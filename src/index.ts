@@ -596,6 +596,211 @@ app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadP
 });
 
 // ============================================================================
+// CLIENTES
+// ============================================================================
+import * as XLSX from 'xlsx';
+
+// Listar clientes (paginado + busqueda + filtro por comercial)
+app.get('/api/clients', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(200, Math.max(10, Number(req.query.limit) || 50));
+    const offset = (page - 1) * limit;
+    const search = String(req.query.search || '').trim();
+    const commercial = String(req.query.commercial || '').trim();
+    const activeOnly = req.query.active === '1' || req.query.active === 'true';
+
+    const whereParts: string[] = [];
+    const params: any[] = [];
+
+    // Sales solo ven los suyos
+    if (req.user!.role === 'sales' && req.user!.sage_commercial_code) {
+      whereParts.push(`commercial_code = $${params.length + 1}`);
+      params.push(req.user!.sage_commercial_code);
+    } else if (commercial) {
+      whereParts.push(`commercial_code = $${params.length + 1}`);
+      params.push(commercial);
+    }
+
+    if (activeOnly) {
+      whereParts.push('is_active = TRUE');
+    }
+
+    if (search) {
+      whereParts.push(`(razon_social ILIKE $${params.length + 1} OR sage_code ILIKE $${params.length + 1} OR cif ILIKE $${params.length + 1} OR municipio ILIKE $${params.length + 1})`);
+      params.push('%' + search + '%');
+    }
+
+    const whereSQL = whereParts.length > 0 ? 'WHERE ' + whereParts.join(' AND ') : '';
+    const countR = await pool.query(`SELECT COUNT(*)::int AS total FROM clients ${whereSQL}`, params);
+    const total = countR.rows[0].total;
+
+    const r = await pool.query(
+      `SELECT * FROM clients ${whereSQL} ORDER BY razon_social LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
+    );
+
+    res.json({ success: true, clients: r.rows, total, page, limit, pages: Math.ceil(total / limit) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Ver detalle de un cliente
+app.get('/api/clients/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query('SELECT * FROM clients WHERE id = $1', [id]);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Cliente no encontrado' });
+      return;
+    }
+    res.json({ success: true, client: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Importar clientes desde Excel de Sage (admin)
+const uploadExcel = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const name = file.originalname.toLowerCase();
+    if (!name.endsWith('.xlsx') && !name.endsWith('.xls')) {
+      cb(new Error('Solo se aceptan archivos Excel (.xlsx o .xls)'));
+      return;
+    }
+    cb(null, true);
+  }
+});
+
+app.post('/api/clients/import-sage', verifyToken, requireAdmin, uploadExcel.single('excel'), async (req: AuthRequest, res: Response) => {
+  let filePath: string | null = null;
+  try {
+    if (!req.file) {
+      res.status(400).json({ success: false, error: 'No se ha subido ningun Excel' });
+      return;
+    }
+    filePath = req.file.path;
+    console.log(`[IMPORT] Procesando Excel: ${filePath}`);
+
+    const workbook = XLSX.readFile(filePath);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+    if (rows.length < 2) {
+      res.status(400).json({ success: false, error: 'Excel vacio o sin datos' });
+      return;
+    }
+
+    // Validar cabecera
+    const header = rows[0].map((h: any) => String(h).trim().toLowerCase());
+    const expectedCols = ['cód. cliente', 'razón social', 'cif/dni', 'deleg.', 'teléfono', 'municipio', 'provincia', 'comercial asig.', 'cód. contable', 'categoría', 'correo electrónico1'];
+    let cabeceraOk = true;
+    for (let i = 0; i < expectedCols.length; i++) {
+      if (!header[i] || !header[i].includes(expectedCols[i].split('.')[0].split(' ')[0])) {
+        // permisivo: si la primera palabra coincide, ok
+      }
+    }
+    // No validamos estrictamente, solo avisamos
+    console.log(`[IMPORT] Cabecera leida: ${header.join(' | ')}`);
+
+    let nuevos = 0;
+    let actualizados = 0;
+    let dadosBaja = 0;
+    let ignorados = 0;
+    let errores = 0;
+    const erroresList: string[] = [];
+
+    // Procesar cada fila
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      try {
+        const sage_code = String(row[0] || '').trim();
+        const razon_social_raw = String(row[1] || '').trim();
+        const cif = String(row[2] || '').trim() || null;
+        // const deleg = String(row[3] || '').trim();
+        const telefono = String(row[4] || '').trim() || null;
+        const municipio = String(row[5] || '').trim() || null;
+        const provincia = String(row[6] || '').trim() || null;
+        const commercial_code = String(row[7] || '').trim() || null;
+        // const cod_contable = String(row[8] || '').trim();
+        const categoria = String(row[9] || '').trim() || null;
+        const email = String(row[10] || '').trim() || null;
+
+        // Ignorar filas vacias o "CLIENTES VARIOS"
+        if (!sage_code || !razon_social_raw || razon_social_raw.toUpperCase().includes('CLIENTES VARIOS')) {
+          ignorados++;
+          continue;
+        }
+
+        // Detectar BAJA-
+        let is_active = true;
+        let razon_social = razon_social_raw;
+        const upper = razon_social_raw.toUpperCase();
+        if (upper.startsWith('BAJA-') || upper.startsWith('BAJA -') || upper.startsWith('BAJA ')) {
+          is_active = false;
+          razon_social = razon_social_raw.replace(/^BAJA\s*-?\s*/i, '').trim();
+          dadosBaja++;
+        }
+
+        // INSERT o UPDATE (por sage_code)
+        const existe = await pool.query('SELECT id FROM clients WHERE sage_code = $1', [sage_code]);
+        if (existe.rows.length > 0) {
+          // UPDATE
+          await pool.query(
+            `UPDATE clients SET
+              razon_social = $1, cif = $2, telefono = $3,
+              municipio = $4, provincia = $5, commercial_code = $6,
+              categoria = $7, email = $8, is_active = $9, updated_at = NOW()
+             WHERE sage_code = $10`,
+            [razon_social, cif, telefono, municipio, provincia, commercial_code, categoria, email, is_active, sage_code]
+          );
+          actualizados++;
+        } else {
+          // INSERT
+          await pool.query(
+            `INSERT INTO clients
+              (sage_code, razon_social, cif, telefono, municipio, provincia, commercial_code, categoria, email, is_active)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [sage_code, razon_social, cif, telefono, municipio, provincia, commercial_code, categoria, email, is_active]
+          );
+          nuevos++;
+        }
+      } catch (e) {
+        errores++;
+        if (erroresList.length < 10) {
+          erroresList.push(`Fila ${i + 1}: ${(e as Error).message}`);
+        }
+      }
+    }
+
+    // Borrar el Excel temporal
+    try { if (filePath) fs.unlinkSync(filePath); } catch {}
+
+    const total_en_bd = (await pool.query('SELECT COUNT(*)::int AS n FROM clients')).rows[0].n;
+
+    res.json({
+      success: true,
+      mensaje: `Importacion completada`,
+      nuevos,
+      actualizados,
+      dados_de_baja: dadosBaja,
+      ignorados,
+      errores,
+      errores_detalle: erroresList,
+      total_en_bd
+    });
+  } catch (e) {
+    console.error('[IMPORT] Error:', e);
+    if (filePath) { try { fs.unlinkSync(filePath); } catch {} }
+    res.status(500).json({ success: false, error: (e as Error).message || 'Error importando Excel' });
+  }
+});
+
+// ============================================================================
 // FRONTEND FALLBACK
 // ============================================================================
 app.get('*', (req, res) => {

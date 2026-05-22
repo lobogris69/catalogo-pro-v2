@@ -5,8 +5,10 @@ const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
 let appState = {
-  vista: 'login',
-  catalogoActual: null
+  vista: 'catalogos',
+  catalogoActual: null,
+  clientesPagina: 1,
+  clientesBusqueda: ''
 };
 
 const $app = document.getElementById('app');
@@ -92,6 +94,7 @@ function renderLogin() {
 
 // ===== APP PRINCIPAL =====
 function renderApp() {
+  const esAdmin = user.role === 'admin';
   $app.innerHTML = `
     <div class="app-shell">
       <div class="topbar">
@@ -101,14 +104,30 @@ function renderApp() {
         </div>
         <button class="topbar-logout" onclick="logout()">Salir</button>
       </div>
+      <div class="navtabs">
+        <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
+        ${esAdmin ? `<button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>` : ''}
+      </div>
       <div id="vista-contenido"></div>
     </div>
   `;
-  if (appState.catalogoActual) {
+  routerVista();
+}
+
+function routerVista() {
+  if (appState.vista === 'clientes') {
+    renderListaClientes();
+  } else if (appState.catalogoActual) {
     renderEditorCatalogo(appState.catalogoActual);
   } else {
     renderListaCatalogos();
   }
+}
+
+function irA(vista) {
+  appState.vista = vista;
+  appState.catalogoActual = null;
+  render();
 }
 
 // ===== LISTA DE CATALOGOS =====
@@ -445,6 +464,163 @@ function abrirModalEditarLamina(sheet, catalogId) {
       renderEditorCatalogo(catalogId);
     } catch (err) {
       document.getElementById('modal-edit-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
+}
+
+// ============================================================================
+// CLIENTES
+// ============================================================================
+async function renderListaClientes() {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando clientes…</div></div>`;
+  try {
+    const params = new URLSearchParams({
+      page: appState.clientesPagina,
+      limit: 50,
+      search: appState.clientesBusqueda || ''
+    });
+    const r = await api('/api/clients?' + params.toString());
+    const clientes = r.clients || [];
+    const esAdmin = user.role === 'admin';
+
+    let html = `
+      <div class="contenedor">
+        <div class="titulo-pagina">
+          <div>
+            <h2>Clientes</h2>
+            <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+              ${r.total} total · página ${r.page} de ${r.pages || 1}
+            </div>
+          </div>
+          ${esAdmin ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalImportarSage()">📊 Importar Excel Sage</button>` : ''}
+        </div>
+
+        <div style="background:white;border:1px solid var(--gris-borde);border-radius:12px;padding:1rem;margin-bottom:1rem">
+          <input type="text" id="clientes-buscar" placeholder="🔍 Buscar por nombre, CIF, código Sage o municipio..."
+                 value="${escape(appState.clientesBusqueda)}"
+                 style="width:100%;padding:10px 14px;border:1px solid var(--gris-borde);border-radius:10px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">
+        </div>
+    `;
+
+    if (clientes.length === 0) {
+      html += `
+        <div class="empty-state">
+          <div class="empty-state-icono">🏥</div>
+          <h3>${appState.clientesBusqueda ? 'No hay resultados' : 'No hay clientes todavía'}</h3>
+          <p>${appState.clientesBusqueda ? 'Prueba otra búsqueda.' : esAdmin ? 'Importa el Excel de Sage para empezar.' : 'Aún no tienes clientes asignados.'}</p>
+          ${esAdmin && !appState.clientesBusqueda ? `<button class="btn btn-primary" style="max-width:280px;margin:0 auto" onclick="abrirModalImportarSage()">📊 Importar Excel de Sage</button>` : ''}
+        </div>
+      `;
+    } else {
+      html += `<div class="clientes-tabla">`;
+      clientes.forEach(c => {
+        const inactive = !c.is_active ? ' cliente-fila-baja' : '';
+        html += `
+          <div class="cliente-fila${inactive}">
+            <div class="cliente-fila-codigo">${escape(c.sage_code || '?')}</div>
+            <div class="cliente-fila-info">
+              <div class="cliente-fila-nombre">${escape(c.razon_social)} ${!c.is_active ? '<span class="cliente-baja-badge">BAJA</span>' : ''}</div>
+              <div class="cliente-fila-detalles">
+                ${c.cif ? `CIF: ${escape(c.cif)} · ` : ''}${c.municipio ? escape(c.municipio) + ' · ' : ''}${c.provincia ? escape(c.provincia) : ''}
+                ${c.commercial_code ? ` · Com.${escape(c.commercial_code)}` : ''}
+              </div>
+            </div>
+          </div>
+        `;
+      });
+      html += `</div>`;
+
+      // Paginación
+      if (r.pages > 1) {
+        html += `<div class="paginacion">
+          <button class="btn btn-pequeno btn-secondary" ${r.page <= 1 ? 'disabled' : ''} onclick="paginaClientes(${r.page - 1})">← Anterior</button>
+          <span style="font-size:12px;color:var(--gris-texto);align-self:center">Página ${r.page} de ${r.pages}</span>
+          <button class="btn btn-pequeno btn-secondary" ${r.page >= r.pages ? 'disabled' : ''} onclick="paginaClientes(${r.page + 1})">Siguiente →</button>
+        </div>`;
+      }
+    }
+    html += `</div>`;
+    $v.innerHTML = html;
+
+    // Búsqueda con debounce
+    const $busca = document.getElementById('clientes-buscar');
+    let timer;
+    $busca.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        appState.clientesBusqueda = $busca.value.trim();
+        appState.clientesPagina = 1;
+        renderListaClientes();
+      }, 350);
+    });
+  } catch (err) {
+    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+function paginaClientes(p) {
+  appState.clientesPagina = p;
+  renderListaClientes();
+}
+
+// ===== MODAL: IMPORTAR EXCEL SAGE =====
+function abrirModalImportarSage() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>📊 Importar clientes desde Excel de Sage</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div id="modal-import-msg"></div>
+      <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:10px;padding:11px;margin-bottom:1rem;font-size:12px;color:#855900;line-height:1.5">
+        <b>💡 Cómo funciona:</b><br>
+        El sistema lee el Excel y para cada fila:<br>
+        • Si el cliente NO existe → lo crea<br>
+        • Si ya existe (por código Sage) → lo actualiza<br>
+        • Si empieza por "BAJA-" → lo marca como inactivo<br>
+        • "CLIENTES VARIOS" se ignora
+      </div>
+      <div class="upload-zona" id="upload-excel-zona" onclick="document.getElementById('upload-excel-input').click()">
+        <div class="upload-zona-icono">📊</div>
+        <div class="upload-zona-texto">Pulsa para elegir el Excel</div>
+        <div class="upload-zona-sub">.xlsx o .xls (máx 20 MB)</div>
+      </div>
+      <input type="file" id="upload-excel-input" accept=".xlsx,.xls" style="display:none">
+      <div id="import-progreso"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  document.getElementById('upload-excel-input').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!confirm(`Importar "${file.name}" (${(file.size / 1024).toFixed(0)} KB)?\n\nEsto puede tardar 30-60 segundos para 3000 clientes.`)) return;
+    const $prog = document.getElementById('import-progreso');
+    $prog.innerHTML = `<div class="subida-progreso"><span class="spinner"></span> Importando clientes desde Excel…</div>`;
+    try {
+      const fd = new FormData();
+      fd.append('excel', file);
+      const r = await api('/api/clients/import-sage', { method: 'POST', body: fd });
+      $prog.innerHTML = `
+        <div class="exito-msg" style="text-align:left;line-height:1.7">
+          ✅ ${escape(r.mensaje)}<br>
+          • Nuevos: <b>${r.nuevos}</b><br>
+          • Actualizados: <b>${r.actualizados}</b><br>
+          • Dados de baja: <b>${r.dados_de_baja}</b><br>
+          • Ignorados: ${r.ignorados}<br>
+          • Errores: ${r.errores}<br>
+          <br><b>Total clientes en BD: ${r.total_en_bd}</b>
+        </div>
+      `;
+      setTimeout(() => {
+        modal.remove();
+        renderListaClientes();
+      }, 2500);
+    } catch (err) {
+      $prog.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
     }
   });
 }
