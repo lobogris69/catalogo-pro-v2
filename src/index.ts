@@ -68,14 +68,68 @@ function verifyToken(req: AuthRequest, res: Response, next: NextFunction): void 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as any;
     req.user = decoded;
+
+    // === IMPERSONACION ===
+    // Si admin envia header X-Impersonate-User, simula ser ese usuario
+    // Pero el rol REAL del que pide sigue siendo admin (controlado por requireRealAdmin)
+    const impersonateHeader = req.headers['x-impersonate-user'];
+    if (impersonateHeader && decoded.role === 'admin') {
+      const targetId = Number(impersonateHeader);
+      if (targetId > 0 && targetId !== decoded.id) {
+        // Cargar el usuario impersonado (sincronamente con una query rapida)
+        pool.query('SELECT id, email, name, role, sage_commercial_code FROM users WHERE id = $1 AND is_active = TRUE', [targetId])
+          .then(r => {
+            if (r.rows.length > 0) {
+              const target = r.rows[0];
+              req.user = {
+                id: target.id,
+                email: target.email,
+                name: target.name,
+                role: target.role,
+                sage_commercial_code: target.sage_commercial_code,
+                _realAdminId: decoded.id,
+                _realAdminEmail: decoded.email
+              } as any;
+            }
+            next();
+          })
+          .catch(() => next());
+        return;
+      }
+    }
     next();
   } catch (e) {
     res.status(401).json({ success: false, error: 'Token invalido o caducado' });
   }
 }
 
+// requireAdmin acepta admin REAL o admin impersonando (porque solo admin puede impersonar)
 function requireAdmin(req: AuthRequest, res: Response, next: NextFunction): void {
-  if (!req.user || req.user.role !== 'admin') {
+  const u = req.user as any;
+  // Es admin REAL si tiene _realAdminId (impersonando) o si su rol es admin
+  if (!u) {
+    res.status(403).json({ success: false, error: 'No autorizado' });
+    return;
+  }
+  if (u._realAdminId || u.role === 'admin') {
+    next();
+    return;
+  }
+  res.status(403).json({ success: false, error: 'Solo admin' });
+}
+
+// requireRealAdmin: solo admin REAL (no impersonando). Para gestion de usuarios.
+function requireRealAdmin(req: AuthRequest, res: Response, next: NextFunction): void {
+  const u = req.user as any;
+  if (!u) {
+    res.status(403).json({ success: false, error: 'No autorizado' });
+    return;
+  }
+  if (u._realAdminId) {
+    res.status(403).json({ success: false, error: 'No permitido mientras impersonas otro usuario' });
+    return;
+  }
+  if (u.role !== 'admin') {
     res.status(403).json({ success: false, error: 'Solo admin' });
     return;
   }
@@ -299,7 +353,7 @@ app.get('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: R
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
-app.post('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+app.post('/api/users', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const { email, password, name, role, sage_commercial_code } = req.body;
     if (!email || !password || !name || !role) {
@@ -331,7 +385,7 @@ app.post('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: 
 });
 
 // Editar usuario (admin) - nombre, email, rol, codigo Sage, activo
-app.put('/api/users/:id', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+app.put('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
     const { name, email, role, sage_commercial_code, is_active } = req.body;
@@ -369,7 +423,7 @@ app.put('/api/users/:id', verifyToken, requireAdmin, async (req: AuthRequest, re
 });
 
 // Admin: cambiar contraseña de cualquier usuario
-app.put('/api/users/:id/password', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+app.put('/api/users/:id/password', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
     const { new_password } = req.body;
@@ -432,7 +486,7 @@ app.put('/api/users/me/sage-code', verifyToken, async (req: AuthRequest, res: Re
 });
 
 // Eliminar usuario (admin)
-app.delete('/api/users/:id', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+app.delete('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
     if (id === req.user!.id) {

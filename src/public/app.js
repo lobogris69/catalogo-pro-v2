@@ -4,6 +4,7 @@
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
+let impersonating = JSON.parse(localStorage.getItem('cpv2_impersonate') || 'null');
 let appState = {
   vista: 'catalogos',
   catalogoActual: null,
@@ -14,9 +15,30 @@ let appState = {
 const $app = document.getElementById('app');
 
 // ===== HELPERS =====
+// El "rol efectivo" tiene en cuenta si admin esta impersonando a un comercial
+function rolEfectivo() {
+  if (impersonating && user && user.role === 'admin') return 'sales';
+  return user ? user.role : null;
+}
+function codigoSageEfectivo() {
+  if (impersonating && user && user.role === 'admin') return impersonating.sage_commercial_code;
+  return user ? user.sage_commercial_code : null;
+}
+function esAdminReal() {
+  return user && user.role === 'admin';
+}
+function nombreEfectivo() {
+  if (impersonating && user && user.role === 'admin') return impersonating.name;
+  return user ? user.name : '';
+}
+
 function api(endpoint, options = {}) {
   const headers = options.headers || {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  // Si admin esta impersonando a otro usuario, le decimos al backend
+  if (impersonating && user && user.role === 'admin') {
+    headers['X-Impersonate-User'] = String(impersonating.id);
+  }
   if (!(options.body instanceof FormData) && options.body) {
     headers['Content-Type'] = 'application/json';
     if (typeof options.body !== 'string') options.body = JSON.stringify(options.body);
@@ -37,8 +59,10 @@ function escape(s) {
 function logout() {
   localStorage.removeItem('cpv2_token');
   localStorage.removeItem('cpv2_user');
+  localStorage.removeItem('cpv2_impersonate');
   token = null;
   user = null;
+  impersonating = null;
   render();
 }
 
@@ -94,15 +118,33 @@ function renderLogin() {
 
 // ===== APP PRINCIPAL =====
 function renderApp() {
-  const esAdmin = user.role === 'admin';
+  const esAdmin = rolEfectivo() === 'admin';
+  const adminReal = esAdminReal();
+  const impersonando = !!impersonating && user && user.role === 'admin';
+
+  // Banner de impersonación (si admin esta viendo como otro)
+  const bannerImpersonacion = impersonando ? `
+    <div class="banner-impersonacion">
+      <span>👁 Estás viendo CatalogPRO como <b>${escape(impersonating.name)}</b> (comercial)</span>
+      <button onclick="dejarImpersonacion()" class="btn-volver-admin">← Volver a Admin</button>
+    </div>
+  ` : '';
+
   $app.innerHTML = `
     <div class="app-shell">
+      ${bannerImpersonacion}
       <div class="topbar">
         <div>
           <div class="topbar-titulo">CatalogPRO v2</div>
-          <div class="topbar-usuario">${escape(user.name)} · ${user.role}</div>
+          <div class="topbar-usuario">
+            ${escape(nombreEfectivo())} · ${rolEfectivo() === 'admin' ? 'Administrador' : 'Comercial'}
+            ${impersonando ? ` <span style="opacity:0.7">(real: ${escape(user.name)})</span>` : ''}
+          </div>
         </div>
-        <button class="topbar-logout" onclick="logout()">Salir</button>
+        <div style="display:flex; gap:8px; align-items:center;">
+          ${adminReal && !impersonando ? `<button class="topbar-action" onclick="abrirSelectorImpersonacion()" title="Ver como un comercial">👁 Ver como…</button>` : ''}
+          <button class="topbar-logout" onclick="logout()">Salir</button>
+        </div>
       </div>
       <div class="navtabs">
         <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
@@ -131,6 +173,10 @@ function routerVista() {
 }
 
 function irA(vista) {
+  // Si impersona y la vista es solo admin, redirigir a catalogos
+  if (rolEfectivo() === 'sales' && (vista === 'clientes' || vista === 'comerciales')) {
+    vista = 'catalogos';
+  }
   appState.vista = vista;
   appState.catalogoActual = null;
   render();
@@ -986,6 +1032,79 @@ async function renderMiCuenta() {
       $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
     }
   });
+}
+
+// ============================================================================
+// IMPERSONACION (admin ve como comercial)
+// ============================================================================
+async function abrirSelectorImpersonacion() {
+  try {
+    const r = await api('/api/users');
+    const comerciales = (r.users || []).filter(u => u.role === 'sales' && u.is_active);
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-bg';
+    modal.innerHTML = `
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>👁 Ver CatalogPRO como…</h3>
+          <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+        </div>
+        <div style="background:#fffaf0;border:1px solid #ffe4b3;border-radius:10px;padding:11px;margin-bottom:1rem;font-size:12px;color:#856404;line-height:1.5">
+          <b>💡 Modo "Ver como":</b><br>
+          Verás la app como si fueras ese comercial: solo SUS catálogos asignados, SUS clientes, etc.<br>
+          Útil para soporte ("¿qué ve Iván en su tablet?") y para usar tu propia faceta de comercial.
+        </div>
+        ${comerciales.length === 0 ? `
+          <div style="text-align:center;padding:2rem;color:var(--gris-texto)">
+            <p>Aún no hay comerciales creados.</p>
+            <button class="btn btn-primary" style="margin-top:1rem" onclick="this.closest('.modal-bg').remove(); irA('comerciales'); abrirModalNuevoUsuario();">+ Crear primer comercial</button>
+          </div>
+        ` : `
+          <div class="comerciales-lista" style="gap:6px">
+            ${comerciales.map(c => `
+              <button class="comercial-impersonar" onclick="impersonar(${c.id}, '${escape(c.name)}', '${escape(c.sage_commercial_code || '')}')">
+                <div>
+                  <div style="font-size:13px;font-weight:500;color:var(--texto)">${escape(c.name)}</div>
+                  <div style="font-size:11px;color:var(--gris-texto)">
+                    📧 ${escape(c.email)}
+                    ${c.sage_commercial_code ? ` · 🏷️ Sage: ${escape(c.sage_commercial_code)}` : ' · <span style="color:#c33">⚠ sin código Sage</span>'}
+                  </div>
+                </div>
+                <span style="color:var(--rosa);font-size:18px">👁</span>
+              </button>
+            `).join('')}
+          </div>
+        `}
+      </div>
+    `;
+    document.body.appendChild(modal);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+function impersonar(userId, userName, sageCode) {
+  impersonating = {
+    id: userId,
+    name: userName,
+    sage_commercial_code: sageCode || null
+  };
+  localStorage.setItem('cpv2_impersonate', JSON.stringify(impersonating));
+  // Cerrar modal
+  document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+  // Reset estado de vista
+  appState.vista = 'catalogos';
+  appState.catalogoActual = null;
+  render();
+}
+
+function dejarImpersonacion() {
+  impersonating = null;
+  localStorage.removeItem('cpv2_impersonate');
+  appState.vista = 'catalogos';
+  appState.catalogoActual = null;
+  render();
 }
 
 // ===== ARRANQUE =====
