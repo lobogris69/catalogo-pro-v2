@@ -9,7 +9,11 @@ let appState = {
   vista: 'catalogos',
   catalogoActual: null,
   clientesPagina: 1,
-  clientesBusqueda: ''
+  clientesBusqueda: '',
+  visorModo: 'presentacion', // 'presentacion' | 'mosaico'
+  visorIndice: 0,
+  visorBusqueda: '',
+  visorZoom: 1
 };
 
 const $app = document.getElementById('app');
@@ -166,7 +170,12 @@ function routerVista() {
   } else if (appState.vista === 'cuenta') {
     renderMiCuenta();
   } else if (appState.catalogoActual) {
-    renderEditorCatalogo(appState.catalogoActual);
+    // Si admin → editor. Si comercial (o admin impersonando) → visor
+    if (rolEfectivo() === 'admin') {
+      renderEditorCatalogo(appState.catalogoActual);
+    } else {
+      renderVisorComercial(appState.catalogoActual);
+    }
   } else {
     renderListaCatalogos();
   }
@@ -1040,7 +1049,369 @@ async function renderMiCuenta() {
 }
 
 // ============================================================================
-// IMPERSONACION (admin ve como comercial)
+// VISOR COMERCIAL (tablet vertical, modo presentacion + mosaico + zoom)
+// ============================================================================
+let _visorSheets = []; // cache de laminas del catalogo actual
+let _visorCatalog = null;
+
+async function renderVisorComercial(catalogId) {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogo…</div></div>`;
+  try {
+    const r = await api('/api/catalogs/' + catalogId);
+    _visorCatalog = r.catalog;
+    _visorSheets = (r.sheets || []).filter(s => !s.oculta);
+
+    if (_visorSheets.length === 0) {
+      $v.innerHTML = `
+        <div class="contenedor">
+          <div class="titulo-pagina">
+            <button class="btn btn-secondary btn-pequeno" onclick="volverACatalogos()">← Catálogos</button>
+          </div>
+          <div class="empty-state">
+            <div class="empty-state-icono">📄</div>
+            <h3>Este catálogo está vacío</h3>
+            <p>El administrador aún no ha subido láminas.</p>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    // Si el indice esta fuera de rango, reset
+    if (appState.visorIndice >= _visorSheets.length) appState.visorIndice = 0;
+
+    pintarVisor();
+  } catch (err) {
+    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+function pintarVisor() {
+  const $v = document.getElementById('vista-contenido');
+  const totalReal = _visorSheets.length;
+  const busca = appState.visorBusqueda.trim().toLowerCase();
+
+  // Filtrar por búsqueda
+  let visibles = _visorSheets;
+  if (busca) {
+    // Búsqueda por número de lámina o por texto
+    const numero = parseInt(busca);
+    visibles = _visorSheets.filter((s, i) => {
+      if (!isNaN(numero) && (i + 1) === numero) return true;
+      const blob = [s.titulo, s.notas, s.tags].filter(Boolean).join(' ').toLowerCase();
+      return blob.includes(busca);
+    });
+  }
+
+  // Cabecera (común a los dos modos)
+  const cabecera = `
+    <div class="visor-cabecera">
+      <div class="visor-cabecera-fila">
+        <button class="btn-icon-volver" onclick="volverACatalogos()" title="Volver a catálogos">←</button>
+        <div class="visor-titulo-bloque">
+          <div class="visor-titulo">${escape(_visorCatalog.name)}</div>
+          <div class="visor-subtitulo">${totalReal} láminas${busca ? ` · ${visibles.length} resultados` : ''}</div>
+        </div>
+        <div class="visor-modo-switch">
+          <button class="visor-modo-btn ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
+            📺
+          </button>
+          <button class="visor-modo-btn ${appState.visorModo === 'mosaico' ? 'activo' : ''}" onclick="cambiarVisorModo('mosaico')" title="Modo mosaico">
+            ▦
+          </button>
+        </div>
+      </div>
+      <div class="visor-buscador-fila">
+        <input type="text" id="visor-buscar" placeholder="🔍 Buscar (nombre, oferta, número de lámina…)"
+               value="${escape(appState.visorBusqueda)}"
+               class="visor-buscador">
+        ${appState.visorBusqueda ? '<button class="visor-buscador-clear" onclick="limpiarVisorBusqueda()">✕</button>' : ''}
+      </div>
+    </div>
+  `;
+
+  // Cuerpo según el modo
+  let cuerpo = '';
+  if (appState.visorModo === 'mosaico') {
+    cuerpo = pintarMosaico(visibles);
+  } else {
+    cuerpo = pintarPresentacion(visibles);
+  }
+
+  $v.innerHTML = `<div class="visor-shell">${cabecera}${cuerpo}</div>`;
+
+  // Listener de búsqueda con debounce
+  const $busca = document.getElementById('visor-buscar');
+  if ($busca) {
+    let timer;
+    $busca.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        appState.visorBusqueda = $busca.value;
+        if (appState.visorModo === 'presentacion') {
+          appState.visorIndice = 0;
+        }
+        pintarVisor();
+        // Mantener foco
+        setTimeout(() => {
+          const $b = document.getElementById('visor-buscar');
+          if ($b) {
+            $b.focus();
+            const len = $b.value.length;
+            $b.setSelectionRange(len, len);
+          }
+        }, 0);
+      }, 400);
+    });
+  }
+
+  // Engancha controles del modo presentacion
+  if (appState.visorModo === 'presentacion') {
+    engancharGestosPresentacion();
+  }
+}
+
+function pintarPresentacion(visibles) {
+  if (visibles.length === 0) {
+    return `
+      <div class="visor-vacio">
+        <div class="empty-state-icono">🔍</div>
+        <h3>Sin resultados</h3>
+        <p>No hay láminas que coincidan con "${escape(appState.visorBusqueda)}"</p>
+      </div>
+    `;
+  }
+
+  if (appState.visorIndice >= visibles.length) appState.visorIndice = 0;
+  const sheet = visibles[appState.visorIndice];
+  const numeroOriginal = _visorSheets.indexOf(sheet) + 1;
+  const prevDisabled = appState.visorIndice === 0 ? 'disabled' : '';
+  const nextDisabled = appState.visorIndice === visibles.length - 1 ? 'disabled' : '';
+
+  return `
+    <div class="visor-presentacion">
+      <div class="visor-nav-superior">
+        <button class="visor-nav-btn" ${prevDisabled} onclick="visorAnterior()">◀ Anterior</button>
+        <div class="visor-contador">
+          <span class="visor-contador-num">${numeroOriginal}</span>
+          <span class="visor-contador-total">/ ${_visorSheets.length}</span>
+        </div>
+        <button class="visor-nav-btn" ${nextDisabled} onclick="visorSiguiente()">Siguiente ▶</button>
+      </div>
+
+      <div class="visor-imagen-contenedor" id="visor-img-contenedor">
+        <div class="visor-imagen-zoom" id="visor-img-zoom" style="transform: scale(${appState.visorZoom})">
+          <img src="${escape(sheet.imagen_path)}" class="visor-imagen" id="visor-imagen" alt="${escape(sheet.titulo || '')}" draggable="false">
+        </div>
+        ${appState.visorZoom > 1 ? `
+          <button class="visor-zoom-reset" onclick="visorZoomReset()" title="Quitar zoom">
+            🔍 Reset zoom (${appState.visorZoom.toFixed(1)}×)
+          </button>
+        ` : ''}
+      </div>
+
+      ${(sheet.titulo || sheet.notas) ? `
+        <div class="visor-info-lamina">
+          ${sheet.titulo ? `<div class="visor-info-titulo">${escape(sheet.titulo)}</div>` : ''}
+          ${sheet.notas ? `<div class="visor-info-notas">${escape(sheet.notas)}</div>` : ''}
+        </div>
+      ` : ''}
+
+      <div class="visor-zoom-hint">
+        💡 Pellizca con 2 dedos para hacer zoom · doble toque para zoom rápido · desliza para navegar
+      </div>
+    </div>
+  `;
+}
+
+function pintarMosaico(visibles) {
+  if (visibles.length === 0) {
+    return `
+      <div class="visor-vacio">
+        <div class="empty-state-icono">🔍</div>
+        <h3>Sin resultados</h3>
+        <p>No hay láminas que coincidan con "${escape(appState.visorBusqueda)}"</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="visor-mosaico">
+      ${visibles.map((s) => {
+        const idxOriginal = _visorSheets.indexOf(s);
+        const numeroOriginal = idxOriginal + 1;
+        return `
+          <div class="visor-mosaico-celda" onclick="abrirLaminaDesdeMosaico(${idxOriginal})">
+            <img src="${escape(s.imagen_path)}" class="visor-mosaico-img" alt="" loading="lazy">
+            <div class="visor-mosaico-num">${numeroOriginal}</div>
+            ${s.titulo ? `<div class="visor-mosaico-titulo">${escape(s.titulo)}</div>` : ''}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function cambiarVisorModo(modo) {
+  appState.visorModo = modo;
+  appState.visorZoom = 1;
+  pintarVisor();
+}
+
+function visorAnterior() {
+  if (appState.visorIndice > 0) {
+    appState.visorIndice--;
+    appState.visorZoom = 1;
+    pintarVisor();
+  }
+}
+
+function visorSiguiente() {
+  const busca = appState.visorBusqueda.trim().toLowerCase();
+  const visibles = busca ? _visorSheets.filter((s, i) => {
+    const numero = parseInt(busca);
+    if (!isNaN(numero) && (i + 1) === numero) return true;
+    const blob = [s.titulo, s.notas, s.tags].filter(Boolean).join(' ').toLowerCase();
+    return blob.includes(busca);
+  }) : _visorSheets;
+
+  if (appState.visorIndice < visibles.length - 1) {
+    appState.visorIndice++;
+    appState.visorZoom = 1;
+    pintarVisor();
+  }
+}
+
+function visorZoomReset() {
+  appState.visorZoom = 1;
+  pintarVisor();
+}
+
+function abrirLaminaDesdeMosaico(idx) {
+  appState.visorIndice = idx;
+  appState.visorModo = 'presentacion';
+  appState.visorZoom = 1;
+  pintarVisor();
+}
+
+function limpiarVisorBusqueda() {
+  appState.visorBusqueda = '';
+  appState.visorIndice = 0;
+  pintarVisor();
+}
+
+// ----- Gestos: pinch-zoom, doble-tap, swipe -----
+function engancharGestosPresentacion() {
+  const $cont = document.getElementById('visor-img-contenedor');
+  const $zoom = document.getElementById('visor-img-zoom');
+  if (!$cont || !$zoom) return;
+
+  let lastTap = 0;
+  let touchStartX = null;
+  let touchStartY = null;
+  let initialPinchDist = null;
+  let zoomAlInicioPinch = 1;
+
+  // Doble tap (touch + click)
+  $cont.addEventListener('click', (e) => {
+    // Solo si NO hubo pinch
+    if (e.target.closest('.visor-zoom-reset')) return;
+    const ahora = Date.now();
+    if (ahora - lastTap < 350) {
+      // Doble click/tap: zoom rapido
+      if (appState.visorZoom < 1.5) {
+        appState.visorZoom = 2.5;
+      } else {
+        appState.visorZoom = 1;
+      }
+      $zoom.style.transform = `scale(${appState.visorZoom})`;
+      pintarVisor();
+    }
+    lastTap = ahora;
+  });
+
+  // Pinch zoom (touch screens)
+  $cont.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      initialPinchDist = Math.hypot(dx, dy);
+      zoomAlInicioPinch = appState.visorZoom;
+    } else if (e.touches.length === 1) {
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+    }
+  }, { passive: true });
+
+  $cont.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 2 && initialPinchDist !== null) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      const factor = dist / initialPinchDist;
+      let nuevoZoom = zoomAlInicioPinch * factor;
+      nuevoZoom = Math.max(1, Math.min(4, nuevoZoom));
+      appState.visorZoom = nuevoZoom;
+      $zoom.style.transform = `scale(${nuevoZoom})`;
+    }
+  }, { passive: false });
+
+  $cont.addEventListener('touchend', (e) => {
+    // Si terminó un pinch, repintar para mostrar boton reset
+    if (initialPinchDist !== null) {
+      initialPinchDist = null;
+      pintarVisor();
+      return;
+    }
+    // Si fue 1 dedo y no zoom, mirar swipe
+    if (touchStartX !== null && e.changedTouches.length === 1 && appState.visorZoom < 1.2) {
+      const dx = e.changedTouches[0].clientX - touchStartX;
+      const dy = e.changedTouches[0].clientY - touchStartY;
+      // Swipe horizontal claramente más fuerte que vertical
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+        if (dx > 0) visorAnterior();
+        else visorSiguiente();
+      }
+    }
+    touchStartX = null;
+    touchStartY = null;
+  });
+
+  // Wheel zoom (escritorio con rueda)
+  $cont.addEventListener('wheel', (e) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      let nuevoZoom = appState.visorZoom * factor;
+      nuevoZoom = Math.max(1, Math.min(4, nuevoZoom));
+      appState.visorZoom = nuevoZoom;
+      $zoom.style.transform = `scale(${nuevoZoom})`;
+      // Actualizar boton reset
+      const $reset = $cont.querySelector('.visor-zoom-reset');
+      if (nuevoZoom > 1 && !$reset) {
+        pintarVisor();
+      } else if (nuevoZoom <= 1 && $reset) {
+        pintarVisor();
+      }
+    }
+  }, { passive: false });
+
+  // Teclado: flechas izquierda/derecha
+  if (!window._visorTeclasEnganchadas) {
+    window._visorTeclasEnganchadas = true;
+    document.addEventListener('keydown', (e) => {
+      if (!appState.catalogoActual || rolEfectivo() === 'admin') return;
+      if (appState.visorModo !== 'presentacion') return;
+      const tag = document.activeElement ? document.activeElement.tagName : '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === 'ArrowLeft') { e.preventDefault(); visorAnterior(); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); visorSiguiente(); }
+      else if (e.key === 'Escape' && appState.visorZoom > 1) { appState.visorZoom = 1; pintarVisor(); }
+    });
+  }
+}
+
 // ============================================================================
 async function abrirSelectorImpersonacion() {
   try {

@@ -686,3 +686,300 @@ body {
   font-weight: 500;
   white-space: nowrap;
 }
+
+/* ============================================================================
+   VISOR COMERCIAL — tablet vertical, modo presentación + mosaico
+   ============================================================================ */
+.visor-shell {
+  background: #fafafa;
+  min-height: calc(100vh - 110px);
+}
+
+.visor-cabecera {
+  background: white;
+  border-bottom: 1px solid var(--gris-borde);
+  padding: 12px 14px;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.visor-cabecera-fila {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.btn-icon-volver {
+  background: var(--gris-bg);
+  border: 1px solid var(--gris-borde);
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  font-size: 18px;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: var(--rosa);
+  font-weight: 500;
+}
+.btn-icon-volver:hover { background: var(--rosa-claro); border-color: var(--rosa); }
+.visor-titulo-bloque {
+  flex: 1;
+  min-width: 0;
+}
+.visor-titulo {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--texto);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.visor-subtitulo {
+  font-size: 11px;
+  color: var(--gris-texto);
+  margin-top: 2px;
+}
+.visor-modo-switch {
+  display: flex;
+  gap: 4px;
+  background: var(--gris-bg);
+  padding: 3px;
+  border-radius: 10px;
+  border: 1px solid var(--gris-borde);
+}
+.visor-modo-btn {
+  background: transparent;
+  border: 0;
+  width: 38px;
+  height: 32px;
+  border-radius: 7px;
+  font-size: 16px;
+  cursor: pointer;
+  color: var(--gris-texto);
+}
+.visor-modo-btn.activo {
+  background: white;
+  color: var(--rosa);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+.visor-buscador-fila {
+  position: relative;
+}
+.visor-buscador {
+  width: 100%;
+  padding: 11px 38px 11px 14px;
+  border: 1.5px solid var(--gris-borde);
+  border-radius: 10px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  background: white;
+  box-sizing: border-box;
+}
+.visor-buscador:focus { border-color: var(--rosa); }
+.visor-buscador-clear {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: 0;
+  color: var(--gris-texto);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 8px;
+}
+
+/* ===== Modo presentación ===== */
+.visor-presentacion {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+.visor-nav-superior {
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: white;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--gris-borde);
+}
+.visor-nav-btn {
+  background: var(--rosa);
+  color: white;
+  border: 0;
+  padding: 9px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  min-width: 110px;
+}
+.visor-nav-btn:hover { background: var(--rosa-oscuro); }
+.visor-nav-btn:disabled {
+  background: var(--gris-borde);
+  color: #888;
+  cursor: not-allowed;
+}
+.visor-contador {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: inherit;
+}
+.visor-contador-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--rosa);
+}
+.visor-contador-total {
+  font-size: 13px;
+  color: var(--gris-texto);
+}
+
+.visor-imagen-contenedor {
+  width: 100%;
+  max-width: 720px;
+  background: white;
+  border: 1px solid var(--gris-borde);
+  border-radius: 14px;
+  padding: 8px;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.visor-imagen-zoom {
+  width: 100%;
+  transform-origin: center center;
+  transition: transform 0.15s;
+}
+.visor-imagen {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 8px;
+  pointer-events: none;
+}
+.visor-zoom-reset {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: rgba(204, 0, 122, 0.95);
+  color: white;
+  border: 0;
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  z-index: 5;
+}
+
+.visor-info-lamina {
+  width: 100%;
+  max-width: 720px;
+  background: white;
+  border: 1px solid var(--gris-borde);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.visor-info-titulo {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--texto);
+  margin-bottom: 4px;
+}
+.visor-info-notas {
+  font-size: 13px;
+  color: var(--gris-texto);
+  line-height: 1.4;
+}
+.visor-zoom-hint {
+  font-size: 11px;
+  color: var(--gris-texto);
+  text-align: center;
+  max-width: 720px;
+  padding: 4px 8px;
+}
+
+.visor-vacio {
+  text-align: center;
+  padding: 4rem 1.5rem;
+  color: var(--gris-texto);
+}
+.visor-vacio h3 { font-size: 17px; margin-bottom: 6px; color: var(--texto); }
+.visor-vacio p { font-size: 13px; }
+
+/* ===== Modo mosaico ===== */
+.visor-mosaico {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+.visor-mosaico-celda {
+  background: white;
+  border: 1px solid var(--gris-borde);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.15s, transform 0.05s;
+}
+.visor-mosaico-celda:hover {
+  border-color: var(--rosa);
+}
+.visor-mosaico-celda:active {
+  transform: scale(0.97);
+}
+.visor-mosaico-img {
+  width: 100%;
+  height: 180px;
+  object-fit: cover;
+  display: block;
+}
+.visor-mosaico-num {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(204, 0, 122, 0.92);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.visor-mosaico-titulo {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--texto);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-top: 1px solid var(--gris-borde);
+}
+
+/* Mosaico denso en tablets pequeñas: 4 columnas */
+@media (max-width: 900px) {
+  .visor-mosaico { grid-template-columns: repeat(4, 1fr); }
+  .visor-mosaico-img { height: 160px; }
+}
+@media (max-width: 640px) {
+  .visor-mosaico { grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 10px; }
+  .visor-mosaico-img { height: 140px; }
+  .visor-nav-btn { min-width: 80px; padding: 9px 10px; font-size: 12px; }
+}
