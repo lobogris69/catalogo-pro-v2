@@ -329,6 +329,7 @@ async function renderEditorCatalogo(id) {
           ${esAdmin ? `
             <div style="display:flex;gap:6px;align-self:flex-start;flex-wrap:wrap">
               <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
+              ${sheets.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="borrarTodasLaminas(${id}, ${sheets.length})">🗑️ Borrar todas</button>` : ''}
             </div>
           ` : ''}
         </div>
@@ -368,9 +369,10 @@ async function renderEditorCatalogo(id) {
             <div id="laminas-lista">
               ${sheets.length === 0 ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">Sin láminas todavía. ${esAdmin ? 'Sube la primera con el panel de la izquierda.' : ''}</p>` : ''}
               ${sheets.map((s, idx) => `
-                <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-numero="${idx + 1}">
+                <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-numero="${idx + 1}" ${esAdmin ? 'draggable="true"' : ''}>
+                  ${esAdmin ? `<div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>` : ''}
                   <div class="lamina-numero">${idx + 1}</div>
-                  <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'">
+                  <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
                     ${esAdmin ? `
@@ -384,6 +386,7 @@ async function renderEditorCatalogo(id) {
                   ${esAdmin ? `
                   <div class="lamina-acciones">
                     <button class="btn-guardar-tags" data-id="${s.id}" style="display:none" title="Guardar tags">💾</button>
+                    <button onclick="sustituirImagenLamina(${s.id})" title="Sustituir imagen">🔄</button>
                     <button onclick="editarLamina(${s.id})" title="Editar todo">✏️</button>
                     <button class="btn-borrar" onclick="borrarLamina(${s.id}, ${id})" title="Borrar">🗑️</button>
                   </div>
@@ -438,6 +441,8 @@ async function renderEditorCatalogo(id) {
           t = setTimeout(() => filtrarLaminasEditor(filtro.value), 200);
         });
       }
+      // Drag & drop
+      activarDragDropLaminas(id);
     }
 
     if (esAdmin) {
@@ -567,6 +572,159 @@ function filtrarLaminasEditor(texto) {
     if (tags.includes(t)) coincide = true;
     fila.style.display = coincide ? '' : 'none';
   });
+}
+
+// ===== DRAG & DROP REORDENAR LAMINAS =====
+function activarDragDropLaminas(catalogId) {
+  const lista = document.getElementById('laminas-lista');
+  if (!lista) return;
+  let arrastrando = null;
+  let cambios = false;
+
+  lista.addEventListener('dragstart', (e) => {
+    const fila = e.target.closest('.lamina-fila');
+    if (!fila) return;
+    arrastrando = fila;
+    fila.classList.add('lamina-arrastrando');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+
+  lista.addEventListener('dragend', async (e) => {
+    const fila = e.target.closest('.lamina-fila');
+    if (fila) fila.classList.remove('lamina-arrastrando');
+    document.querySelectorAll('.lamina-fila').forEach(f => f.classList.remove('lamina-arrastrando-target'));
+    if (cambios) {
+      cambios = false;
+      // Recalcular números visibles + enviar al backend
+      const filas = Array.from(lista.querySelectorAll('.lamina-fila'));
+      const ids = filas.map(f => Number(f.dataset.id));
+      // Actualizar UI inmediato
+      filas.forEach((f, i) => {
+        f.dataset.numero = String(i + 1);
+        const num = f.querySelector('.lamina-numero');
+        if (num) num.textContent = String(i + 1);
+      });
+      try {
+        await api(`/api/catalogs/${catalogId}/sheets/reorder`, {
+          method: 'PUT',
+          body: { sheet_ids: ids }
+        });
+        // Pequeño feedback visual
+        const $cont = document.querySelector('.editor-panel');
+        if ($cont) {
+          const $msg = document.createElement('div');
+          $msg.className = 'exito-msg';
+          $msg.style.marginBottom = '10px';
+          $msg.textContent = '✓ Orden guardado';
+          $cont.insertBefore($msg, lista);
+          setTimeout(() => $msg.remove(), 1500);
+        }
+      } catch (err) {
+        alert('Error guardando el orden: ' + err.message + '\n\nRecargo la lista.');
+        renderEditorCatalogo(catalogId);
+      }
+    }
+    arrastrando = null;
+  });
+
+  lista.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    const fila = e.target.closest('.lamina-fila');
+    if (!fila || fila === arrastrando) return;
+    document.querySelectorAll('.lamina-arrastrando-target').forEach(f => f.classList.remove('lamina-arrastrando-target'));
+    fila.classList.add('lamina-arrastrando-target');
+  });
+
+  lista.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const target = e.target.closest('.lamina-fila');
+    if (!target || !arrastrando || target === arrastrando) return;
+    // Determinar si insertar antes o después según posición del cursor
+    const rect = target.getBoundingClientRect();
+    const insertarAntes = (e.clientY - rect.top) < rect.height / 2;
+    if (insertarAntes) {
+      target.parentNode.insertBefore(arrastrando, target);
+    } else {
+      target.parentNode.insertBefore(arrastrando, target.nextSibling);
+    }
+    cambios = true;
+  });
+}
+
+// ===== SUSTITUIR IMAGEN (mantiene tags, orden, etc.) =====
+async function sustituirImagenLamina(sheetId) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!confirm(`Sustituir la imagen de esta lámina por "${file.name}"?\n\nSe mantiene el orden, los tags y demás datos.`)) return;
+    try {
+      const fd = new FormData();
+      fd.append('imagen', file);
+      await api('/api/sheets/' + sheetId + '/image', { method: 'PUT', body: fd });
+      // Refrescar la lámina visible sin recargar todo
+      const fila = document.querySelector(`.lamina-fila[data-id="${sheetId}"]`);
+      if (fila) {
+        const img = fila.querySelector('.lamina-mini');
+        // Forzar refresh visual
+        const orig = img.src;
+        img.src = orig + (orig.includes('?') ? '&' : '?') + 't=' + Date.now();
+      }
+      // Feedback
+      const $cont = fila ? fila : document.querySelector('.editor-panel');
+      const $msg = document.createElement('div');
+      $msg.className = 'exito-msg';
+      $msg.style.cssText = 'margin: 6px 0; font-size: 12px;';
+      $msg.textContent = '✓ Imagen sustituida';
+      $cont.parentNode.insertBefore($msg, $cont);
+      setTimeout(() => $msg.remove(), 1500);
+    } catch (err) {
+      alert('Error sustituyendo imagen: ' + err.message);
+    }
+  });
+  input.click();
+}
+
+// ===== BORRAR TODAS LAS LAMINAS DE UN CATALOGO =====
+async function borrarTodasLaminas(catalogId, total) {
+  if (!confirm(`⚠️ ATENCIÓN\n\nVas a borrar TODAS las ${total} láminas de este catálogo.\n\nEsta acción NO se puede deshacer.\n\n¿Continuar?`)) return;
+  const escribe = prompt(`Para confirmar, escribe la palabra: BORRAR`);
+  if (escribe !== 'BORRAR') {
+    alert('No has escrito "BORRAR" correctamente. Operación cancelada.');
+    return;
+  }
+  try {
+    const r = await api(`/api/catalogs/${catalogId}/sheets/all`, { method: 'DELETE' });
+    alert(`✓ ${r.eliminadas} láminas eliminadas.\n${r.archivos_borrados} archivos borrados del disco.`);
+    renderEditorCatalogo(catalogId);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+// ===== LIGHTBOX (ver lámina grande) =====
+function abrirLightbox(imagenPath, titulo, numero) {
+  const div = document.createElement('div');
+  div.className = 'lightbox-bg';
+  div.innerHTML = `
+    <button class="lightbox-cerrar" onclick="this.closest('.lightbox-bg').remove()" title="Cerrar">✕</button>
+    <div class="lightbox-info">${numero}. ${escape(titulo)}</div>
+    <img src="${escape(imagenPath)}" class="lightbox-img" alt="">
+  `;
+  div.addEventListener('click', (e) => {
+    if (e.target === div) div.remove();
+  });
+  // Cerrar con Escape
+  const keyHandler = (e) => {
+    if (e.key === 'Escape') {
+      div.remove();
+      document.removeEventListener('keydown', keyHandler);
+    }
+  };
+  document.addEventListener('keydown', keyHandler);
+  document.body.appendChild(div);
 }
 
 // ===== EDITAR LAMINA =====

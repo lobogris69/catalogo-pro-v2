@@ -623,6 +623,61 @@ app.put('/api/catalogs/:cid/sheets/:sid/order', verifyToken, requireAdmin, async
   }
 });
 
+// Reordenar varias laminas a la vez (drag&drop)
+app.put('/api/catalogs/:cid/sheets/reorder', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const catalogId = Number(req.params.cid);
+    const { sheet_ids } = req.body;
+    if (!Array.isArray(sheet_ids) || sheet_ids.length === 0) {
+      res.status(400).json({ success: false, error: 'sheet_ids debe ser array no vacio' });
+      return;
+    }
+    await client.query('BEGIN');
+    // Actualizar orden secuencialmente segun el array recibido
+    for (let i = 0; i < sheet_ids.length; i++) {
+      const sheetId = Number(sheet_ids[i]);
+      await client.query(
+        'UPDATE sheets SET orden = $1 WHERE id = $2 AND catalog_id = $3',
+        [i + 1, sheetId, catalogId]
+      );
+    }
+    await client.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
+    await client.query('COMMIT');
+    res.json({ success: true, reordenadas: sheet_ids.length });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ success: false, error: (e as Error).message });
+  } finally {
+    client.release();
+  }
+});
+
+// Borrar TODAS las laminas de un catalogo (mantiene el catalogo, solo vacia)
+app.delete('/api/catalogs/:cid/sheets/all', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.cid);
+    const r = await pool.query('DELETE FROM sheets WHERE catalog_id = $1 RETURNING imagen_path', [catalogId]);
+    // Borrar archivos físicos
+    let borrados = 0;
+    for (const row of r.rows) {
+      const filePath = path.join(UPLOADS_DIR, path.basename(row.imagen_path));
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          borrados++;
+        }
+      } catch (e) {
+        console.warn('No se pudo borrar archivo:', filePath, (e as Error).message);
+      }
+    }
+    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
+    res.json({ success: true, eliminadas: r.rows.length, archivos_borrados: borrados });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
 // Editar lamina (titulo/notas/tags - sin tocar imagen)
 app.put('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
