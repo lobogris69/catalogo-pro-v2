@@ -136,6 +136,44 @@ function requireRealAdmin(req: AuthRequest, res: Response, next: NextFunction): 
   next();
 }
 
+// Helper B5: en algunos endpoints, si el catalogo es 'express' rechazamos
+// porque sus laminas vienen del maestro y no se pueden subir/editar/borrar aqui.
+// Devuelve true si OK (puede continuar), false si rechazado (ya envio respuesta).
+async function assertNotExpress(catalogId: number, res: Response): Promise<boolean> {
+  const r = await pool.query('SELECT tipo FROM catalogs WHERE id = $1', [catalogId]);
+  if (r.rows.length === 0) {
+    res.status(404).json({ success: false, error: 'Catalogo no encontrado' });
+    return false;
+  }
+  if (r.rows[0].tipo === 'express') {
+    res.status(400).json({
+      success: false,
+      error: 'No se puede modificar laminas en un Express. Las laminas pertenecen al maestro padre. Usa los endpoints /express-sheets para anadir/quitar/reordenar referencias.'
+    });
+    return false;
+  }
+  return true;
+}
+
+// Helper B5: igual que el anterior pero buscando el catalogo desde una sheet_id.
+async function assertSheetNotInExpress(sheetId: number, res: Response): Promise<boolean> {
+  const r = await pool.query(
+    `SELECT c.tipo FROM sheets s JOIN catalogs c ON c.id = s.catalog_id WHERE s.id = $1`,
+    [sheetId]
+  );
+  if (r.rows.length === 0) {
+    res.status(404).json({ success: false, error: 'Lamina no encontrada' });
+    return false;
+  }
+  if (r.rows[0].tipo === 'express') {
+    // Nota: una sheet NUNCA deberia pertenecer a un catalog express (las sheets cuelgan del maestro).
+    // Pero esto es defensa en profundidad por si en el futuro cambia algo.
+    res.status(400).json({ success: false, error: 'Esta lamina pertenece a un Express, modifica desde el maestro padre' });
+    return false;
+  }
+  return true;
+}
+
 // ============================================================================
 // MULTER (subida de archivos)
 // ============================================================================
@@ -276,6 +314,20 @@ async function initDB(): Promise<void> {
         tipo VARCHAR(20) DEFAULT 'pedido',
         created_at TIMESTAMP DEFAULT NOW()
       );
+
+      -- B5: tabla de union para catalogos Express
+      -- Un Express NO duplica laminas: solo guarda referencias al maestro padre.
+      -- Si el maestro cambia una imagen/tag, el Express lo refleja automaticamente (espejo en vivo).
+      CREATE TABLE IF NOT EXISTS express_sheets (
+        id SERIAL PRIMARY KEY,
+        express_catalog_id INTEGER NOT NULL REFERENCES catalogs(id) ON DELETE CASCADE,
+        sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+        orden INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(express_catalog_id, sheet_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_express_catalog ON express_sheets(express_catalog_id);
+      CREATE INDEX IF NOT EXISTS idx_express_orden ON express_sheets(express_catalog_id, orden);
     `;
     await pool.query(schemaSQL);
 
@@ -512,16 +564,29 @@ app.delete('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequ
 app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    // Para cada catalogo devolvemos:
+    //  - sheet_count: numero de laminas (en sheets para maestro/clon, en express_sheets para express)
+    //  - parent_name: nombre del maestro padre (solo si es express, NULL en otros casos)
     let r;
     if (req.user.role === 'admin') {
       r = await pool.query(`
-        SELECT c.*, (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE) AS sheet_count
+        SELECT c.*,
+          CASE
+            WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
+            ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
+          END AS sheet_count,
+          (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name
         FROM catalogs c
         ORDER BY c.updated_at DESC
       `);
     } else {
       r = await pool.query(`
-        SELECT c.*, (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE) AS sheet_count
+        SELECT c.*,
+          CASE
+            WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
+            ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
+          END AS sheet_count,
+          (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name
         FROM catalogs c
         JOIN catalog_assignments ca ON ca.catalog_id = c.id
         WHERE ca.user_id = $1 AND c.estado != 'archivado'
@@ -535,9 +600,10 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
 });
 
 // Crear catalogo (maestro o express, solo admin)
+// Si es express, parent_id (maestro padre) es OBLIGATORIO.
 app.post('/api/catalogs', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const { name, description, tipo, fecha_caducidad } = req.body;
+    const { name, description, tipo, fecha_caducidad, parent_id } = req.body;
     if (!name || !tipo) {
       res.status(400).json({ success: false, error: 'Nombre y tipo obligatorios' });
       return;
@@ -546,10 +612,28 @@ app.post('/api/catalogs', verifyToken, requireAdmin, async (req: AuthRequest, re
       res.status(400).json({ success: false, error: 'Tipo invalido (maestro|express)' });
       return;
     }
+    // Si es express necesitamos un maestro padre valido
+    let parentIdFinal: number | null = null;
+    if (tipo === 'express') {
+      if (!parent_id) {
+        res.status(400).json({ success: false, error: 'Un Express debe colgar de un maestro. Falta parent_id.' });
+        return;
+      }
+      const pad = await pool.query(`SELECT id, tipo FROM catalogs WHERE id = $1`, [Number(parent_id)]);
+      if (pad.rows.length === 0) {
+        res.status(400).json({ success: false, error: 'El maestro padre indicado no existe' });
+        return;
+      }
+      if (pad.rows[0].tipo !== 'maestro') {
+        res.status(400).json({ success: false, error: 'Un Express solo puede colgar de un catalogo de tipo maestro' });
+        return;
+      }
+      parentIdFinal = Number(parent_id);
+    }
     const r = await pool.query(
-      `INSERT INTO catalogs (name, description, tipo, fecha_caducidad, created_by)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [name, description || '', tipo, fecha_caducidad || null, req.user!.id]
+      `INSERT INTO catalogs (name, description, tipo, fecha_caducidad, created_by, parent_id)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [name, description || '', tipo, fecha_caducidad || null, req.user!.id, parentIdFinal]
     );
     res.status(201).json({ success: true, catalog: r.rows[0] });
   } catch (e) {
@@ -558,6 +642,8 @@ app.post('/api/catalogs', verifyToken, requireAdmin, async (req: AuthRequest, re
 });
 
 // Ver catalogo + sus laminas
+// Si es 'express', las laminas vienen del maestro padre via express_sheets (espejo en vivo).
+// Si es 'maestro' o 'clon', vienen de sheets directamente como siempre.
 app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -566,11 +652,28 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
       res.status(404).json({ success: false, error: 'Catalogo no encontrado' });
       return;
     }
-    const sheets = await pool.query(
-      'SELECT * FROM sheets WHERE catalog_id = $1 ORDER BY orden, id',
-      [id]
-    );
-    res.json({ success: true, catalog: c.rows[0], sheets: sheets.rows });
+    const cat = c.rows[0];
+
+    let sheetsRows;
+    if (cat.tipo === 'express') {
+      // Laminas a traves de express_sheets, ordenadas por es.orden (orden DENTRO del Express)
+      // Si una lamina del maestro fue borrada, la JOIN la deja fuera automaticamente.
+      const r = await pool.query(`
+        SELECT s.*, es.orden AS orden, es.id AS express_sheet_id
+        FROM express_sheets es
+        JOIN sheets s ON s.id = es.sheet_id
+        WHERE es.express_catalog_id = $1
+        ORDER BY es.orden, es.id
+      `, [id]);
+      sheetsRows = r.rows;
+    } else {
+      const r = await pool.query(
+        'SELECT * FROM sheets WHERE catalog_id = $1 ORDER BY orden, id',
+        [id]
+      );
+      sheetsRows = r.rows;
+    }
+    res.json({ success: true, catalog: cat, sheets: sheetsRows });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
@@ -582,6 +685,7 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
 app.post('/api/catalogs/:id/sheets', verifyToken, requireAdmin, upload.single('imagen'), async (req: AuthRequest, res: Response) => {
   try {
     const catalogId = Number(req.params.id);
+    if (!(await assertNotExpress(catalogId, res))) return;
     if (!req.file) {
       res.status(400).json({ success: false, error: 'No se ha subido ninguna imagen' });
       return;
@@ -628,6 +732,7 @@ app.put('/api/catalogs/:cid/sheets/reorder', verifyToken, requireAdmin, async (r
   const client = await pool.connect();
   try {
     const catalogId = Number(req.params.cid);
+    if (!(await assertNotExpress(catalogId, res))) return;
     const { sheet_ids } = req.body;
     if (!Array.isArray(sheet_ids) || sheet_ids.length === 0) {
       res.status(400).json({ success: false, error: 'sheet_ids debe ser array no vacio' });
@@ -654,9 +759,24 @@ app.put('/api/catalogs/:cid/sheets/reorder', verifyToken, requireAdmin, async (r
 });
 
 // Borrar TODAS las laminas de un catalogo (mantiene el catalogo, solo vacia)
+// Si es express -> vacia la tabla express_sheets (referencias). NUNCA borra laminas reales del maestro.
+// Si es maestro/clon -> borra las laminas reales y sus archivos en disco.
 app.delete('/api/catalogs/:cid/sheets/all', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const catalogId = Number(req.params.cid);
+    const catInfo = await pool.query('SELECT tipo FROM catalogs WHERE id = $1', [catalogId]);
+    if (catInfo.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Catalogo no encontrado' });
+      return;
+    }
+    if (catInfo.rows[0].tipo === 'express') {
+      // En un Express solo quitamos las referencias, NO tocamos sheets ni archivos.
+      const r = await pool.query('DELETE FROM express_sheets WHERE express_catalog_id = $1', [catalogId]);
+      await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
+      res.json({ success: true, eliminadas: r.rowCount, archivos_borrados: 0 });
+      return;
+    }
+    // Maestro/clon: borrado real
     const r = await pool.query('DELETE FROM sheets WHERE catalog_id = $1 RETURNING imagen_path', [catalogId]);
     // Borrar archivos físicos
     let borrados = 0;
@@ -675,6 +795,157 @@ app.delete('/api/catalogs/:cid/sheets/all', verifyToken, requireAdmin, async (re
     res.json({ success: true, eliminadas: r.rows.length, archivos_borrados: borrados });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// B5 - CATALOGOS EXPRESS (selecciones del maestro, espejo en vivo)
+// ============================================================================
+
+// GET laminas DISPONIBLES en el maestro padre que aun NO estan en este Express.
+// Sirve para el "selector" del editor Express (panel izquierdo).
+// Devuelve tambien las que ya estan, marcadas con ya_en_express=true.
+app.get('/api/catalogs/:id/master-sheets', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const expressId = Number(req.params.id);
+    // Verificar que es express y obtener parent_id
+    const c = await pool.query(`SELECT id, tipo, parent_id, name FROM catalogs WHERE id = $1`, [expressId]);
+    if (c.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Catalogo no encontrado' });
+      return;
+    }
+    if (c.rows[0].tipo !== 'express') {
+      res.status(400).json({ success: false, error: 'Este endpoint solo aplica a catalogos Express' });
+      return;
+    }
+    if (!c.rows[0].parent_id) {
+      res.status(400).json({ success: false, error: 'Este Express no tiene maestro padre asignado' });
+      return;
+    }
+    // Todas las laminas del maestro, con flag de si ya estan en este Express
+    const r = await pool.query(`
+      SELECT s.*,
+        EXISTS(SELECT 1 FROM express_sheets es WHERE es.express_catalog_id = $1 AND es.sheet_id = s.id) AS ya_en_express
+      FROM sheets s
+      WHERE s.catalog_id = $2 AND s.oculta = FALSE
+      ORDER BY s.orden, s.id
+    `, [expressId, c.rows[0].parent_id]);
+    res.json({ success: true, parent_id: c.rows[0].parent_id, sheets: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST anadir varias laminas del maestro al Express
+// Body: { sheet_ids: [12, 34, 56] }
+// Las añade al final, respetando el orden actual de express_sheets.
+app.post('/api/catalogs/:id/express-sheets', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const expressId = Number(req.params.id);
+    const { sheet_ids } = req.body;
+    if (!Array.isArray(sheet_ids) || sheet_ids.length === 0) {
+      res.status(400).json({ success: false, error: 'sheet_ids debe ser un array no vacio' });
+      return;
+    }
+    // Verificar que el catalogo es express
+    const c = await client.query(`SELECT tipo, parent_id FROM catalogs WHERE id = $1`, [expressId]);
+    if (c.rows.length === 0 || c.rows[0].tipo !== 'express') {
+      res.status(400).json({ success: false, error: 'Solo aplicable a catalogos Express' });
+      return;
+    }
+    const parentId = c.rows[0].parent_id;
+    if (!parentId) {
+      res.status(400).json({ success: false, error: 'Express sin maestro padre' });
+      return;
+    }
+    // Filtrar: solo aceptamos sheet_ids que SI pertenecen al maestro padre
+    const validSheets = await client.query(
+      `SELECT id FROM sheets WHERE catalog_id = $1 AND id = ANY($2::int[])`,
+      [parentId, sheet_ids.map((x: any) => Number(x))]
+    );
+    const validIds = validSheets.rows.map((r: any) => r.id);
+    if (validIds.length === 0) {
+      res.status(400).json({ success: false, error: 'Ninguna lamina valida del maestro padre' });
+      return;
+    }
+    await client.query('BEGIN');
+    // Orden actual maximo
+    const maxR = await client.query(
+      `SELECT COALESCE(MAX(orden),0) AS m FROM express_sheets WHERE express_catalog_id = $1`,
+      [expressId]
+    );
+    let nextOrden = Number(maxR.rows[0].m) + 1;
+    let anadidas = 0;
+    for (const sid of validIds) {
+      const ins = await client.query(
+        `INSERT INTO express_sheets (express_catalog_id, sheet_id, orden)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (express_catalog_id, sheet_id) DO NOTHING`,
+        [expressId, sid, nextOrden]
+      );
+      if (ins.rowCount && ins.rowCount > 0) {
+        nextOrden++;
+        anadidas++;
+      }
+    }
+    await client.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [expressId]);
+    await client.query('COMMIT');
+    res.json({ success: true, anadidas });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ success: false, error: (e as Error).message });
+  } finally {
+    client.release();
+  }
+});
+
+// DELETE quitar una lamina del Express (NO borra la lamina real del maestro)
+app.delete('/api/catalogs/:cid/express-sheets/:sid', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const expressId = Number(req.params.cid);
+    const sheetId = Number(req.params.sid);
+    const r = await pool.query(
+      `DELETE FROM express_sheets WHERE express_catalog_id = $1 AND sheet_id = $2 RETURNING id`,
+      [expressId, sheetId]
+    );
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Esta lamina no estaba en el Express' });
+      return;
+    }
+    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [expressId]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// PUT reordenar laminas dentro del Express (drag&drop)
+// Body: { sheet_ids: [12,34,56] }  -> ese sera el orden final
+app.put('/api/catalogs/:cid/express-sheets/reorder', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const expressId = Number(req.params.cid);
+    const { sheet_ids } = req.body;
+    if (!Array.isArray(sheet_ids)) {
+      res.status(400).json({ success: false, error: 'sheet_ids debe ser un array' });
+      return;
+    }
+    await client.query('BEGIN');
+    for (let i = 0; i < sheet_ids.length; i++) {
+      await client.query(
+        `UPDATE express_sheets SET orden = $1 WHERE express_catalog_id = $2 AND sheet_id = $3`,
+        [i + 1, expressId, Number(sheet_ids[i])]
+      );
+    }
+    await client.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [expressId]);
+    await client.query('COMMIT');
+    res.json({ success: true, reordenadas: sheet_ids.length });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ success: false, error: (e as Error).message });
+  } finally {
+    client.release();
   }
 });
 
@@ -812,6 +1083,7 @@ app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadP
   let pdfPath: string | null = null;
   try {
     const catalogId = Number(req.params.id);
+    if (!(await assertNotExpress(catalogId, res))) return;
     if (!req.file) {
       res.status(400).json({ success: false, error: 'No se ha subido ningun PDF' });
       return;

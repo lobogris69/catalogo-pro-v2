@@ -177,6 +177,26 @@ CREATE TABLE IF NOT EXISTS annotations (
 CREATE INDEX IF NOT EXISTS idx_annot_visit ON annotations(visit_id);
 
 -- ============================================================================
+-- B5: EXPRESS_SHEETS - tabla de union para catalogos Express (espejo del maestro)
+-- ============================================================================
+-- Un catalogo Express NO duplica laminas. En lugar de eso guarda una lista
+-- ordenada de referencias a laminas existentes en su maestro padre (parent_id).
+-- Cambios en la lamina del maestro (imagen, tags, titulo) se reflejan en vivo
+-- en todos los Express que la referencien.
+-- Si se borra la lamina del maestro -> ON DELETE CASCADE quita la referencia aqui.
+-- Si se borra el catalogo Express -> CASCADE limpia esta tabla.
+CREATE TABLE IF NOT EXISTS express_sheets (
+  id                  SERIAL PRIMARY KEY,
+  express_catalog_id  INTEGER NOT NULL REFERENCES catalogs(id) ON DELETE CASCADE,
+  sheet_id            INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+  orden               INTEGER NOT NULL DEFAULT 0,
+  created_at          TIMESTAMP DEFAULT NOW(),
+  UNIQUE(express_catalog_id, sheet_id)
+);
+CREATE INDEX IF NOT EXISTS idx_express_catalog ON express_sheets(express_catalog_id);
+CREATE INDEX IF NOT EXISTS idx_express_orden ON express_sheets(express_catalog_id, orden);
+
+-- ============================================================================
 -- USUARIO ADMIN POR DEFECTO
 -- ============================================================================
 -- Se crea en codigo TS si la tabla esta vacia (con bcrypt)

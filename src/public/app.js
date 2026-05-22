@@ -222,13 +222,20 @@ async function renderListaCatalogos() {
       catalogos.forEach(c => {
         const tipoClase = c.tipo === 'maestro' ? 'tipo-maestro' : c.tipo === 'clon' ? 'tipo-clon' : 'tipo-express';
         const estadoClase = c.estado === 'publicado' ? 'estado-publicado' : 'estado-borrador';
+        // Badge: para express usamos icono y texto explicito; para el resto solo el tipo
+        const badgeTxt = c.tipo === 'express' ? '📗 Express' : c.tipo === 'maestro' ? '📕 Maestro' : '📘 Clon';
+        // Linea con el maestro padre (solo express)
+        const parentLine = (c.tipo === 'express' && c.parent_name)
+          ? `<div class="catalogo-card-parent">de: ${escape(c.parent_name)}</div>`
+          : '';
         html += `
           <div class="catalogo-card" onclick="abrirCatalogo(${c.id})">
             <div class="catalogo-card-header">
-              <span class="catalogo-card-tipo ${tipoClase}">${c.tipo}</span>
+              <span class="catalogo-card-tipo ${tipoClase}">${badgeTxt}</span>
               <span class="catalogo-card-estado ${estadoClase}">${c.estado}</span>
             </div>
             <div class="catalogo-card-nombre">${escape(c.name)}</div>
+            ${parentLine}
             <div class="catalogo-card-info">${c.sheet_count || 0} láminas · V${c.version}</div>
           </div>
         `;
@@ -243,7 +250,17 @@ async function renderListaCatalogos() {
 }
 
 // ===== MODAL: NUEVO CATALOGO =====
-function abrirModalNuevoCatalogo() {
+async function abrirModalNuevoCatalogo() {
+  // Antes de abrir el modal cargamos la lista de maestros disponibles (para el selector de padre)
+  let maestros = [];
+  try {
+    const r = await api('/api/catalogs');
+    maestros = (r.catalogs || []).filter(c => c.tipo === 'maestro');
+  } catch (err) {
+    alert('No se pudieron cargar los maestros: ' + err.message);
+    return;
+  }
+
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
   modal.innerHTML = `
@@ -255,19 +272,31 @@ function abrirModalNuevoCatalogo() {
       <div id="modal-error"></div>
       <form id="form-nuevo-cat">
         <div class="form-group">
+          <label>Tipo</label>
+          <select id="cat-tipo">
+            <option value="maestro">📕 Maestro (catálogo principal)</option>
+            <option value="express">📗 Express (selección del maestro para una campaña)</option>
+          </select>
+        </div>
+        <div class="form-group" id="grupo-maestro-padre" style="display:none">
+          <label>Maestro padre <span style="color:var(--rosa)">*</span></label>
+          <select id="cat-parent-id">
+            ${maestros.length === 0
+              ? `<option value="">— No hay maestros aún, crea uno primero —</option>`
+              : maestros.map(m => `<option value="${m.id}">${escape(m.name)}</option>`).join('')
+            }
+          </select>
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">
+            El Express seleccionará láminas de este maestro. Es un espejo en vivo: si actualizas la lámina en el maestro, el Express lo refleja.
+          </div>
+        </div>
+        <div class="form-group">
           <label>Nombre</label>
           <input type="text" id="cat-name" required placeholder="Ej: Catálogo General Mayo 2026">
         </div>
         <div class="form-group">
           <label>Descripción (opcional)</label>
           <textarea id="cat-desc" rows="2" placeholder="Notas internas..."></textarea>
-        </div>
-        <div class="form-group">
-          <label>Tipo</label>
-          <select id="cat-tipo">
-            <option value="maestro">Maestro (catálogo principal)</option>
-            <option value="express">Express (campaña/novedades)</option>
-          </select>
         </div>
         <div class="modal-acciones">
           <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
@@ -277,14 +306,33 @@ function abrirModalNuevoCatalogo() {
     </div>
   `;
   document.body.appendChild(modal);
+
+  // Mostrar/ocultar selector de maestro padre segun el tipo elegido
+  const tipoSel = document.getElementById('cat-tipo');
+  const grupoPadre = document.getElementById('grupo-maestro-padre');
+  function actualizarVisibilidadPadre() {
+    grupoPadre.style.display = tipoSel.value === 'express' ? '' : 'none';
+  }
+  tipoSel.addEventListener('change', actualizarVisibilidadPadre);
+  actualizarVisibilidadPadre();
+
   document.getElementById('form-nuevo-cat').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
+      const tipo = tipoSel.value;
       const data = {
         name: document.getElementById('cat-name').value.trim(),
         description: document.getElementById('cat-desc').value.trim(),
-        tipo: document.getElementById('cat-tipo').value
+        tipo: tipo
       };
+      if (tipo === 'express') {
+        const parentId = document.getElementById('cat-parent-id').value;
+        if (!parentId) {
+          document.getElementById('modal-error').innerHTML = `<div class="error-msg">Tienes que elegir un maestro padre. Si no hay ninguno, crea primero un Maestro.</div>`;
+          return;
+        }
+        data.parent_id = Number(parentId);
+      }
       const r = await api('/api/catalogs', { method: 'POST', body: data });
       modal.remove();
       appState.catalogoActual = r.catalog.id;
@@ -313,6 +361,11 @@ async function renderEditorCatalogo(id) {
   try {
     const r = await api('/api/catalogs/' + id);
     const c = r.catalog;
+    // Si es Express, llevamos al editor específico (selector del maestro + lista del Express)
+    if (c.tipo === 'express') {
+      renderEditorExpress(id, r);
+      return;
+    }
     const sheets = r.sheets || [];
     const esAdmin = rolEfectivo() === 'admin';
 
@@ -465,6 +518,321 @@ async function renderEditorCatalogo(id) {
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
   }
+}
+
+// ============================================================================
+// ===== EDITOR ESPECÍFICO DE CATÁLOGO EXPRESS (B5) =====
+// ============================================================================
+// Un Express selecciona láminas de su maestro padre (espejo en vivo).
+// La pantalla muestra DOS columnas:
+//  - Izquierda: láminas disponibles en el maestro (con checkbox)
+//  - Derecha: láminas que ya están en el Express (orden + quitar)
+// Estado local del editor (solo mientras renderiza esta vista).
+let _expressEditor = {
+  catalogId: null,
+  expressData: null,    // { catalog, sheets } del Express
+  masterSheets: [],     // láminas del maestro padre
+  filtroMaestro: '',
+  filtroExpress: '',
+  seleccionMaestro: new Set(),
+};
+
+async function renderEditorExpress(id, expressData) {
+  _expressEditor.catalogId = id;
+  _expressEditor.expressData = expressData;
+  _expressEditor.seleccionMaestro = new Set();
+
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogo Express…</div></div>`;
+
+  try {
+    const r = await api('/api/catalogs/' + id + '/master-sheets');
+    _expressEditor.masterSheets = r.sheets || [];
+    pintarEditorExpress();
+  } catch (err) {
+    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+function pintarEditorExpress() {
+  const id = _expressEditor.catalogId;
+  const c = _expressEditor.expressData.catalog;
+  const sheetsExpress = _expressEditor.expressData.sheets || [];
+  const masterSheets = _expressEditor.masterSheets;
+  const fM = (_expressEditor.filtroMaestro || '').toLowerCase().trim();
+  const fE = (_expressEditor.filtroExpress || '').toLowerCase().trim();
+
+  // Filtrar maestro y express
+  const masterFiltradas = !fM ? masterSheets : masterSheets.filter(s => {
+    const hay = (s.titulo || '').toLowerCase() + ' ' + (s.tags || '').toLowerCase();
+    return hay.includes(fM);
+  });
+  const expressFiltradas = !fE ? sheetsExpress : sheetsExpress.filter(s => {
+    const hay = (s.titulo || '').toLowerCase() + ' ' + (s.tags || '').toLowerCase();
+    return hay.includes(fE);
+  });
+
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `
+    <div class="contenedor">
+      <div class="titulo-pagina">
+        <div>
+          <button class="btn btn-secondary btn-pequeno" onclick="volverACatalogos()">← Catálogos</button>
+          <h2 style="margin-top:8px">📗 ${escape(c.name)}</h2>
+          <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+            Express · ${sheetsExpress.length} láminas seleccionadas · V${c.version} · ${c.estado}
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;align-self:flex-start;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
+          ${sheetsExpress.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="vaciarExpress(${id}, ${sheetsExpress.length})">🗑️ Vaciar Express</button>` : ''}
+        </div>
+      </div>
+
+      <div class="express-grid">
+        <!-- COLUMNA IZQUIERDA: laminas del maestro -->
+        <div class="editor-panel express-panel">
+          <div class="express-panel-header">
+            <h3 style="margin:0">Láminas del maestro (${masterSheets.length})</h3>
+            <button class="btn btn-primary btn-pequeno" id="btn-anadir-seleccionadas" disabled
+                    onclick="anadirSeleccionadasAlExpress(${id})">
+              Añadir → (<span id="contador-sel">0</span>)
+            </button>
+          </div>
+          <input type="text" id="filtro-maestro" placeholder="🔍 Buscar en maestro (número, título o tag)..."
+                 value="${escape(_expressEditor.filtroMaestro)}"
+                 style="width:100%;padding:8px 12px;border:1px solid var(--gris-borde);border-radius:8px;font-size:13px;margin-bottom:8px;outline:none">
+          <div style="display:flex;gap:6px;margin-bottom:8px">
+            <button class="btn btn-secondary btn-pequeno" onclick="seleccionarMaestroTodos()">Marcar todos visibles</button>
+            <button class="btn btn-secondary btn-pequeno" onclick="limpiarSeleccionMaestro()">Limpiar selección</button>
+          </div>
+          <div class="express-lista" id="lista-maestro">
+            ${masterFiltradas.length === 0
+              ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">${masterSheets.length === 0 ? 'El maestro padre no tiene láminas todavía.' : 'No hay resultados con ese filtro.'}</p>`
+              : masterFiltradas.map((s, idx) => {
+                const yaEsta = !!s.ya_en_express;
+                const seleccionada = _expressEditor.seleccionMaestro.has(s.id);
+                return `
+                  <div class="express-fila ${yaEsta ? 'express-fila-en-express' : ''}" data-id="${s.id}">
+                    <input type="checkbox" class="express-check"
+                           data-id="${s.id}"
+                           ${yaEsta ? 'disabled' : ''}
+                           ${seleccionada ? 'checked' : ''}
+                           title="${yaEsta ? 'Ya está en el Express' : 'Seleccionar para añadir'}">
+                    <div class="lamina-numero" style="font-size:11px">${s.orden}</div>
+                    <img src="${escape(s.imagen_path)}" class="lamina-mini" alt=""
+                         onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${s.orden})">
+                    <div class="lamina-info">
+                      <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
+                      <div class="lamina-notas" style="font-size:11px">${escape(s.tags || '—')}</div>
+                    </div>
+                    ${yaEsta ? '<span class="express-badge-ya">✓ ya está</span>' : ''}
+                  </div>
+                `;
+              }).join('')
+            }
+          </div>
+        </div>
+
+        <!-- COLUMNA DERECHA: laminas en el Express -->
+        <div class="editor-panel express-panel">
+          <div class="express-panel-header">
+            <h3 style="margin:0">En este Express (${sheetsExpress.length})</h3>
+            <div style="font-size:11px;color:var(--gris-texto)">arrastra ⋮⋮ para reordenar</div>
+          </div>
+          <input type="text" id="filtro-express" placeholder="🔍 Buscar en este Express..."
+                 value="${escape(_expressEditor.filtroExpress)}"
+                 style="width:100%;padding:8px 12px;border:1px solid var(--gris-borde);border-radius:8px;font-size:13px;margin-bottom:8px;outline:none">
+          <div class="express-lista" id="lista-express">
+            ${expressFiltradas.length === 0
+              ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">${sheetsExpress.length === 0 ? 'El Express aún no tiene láminas. Marca alguna del maestro y pulsa "Añadir →".' : 'No hay resultados con ese filtro.'}</p>`
+              : expressFiltradas.map((s, idx) => `
+                <div class="express-fila lamina-fila" data-id="${s.id}" draggable="true">
+                  <div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>
+                  <div class="lamina-numero">${idx + 1}</div>
+                  <img src="${escape(s.imagen_path)}" class="lamina-mini" alt=""
+                       onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${idx + 1})">
+                  <div class="lamina-info">
+                    <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
+                    <div class="lamina-notas" style="font-size:11px">${escape(s.tags || '—')}</div>
+                  </div>
+                  <div class="lamina-acciones">
+                    <button class="btn-borrar" onclick="quitarDelExpress(${id}, ${s.id})" title="Quitar del Express">✖</button>
+                  </div>
+                </div>
+              `).join('')
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Listeners de checkboxes (maestro)
+  document.querySelectorAll('#lista-maestro .express-check').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const sid = Number(cb.dataset.id);
+      if (cb.checked) _expressEditor.seleccionMaestro.add(sid);
+      else _expressEditor.seleccionMaestro.delete(sid);
+      actualizarContadorSeleccion();
+    });
+  });
+  actualizarContadorSeleccion();
+
+  // Filtros con debounce
+  const fMaestro = document.getElementById('filtro-maestro');
+  if (fMaestro) {
+    let t1;
+    fMaestro.addEventListener('input', () => {
+      clearTimeout(t1);
+      t1 = setTimeout(() => {
+        _expressEditor.filtroMaestro = fMaestro.value;
+        pintarEditorExpress();
+        // Re-poner el foco en el input
+        const nv = document.getElementById('filtro-maestro');
+        if (nv) { nv.focus(); nv.setSelectionRange(nv.value.length, nv.value.length); }
+      }, 250);
+    });
+  }
+  const fExpress = document.getElementById('filtro-express');
+  if (fExpress) {
+    let t2;
+    fExpress.addEventListener('input', () => {
+      clearTimeout(t2);
+      t2 = setTimeout(() => {
+        _expressEditor.filtroExpress = fExpress.value;
+        pintarEditorExpress();
+        const nv = document.getElementById('filtro-express');
+        if (nv) { nv.focus(); nv.setSelectionRange(nv.value.length, nv.value.length); }
+      }, 250);
+    });
+  }
+
+  // Drag & drop en la lista del Express (reordenar)
+  activarDragDropExpress(id);
+}
+
+function actualizarContadorSeleccion() {
+  const n = _expressEditor.seleccionMaestro.size;
+  const c = document.getElementById('contador-sel');
+  if (c) c.textContent = n;
+  const btn = document.getElementById('btn-anadir-seleccionadas');
+  if (btn) btn.disabled = (n === 0);
+}
+
+function seleccionarMaestroTodos() {
+  // Solo los visibles (segun filtro) Y que no esten ya en el express
+  document.querySelectorAll('#lista-maestro .express-check').forEach(cb => {
+    if (!cb.disabled) {
+      cb.checked = true;
+      _expressEditor.seleccionMaestro.add(Number(cb.dataset.id));
+    }
+  });
+  actualizarContadorSeleccion();
+}
+
+function limpiarSeleccionMaestro() {
+  _expressEditor.seleccionMaestro = new Set();
+  document.querySelectorAll('#lista-maestro .express-check').forEach(cb => {
+    if (!cb.disabled) cb.checked = false;
+  });
+  actualizarContadorSeleccion();
+}
+
+async function anadirSeleccionadasAlExpress(expressId) {
+  const ids = Array.from(_expressEditor.seleccionMaestro);
+  if (ids.length === 0) return;
+  try {
+    const r = await api('/api/catalogs/' + expressId + '/express-sheets', {
+      method: 'POST',
+      body: { sheet_ids: ids }
+    });
+    // Recargar todo
+    _expressEditor.seleccionMaestro = new Set();
+    const fresco = await api('/api/catalogs/' + expressId);
+    _expressEditor.expressData = fresco;
+    const ms = await api('/api/catalogs/' + expressId + '/master-sheets');
+    _expressEditor.masterSheets = ms.sheets || [];
+    pintarEditorExpress();
+  } catch (err) {
+    alert('Error al añadir: ' + err.message);
+  }
+}
+
+async function quitarDelExpress(expressId, sheetId) {
+  if (!confirm('¿Quitar esta lámina del Express? La lámina seguirá en el maestro.')) return;
+  try {
+    await api('/api/catalogs/' + expressId + '/express-sheets/' + sheetId, { method: 'DELETE' });
+    const fresco = await api('/api/catalogs/' + expressId);
+    _expressEditor.expressData = fresco;
+    const ms = await api('/api/catalogs/' + expressId + '/master-sheets');
+    _expressEditor.masterSheets = ms.sheets || [];
+    pintarEditorExpress();
+  } catch (err) {
+    alert('Error al quitar: ' + err.message);
+  }
+}
+
+async function vaciarExpress(expressId, total) {
+  if (!confirm(`¿Quitar TODAS las ${total} láminas del Express?\n\nLas láminas seguirán en el maestro, solo se borran las referencias en este Express.`)) return;
+  if (!confirm(`Confirmación final: ¿seguro?`)) return;
+  try {
+    await api('/api/catalogs/' + expressId + '/sheets/all', { method: 'DELETE' });
+    const fresco = await api('/api/catalogs/' + expressId);
+    _expressEditor.expressData = fresco;
+    const ms = await api('/api/catalogs/' + expressId + '/master-sheets');
+    _expressEditor.masterSheets = ms.sheets || [];
+    pintarEditorExpress();
+  } catch (err) {
+    alert('Error al vaciar: ' + err.message);
+  }
+}
+
+// Drag & drop dentro de la lista del Express (reordena la tabla express_sheets)
+function activarDragDropExpress(expressId) {
+  const lista = document.getElementById('lista-express');
+  if (!lista) return;
+  let draggedEl = null;
+
+  lista.querySelectorAll('.lamina-fila[draggable="true"]').forEach(fila => {
+    fila.addEventListener('dragstart', (e) => {
+      draggedEl = fila;
+      fila.classList.add('lamina-arrastrando');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', fila.dataset.id);
+    });
+    fila.addEventListener('dragend', () => {
+      fila.classList.remove('lamina-arrastrando');
+      draggedEl = null;
+    });
+    fila.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (!draggedEl || draggedEl === fila) return;
+      const rect = fila.getBoundingClientRect();
+      const mitad = rect.top + rect.height / 2;
+      if (e.clientY < mitad) lista.insertBefore(draggedEl, fila);
+      else lista.insertBefore(draggedEl, fila.nextSibling);
+    });
+    fila.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      // Recopilar nuevo orden
+      const nuevoOrden = Array.from(lista.querySelectorAll('.lamina-fila[draggable="true"]'))
+        .map(f => Number(f.dataset.id));
+      try {
+        await api('/api/catalogs/' + expressId + '/express-sheets/reorder', {
+          method: 'PUT',
+          body: { sheet_ids: nuevoOrden }
+        });
+        // Actualizar estado local (sin recargar todo)
+        const byId = {};
+        (_expressEditor.expressData.sheets || []).forEach(s => byId[s.id] = s);
+        _expressEditor.expressData.sheets = nuevoOrden.map(sid => byId[sid]).filter(Boolean);
+        pintarEditorExpress();
+      } catch (err) {
+        alert('Error al reordenar: ' + err.message);
+      }
+    });
+  });
 }
 
 // ===== SUBIR LAMINA =====
