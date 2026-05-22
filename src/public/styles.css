@@ -493,21 +493,34 @@ body {
   border: 1px solid var(--gris-borde);
   border-radius: 10px;
   margin-bottom: 6px;
+  transition: border-color 0.15s;
+}
+.lamina-fila:hover {
+  border-color: var(--rosa);
+  background: white;
 }
 .lamina-numero {
-  width: 28px;
+  width: 32px;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--rosa);
   text-align: center;
 }
 .lamina-mini {
-  width: 50px;
-  height: 65px;
-  background: #f3f4f6;
+  width: 54px;
+  height: 70px;
+  background: white;
   border: 1px solid var(--gris-borde);
   border-radius: 6px;
   object-fit: cover;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.lamina-mini:hover {
+  transform: scale(1.6);
+  z-index: 10;
+  box-shadow: 0 8px 24px rgba(204, 0, 122, 0.25);
 }
 .lamina-info {
   flex: 1;
@@ -622,4 +635,54 @@ body {
 .comercial-impersonar:hover {
   border-color: var(--rosa);
   background: var(--rosa-claro);
+}
+
+/* ===== ASIGNACIONES catalogo-comerciales ===== */
+.asignaciones-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.asignacion-fila {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: white;
+  border: 1.5px solid var(--gris-borde);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.asignacion-fila:hover {
+  border-color: var(--rosa);
+  background: var(--rosa-claro);
+}
+.asignacion-fila.asignacion-activa {
+  border-color: var(--rosa);
+  background: var(--rosa-claro);
+}
+.asignacion-fila input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--rosa);
+}
+.asignacion-info { flex: 1; min-width: 0; }
+.asignacion-nombre {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--texto);
+  margin-bottom: 2px;
+}
+.asignacion-meta {
+  font-size: 11px;
+  color: var(--gris-texto);
+}
+.asg-status {
+  font-size: 11px;
+  color: var(--rosa);
+  font-weight: 500;
+  white-space: nowrap;
 }

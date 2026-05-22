@@ -189,7 +189,7 @@ async function renderListaCatalogos() {
   try {
     const r = await api('/api/catalogs');
     const catalogos = r.catalogs || [];
-    const esAdmin = user.role === 'admin';
+    const esAdmin = rolEfectivo() === 'admin';
 
     let html = `
       <div class="contenedor">
@@ -305,7 +305,7 @@ async function renderEditorCatalogo(id) {
     const r = await api('/api/catalogs/' + id);
     const c = r.catalog;
     const sheets = r.sheets || [];
-    const esAdmin = user.role === 'admin';
+    const esAdmin = rolEfectivo() === 'admin';
 
     let html = `
       <div class="contenedor">
@@ -317,6 +317,11 @@ async function renderEditorCatalogo(id) {
               ${c.tipo} · ${sheets.length} láminas · V${c.version} · ${c.estado}
             </div>
           </div>
+          ${esAdmin ? `
+            <div style="display:flex;gap:6px;align-self:flex-start;flex-wrap:wrap">
+              <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
+            </div>
+          ` : ''}
         </div>
 
         <div class="editor-grid">
@@ -528,7 +533,7 @@ let _busquedaTokenActual = 0;
 
 async function renderListaClientes() {
   const $v = document.getElementById('vista-contenido');
-  const esAdmin = user.role === 'admin';
+  const esAdmin = rolEfectivo() === 'admin';
 
   // Estructura HTML fija (no se vuelve a renderizar al buscar)
   $v.innerHTML = `
@@ -613,7 +618,7 @@ async function cargarClientesYRefrescarLista() {
     if ($spinner) $spinner.style.display = 'none';
 
     const clientes = r.clients || [];
-    const esAdmin = user.role === 'admin';
+    const esAdmin = rolEfectivo() === 'admin';
 
     $resumen.textContent = `${r.total} ${appState.clientesBusqueda ? 'resultados' : 'clientes'} · página ${r.page} de ${r.pages || 1}`;
 
@@ -1105,6 +1110,101 @@ function dejarImpersonacion() {
   appState.vista = 'catalogos';
   appState.catalogoActual = null;
   render();
+}
+
+// ============================================================================
+// ASIGNAR CATALOGO A COMERCIALES
+// ============================================================================
+async function abrirAsignacionComerciales(catalogId) {
+  try {
+    const [catR, asgR] = await Promise.all([
+      api('/api/catalogs/' + catalogId),
+      api('/api/catalogs/' + catalogId + '/assignments')
+    ]);
+    const catalog = catR.catalog;
+    const usuarios = (asgR.users || []).filter(u => u.role === 'sales' && u.is_active);
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-bg';
+    modal.innerHTML = `
+      <div class="modal-card" style="max-width:520px">
+        <div class="modal-header">
+          <h3>👥 Asignar catálogo a comerciales</h3>
+          <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+        </div>
+        <div style="background:#fffaf0;border:1px solid #ffe4b3;border-radius:10px;padding:11px;margin-bottom:1rem;font-size:12px;color:#856404;line-height:1.5">
+          <b>📚 ${escape(catalog.name)}</b><br>
+          Marca los comerciales que deben ver este catálogo. Solo verán los catálogos que tú les asignes.
+        </div>
+
+        ${usuarios.length === 0 ? `
+          <div style="text-align:center;padding:1.5rem;color:var(--gris-texto)">
+            <p>No hay comerciales activos.</p>
+            <button class="btn btn-primary" style="margin-top:1rem;max-width:280px;margin:1rem auto 0" onclick="this.closest('.modal-bg').remove(); irA('comerciales'); abrirModalNuevoUsuario();">+ Crear comercial</button>
+          </div>
+        ` : `
+          <div class="asignaciones-lista" id="asignaciones-lista">
+            ${usuarios.map(u => {
+              const asignado = !!u.assignment_id;
+              return `
+                <label class="asignacion-fila ${asignado ? 'asignacion-activa' : ''}">
+                  <input type="checkbox" class="asg-check" data-uid="${u.id}" ${asignado ? 'checked' : ''}>
+                  <div class="asignacion-info">
+                    <div class="asignacion-nombre">${escape(u.name)}</div>
+                    <div class="asignacion-meta">
+                      📧 ${escape(u.email)}
+                      ${u.sage_commercial_code ? ` · 🏷️ Sage: ${escape(u.sage_commercial_code)}` : ''}
+                    </div>
+                  </div>
+                  <span class="asg-status">${asignado ? '✓ asignado' : ''}</span>
+                </label>
+              `;
+            }).join('')}
+          </div>
+          <div id="asg-msg" style="margin-top:0.8rem"></div>
+          <div class="modal-acciones">
+            <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+          </div>
+        `}
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Listener para cada checkbox: asigna/desasigna en cuanto cambia
+    modal.querySelectorAll('.asg-check').forEach(cb => {
+      cb.addEventListener('change', async () => {
+        const uid = Number(cb.dataset.uid);
+        const $fila = cb.closest('.asignacion-fila');
+        const $status = $fila.querySelector('.asg-status');
+        const $msg = document.getElementById('asg-msg');
+        $msg.innerHTML = '';
+        cb.disabled = true;
+        try {
+          if (cb.checked) {
+            await api('/api/catalogs/' + catalogId + '/assignments', {
+              method: 'POST',
+              body: { user_id: uid }
+            });
+            $fila.classList.add('asignacion-activa');
+            $status.textContent = '✓ asignado';
+          } else {
+            await api('/api/catalogs/' + catalogId + '/assignments/' + uid, {
+              method: 'DELETE'
+            });
+            $fila.classList.remove('asignacion-activa');
+            $status.textContent = '';
+          }
+        } catch (err) {
+          $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+          cb.checked = !cb.checked; // revertir
+        } finally {
+          cb.disabled = false;
+        }
+      });
+    });
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
 }
 
 // ===== ARRANQUE =====

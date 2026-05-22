@@ -524,7 +524,7 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
         SELECT c.*, (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE) AS sheet_count
         FROM catalogs c
         JOIN catalog_assignments ca ON ca.catalog_id = c.id
-        WHERE ca.user_id = $1 AND c.estado = 'publicado'
+        WHERE ca.user_id = $1 AND c.estado != 'archivado'
         ORDER BY c.updated_at DESC
       `, [req.user.id]);
     }
@@ -675,6 +675,63 @@ app.delete('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest
       res.status(404).json({ success: false, error: 'Lamina no encontrada' });
       return;
     }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// ASIGNACIONES de catalogos a comerciales
+// ============================================================================
+
+// Ver quien tiene asignado este catalogo
+app.get('/api/catalogs/:id/assignments', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.id);
+    const r = await pool.query(`
+      SELECT u.id, u.name, u.email, u.role, u.sage_commercial_code, u.is_active,
+             ca.id AS assignment_id, ca.assigned_at
+      FROM users u
+      LEFT JOIN catalog_assignments ca ON ca.user_id = u.id AND ca.catalog_id = $1
+      WHERE u.role = 'sales' OR u.role = 'admin'
+      ORDER BY u.role DESC, u.name
+    `, [catalogId]);
+    res.json({ success: true, users: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Asignar catalogo a usuario
+app.post('/api/catalogs/:id/assignments', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.id);
+    const { user_id } = req.body;
+    if (!user_id) {
+      res.status(400).json({ success: false, error: 'user_id obligatorio' });
+      return;
+    }
+    await pool.query(
+      `INSERT INTO catalog_assignments (user_id, catalog_id) VALUES ($1, $2)
+       ON CONFLICT (user_id, catalog_id) DO NOTHING`,
+      [Number(user_id), catalogId]
+    );
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Desasignar catalogo de usuario
+app.delete('/api/catalogs/:cid/assignments/:uid', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.cid);
+    const userId = Number(req.params.uid);
+    await pool.query(
+      'DELETE FROM catalog_assignments WHERE catalog_id = $1 AND user_id = $2',
+      [catalogId, userId]
+    );
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
