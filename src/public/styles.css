@@ -306,6 +306,15 @@ body {
   transition: background 0.15s;
 }
 .upload-zona:hover { background: #fef0f6; }
+.upload-zona.upload-zona-pdf {
+  border-color: #7c3aed;
+  background: #f5f3ff;
+}
+.upload-zona.upload-zona-pdf .upload-zona-icono,
+.upload-zona.upload-zona-pdf .upload-zona-texto {
+  color: #7c3aed;
+}
+.upload-zona.upload-zona-pdf:hover { background: #ede9fe; }
 .upload-zona-icono { font-size: 28px; color: var(--rosa); margin-bottom: 6px; }
 .upload-zona-texto { color: var(--rosa); font-size: 13px; font-weight: 500; }
 .upload-zona-sub { color: var(--gris-texto); font-size: 11px; margin-top: 4px; }

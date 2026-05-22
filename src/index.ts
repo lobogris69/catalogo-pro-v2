@@ -7,7 +7,11 @@ import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import dotenv from 'dotenv';
+
+const execAsync = promisify(exec);
 
 dotenv.config();
 
@@ -233,7 +237,15 @@ async function initDB(): Promise<void> {
     }
     console.log('✅ BD inicializada');
   } catch (e) {
-    console.error('❌ Error inicializando BD:', (e as Error).message);
+    console.error('❌ Error inicializando BD - DETALLE COMPLETO:');
+    console.error('  Tipo de error:', typeof e);
+    console.error('  Error JSON:', JSON.stringify(e, Object.getOwnPropertyNames(e as object)));
+    console.error('  Error toString:', String(e));
+    if (e instanceof Error) {
+      console.error('  Mensaje:', e.message);
+      console.error('  Stack:', e.stack);
+    }
+    console.error('  DATABASE_URL configurado:', process.env.DATABASE_URL ? 'SI (oculto)' : 'NO - FALTA!');
     throw e;
   }
 }
@@ -486,6 +498,104 @@ app.delete('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest
 });
 
 // ============================================================================
+// LAMINAS - subir PDF entero y trocear en laminas
+// ============================================================================
+const uploadPdf = multer({
+  storage,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype !== 'application/pdf') {
+      cb(new Error('Solo se aceptan archivos PDF'));
+      return;
+    }
+    cb(null, true);
+  }
+});
+
+app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadPdf.single('pdf'), async (req: AuthRequest, res: Response) => {
+  let pdfPath: string | null = null;
+  try {
+    const catalogId = Number(req.params.id);
+    if (!req.file) {
+      res.status(400).json({ success: false, error: 'No se ha subido ningun PDF' });
+      return;
+    }
+    pdfPath = req.file.path;
+    console.log(`[PDF] Procesando PDF: ${pdfPath}`);
+
+    // Verificar que pdftoppm esta disponible
+    try {
+      await execAsync('which pdftoppm');
+    } catch (e) {
+      res.status(500).json({ success: false, error: 'pdftoppm (poppler-utils) no esta instalado en el servidor' });
+      return;
+    }
+
+    // Sacar el orden actual mas alto para que las nuevas laminas vayan despues
+    const maxR = await pool.query('SELECT COALESCE(MAX(orden),0) AS max_orden FROM sheets WHERE catalog_id = $1', [catalogId]);
+    let ordenSiguiente = Number(maxR.rows[0].max_orden) + 1;
+
+    // Trocear el PDF con pdftoppm
+    // Sale: prefix-001.jpg, prefix-002.jpg, etc.
+    const prefix = path.join(UPLOADS_DIR, `pdf_${Date.now()}`);
+    const cmd = `pdftoppm -jpeg -r 150 "${pdfPath}" "${prefix}"`;
+    console.log(`[PDF] Ejecutando: ${cmd}`);
+    await execAsync(cmd, { maxBuffer: 50 * 1024 * 1024 });
+
+    // Buscar los JPGs generados
+    const baseName = path.basename(prefix);
+    const archivos = fs.readdirSync(UPLOADS_DIR)
+      .filter(f => f.startsWith(baseName + '-') && f.endsWith('.jpg'))
+      .sort();
+
+    if (archivos.length === 0) {
+      res.status(500).json({ success: false, error: 'No se generaron paginas del PDF. Posiblemente este corrupto.' });
+      return;
+    }
+
+    console.log(`[PDF] ${archivos.length} paginas generadas`);
+
+    // Insertar cada pagina como una lamina en BD
+    const laminasCreadas = [];
+    for (let i = 0; i < archivos.length; i++) {
+      const archivo = archivos[i];
+      const imagenPath = '/uploads/' + archivo;
+      const titulo = `Lamina ${ordenSiguiente}`;
+      const r = await pool.query(
+        `INSERT INTO sheets (catalog_id, orden, titulo, imagen_path)
+         VALUES ($1,$2,$3,$4) RETURNING id, orden, titulo, imagen_path`,
+        [catalogId, ordenSiguiente, titulo, imagenPath]
+      );
+      laminasCreadas.push(r.rows[0]);
+      ordenSiguiente++;
+    }
+
+    // Borrar el PDF original (ya no nos sirve)
+    try {
+      if (pdfPath) fs.unlinkSync(pdfPath);
+    } catch (e) {
+      console.warn('No se pudo borrar PDF temporal:', (e as Error).message);
+    }
+
+    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
+
+    res.status(201).json({
+      success: true,
+      message: `${laminasCreadas.length} laminas creadas correctamente`,
+      laminas_creadas: laminasCreadas.length,
+      sheets: laminasCreadas
+    });
+  } catch (e) {
+    console.error('[PDF] Error:', e);
+    // Intentar borrar el PDF si quedo
+    if (pdfPath) {
+      try { fs.unlinkSync(pdfPath); } catch {}
+    }
+    res.status(500).json({ success: false, error: (e as Error).message || 'Error procesando PDF' });
+  }
+});
+
+// ============================================================================
 // FRONTEND FALLBACK
 // ============================================================================
 app.get('*', (req, res) => {
@@ -500,6 +610,13 @@ initDB().then(() => {
     console.log(`✅ CatalogPRO v2 escuchando en puerto ${PORT}`);
   });
 }).catch(e => {
-  console.error('❌ Error fatal al arrancar:', e.message);
+  console.error('❌ Error fatal al arrancar - DETALLE COMPLETO:');
+  console.error('  Tipo:', typeof e);
+  console.error('  Error JSON:', JSON.stringify(e, Object.getOwnPropertyNames(e as object)));
+  console.error('  toString:', String(e));
+  if (e instanceof Error) {
+    console.error('  Mensaje:', e.message);
+    console.error('  Stack:', e.stack);
+  }
   process.exit(1);
 });

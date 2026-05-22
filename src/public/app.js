@@ -251,13 +251,23 @@ async function renderEditorCatalogo(id) {
         <div class="editor-grid">
           ${esAdmin ? `
           <div class="editor-panel">
-            <h3>Subir lámina</h3>
+            <h3>Subir láminas</h3>
             <div class="upload-zona" id="upload-zona" onclick="document.getElementById('upload-input').click()">
               <div class="upload-zona-icono">📄</div>
               <div class="upload-zona-texto">Pulsa para elegir archivo</div>
-              <div class="upload-zona-sub">JPG · PNG · PDF (1 página)</div>
+              <div class="upload-zona-sub">JPG · PNG (una lámina)</div>
             </div>
-            <input type="file" id="upload-input" accept="image/*,application/pdf" style="display:none">
+            <input type="file" id="upload-input" accept="image/*" style="display:none">
+
+            <div style="text-align:center; margin:14px 0 10px; color:var(--gris-texto); font-size:11px;">— o —</div>
+
+            <div class="upload-zona upload-zona-pdf" id="upload-zona-pdf" onclick="document.getElementById('upload-pdf-input').click()">
+              <div class="upload-zona-icono">📚</div>
+              <div class="upload-zona-texto">Subir PDF completo</div>
+              <div class="upload-zona-sub">se trocea en láminas automáticamente</div>
+            </div>
+            <input type="file" id="upload-pdf-input" accept="application/pdf" style="display:none">
+
             <div id="upload-progreso"></div>
           </div>
           ` : ''}
@@ -297,6 +307,14 @@ async function renderEditorCatalogo(id) {
         await subirLamina(id, file);
         input.value = '';
       });
+
+      const inputPdf = document.getElementById('upload-pdf-input');
+      inputPdf.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        await subirPDF(id, file);
+        inputPdf.value = '';
+      });
     }
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
@@ -314,6 +332,25 @@ async function subirLamina(catalogId, file) {
     await api(`/api/catalogs/${catalogId}/sheets`, { method: 'POST', body: fd });
     $prog.innerHTML = `<div class="exito-msg">✓ Lámina añadida</div>`;
     setTimeout(() => renderEditorCatalogo(catalogId), 600);
+  } catch (err) {
+    $prog.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+  }
+}
+
+// ===== SUBIR PDF Y TROCEAR =====
+async function subirPDF(catalogId, file) {
+  const $prog = document.getElementById('upload-progreso');
+  const mb = (file.size / 1024 / 1024).toFixed(1);
+  if (!confirm(`Vas a subir un PDF de ${mb} MB y trocearlo en láminas automáticamente.\n\nEsto puede tardar varios minutos si el PDF es largo (cada página = 1 lámina).\n\n¿Continuar?`)) {
+    return;
+  }
+  $prog.innerHTML = `<div class="subida-progreso"><span class="spinner"></span> Subiendo PDF de ${mb} MB y troceando… (puede tardar varios minutos)</div>`;
+  try {
+    const fd = new FormData();
+    fd.append('pdf', file);
+    const r = await api(`/api/catalogs/${catalogId}/sheets/from-pdf`, { method: 'POST', body: fd });
+    $prog.innerHTML = `<div class="exito-msg">✓ ${r.laminas_creadas} láminas creadas desde el PDF</div>`;
+    setTimeout(() => renderEditorCatalogo(catalogId), 800);
   } catch (err) {
     $prog.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
   }
