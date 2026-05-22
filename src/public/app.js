@@ -53,7 +53,18 @@ function api(endpoint, options = {}) {
   return fetch(API + endpoint, { ...options, headers })
     .then(async r => {
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || `Error ${r.status}`);
+      if (!r.ok) {
+        // Si el backend dice que el token caducó/no vale, hacemos logout limpio para que el
+        // usuario vea la pantalla de login en vez de un error críptico en cualquier pantalla.
+        if (r.status === 401 && data.error && /token/i.test(data.error)) {
+          // Avisar y desloguear
+          setTimeout(() => {
+            alert('Tu sesión ha caducado. Vuelve a iniciar sesión.');
+            logout();
+          }, 0);
+        }
+        throw new Error(data.error || `Error ${r.status}`);
+      }
       return data;
     });
 }
@@ -851,10 +862,26 @@ function activarDragDropExpress(expressId) {
     fila.addEventListener('dragover', (e) => {
       e.preventDefault();
       if (!draggedEl || draggedEl === fila) return;
+      // Defensa: ambos nodos tienen que ser hijos directos de la misma lista
+      if (fila.parentNode !== lista || draggedEl.parentNode !== lista) return;
       const rect = fila.getBoundingClientRect();
       const mitad = rect.top + rect.height / 2;
-      if (e.clientY < mitad) lista.insertBefore(draggedEl, fila);
-      else lista.insertBefore(draggedEl, fila.nextSibling);
+      try {
+        if (e.clientY < mitad) {
+          if (fila.previousSibling !== draggedEl) {
+            lista.insertBefore(draggedEl, fila);
+          }
+        } else {
+          const ref = fila.nextSibling;
+          if (ref === draggedEl) {
+            // ya está en posición
+          } else if (ref && ref.parentNode === lista) {
+            lista.insertBefore(draggedEl, ref);
+          } else {
+            lista.appendChild(draggedEl);
+          }
+        }
+      } catch (_) { /* defensa silenciosa */ }
     });
     fila.addEventListener('drop', async (e) => {
       e.preventDefault();
@@ -998,12 +1025,14 @@ function activarDragDropLaminas(catalogId) {
     arrastrando = fila;
     fila.classList.add('lamina-arrastrando');
     e.dataTransfer.effectAllowed = 'move';
+    // Algunos navegadores necesitan setData para que el drag funcione
+    try { e.dataTransfer.setData('text/plain', String(fila.dataset.id || '')); } catch(_) {}
   });
 
   lista.addEventListener('dragend', async (e) => {
     const fila = e.target.closest('.lamina-fila');
     if (fila) fila.classList.remove('lamina-arrastrando');
-    document.querySelectorAll('.lamina-fila').forEach(f => f.classList.remove('lamina-arrastrando-target'));
+    document.querySelectorAll('.lamina-arrastrando-target').forEach(f => f.classList.remove('lamina-arrastrando-target'));
     if (cambios) {
       cambios = false;
       // Recalcular números visibles + enviar al backend
@@ -1038,27 +1067,50 @@ function activarDragDropLaminas(catalogId) {
     arrastrando = null;
   });
 
+  // Mover EN dragover (mas fiable que en drop). Pintar guia visual solo.
   lista.addEventListener('dragover', (e) => {
     e.preventDefault();
-    const fila = e.target.closest('.lamina-fila');
-    if (!fila || fila === arrastrando) return;
-    document.querySelectorAll('.lamina-arrastrando-target').forEach(f => f.classList.remove('lamina-arrastrando-target'));
-    fila.classList.add('lamina-arrastrando-target');
-  });
-
-  lista.addEventListener('drop', (e) => {
-    e.preventDefault();
+    if (!arrastrando) return;
     const target = e.target.closest('.lamina-fila');
-    if (!target || !arrastrando || target === arrastrando) return;
+    if (!target || target === arrastrando) return;
+    // Defensa: ambos nodos tienen que ser hijos directos de la misma lista.
+    // Si no, no hacemos nada (evita el error insertBefore).
+    if (target.parentNode !== lista || arrastrando.parentNode !== lista) return;
     // Determinar si insertar antes o después según posición del cursor
     const rect = target.getBoundingClientRect();
     const insertarAntes = (e.clientY - rect.top) < rect.height / 2;
-    if (insertarAntes) {
-      target.parentNode.insertBefore(arrastrando, target);
-    } else {
-      target.parentNode.insertBefore(arrastrando, target.nextSibling);
+    try {
+      if (insertarAntes) {
+        // Si arrastrando ya está justo antes de target, no hacer nada
+        if (target.previousSibling !== arrastrando) {
+          lista.insertBefore(arrastrando, target);
+          cambios = true;
+        }
+      } else {
+        // Insertar después de target = antes de target.nextSibling.
+        // Si nextSibling es null, appendChild lo pone al final.
+        const ref = target.nextSibling;
+        if (ref === arrastrando) {
+          // ya está en posición
+        } else if (ref && ref.parentNode === lista) {
+          lista.insertBefore(arrastrando, ref);
+          cambios = true;
+        } else {
+          lista.appendChild(arrastrando);
+          cambios = true;
+        }
+      }
+    } catch (_) {
+      // Defensa contra cualquier caso raro de cross-browser: no rompemos la UI.
     }
-    cambios = true;
+    // Guia visual de "estoy sobre este target"
+    document.querySelectorAll('.lamina-arrastrando-target').forEach(f => f.classList.remove('lamina-arrastrando-target'));
+    target.classList.add('lamina-arrastrando-target');
+  });
+
+  // El drop solo confirma que se soltó aquí (no movemos nada, ya está movido en dragover)
+  lista.addEventListener('drop', (e) => {
+    e.preventDefault();
   });
 }
 
@@ -2499,10 +2551,23 @@ function activarDragDropPlantillas() {
     fila.addEventListener('dragover', (e) => {
       e.preventDefault();
       if (!dragged || dragged === fila) return;
+      if (fila.parentNode !== lista || dragged.parentNode !== lista) return;
       const rect = fila.getBoundingClientRect();
       const mitad = rect.top + rect.height / 2;
-      if (e.clientY < mitad) lista.insertBefore(dragged, fila);
-      else lista.insertBefore(dragged, fila.nextSibling);
+      try {
+        if (e.clientY < mitad) {
+          if (fila.previousSibling !== dragged) lista.insertBefore(dragged, fila);
+        } else {
+          const ref = fila.nextSibling;
+          if (ref === dragged) {
+            // ya está en posición
+          } else if (ref && ref.parentNode === lista) {
+            lista.insertBefore(dragged, ref);
+          } else {
+            lista.appendChild(dragged);
+          }
+        }
+      } catch (_) { /* defensa silenciosa */ }
     });
     fila.addEventListener('drop', async (e) => {
       e.preventDefault();
