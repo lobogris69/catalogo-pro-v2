@@ -358,20 +358,33 @@ async function renderEditorCatalogo(id) {
           ` : ''}
 
           <div class="editor-panel">
-            <h3>Láminas (${sheets.length})</h3>
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem; flex-wrap:wrap">
+              <h3 style="margin-bottom:0">Láminas (${sheets.length})</h3>
+              ${esAdmin ? `
+                <input type="text" id="filtro-laminas" placeholder="🔍 Filtrar (número o palabra)..."
+                       style="flex:1; min-width:200px; padding:8px 12px; border:1px solid var(--gris-borde); border-radius:8px; font-size:13px; font-family:inherit; outline:none;">
+              ` : ''}
+            </div>
             <div id="laminas-lista">
               ${sheets.length === 0 ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">Sin láminas todavía. ${esAdmin ? 'Sube la primera con el panel de la izquierda.' : ''}</p>` : ''}
               ${sheets.map((s, idx) => `
-                <div class="lamina-fila" data-id="${s.id}">
+                <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-numero="${idx + 1}">
                   <div class="lamina-numero">${idx + 1}</div>
                   <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
-                    <div class="lamina-notas">${escape(s.notas || s.tags || 'Sin notas')}</div>
+                    ${esAdmin ? `
+                      <input type="text" class="lamina-tags-input" value="${escape(s.tags || '')}"
+                             placeholder="🏷️ tags (ej: gafas, sol, coronation, oferta 12+12)"
+                             data-id="${s.id}" data-original="${escape(s.tags || '')}">
+                    ` : `
+                      <div class="lamina-notas">${escape(s.notas || s.tags || 'Sin notas')}</div>
+                    `}
                   </div>
                   ${esAdmin ? `
                   <div class="lamina-acciones">
-                    <button onclick="editarLamina(${s.id})" title="Editar">✏️</button>
+                    <button class="btn-guardar-tags" data-id="${s.id}" style="display:none" title="Guardar tags">💾</button>
+                    <button onclick="editarLamina(${s.id})" title="Editar todo">✏️</button>
                     <button class="btn-borrar" onclick="borrarLamina(${s.id}, ${id})" title="Borrar">🗑️</button>
                   </div>
                   ` : ''}
@@ -383,6 +396,49 @@ async function renderEditorCatalogo(id) {
       </div>
     `;
     $v.innerHTML = html;
+
+    // Listeners para la edición inline de tags
+    if (esAdmin) {
+      // Inputs de tags
+      document.querySelectorAll('.lamina-tags-input').forEach(input => {
+        const id = Number(input.dataset.id);
+        const fila = input.closest('.lamina-fila');
+        const btnGuardar = fila.querySelector('.btn-guardar-tags');
+        input.addEventListener('input', () => {
+          if (input.value !== input.dataset.original) {
+            btnGuardar.style.display = 'inline-block';
+            input.classList.add('lamina-tags-dirty');
+          } else {
+            btnGuardar.style.display = 'none';
+            input.classList.remove('lamina-tags-dirty');
+          }
+        });
+        // Guardar al pulsar Enter
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            guardarTagsLamina(id);
+          } else if (e.key === 'Escape') {
+            input.value = input.dataset.original;
+            btnGuardar.style.display = 'none';
+            input.classList.remove('lamina-tags-dirty');
+          }
+        });
+      });
+      // Botones de guardar
+      document.querySelectorAll('.btn-guardar-tags').forEach(btn => {
+        btn.addEventListener('click', () => guardarTagsLamina(Number(btn.dataset.id)));
+      });
+      // Filtro
+      const filtro = document.getElementById('filtro-laminas');
+      if (filtro) {
+        let t;
+        filtro.addEventListener('input', () => {
+          clearTimeout(t);
+          t = setTimeout(() => filtrarLaminasEditor(filtro.value), 200);
+        });
+      }
+    }
 
     if (esAdmin) {
       const input = document.getElementById('upload-input');
@@ -450,6 +506,67 @@ async function borrarLamina(sheetId, catalogId) {
   } catch (err) {
     alert('Error: ' + err.message);
   }
+}
+
+// ===== GUARDAR TAGS INLINE =====
+async function guardarTagsLamina(sheetId) {
+  const input = document.querySelector(`.lamina-tags-input[data-id="${sheetId}"]`);
+  if (!input) return;
+  const fila = input.closest('.lamina-fila');
+  const btnGuardar = fila.querySelector('.btn-guardar-tags');
+  const nuevoValor = input.value.trim();
+  // Guardar usando endpoint que solo actualiza tags
+  input.disabled = true;
+  btnGuardar.disabled = true;
+  btnGuardar.textContent = '⏳';
+  try {
+    // Cogemos titulo/notas actuales (no los tocamos)
+    const titulo = fila.querySelector('.lamina-titulo').textContent.trim();
+    const tituloLimpio = titulo === 'Sin título' ? '' : titulo;
+    await api('/api/sheets/' + sheetId, {
+      method: 'PUT',
+      body: {
+        titulo: tituloLimpio,
+        notas: '',
+        tags: nuevoValor
+      }
+    });
+    input.dataset.original = nuevoValor;
+    input.classList.remove('lamina-tags-dirty');
+    btnGuardar.style.display = 'none';
+    btnGuardar.textContent = '💾';
+    // Actualizar los data-attrs del filtro
+    fila.dataset.tags = nuevoValor.toLowerCase();
+    // Feedback visual
+    input.classList.add('lamina-tags-saved');
+    setTimeout(() => input.classList.remove('lamina-tags-saved'), 1500);
+  } catch (err) {
+    alert('Error guardando tags: ' + err.message);
+    btnGuardar.textContent = '💾';
+  } finally {
+    input.disabled = false;
+    btnGuardar.disabled = false;
+  }
+}
+
+// ===== FILTRAR LAMINAS EN EL EDITOR =====
+function filtrarLaminasEditor(texto) {
+  const t = texto.trim().toLowerCase();
+  const numero = parseInt(t);
+  document.querySelectorAll('#laminas-lista .lamina-fila').forEach(fila => {
+    if (!t) {
+      fila.style.display = '';
+      return;
+    }
+    const titulo = fila.dataset.titulo || '';
+    const tags = fila.dataset.tags || '';
+    const num = fila.dataset.numero || '';
+    let coincide = false;
+    if (!isNaN(numero) && String(numero) === num) coincide = true;
+    if (titulo.includes(t)) coincide = true;
+    if (tags.includes(t)) coincide = true;
+    fila.style.display = coincide ? '' : 'none';
+  });
 }
 
 // ===== EDITAR LAMINA =====

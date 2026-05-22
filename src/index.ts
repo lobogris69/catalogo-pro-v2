@@ -779,7 +779,7 @@ app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadP
     // Trocear el PDF con pdftoppm
     // Sale: prefix-001.jpg, prefix-002.jpg, etc.
     const prefix = path.join(UPLOADS_DIR, `pdf_${Date.now()}`);
-    const cmd = `pdftoppm -jpeg -r 150 "${pdfPath}" "${prefix}"`;
+    const cmd = `pdftoppm -jpeg -jpegopt quality=88 -r 250 "${pdfPath}" "${prefix}"`;
     console.log(`[PDF] Ejecutando: ${cmd}`);
     await execAsync(cmd, { maxBuffer: 50 * 1024 * 1024 });
 
