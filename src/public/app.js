@@ -107,6 +107,8 @@ function renderApp() {
       <div class="navtabs">
         <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
         ${esAdmin ? `<button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>` : ''}
+        ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
+        <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')" style="margin-left:auto">⚙️ Mi cuenta</button>
       </div>
       <div id="vista-contenido"></div>
     </div>
@@ -117,6 +119,10 @@ function renderApp() {
 function routerVista() {
   if (appState.vista === 'clientes') {
     renderListaClientes();
+  } else if (appState.vista === 'comerciales') {
+    renderListaComerciales();
+  } else if (appState.vista === 'cuenta') {
+    renderMiCuenta();
   } else if (appState.catalogoActual) {
     renderEditorCatalogo(appState.catalogoActual);
   } else {
@@ -673,6 +679,311 @@ function abrirModalImportarSage() {
       }, 2500);
     } catch (err) {
       $prog.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
+}
+
+// ============================================================================
+// COMERCIALES (admin only)
+// ============================================================================
+async function renderListaComerciales() {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando comerciales…</div></div>`;
+  try {
+    const r = await api('/api/users');
+    const usuarios = r.users || [];
+
+    let html = `
+      <div class="contenedor">
+        <div class="titulo-pagina">
+          <div>
+            <h2>Comerciales y usuarios</h2>
+            <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+              ${usuarios.length} usuarios · ${usuarios.filter(u => u.role === 'admin').length} admin · ${usuarios.filter(u => u.role === 'sales').length} comerciales
+            </div>
+          </div>
+          <button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoUsuario()">+ Nuevo usuario</button>
+        </div>
+
+        <div class="comerciales-lista">
+    `;
+
+    usuarios.forEach(u => {
+      const esYo = u.id === user.id;
+      const inactiveCls = !u.is_active ? ' comercial-inactivo' : '';
+      const rolBadge = u.role === 'admin'
+        ? '<span class="rol-badge rol-admin">ADMIN</span>'
+        : '<span class="rol-badge rol-sales">COMERCIAL</span>';
+      html += `
+        <div class="comercial-card${inactiveCls}">
+          <div class="comercial-card-info">
+            <div class="comercial-card-cabecera">
+              <span class="comercial-nombre">${escape(u.name)}</span>
+              ${rolBadge}
+              ${esYo ? '<span class="rol-badge rol-yo">TÚ</span>' : ''}
+              ${!u.is_active ? '<span class="rol-badge rol-baja">INACTIVO</span>' : ''}
+            </div>
+            <div class="comercial-card-detalles">
+              📧 ${escape(u.email)}
+              ${u.sage_commercial_code ? ` · 🏷️ Sage: ${escape(u.sage_commercial_code)}` : ' · <span style="color:#999">sin código Sage</span>'}
+            </div>
+          </div>
+          <div class="comercial-card-acciones">
+            <button class="btn btn-pequeno btn-secondary" onclick="editarUsuario(${u.id})" title="Editar">✏️ Editar</button>
+            <button class="btn btn-pequeno btn-secondary" onclick="cambiarContraseñaUsuario(${u.id}, '${escape(u.name)}')" title="Cambiar contraseña">🔑 Contraseña</button>
+            ${!esYo ? `<button class="btn btn-pequeno btn-danger" onclick="desactivarUsuario(${u.id}, '${escape(u.name)}')" title="${u.is_active ? 'Desactivar' : 'Ya inactivo'}" ${!u.is_active ? 'disabled' : ''}>🗑️</button>` : ''}
+          </div>
+        </div>
+      `;
+    });
+
+    html += '</div></div>';
+    $v.innerHTML = html;
+  } catch (err) {
+    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+function abrirModalNuevoUsuario() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>+ Nuevo usuario</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div id="modal-user-error"></div>
+      <form id="form-nuevo-user">
+        <div class="form-group">
+          <label>Nombre completo</label>
+          <input type="text" id="u-name" required placeholder="Ej: Iván García">
+        </div>
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" id="u-email" required placeholder="ivan@lomhifar.com">
+        </div>
+        <div class="form-group">
+          <label>Contraseña inicial</label>
+          <input type="text" id="u-password" required placeholder="Ej: lomhifar2026" value="lomhifar2026">
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">El usuario la podrá cambiar después.</div>
+        </div>
+        <div class="form-group">
+          <label>Rol</label>
+          <select id="u-role">
+            <option value="sales">Comercial</option>
+            <option value="admin">Administrador</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Código comercial Sage</label>
+          <input type="text" id="u-sage" placeholder="Ej: 1, 2, 6...">
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Necesario para que vea solo SUS clientes. Mira el Excel de Sage para identificarlo.</div>
+        </div>
+        <div class="modal-acciones">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Crear</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('form-nuevo-user').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const data = {
+        name: document.getElementById('u-name').value.trim(),
+        email: document.getElementById('u-email').value.trim(),
+        password: document.getElementById('u-password').value,
+        role: document.getElementById('u-role').value,
+        sage_commercial_code: document.getElementById('u-sage').value.trim()
+      };
+      await api('/api/users', { method: 'POST', body: data });
+      modal.remove();
+      renderListaComerciales();
+    } catch (err) {
+      document.getElementById('modal-user-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
+}
+
+async function editarUsuario(id) {
+  try {
+    const r = await api('/api/users');
+    const u = (r.users || []).find(x => x.id === id);
+    if (!u) return;
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-bg';
+    modal.innerHTML = `
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Editar usuario</h3>
+          <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+        </div>
+        <div id="modal-edit-user-error"></div>
+        <form id="form-edit-user">
+          <div class="form-group">
+            <label>Nombre completo</label>
+            <input type="text" id="eu-name" required value="${escape(u.name)}">
+          </div>
+          <div class="form-group">
+            <label>Email</label>
+            <input type="email" id="eu-email" required value="${escape(u.email)}">
+          </div>
+          <div class="form-group">
+            <label>Rol</label>
+            <select id="eu-role" ${u.id === user.id ? 'disabled' : ''}>
+              <option value="sales" ${u.role === 'sales' ? 'selected' : ''}>Comercial</option>
+              <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Administrador</option>
+            </select>
+            ${u.id === user.id ? '<div style="font-size:11px;color:var(--gris-texto);margin-top:4px">No puedes cambiar tu propio rol.</div>' : ''}
+          </div>
+          <div class="form-group">
+            <label>Código comercial Sage</label>
+            <input type="text" id="eu-sage" value="${escape(u.sage_commercial_code || '')}">
+          </div>
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="eu-active" ${u.is_active ? 'checked' : ''} style="width:auto">
+              <span>Usuario activo</span>
+            </label>
+          </div>
+          <div class="modal-acciones">
+            <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+            <button type="submit" class="btn btn-primary">Guardar</button>
+          </div>
+        </form>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    document.getElementById('form-edit-user').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const data = {
+          name: document.getElementById('eu-name').value.trim(),
+          email: document.getElementById('eu-email').value.trim(),
+          role: document.getElementById('eu-role').value,
+          sage_commercial_code: document.getElementById('eu-sage').value.trim(),
+          is_active: document.getElementById('eu-active').checked
+        };
+        await api('/api/users/' + id, { method: 'PUT', body: data });
+        modal.remove();
+        renderListaComerciales();
+      } catch (err) {
+        document.getElementById('modal-edit-user-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+      }
+    });
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+function cambiarContraseñaUsuario(id, nombre) {
+  const nueva = prompt(`Nueva contraseña para ${nombre}:\n(mínimo 4 caracteres)`);
+  if (!nueva) return;
+  if (nueva.length < 4) {
+    alert('La contraseña debe tener al menos 4 caracteres');
+    return;
+  }
+  api('/api/users/' + id + '/password', { method: 'PUT', body: { new_password: nueva } })
+    .then(() => alert(`Contraseña de ${nombre} cambiada correctamente.\n\nNueva contraseña: ${nueva}\n\nApúntala bien antes de cerrar.`))
+    .catch(err => alert('Error: ' + err.message));
+}
+
+function desactivarUsuario(id, nombre) {
+  if (!confirm(`¿Desactivar a "${nombre}"?\n\nEl usuario no podrá entrar más, pero su historial se conserva.\n\nPuedes reactivarlo desde el botón Editar.`)) return;
+  api('/api/users/' + id, { method: 'DELETE' })
+    .then(() => renderListaComerciales())
+    .catch(err => alert('Error: ' + err.message));
+}
+
+// ============================================================================
+// MI CUENTA
+// ============================================================================
+async function renderMiCuenta() {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `
+    <div class="contenedor" style="max-width:600px">
+      <div class="titulo-pagina">
+        <div>
+          <h2>⚙️ Mi cuenta</h2>
+          <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">${escape(user.name)} · ${user.role === 'admin' ? 'Administrador' : 'Comercial'}</div>
+        </div>
+      </div>
+
+      <div class="editor-panel" style="margin-bottom:1rem">
+        <h3>🔑 Cambiar mi contraseña</h3>
+        <div id="cuenta-pass-msg"></div>
+        <form id="form-mi-pass">
+          <div class="form-group">
+            <label>Contraseña actual</label>
+            <input type="password" id="mp-actual" required autocomplete="current-password">
+          </div>
+          <div class="form-group">
+            <label>Contraseña nueva (mín. 4 caracteres)</label>
+            <input type="password" id="mp-nueva" required autocomplete="new-password">
+          </div>
+          <div class="form-group">
+            <label>Repite la contraseña nueva</label>
+            <input type="password" id="mp-confirma" required autocomplete="new-password">
+          </div>
+          <button type="submit" class="btn btn-primary">Cambiar contraseña</button>
+        </form>
+      </div>
+
+      <div class="editor-panel">
+        <h3>🏷️ Mi código comercial Sage</h3>
+        <div id="cuenta-sage-msg"></div>
+        <form id="form-mi-sage">
+          <div class="form-group">
+            <label>Código actual</label>
+            <input type="text" id="ms-sage" placeholder="Ej: 1, 2, 6..." value="${escape(user.sage_commercial_code || '')}">
+            <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">
+              Es el número que te identifica como comercial en Sage. Si tienes dudas, pregunta al administrador.
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary">Guardar código Sage</button>
+        </form>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('form-mi-pass').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const actual = document.getElementById('mp-actual').value;
+    const nueva = document.getElementById('mp-nueva').value;
+    const confirma = document.getElementById('mp-confirma').value;
+    const $msg = document.getElementById('cuenta-pass-msg');
+    if (nueva !== confirma) {
+      $msg.innerHTML = '<div class="error-msg">Las contraseñas nuevas no coinciden</div>';
+      return;
+    }
+    if (nueva.length < 4) {
+      $msg.innerHTML = '<div class="error-msg">La nueva contraseña debe tener al menos 4 caracteres</div>';
+      return;
+    }
+    try {
+      await api('/api/users/me/password', { method: 'PUT', body: { current_password: actual, new_password: nueva } });
+      $msg.innerHTML = '<div class="exito-msg">✓ Contraseña cambiada correctamente</div>';
+      document.getElementById('form-mi-pass').reset();
+    } catch (err) {
+      $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
+
+  document.getElementById('form-mi-sage').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const valor = document.getElementById('ms-sage').value.trim();
+    const $msg = document.getElementById('cuenta-sage-msg');
+    try {
+      await api('/api/users/me/sage-code', { method: 'PUT', body: { sage_commercial_code: valor } });
+      // Actualizar el user local
+      user.sage_commercial_code = valor;
+      localStorage.setItem('cpv2_user', JSON.stringify(user));
+      $msg.innerHTML = '<div class="exito-msg">✓ Código Sage actualizado</div>';
+    } catch (err) {
+      $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
     }
   });
 }

@@ -294,7 +294,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
 // ============================================================================
 app.get('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, is_active, created_at FROM users ORDER BY created_at');
+    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, is_active, created_at FROM users ORDER BY role, name');
     res.json({ success: true, users: r.rows });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -310,12 +310,142 @@ app.post('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: 
       res.status(400).json({ success: false, error: 'Rol invalido' });
       return;
     }
+    if (password.length < 4) {
+      res.status(400).json({ success: false, error: 'La contraseña debe tener al menos 4 caracteres' });
+      return;
+    }
     const hash = await bcrypt.hash(password, 10);
     const r = await pool.query(
-      'INSERT INTO users (email, password_hash, name, role, sage_commercial_code) VALUES ($1,$2,$3,$4,$5) RETURNING id, email, name, role, sage_commercial_code',
-      [email, hash, name, role, sage_commercial_code || null]
+      'INSERT INTO users (email, password_hash, name, role, sage_commercial_code) VALUES ($1,$2,$3,$4,$5) RETURNING id, email, name, role, sage_commercial_code, is_active, created_at',
+      [email.trim().toLowerCase(), hash, name.trim(), role, sage_commercial_code ? String(sage_commercial_code).trim() : null]
     );
     res.status(201).json({ success: true, user: r.rows[0] });
+  } catch (e) {
+    const msg = (e as Error).message || '';
+    if (msg.includes('duplicate') || msg.includes('users_email_key')) {
+      res.status(400).json({ success: false, error: 'Ya existe un usuario con ese email' });
+      return;
+    }
+    res.status(400).json({ success: false, error: msg });
+  }
+});
+
+// Editar usuario (admin) - nombre, email, rol, codigo Sage, activo
+app.put('/api/users/:id', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { name, email, role, sage_commercial_code, is_active } = req.body;
+    if (!name || !email || !role) {
+      res.status(400).json({ success: false, error: 'Nombre, email y rol son obligatorios' });
+      return;
+    }
+    if (!['admin','sales'].includes(role)) {
+      res.status(400).json({ success: false, error: 'Rol invalido' });
+      return;
+    }
+    // No permitir que el admin se quite admin a si mismo
+    if (id === req.user!.id && role !== 'admin') {
+      res.status(400).json({ success: false, error: 'No puedes quitarte tu propio rol de admin' });
+      return;
+    }
+    const r = await pool.query(
+      `UPDATE users SET name=$1, email=$2, role=$3, sage_commercial_code=$4, is_active=$5
+       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, is_active`,
+      [name.trim(), email.trim().toLowerCase(), role, sage_commercial_code ? String(sage_commercial_code).trim() : null, is_active !== false, id]
+    );
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+      return;
+    }
+    res.json({ success: true, user: r.rows[0] });
+  } catch (e) {
+    const msg = (e as Error).message || '';
+    if (msg.includes('duplicate') || msg.includes('users_email_key')) {
+      res.status(400).json({ success: false, error: 'Ya existe otro usuario con ese email' });
+      return;
+    }
+    res.status(400).json({ success: false, error: msg });
+  }
+});
+
+// Admin: cambiar contraseña de cualquier usuario
+app.put('/api/users/:id/password', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { new_password } = req.body;
+    if (!new_password || new_password.length < 4) {
+      res.status(400).json({ success: false, error: 'La contraseña debe tener al menos 4 caracteres' });
+      return;
+    }
+    const hash = await bcrypt.hash(new_password, 10);
+    const r = await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2 RETURNING id, email', [hash, id]);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Cualquier usuario: cambiar su propia contraseña (requiere la actual)
+app.put('/api/users/me/password', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { current_password, new_password } = req.body;
+    if (!current_password || !new_password) {
+      res.status(400).json({ success: false, error: 'Contraseña actual y nueva son obligatorias' });
+      return;
+    }
+    if (new_password.length < 4) {
+      res.status(400).json({ success: false, error: 'La nueva contraseña debe tener al menos 4 caracteres' });
+      return;
+    }
+    const r = await pool.query('SELECT password_hash FROM users WHERE id=$1', [req.user!.id]);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+      return;
+    }
+    const ok = await bcrypt.compare(current_password, r.rows[0].password_hash);
+    if (!ok) {
+      res.status(401).json({ success: false, error: 'La contraseña actual no es correcta' });
+      return;
+    }
+    const hash = await bcrypt.hash(new_password, 10);
+    await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2', [hash, req.user!.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Cualquier usuario: cambiar su propio codigo Sage
+app.put('/api/users/me/sage-code', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { sage_commercial_code } = req.body;
+    const valor = sage_commercial_code ? String(sage_commercial_code).trim() : null;
+    await pool.query('UPDATE users SET sage_commercial_code=$1 WHERE id=$2', [valor, req.user!.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Eliminar usuario (admin)
+app.delete('/api/users/:id', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (id === req.user!.id) {
+      res.status(400).json({ success: false, error: 'No puedes eliminarte a ti mismo' });
+      return;
+    }
+    // Mejor desactivar que eliminar (porque puede tener visitas asociadas)
+    const r = await pool.query('UPDATE users SET is_active=FALSE WHERE id=$1 RETURNING id', [id]);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+      return;
+    }
+    res.json({ success: true, mensaje: 'Usuario desactivado (no eliminado, conserva su historial)' });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
   }
