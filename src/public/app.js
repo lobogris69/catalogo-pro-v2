@@ -8,12 +8,15 @@ let impersonating = JSON.parse(localStorage.getItem('cpv2_impersonate') || 'null
 let appState = {
   vista: 'catalogos',
   catalogoActual: null,
+  clienteActual: null,        // B6: ficha de cliente abierta
   clientesPagina: 1,
   clientesBusqueda: '',
   visorModo: 'presentacion', // 'presentacion' | 'mosaico'
   visorIndice: 0,
   visorBusqueda: '',
-  visorZoom: 1
+  visorZoom: 1,
+  visitaActiva: null,         // B6: { id, client_id, cliente_nombre, catalog_id, ... } o null
+  visitaVerId: null           // B6: si !=null se muestra detalle de una visita pasada
 };
 
 const $app = document.getElementById('app');
@@ -67,6 +70,10 @@ function logout() {
   token = null;
   user = null;
   impersonating = null;
+  appState.visitaActiva = null;
+  appState.clienteActual = null;
+  appState.visitaVerId = null;
+  window._visitaCargada = false;
   render();
 }
 
@@ -121,7 +128,17 @@ function renderLogin() {
 }
 
 // ===== APP PRINCIPAL =====
-function renderApp() {
+async function renderApp() {
+  // B6: cargar visita activa una vez al arrancar la sesión.
+  // _visitaCargada=true en window para no volver a pedirla en cada render.
+  if (!window._visitaCargada) {
+    window._visitaCargada = true;
+    try {
+      const r = await api('/api/visits/current');
+      appState.visitaActiva = r.visit || null;
+    } catch (e) { /* sin visita o sin red */ }
+  }
+
   const esAdmin = rolEfectivo() === 'admin';
   const adminReal = esAdminReal();
   const impersonando = !!impersonating && user && user.role === 'admin';
@@ -134,9 +151,23 @@ function renderApp() {
     </div>
   ` : '';
 
+  // B6: Barra de visita activa (si el usuario tiene una visita en curso)
+  const va = appState.visitaActiva;
+  const barraVisita = va ? `
+    <div class="banner-visita">
+      <span>🛒 Visita en curso: <b>${escape(va.cliente_nombre || ('Cliente #' + va.client_id))}</b></span>
+      <div style="display:flex; gap:6px">
+        <button class="btn btn-secondary btn-pequeno" onclick="abrirVisitaActiva()">Ver visita</button>
+        <button class="btn btn-primary btn-pequeno" onclick="cerrarVisitaActiva()">Cerrar visita</button>
+        <button class="btn btn-danger btn-pequeno" onclick="descartarVisitaActiva()">Descartar</button>
+      </div>
+    </div>
+  ` : '';
+
   $app.innerHTML = `
     <div class="app-shell">
       ${bannerImpersonacion}
+      ${barraVisita}
       <div class="topbar">
         <div>
           <div class="topbar-titulo">CatalogPRO v2</div>
@@ -152,7 +183,7 @@ function renderApp() {
       </div>
       <div class="navtabs">
         <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
-        ${esAdmin ? `<button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>` : ''}
+        <button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
         <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')" style="margin-left:auto">⚙️ Mi cuenta</button>
       </div>
@@ -164,7 +195,13 @@ function renderApp() {
 
 function routerVista() {
   if (appState.vista === 'clientes') {
-    renderListaClientes();
+    if (appState.clienteActual) {
+      renderDetalleCliente(appState.clienteActual);
+    } else if (appState.visitaVerId) {
+      renderDetalleVisita(appState.visitaVerId);
+    } else {
+      renderListaClientes();
+    }
   } else if (appState.vista === 'comerciales') {
     renderListaComerciales();
   } else if (appState.vista === 'cuenta') {
@@ -182,12 +219,14 @@ function routerVista() {
 }
 
 function irA(vista) {
-  // Si impersona y la vista es solo admin, redirigir a catalogos
-  if (rolEfectivo() === 'sales' && (vista === 'clientes' || vista === 'comerciales')) {
+  // Comerciales (incluido admin impersonando) NO pueden entrar a comerciales (gestión users)
+  if (rolEfectivo() === 'sales' && vista === 'comerciales') {
     vista = 'catalogos';
   }
   appState.vista = vista;
   appState.catalogoActual = null;
+  appState.clienteActual = null;
+  appState.visitaVerId = null;
   render();
 }
 
@@ -1289,7 +1328,7 @@ async function cargarClientesYRefrescarLista() {
       clientes.forEach(c => {
         const inactive = !c.is_active ? ' cliente-fila-baja' : '';
         html += `
-          <div class="cliente-fila${inactive}">
+          <div class="cliente-fila cliente-fila-clickable${inactive}" onclick="abrirDetalleCliente(${c.id})">
             <div class="cliente-fila-codigo">${escape(c.sage_code || '?')}</div>
             <div class="cliente-fila-info">
               <div class="cliente-fila-nombre">${escape(c.razon_social)} ${!c.is_active ? '<span class="cliente-baja-badge">BAJA</span>' : ''}</div>
@@ -1298,6 +1337,7 @@ async function cargarClientesYRefrescarLista() {
                 ${c.commercial_code ? ` · Com.${escape(c.commercial_code)}` : ''}
               </div>
             </div>
+            <div class="cliente-fila-chevron">›</div>
           </div>
         `;
       });
@@ -1705,6 +1745,13 @@ async function renderVisorComercial(catalogId) {
     _visorCatalog = r.catalog;
     _visorSheets = (r.sheets || []).filter(s => !s.oculta);
 
+    // B6: si hay visita activa, cargar anotaciones para pintarlas en el visor
+    if (appState.visitaActiva) {
+      await cargarAnotacionesDeVisita();
+    } else {
+      _anotacionesVisita = {};
+    }
+
     if (_visorSheets.length === 0) {
       $v.innerHTML = `
         <div class="contenedor">
@@ -1861,9 +1908,41 @@ function pintarPresentacion(visibles) {
         </div>
       ` : ''}
 
+      ${appState.visitaActiva ? pintarPanelAnotaciones(sheet, numeroOriginal) : ''}
+
       <div class="visor-zoom-hint">
         💡 Pellizca con 2 dedos para hacer zoom · doble toque para zoom rápido · desliza para navegar
       </div>
+    </div>
+  `;
+}
+
+// B6: panel de anotaciones de una lámina dentro del visor (solo si visita activa)
+function pintarPanelAnotaciones(sheet, numero) {
+  const sid = sheet.id;
+  const anots = _anotacionesVisita[sid] || [];
+  return `
+    <div class="visor-anotaciones">
+      <div class="visor-anotaciones-header">
+        <span>📝 Anotaciones para esta lámina (${anots.length})</span>
+        <button class="btn btn-primary btn-pequeno" onclick="abrirModalAnotar(${sid}, ${JSON.stringify(sheet.titulo || '').replace(/"/g,'&quot;')}, ${numero})">+ Anotar</button>
+      </div>
+      ${anots.length === 0
+        ? `<div class="visor-anotaciones-vacio">Aún no has anotado nada en esta lámina.</div>`
+        : `<div class="visor-anotaciones-lista">
+            ${anots.map(a => {
+              const icon = a.tipo === 'pedido' ? '🛒' : a.tipo === 'devolucion' ? '↩️' : '📝';
+              return `
+                <div class="anot-chip">
+                  <span class="anot-chip-icon">${icon}</span>
+                  <span class="anot-chip-texto">${escape(a.texto_libre)}</span>
+                  <button class="anot-chip-btn" onclick="editarAnotacion(${a.id}, ${sid}, ${JSON.stringify(a.texto_libre).replace(/"/g,'&quot;')}, '${a.tipo}')" title="Editar">✏️</button>
+                  <button class="anot-chip-btn anot-chip-btn-borrar" onclick="borrarAnotacion(${a.id}, ${sid})" title="Borrar">🗑️</button>
+                </div>
+              `;
+            }).join('')}
+          </div>`
+      }
     </div>
   `;
 }
@@ -1883,10 +1962,12 @@ function pintarMosaico(visibles) {
       ${visibles.map((s) => {
         const idxOriginal = _visorSheets.indexOf(s);
         const numeroOriginal = idxOriginal + 1;
+        const anots = (appState.visitaActiva && _anotacionesVisita[s.id]) ? _anotacionesVisita[s.id].length : 0;
         return `
           <div class="visor-mosaico-celda" onclick="abrirLaminaDesdeMosaico(${idxOriginal})">
             <img src="${escape(s.imagen_path)}" class="visor-mosaico-img" alt="" loading="lazy">
             <div class="visor-mosaico-num">${numeroOriginal}</div>
+            ${anots > 0 ? `<div class="visor-mosaico-anots" title="${anots} anotaciones">📝 ${anots}</div>` : ''}
             ${s.titulo ? `<div class="visor-mosaico-titulo">${escape(s.titulo)}</div>` : ''}
           </div>
         `;
@@ -2219,6 +2300,439 @@ async function abrirAsignacionComerciales(catalogId) {
   } catch (err) {
     alert('Error: ' + err.message);
   }
+}
+
+// ============================================================================
+// ===== B6 - VISITAS Y ANOTACIONES =====
+// ============================================================================
+
+// ----- ABRIR DETALLE CLIENTE -----
+function abrirDetalleCliente(id) {
+  appState.clienteActual = id;
+  appState.visitaVerId = null;
+  appState.vista = 'clientes';
+  render();
+}
+
+function volverAClientes() {
+  appState.clienteActual = null;
+  appState.visitaVerId = null;
+  render();
+}
+
+// ----- RENDER DETALLE CLIENTE -----
+async function renderDetalleCliente(id) {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando cliente…</div></div>`;
+  try {
+    const r = await api('/api/clients/' + id);
+    const c = r.client;
+    const visitas = r.visitas || [];
+
+    // Fila auxiliar para imprimir un campo si existe
+    const campo = (label, val) => val
+      ? `<div class="kv-row"><div class="kv-label">${label}</div><div class="kv-val">${escape(String(val))}</div></div>`
+      : '';
+
+    // Construir HTML
+    let html = `
+      <div class="contenedor">
+        <div class="titulo-pagina">
+          <div>
+            <button class="btn btn-secondary btn-pequeno" onclick="volverAClientes()">← Clientes</button>
+            <h2 style="margin-top:8px">🏥 ${escape(c.razon_social)} ${!c.is_active ? '<span class="cliente-baja-badge">BAJA</span>' : ''}</h2>
+            <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+              Código Sage: <b>${escape(c.sage_code || '—')}</b>
+              ${c.commercial_code ? ` · Comercial asignado: ${escape(c.commercial_code)}` : ''}
+              ${c.categoria ? ` · Categoría ${escape(c.categoria)}` : ''}
+            </div>
+          </div>
+          <div style="display:flex; gap:6px; align-self:flex-start; flex-wrap:wrap">
+            <button class="btn btn-primary" onclick="iniciarVisitaParaCliente(${c.id})">🛒 Empezar visita</button>
+          </div>
+        </div>
+
+        <div class="cliente-detalle-grid">
+          <!-- Ficha de datos -->
+          <div class="editor-panel">
+            <h3>Datos</h3>
+            <div class="kv-tabla">
+              ${campo('Razón social', c.razon_social)}
+              ${campo('CIF', c.cif)}
+              ${campo('Dirección', c.direccion)}
+              ${campo('CP', c.cp)}
+              ${campo('Municipio', c.municipio)}
+              ${campo('Provincia', c.provincia)}
+              ${campo('Teléfono', c.telefono)}
+              ${campo('WhatsApp', c.whatsapp)}
+              ${campo('Email', c.email)}
+              ${campo('Email alternativo', c.email_alternativo)}
+              ${campo('Nº cuenta', c.numero_cuenta)}
+              ${campo('Ciclo visita (días)', c.ciclo_visita_dias)}
+              ${campo('Última visita', c.ultima_visita_at ? new Date(c.ultima_visita_at).toLocaleString('es-ES') : '—')}
+              ${c.notas_internas ? `<div class="kv-row"><div class="kv-label">Notas internas</div><div class="kv-val">${escape(c.notas_internas)}</div></div>` : ''}
+            </div>
+          </div>
+
+          <!-- Historial de visitas -->
+          <div class="editor-panel">
+            <h3>Historial de visitas (${visitas.length})</h3>
+            ${visitas.length === 0
+              ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">Aún no hay visitas registradas con este cliente.</p>`
+              : `<div class="historial-visitas">
+                  ${visitas.map(v => {
+                    const fecha = new Date(v.created_at).toLocaleString('es-ES');
+                    const badge = v.status === 'draft'
+                      ? '<span class="visita-badge visita-badge-draft">borrador</span>'
+                      : v.status === 'confirmed'
+                        ? '<span class="visita-badge visita-badge-confirmed">cerrada</span>'
+                        : '<span class="visita-badge">enviada</span>';
+                    return `
+                      <div class="visita-fila" onclick="abrirDetalleVisita(${v.id})">
+                        <div class="visita-fecha">${fecha}</div>
+                        <div class="visita-info">
+                          <div class="visita-titulo">
+                            ${badge}
+                            ${v.hubo_pedido ? '<span class="visita-badge visita-badge-pedido">🛒 con pedido</span>' : '<span class="visita-badge visita-badge-sin">sin pedido</span>'}
+                            <span style="font-size:11px;color:var(--gris-texto)">· ${v.num_anotaciones} anotaciones</span>
+                          </div>
+                          <div style="font-size:12px;color:var(--gris-texto);margin-top:2px">
+                            ${escape(v.comercial_nombre || '?')} · ${escape(v.catalog_nombre || 'sin catálogo')}
+                          </div>
+                        </div>
+                        <div class="visita-chevron">›</div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>`
+            }
+          </div>
+        </div>
+      </div>
+    `;
+    $v.innerHTML = html;
+  } catch (err) {
+    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+// ----- INICIAR VISITA DESDE FICHA DE CLIENTE -----
+async function iniciarVisitaParaCliente(clientId) {
+  // Si ya hay visita activa con OTRO cliente, avisar
+  if (appState.visitaActiva && appState.visitaActiva.client_id !== clientId) {
+    if (!confirm('Ya tienes una visita en curso con otro cliente. Si quieres iniciar una nueva, primero cierra o descarta la actual.')) return;
+    return;
+  }
+  if (appState.visitaActiva && appState.visitaActiva.client_id === clientId) {
+    alert('Ya tienes una visita en curso con este cliente. Continúa donde la dejaste.');
+    abrirVisitaActiva();
+    return;
+  }
+  // Pedir al usuario que elija el catálogo (de su cartera)
+  try {
+    const r = await api('/api/catalogs');
+    const cats = (r.catalogs || []);
+    if (cats.length === 0) {
+      alert('No tienes catálogos disponibles para iniciar la visita.');
+      return;
+    }
+    abrirModalElegirCatalogoVisita(clientId, cats);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+function abrirModalElegirCatalogoVisita(clientId, cats) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Elige catálogo para la visita</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p style="font-size:13px;color:var(--gris-texto);margin:0 0 12px">Selecciona el catálogo que vas a mostrar durante esta visita. Podrás añadir anotaciones lámina por lámina mientras navegas.</p>
+      <div class="lista-catalogos-visita">
+        ${cats.map(c => {
+          const icono = c.tipo === 'express' ? '📗' : c.tipo === 'maestro' ? '📕' : '📘';
+          return `
+            <button class="btn-elegir-cat" onclick="confirmarIniciarVisita(${clientId}, ${c.id})">
+              <div style="font-size:18px">${icono}</div>
+              <div style="flex:1;text-align:left">
+                <div style="font-weight:500">${escape(c.name)}</div>
+                <div style="font-size:11px;color:var(--gris-texto)">${c.sheet_count || 0} láminas · V${c.version}${c.parent_name ? ' · de: ' + escape(c.parent_name) : ''}</div>
+              </div>
+            </button>
+          `;
+        }).join('')}
+      </div>
+      <div class="modal-acciones">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function confirmarIniciarVisita(clientId, catalogId) {
+  // Cerrar modal si está abierto
+  document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+  try {
+    const r = await api('/api/visits/start', {
+      method: 'POST',
+      body: { client_id: clientId, catalog_id: catalogId }
+    });
+    // Refrescar la visita activa con datos completos
+    const cur = await api('/api/visits/current');
+    appState.visitaActiva = cur.visit || null;
+    // Llevar al visor comercial del catálogo elegido
+    appState.vista = 'catalogos';
+    appState.clienteActual = null;
+    appState.visitaVerId = null;
+    appState.catalogoActual = catalogId;
+    appState.visorIndice = 0;
+    render();
+  } catch (err) {
+    alert('Error al iniciar visita: ' + err.message);
+  }
+}
+
+// ----- ABRIR VISITA ACTIVA (botón "Ver visita" de la barra) -----
+function abrirVisitaActiva() {
+  if (!appState.visitaActiva) return;
+  // Llevar al visor del catálogo de la visita
+  appState.vista = 'catalogos';
+  appState.clienteActual = null;
+  appState.visitaVerId = null;
+  appState.catalogoActual = appState.visitaActiva.catalog_id;
+  render();
+}
+
+// ----- CERRAR VISITA ACTIVA (confirmar) -----
+async function cerrarVisitaActiva() {
+  if (!appState.visitaActiva) return;
+  const notas = prompt('Notas generales de la visita (opcional):', '');
+  if (notas === null) return; // canceló
+  try {
+    await api('/api/visits/' + appState.visitaActiva.id + '/confirm', {
+      method: 'POST',
+      body: { notas_generales: notas || '' }
+    });
+    const visitaId = appState.visitaActiva.id;
+    appState.visitaActiva = null;
+    // Llevar al detalle de la visita recién cerrada
+    appState.vista = 'clientes';
+    appState.catalogoActual = null;
+    appState.clienteActual = null;
+    appState.visitaVerId = visitaId;
+    render();
+  } catch (err) {
+    alert('Error al cerrar visita: ' + err.message);
+  }
+}
+
+// ----- DESCARTAR VISITA ACTIVA -----
+async function descartarVisitaActiva() {
+  if (!appState.visitaActiva) return;
+  if (!confirm('¿Descartar la visita actual? Se perderán todas las anotaciones que has añadido.')) return;
+  if (!confirm('Confirmación final: ¿seguro que quieres descartarla?')) return;
+  try {
+    await api('/api/visits/' + appState.visitaActiva.id + '/discard', { method: 'POST' });
+    appState.visitaActiva = null;
+    appState.vista = 'catalogos';
+    appState.catalogoActual = null;
+    render();
+  } catch (err) {
+    alert('Error al descartar: ' + err.message);
+  }
+}
+
+// ----- AÑADIR / EDITAR / BORRAR ANOTACIONES -----
+
+// Modal genérico para añadir anotación sobre una lámina
+function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
+  if (!appState.visitaActiva) {
+    alert('Para anotar, primero inicia una visita desde la ficha del cliente.');
+    return;
+  }
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Anotar lámina ${sheetNumero}</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div style="font-size:13px;color:var(--gris-texto);margin-bottom:8px">${escape(sheetTitulo || 'Sin título')}</div>
+      <div id="modal-error"></div>
+      <form id="form-anotar">
+        <div class="form-group">
+          <label>Tipo</label>
+          <select id="anot-tipo">
+            <option value="pedido">🛒 Pedido</option>
+            <option value="devolucion">↩️ Devolución</option>
+            <option value="nota">📝 Nota</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Texto</label>
+          <textarea id="anot-texto" rows="4" required placeholder="Ej: 12+12 oferta · 6 cajas · revisar caducidad..."></textarea>
+        </div>
+        <div class="modal-acciones">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Guardar</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  // foco
+  setTimeout(() => { const t = document.getElementById('anot-texto'); if (t) t.focus(); }, 50);
+  document.getElementById('form-anotar').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const texto = document.getElementById('anot-texto').value.trim();
+    const tipo = document.getElementById('anot-tipo').value;
+    if (!texto) return;
+    try {
+      await api('/api/visits/' + appState.visitaActiva.id + '/annotations', {
+        method: 'POST',
+        body: { sheet_id: sheetId, texto_libre: texto, tipo }
+      });
+      modal.remove();
+      // Refrescar la zona de anotaciones del visor si está pintado
+      refrescarAnotacionesVisor(sheetId);
+    } catch (err) {
+      document.getElementById('modal-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
+}
+
+// Cache local de anotaciones por sheet_id de la visita actual (para no pegar a la API por cada repintado)
+let _anotacionesVisita = {};
+
+async function cargarAnotacionesDeVisita() {
+  if (!appState.visitaActiva) { _anotacionesVisita = {}; return; }
+  try {
+    const r = await api('/api/visits/' + appState.visitaActiva.id);
+    _anotacionesVisita = {};
+    (r.annotations || []).forEach(a => {
+      const sid = a.sheet_id;
+      if (!_anotacionesVisita[sid]) _anotacionesVisita[sid] = [];
+      _anotacionesVisita[sid].push(a);
+    });
+  } catch (e) {
+    _anotacionesVisita = {};
+  }
+}
+
+function refrescarAnotacionesVisor(sheetId) {
+  // Pide al backend solo si hay visita activa, y vuelve a pintar el visor entero (más simple)
+  cargarAnotacionesDeVisita().then(() => {
+    if (typeof pintarVisor === 'function') pintarVisor();
+  });
+}
+
+async function borrarAnotacion(anotId, sheetId) {
+  if (!confirm('¿Borrar esta anotación?')) return;
+  try {
+    await api('/api/annotations/' + anotId, { method: 'DELETE' });
+    refrescarAnotacionesVisor(sheetId);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+async function editarAnotacion(anotId, sheetId, textoActual, tipoActual) {
+  const nuevo = prompt('Editar texto de la anotación:', textoActual);
+  if (nuevo === null) return;
+  const t = String(nuevo).trim();
+  if (!t) return;
+  try {
+    await api('/api/annotations/' + anotId, {
+      method: 'PUT',
+      body: { texto_libre: t, tipo: tipoActual }
+    });
+    refrescarAnotacionesVisor(sheetId);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+// ----- RENDER DETALLE DE UNA VISITA (pasada o recién cerrada) -----
+async function renderDetalleVisita(visitId) {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando visita…</div></div>`;
+  try {
+    const r = await api('/api/visits/' + visitId);
+    const v = r.visit;
+    const anots = r.annotations || [];
+    const fecha = new Date(v.created_at).toLocaleString('es-ES');
+    const cerrada = v.confirmed_at ? new Date(v.confirmed_at).toLocaleString('es-ES') : null;
+    const statusBadge = v.status === 'draft'
+      ? '<span class="visita-badge visita-badge-draft">borrador</span>'
+      : v.status === 'confirmed'
+        ? '<span class="visita-badge visita-badge-confirmed">cerrada</span>'
+        : '<span class="visita-badge">enviada</span>';
+    let html = `
+      <div class="contenedor">
+        <div class="titulo-pagina">
+          <div>
+            <button class="btn btn-secondary btn-pequeno" onclick="volverDesdeVisita(${v.client_id})">← Volver al cliente</button>
+            <h2 style="margin-top:8px">Visita del ${escape(fecha)} ${statusBadge}</h2>
+            <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+              Cliente: <b>${escape(v.cliente_nombre || ('#' + v.client_id))}</b>
+              · Comercial: ${escape(v.comercial_nombre || '?')}
+              · Catálogo: ${escape(v.catalog_nombre || '—')}
+              ${cerrada ? ` · Cerrada: ${escape(cerrada)}` : ''}
+            </div>
+          </div>
+        </div>
+
+        ${v.notas_generales ? `
+          <div class="editor-panel" style="margin-bottom:16px">
+            <h3>Notas generales</h3>
+            <p style="white-space:pre-wrap; font-size:14px">${escape(v.notas_generales)}</p>
+          </div>
+        ` : ''}
+
+        <div class="editor-panel">
+          <h3>Anotaciones (${anots.length})</h3>
+          ${anots.length === 0
+            ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">No hay anotaciones en esta visita.</p>`
+            : anots.map(a => {
+              const tipoIcon = a.tipo === 'pedido' ? '🛒' : a.tipo === 'devolucion' ? '↩️' : '📝';
+              return `
+                <div class="anot-fila">
+                  ${a.sheet_imagen ? `<img src="${escape(a.sheet_imagen)}" class="lamina-mini" onclick="abrirLightbox('${escape(a.sheet_imagen)}','${escape((a.sheet_titulo || 'Lámina').replace(/'/g,'\\\''))}', ${a.sheet_orden || 0})">` : `<div class="lamina-mini" style="background:#eee"></div>`}
+                  <div class="anot-info">
+                    <div class="anot-titulo">${tipoIcon} ${escape(a.sheet_titulo || ('Lámina #' + (a.sheet_orden || '?')))}</div>
+                    <div class="anot-texto">${escape(a.texto_libre)}</div>
+                  </div>
+                </div>
+              `;
+            }).join('')
+          }
+        </div>
+      </div>
+    `;
+    $v.innerHTML = html;
+  } catch (err) {
+    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+function abrirDetalleVisita(visitId) {
+  appState.vista = 'clientes';
+  appState.catalogoActual = null;
+  appState.clienteActual = null;
+  appState.visitaVerId = visitId;
+  render();
+}
+
+function volverDesdeVisita(clientId) {
+  appState.visitaVerId = null;
+  appState.clienteActual = clientId;
+  render();
 }
 
 // ===== ARRANQUE =====

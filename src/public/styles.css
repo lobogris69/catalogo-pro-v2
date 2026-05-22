@@ -1225,3 +1225,262 @@ body {
 .express-lista .btn-borrar:hover {
   background: #fee2e2;
 }
+
+/* ============================================================================
+   B6 - VISITAS Y ANOTACIONES
+   ============================================================================ */
+
+/* Barra superior de visita activa */
+.banner-visita {
+  background: linear-gradient(90deg, #fef3c7, #fde68a);
+  color: #78350f;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 500;
+  border-bottom: 2px solid #f59e0b;
+  flex-wrap: wrap;
+}
+
+/* Cliente fila clickable */
+.cliente-fila-clickable {
+  cursor: pointer;
+  transition: background 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.cliente-fila-clickable:hover {
+  background: #fafafa;
+}
+.cliente-fila-clickable:active {
+  background: #f3f4f6;
+}
+.cliente-fila-chevron {
+  color: var(--gris-texto);
+  font-size: 20px;
+  padding-right: 8px;
+}
+
+/* Detalle cliente: dos columnas */
+.cliente-detalle-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+@media (max-width: 900px) {
+  .cliente-detalle-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Tabla key-value para ficha */
+.kv-tabla {
+  display: flex;
+  flex-direction: column;
+}
+.kv-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 13px;
+}
+.kv-row:last-child { border-bottom: none; }
+.kv-label {
+  color: var(--gris-texto);
+  font-weight: 500;
+}
+.kv-val {
+  word-break: break-word;
+}
+
+/* Historial de visitas */
+.historial-visitas {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.visita-fila {
+  display: grid;
+  grid-template-columns: 140px 1fr 24px;
+  gap: 8px;
+  padding: 10px;
+  background: #fafafa;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+  align-items: center;
+}
+.visita-fila:hover { background: #f3f4f6; }
+.visita-fecha {
+  font-size: 12px;
+  color: var(--gris-texto);
+}
+.visita-titulo {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.visita-chevron {
+  color: var(--gris-texto);
+  font-size: 20px;
+  text-align: right;
+}
+.visita-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #e5e7eb;
+  color: #374151;
+}
+.visita-badge-draft { background: #fef3c7; color: #92400e; }
+.visita-badge-confirmed { background: #dcfce7; color: #166534; }
+.visita-badge-pedido { background: var(--rosa-claro); color: var(--rosa); }
+.visita-badge-sin { background: #f3f4f6; color: #6b7280; }
+
+/* Modal elegir catálogo para visita */
+.lista-catalogos-visita {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.btn-elegir-cat {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--gris-borde);
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: background 0.15s;
+}
+.btn-elegir-cat:hover {
+  background: var(--rosa-claro);
+  border-color: var(--rosa);
+}
+
+/* Panel anotaciones dentro del visor */
+.visor-anotaciones {
+  background: white;
+  border: 1px solid #fde68a;
+  border-radius: 12px;
+  padding: 12px;
+  margin-top: 12px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+}
+.visor-anotaciones-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: #78350f;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.visor-anotaciones-vacio {
+  font-size: 13px;
+  color: var(--gris-texto);
+  text-align: center;
+  padding: 8px;
+  font-style: italic;
+}
+.visor-anotaciones-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.anot-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #fffbeb;
+  border-radius: 8px;
+  border-left: 3px solid #f59e0b;
+}
+.anot-chip-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.anot-chip-texto {
+  flex: 1;
+  font-size: 13px;
+  word-break: break-word;
+}
+.anot-chip-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.anot-chip-btn:hover {
+  background: rgba(0,0,0,0.06);
+}
+.anot-chip-btn-borrar:hover {
+  background: #fee2e2;
+}
+
+/* Badge de anotaciones en mosaico */
+.visor-mosaico-anots {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(245, 158, 11, 0.95);
+  color: white;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+  z-index: 2;
+}
+
+/* Detalle visita: filas de anotaciones */
+.anot-fila {
+  display: flex;
+  gap: 12px;
+  padding: 10px;
+  border-bottom: 1px solid #f3f4f6;
+  align-items: center;
+}
+.anot-fila:last-child { border-bottom: none; }
+.anot-fila .lamina-mini {
+  width: 60px;
+  height: 60px;
+  flex-shrink: 0;
+  object-fit: cover;
+  border-radius: 6px;
+}
+.anot-info {
+  flex: 1;
+  min-width: 0;
+}
+.anot-titulo {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+.anot-texto {
+  font-size: 13px;
+  color: #374151;
+  word-break: break-word;
+  white-space: pre-wrap;
+}

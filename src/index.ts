@@ -1217,13 +1217,49 @@ app.get('/api/clients', verifyToken, async (req: AuthRequest, res: Response) => 
 // Ver detalle de un cliente
 app.get('/api/clients/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
     const id = Number(req.params.id);
     const r = await pool.query('SELECT * FROM clients WHERE id = $1', [id]);
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Cliente no encontrado' });
       return;
     }
-    res.json({ success: true, client: r.rows[0] });
+    // Historial de visitas del cliente (las ultimas 20).
+    // Admin ve todas, comercial (incluido admin impersonando) solo las suyas.
+    let visitasQuery, visitasParams;
+    if (req.user.role === 'admin') {
+      visitasQuery = `
+        SELECT v.id, v.client_id, v.user_id, v.catalog_id, v.status, v.hubo_pedido,
+               v.notas_generales, v.created_at, v.confirmed_at,
+               u.name AS comercial_nombre,
+               c.name AS catalog_nombre,
+               (SELECT COUNT(*)::int FROM annotations a WHERE a.visit_id = v.id) AS num_anotaciones
+        FROM visits v
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN catalogs c ON c.id = v.catalog_id
+        WHERE v.client_id = $1
+        ORDER BY v.created_at DESC
+        LIMIT 20
+      `;
+      visitasParams = [id];
+    } else {
+      visitasQuery = `
+        SELECT v.id, v.client_id, v.user_id, v.catalog_id, v.status, v.hubo_pedido,
+               v.notas_generales, v.created_at, v.confirmed_at,
+               u.name AS comercial_nombre,
+               c.name AS catalog_nombre,
+               (SELECT COUNT(*)::int FROM annotations a WHERE a.visit_id = v.id) AS num_anotaciones
+        FROM visits v
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN catalogs c ON c.id = v.catalog_id
+        WHERE v.client_id = $1 AND v.user_id = $2
+        ORDER BY v.created_at DESC
+        LIMIT 20
+      `;
+      visitasParams = [id, req.user.id];
+    }
+    const visitas = await pool.query(visitasQuery, visitasParams);
+    res.json({ success: true, client: r.rows[0], visitas: visitas.rows });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
@@ -1365,6 +1401,292 @@ app.post('/api/clients/import-sage', verifyToken, requireAdmin, uploadExcel.sing
     console.error('[IMPORT] Error:', e);
     if (filePath) { try { fs.unlinkSync(filePath); } catch {} }
     res.status(500).json({ success: false, error: (e as Error).message || 'Error importando Excel' });
+  }
+});
+
+// ============================================================================
+// B6 - VISITAS Y ANOTACIONES (pedidos durante visita comercial)
+// ============================================================================
+// Concepto: una visita es UN comercial visitando UN cliente con UN catalogo.
+// Mientras dura, el comercial puede escribir anotaciones (= items pedidos / notas)
+// asociadas a una lamina concreta. Cuando termina, "confirma" la visita.
+//
+// Reglas:
+//  - Solo puede tener UNA visita en estado 'draft' por (comercial, cliente) a la vez.
+//    Si ya existe, devolvemos esa misma para continuarla.
+//  - Comerciales solo ven SUS propias visitas. Admin REAL ve todas. Admin
+//    impersonando ve las del comercial impersonado (rol efectivo = sales).
+//  - Cuando se confirma, marcamos confirmed_at y hubo_pedido segun anotaciones tipo='pedido'.
+
+// Helper: averiguar el user_id "efectivo" (admin impersonando -> el comercial)
+function effectiveUserId(req: AuthRequest): number {
+  return req.user!.id;
+}
+
+// Helper: determinar si el rol efectivo es comercial
+function isEffectiveSales(req: AuthRequest): boolean {
+  return req.user!.role === 'sales';
+}
+
+// POST iniciar visita (o continuar la existente)
+// Body: { client_id, catalog_id }
+app.post('/api/visits/start', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { client_id, catalog_id } = req.body;
+    if (!client_id || !catalog_id) {
+      res.status(400).json({ success: false, error: 'client_id y catalog_id obligatorios' });
+      return;
+    }
+    const userId = effectiveUserId(req);
+    // Buscar visita draft existente para este (user, client)
+    const existing = await pool.query(
+      `SELECT * FROM visits WHERE user_id = $1 AND client_id = $2 AND status = 'draft' ORDER BY created_at DESC LIMIT 1`,
+      [userId, Number(client_id)]
+    );
+    if (existing.rows.length > 0) {
+      // Si el catalogo cambia, lo actualizamos (el comercial puede haber abierto otro)
+      if (existing.rows[0].catalog_id !== Number(catalog_id)) {
+        await pool.query(`UPDATE visits SET catalog_id = $1 WHERE id = $2`, [Number(catalog_id), existing.rows[0].id]);
+        existing.rows[0].catalog_id = Number(catalog_id);
+      }
+      res.json({ success: true, visit: existing.rows[0], continued: true });
+      return;
+    }
+    // Crear nueva
+    const cat = await pool.query(`SELECT version FROM catalogs WHERE id = $1`, [Number(catalog_id)]);
+    const versionCat = cat.rows[0]?.version || 1;
+    const r = await pool.query(
+      `INSERT INTO visits (client_id, user_id, catalog_id, version_catalog, status)
+       VALUES ($1, $2, $3, $4, 'draft') RETURNING *`,
+      [Number(client_id), userId, Number(catalog_id), versionCat]
+    );
+    // Actualizar ultima_visita_at del cliente
+    await pool.query(`UPDATE clients SET ultima_visita_at = NOW() WHERE id = $1`, [Number(client_id)]);
+    res.json({ success: true, visit: r.rows[0], continued: false });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET visita actual (draft) del usuario - si existe
+app.get('/api/visits/current', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = effectiveUserId(req);
+    const r = await pool.query(
+      `SELECT v.*, c.razon_social AS cliente_nombre, cat.name AS catalog_nombre
+       FROM visits v
+       LEFT JOIN clients c ON c.id = v.client_id
+       LEFT JOIN catalogs cat ON cat.id = v.catalog_id
+       WHERE v.user_id = $1 AND v.status = 'draft'
+       ORDER BY v.created_at DESC LIMIT 1`,
+      [userId]
+    );
+    res.json({ success: true, visit: r.rows[0] || null });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET una visita concreta + sus anotaciones
+app.get('/api/visits/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    const v = await pool.query(`
+      SELECT v.*, c.razon_social AS cliente_nombre, cat.name AS catalog_nombre, u.name AS comercial_nombre
+      FROM visits v
+      LEFT JOIN clients c ON c.id = v.client_id
+      LEFT JOIN catalogs cat ON cat.id = v.catalog_id
+      LEFT JOIN users u ON u.id = v.user_id
+      WHERE v.id = $1`, [id]);
+    if (v.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Visita no encontrada' });
+      return;
+    }
+    // Comercial solo ve las suyas (admin REAL ve todas)
+    if (isEffectiveSales(req) && v.rows[0].user_id !== userId) {
+      res.status(403).json({ success: false, error: 'No tienes acceso a esta visita' });
+      return;
+    }
+    // Cargar anotaciones con datos de la lamina
+    const anots = await pool.query(`
+      SELECT a.*, s.titulo AS sheet_titulo, s.imagen_path AS sheet_imagen, s.orden AS sheet_orden
+      FROM annotations a
+      LEFT JOIN sheets s ON s.id = a.sheet_id
+      WHERE a.visit_id = $1
+      ORDER BY a.orden_en_visita, a.id`, [id]);
+    res.json({ success: true, visit: v.rows[0], annotations: anots.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST anotar una lamina dentro de una visita
+// Body: { sheet_id, texto_libre, tipo? }  tipo: 'pedido' (default), 'devolucion' o 'nota'
+app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const visitId = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    const { sheet_id, texto_libre, tipo } = req.body;
+    if (!texto_libre || !String(texto_libre).trim()) {
+      res.status(400).json({ success: false, error: 'texto_libre obligatorio' });
+      return;
+    }
+    const tipoFinal = ['pedido','devolucion','nota'].includes(tipo) ? tipo : 'pedido';
+    // Comprobar permiso sobre la visita
+    const v = await pool.query(`SELECT user_id, status FROM visits WHERE id = $1`, [visitId]);
+    if (v.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Visita no encontrada' });
+      return;
+    }
+    if (isEffectiveSales(req) && v.rows[0].user_id !== userId) {
+      res.status(403).json({ success: false, error: 'No tienes acceso a esta visita' });
+      return;
+    }
+    if (v.rows[0].status !== 'draft') {
+      res.status(400).json({ success: false, error: 'No se pueden añadir anotaciones a una visita ya confirmada' });
+      return;
+    }
+    // Orden: max+1
+    const maxR = await pool.query(
+      `SELECT COALESCE(MAX(orden_en_visita),0) AS m FROM annotations WHERE visit_id = $1`,
+      [visitId]
+    );
+    const orden = Number(maxR.rows[0].m) + 1;
+    const r = await pool.query(
+      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal]
+    );
+    res.json({ success: true, annotation: r.rows[0] });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// PUT editar texto de una anotacion
+app.put('/api/annotations/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    const { texto_libre, tipo } = req.body;
+    if (!texto_libre || !String(texto_libre).trim()) {
+      res.status(400).json({ success: false, error: 'texto_libre obligatorio' });
+      return;
+    }
+    // Check ownership via visit
+    const a = await pool.query(`
+      SELECT a.*, v.user_id AS visit_user, v.status AS visit_status
+      FROM annotations a JOIN visits v ON v.id = a.visit_id WHERE a.id = $1`, [id]);
+    if (a.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Anotación no encontrada' });
+      return;
+    }
+    if (isEffectiveSales(req) && a.rows[0].visit_user !== userId) {
+      res.status(403).json({ success: false, error: 'No tienes acceso a esta anotación' });
+      return;
+    }
+    if (a.rows[0].visit_status !== 'draft') {
+      res.status(400).json({ success: false, error: 'No se pueden editar anotaciones de una visita confirmada' });
+      return;
+    }
+    const tipoFinal = ['pedido','devolucion','nota'].includes(tipo) ? tipo : a.rows[0].tipo;
+    const r = await pool.query(
+      `UPDATE annotations SET texto_libre = $1, tipo = $2 WHERE id = $3 RETURNING *`,
+      [String(texto_libre).trim(), tipoFinal, id]
+    );
+    res.json({ success: true, annotation: r.rows[0] });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// DELETE quitar una anotacion
+app.delete('/api/annotations/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    const a = await pool.query(`
+      SELECT a.id, v.user_id AS visit_user, v.status AS visit_status
+      FROM annotations a JOIN visits v ON v.id = a.visit_id WHERE a.id = $1`, [id]);
+    if (a.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Anotación no encontrada' });
+      return;
+    }
+    if (isEffectiveSales(req) && a.rows[0].visit_user !== userId) {
+      res.status(403).json({ success: false, error: 'No tienes acceso a esta anotación' });
+      return;
+    }
+    if (a.rows[0].visit_status !== 'draft') {
+      res.status(400).json({ success: false, error: 'No se pueden borrar anotaciones de una visita confirmada' });
+      return;
+    }
+    await pool.query(`DELETE FROM annotations WHERE id = $1`, [id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST cerrar / confirmar visita
+// Body: { notas_generales? }
+app.post('/api/visits/:id/confirm', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    const { notas_generales } = req.body;
+    const v = await pool.query(`SELECT * FROM visits WHERE id = $1`, [id]);
+    if (v.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Visita no encontrada' });
+      return;
+    }
+    if (isEffectiveSales(req) && v.rows[0].user_id !== userId) {
+      res.status(403).json({ success: false, error: 'No tienes acceso a esta visita' });
+      return;
+    }
+    if (v.rows[0].status !== 'draft') {
+      res.status(400).json({ success: false, error: 'La visita ya estaba confirmada' });
+      return;
+    }
+    const huboPedido = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM annotations WHERE visit_id = $1 AND tipo IN ('pedido','devolucion')`,
+      [id]
+    );
+    const r = await pool.query(
+      `UPDATE visits SET status = 'confirmed', confirmed_at = NOW(),
+       notas_generales = $1, hubo_pedido = $2 WHERE id = $3 RETURNING *`,
+      [notas_generales ? String(notas_generales).trim() : null, huboPedido.rows[0].n > 0, id]
+    );
+    // Actualizar ultima_visita_at del cliente
+    await pool.query(`UPDATE clients SET ultima_visita_at = NOW() WHERE id = $1`, [r.rows[0].client_id]);
+    res.json({ success: true, visit: r.rows[0] });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST descartar visita en draft (sin confirmar - la borra)
+app.post('/api/visits/:id/discard', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    const v = await pool.query(`SELECT * FROM visits WHERE id = $1`, [id]);
+    if (v.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Visita no encontrada' });
+      return;
+    }
+    if (isEffectiveSales(req) && v.rows[0].user_id !== userId) {
+      res.status(403).json({ success: false, error: 'No tienes acceso a esta visita' });
+      return;
+    }
+    if (v.rows[0].status !== 'draft') {
+      res.status(400).json({ success: false, error: 'Solo se pueden descartar visitas en borrador' });
+      return;
+    }
+    await pool.query(`DELETE FROM visits WHERE id = $1`, [id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
   }
 });
 
