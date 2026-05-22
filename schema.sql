@@ -197,6 +197,22 @@ CREATE INDEX IF NOT EXISTS idx_express_catalog ON express_sheets(express_catalog
 CREATE INDEX IF NOT EXISTS idx_express_orden ON express_sheets(express_catalog_id, orden);
 
 -- ============================================================================
+-- D: ANNOTATION_TEMPLATES - plantillas globales de anotacion (gestion admin)
+-- ============================================================================
+-- Frases rápidas que los comerciales pueden insertar de un toque mientras
+-- anotan en una visita ("12+1", "Oferta -15%", "Revisar caducidad", etc.)
+-- Se gestionan desde la pestaña "Plantillas" (solo admin real).
+CREATE TABLE IF NOT EXISTS annotation_templates (
+  id              SERIAL PRIMARY KEY,
+  texto           VARCHAR(150) NOT NULL,
+  tipo            VARCHAR(20) NOT NULL DEFAULT 'pedido' CHECK (tipo IN ('pedido','devolucion','nota')),
+  orden           INTEGER NOT NULL DEFAULT 0,
+  created_at      TIMESTAMP DEFAULT NOW(),
+  updated_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_templates_orden ON annotation_templates(orden, id);
+
+-- ============================================================================
 -- USUARIO ADMIN POR DEFECTO
 -- ============================================================================
 -- Se crea en codigo TS si la tabla esta vacia (con bcrypt)

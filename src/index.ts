@@ -328,8 +328,42 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_express_catalog ON express_sheets(express_catalog_id);
       CREATE INDEX IF NOT EXISTS idx_express_orden ON express_sheets(express_catalog_id, orden);
+
+      -- D: plantillas globales de anotacion (gestionadas por admin)
+      CREATE TABLE IF NOT EXISTS annotation_templates (
+        id SERIAL PRIMARY KEY,
+        texto VARCHAR(150) NOT NULL,
+        tipo VARCHAR(20) NOT NULL DEFAULT 'pedido' CHECK (tipo IN ('pedido','devolucion','nota')),
+        orden INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_templates_orden ON annotation_templates(orden, id);
     `;
     await pool.query(schemaSQL);
+
+    // Sembrar plantillas iniciales solo si la tabla esta vacia (LOMHIFAR habitual)
+    const tplCnt = await pool.query('SELECT COUNT(*)::int AS n FROM annotation_templates');
+    if (tplCnt.rows[0].n === 0) {
+      const seed = [
+        ['12+1', 'pedido'],
+        ['6+1 oferta', 'pedido'],
+        ['Oferta -15%', 'pedido'],
+        ['1 caja', 'pedido'],
+        ['Reposición habitual', 'pedido'],
+        ['Revisar caducidad', 'nota'],
+        ['Tarifa pendiente', 'nota'],
+        ['Devolver lote caducado', 'devolucion'],
+        ['Devolver por mal estado', 'devolucion']
+      ];
+      for (let i = 0; i < seed.length; i++) {
+        await pool.query(
+          'INSERT INTO annotation_templates (texto, tipo, orden) VALUES ($1, $2, $3)',
+          [seed[i][0], seed[i][1], i + 1]
+        );
+      }
+      console.log('✅ Sembradas ' + seed.length + ' plantillas de anotación iniciales');
+    }
 
     // Crear admin por defecto si no hay usuarios
     const cnt = await pool.query('SELECT COUNT(*)::int AS n FROM users');
@@ -1687,6 +1721,261 @@ app.post('/api/visits/:id/discard', verifyToken, async (req: AuthRequest, res: R
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// D - PLANTILLAS DE ANOTACION (globales, gestion por admin)
+// ============================================================================
+
+// GET listar plantillas (cualquier usuario autenticado las puede leer)
+app.get('/api/annotation-templates', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `SELECT * FROM annotation_templates ORDER BY orden, id`
+    );
+    res.json({ success: true, templates: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST crear plantilla (admin real)
+app.post('/api/annotation-templates', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { texto, tipo } = req.body;
+    if (!texto || !String(texto).trim()) {
+      res.status(400).json({ success: false, error: 'texto obligatorio' });
+      return;
+    }
+    const tipoFinal = ['pedido','devolucion','nota'].includes(tipo) ? tipo : 'pedido';
+    const maxR = await pool.query(`SELECT COALESCE(MAX(orden),0) AS m FROM annotation_templates`);
+    const orden = Number(maxR.rows[0].m) + 1;
+    const r = await pool.query(
+      `INSERT INTO annotation_templates (texto, tipo, orden) VALUES ($1, $2, $3) RETURNING *`,
+      [String(texto).trim().substring(0, 150), tipoFinal, orden]
+    );
+    res.status(201).json({ success: true, template: r.rows[0] });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// PUT editar plantilla (admin real)
+app.put('/api/annotation-templates/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { texto, tipo } = req.body;
+    if (!texto || !String(texto).trim()) {
+      res.status(400).json({ success: false, error: 'texto obligatorio' });
+      return;
+    }
+    const tipoFinal = ['pedido','devolucion','nota'].includes(tipo) ? tipo : 'pedido';
+    const r = await pool.query(
+      `UPDATE annotation_templates SET texto=$1, tipo=$2, updated_at=NOW() WHERE id=$3 RETURNING *`,
+      [String(texto).trim().substring(0, 150), tipoFinal, id]
+    );
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Plantilla no encontrada' });
+      return;
+    }
+    res.json({ success: true, template: r.rows[0] });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// DELETE borrar plantilla (admin real)
+app.delete('/api/annotation-templates/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(`DELETE FROM annotation_templates WHERE id = $1 RETURNING id`, [id]);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Plantilla no encontrada' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// PUT reordenar plantillas (admin real)
+// Body: { ids: [3, 1, 4, 2] }
+app.put('/api/annotation-templates/reorder', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids)) {
+      res.status(400).json({ success: false, error: 'ids debe ser array' });
+      return;
+    }
+    await client.query('BEGIN');
+    for (let i = 0; i < ids.length; i++) {
+      await client.query(`UPDATE annotation_templates SET orden = $1, updated_at = NOW() WHERE id = $2`,
+        [i + 1, Number(ids[i])]);
+    }
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ success: false, error: (e as Error).message });
+  } finally {
+    client.release();
+  }
+});
+
+// ============================================================================
+// D - PDF DE VISITA (resumen texto)
+// ============================================================================
+const PDFDocumentLib = require('pdfkit');
+
+app.get('/api/visits/:id/pdf', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    // Cargar visita con joins
+    const v = await pool.query(`
+      SELECT v.*, c.razon_social AS cliente_nombre, c.cif AS cliente_cif,
+             c.direccion AS cliente_direccion, c.cp AS cliente_cp,
+             c.municipio AS cliente_municipio, c.provincia AS cliente_provincia,
+             c.telefono AS cliente_telefono, c.email AS cliente_email,
+             c.sage_code AS cliente_sage,
+             cat.name AS catalog_nombre,
+             u.name AS comercial_nombre, u.email AS comercial_email
+      FROM visits v
+      LEFT JOIN clients c ON c.id = v.client_id
+      LEFT JOIN catalogs cat ON cat.id = v.catalog_id
+      LEFT JOIN users u ON u.id = v.user_id
+      WHERE v.id = $1`, [id]);
+    if (v.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Visita no encontrada' });
+      return;
+    }
+    const visit = v.rows[0];
+    if (isEffectiveSales(req) && visit.user_id !== userId) {
+      res.status(403).json({ success: false, error: 'No tienes acceso a esta visita' });
+      return;
+    }
+    // Anotaciones con datos lamina
+    const anots = await pool.query(`
+      SELECT a.*, s.titulo AS sheet_titulo, s.orden AS sheet_orden, s.tags AS sheet_tags
+      FROM annotations a
+      LEFT JOIN sheets s ON s.id = a.sheet_id
+      WHERE a.visit_id = $1
+      ORDER BY a.orden_en_visita, a.id`, [id]);
+    const annotations = anots.rows;
+
+    // Generar PDF al vuelo
+    const doc = new PDFDocumentLib({ size: 'A4', margin: 40 });
+    const fecha = visit.confirmed_at
+      ? new Date(visit.confirmed_at).toLocaleDateString('es-ES')
+      : new Date(visit.created_at).toLocaleDateString('es-ES');
+    const filename = `visita_${visit.cliente_sage || visit.client_id}_${fecha.replace(/\//g, '-')}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    doc.pipe(res);
+
+    // ---------- CABECERA ----------
+    doc.fontSize(18).fillColor('#cc007a').text('LOMHIFAR S.L.', { align: 'left' });
+    doc.fontSize(9).fillColor('#666')
+       .text('Distribución de productos parafarmacéuticos', { continued: false });
+    doc.moveDown(0.5);
+    doc.fontSize(14).fillColor('#000').text('Resumen de visita comercial', { underline: false });
+    doc.moveDown(0.3);
+    doc.fontSize(10).fillColor('#666')
+       .text(`Generado: ${new Date().toLocaleString('es-ES')}`);
+    doc.moveDown(0.8);
+
+    // Linea separadora
+    doc.strokeColor('#cc007a').lineWidth(1.5)
+       .moveTo(40, doc.y).lineTo(555, doc.y).stroke();
+    doc.moveDown(0.8);
+
+    // ---------- DATOS CLIENTE ----------
+    doc.fontSize(11).fillColor('#000').font('Helvetica-Bold').text('Cliente');
+    doc.font('Helvetica').fontSize(10).fillColor('#000');
+    const addLine = (label: string, val: any) => {
+      if (val == null || val === '') return;
+      doc.font('Helvetica-Bold').text(label + ': ', { continued: true })
+         .font('Helvetica').text(String(val));
+    };
+    addLine('Razón social', visit.cliente_nombre);
+    addLine('Código Sage', visit.cliente_sage);
+    addLine('CIF', visit.cliente_cif);
+    const direccion = [visit.cliente_direccion, visit.cliente_cp, visit.cliente_municipio, visit.cliente_provincia].filter(x => !!x).join(', ');
+    if (direccion) addLine('Dirección', direccion);
+    addLine('Teléfono', visit.cliente_telefono);
+    addLine('Email', visit.cliente_email);
+    doc.moveDown(0.6);
+
+    // ---------- DATOS VISITA ----------
+    doc.font('Helvetica-Bold').fontSize(11).text('Visita');
+    doc.font('Helvetica').fontSize(10);
+    addLine('Fecha', fecha);
+    addLine('Comercial', visit.comercial_nombre);
+    addLine('Catálogo mostrado', visit.catalog_nombre);
+    addLine('Estado', visit.status === 'confirmed' ? 'Cerrada' : visit.status === 'sent' ? 'Enviada' : 'Borrador');
+    doc.moveDown(0.6);
+
+    // ---------- ANOTACIONES ----------
+    const grupos: any = { pedido: [], devolucion: [], nota: [] };
+    annotations.forEach((a: any) => {
+      if (grupos[a.tipo]) grupos[a.tipo].push(a);
+      else grupos.nota.push(a);
+    });
+
+    const pintarGrupo = (titulo: string, items: any[], color: string) => {
+      if (items.length === 0) return;
+      // Comprobar espacio
+      if (doc.y > 720) doc.addPage();
+      doc.font('Helvetica-Bold').fontSize(11).fillColor(color).text(titulo);
+      doc.font('Helvetica').fontSize(10).fillColor('#000');
+      doc.moveDown(0.2);
+      items.forEach((a: any) => {
+        if (doc.y > 770) doc.addPage();
+        const num = a.sheet_orden ? `Lám.${a.sheet_orden}` : '—';
+        const tit = a.sheet_titulo ? ` · ${a.sheet_titulo}` : '';
+        // bullet
+        doc.font('Helvetica-Bold').text(`• ${num}${tit}`, { continued: false });
+        doc.font('Helvetica').fillColor('#222')
+           .text(`    ${a.texto_libre}`, { indent: 0 });
+        doc.fillColor('#000');
+        doc.moveDown(0.2);
+      });
+      doc.moveDown(0.4);
+    };
+
+    pintarGrupo('PEDIDOS (' + grupos.pedido.length + ')', grupos.pedido, '#166534');
+    pintarGrupo('DEVOLUCIONES (' + grupos.devolucion.length + ')', grupos.devolucion, '#92400e');
+    pintarGrupo('NOTAS (' + grupos.nota.length + ')', grupos.nota, '#374151');
+
+    if (annotations.length === 0) {
+      doc.font('Helvetica-Oblique').fontSize(10).fillColor('#666')
+         .text('Esta visita no tiene anotaciones registradas.');
+      doc.moveDown(0.6);
+    }
+
+    // ---------- NOTAS GENERALES ----------
+    if (visit.notas_generales && String(visit.notas_generales).trim()) {
+      if (doc.y > 700) doc.addPage();
+      doc.font('Helvetica-Bold').fontSize(11).fillColor('#000').text('Notas generales');
+      doc.font('Helvetica').fontSize(10).fillColor('#222')
+         .text(visit.notas_generales);
+      doc.moveDown(0.5);
+    }
+
+    // ---------- PIE ----------
+    const bottom = 800;
+    doc.fontSize(8).fillColor('#999')
+       .text('LOMHIFAR S.L. · Documento generado automáticamente por CatalogPRO v2',
+             40, bottom, { width: 515, align: 'center' });
+
+    doc.end();
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: (e as Error).message });
+    }
   }
 });
 

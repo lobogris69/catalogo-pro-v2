@@ -185,6 +185,7 @@ async function renderApp() {
         <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
         <button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
+        ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
         <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')" style="margin-left:auto">⚙️ Mi cuenta</button>
       </div>
       <div id="vista-contenido"></div>
@@ -204,6 +205,8 @@ function routerVista() {
     }
   } else if (appState.vista === 'comerciales') {
     renderListaComerciales();
+  } else if (appState.vista === 'plantillas') {
+    renderListaPlantillas();
   } else if (appState.vista === 'cuenta') {
     renderMiCuenta();
   } else if (appState.catalogoActual) {
@@ -220,7 +223,8 @@ function routerVista() {
 
 function irA(vista) {
   // Comerciales (incluido admin impersonando) NO pueden entrar a comerciales (gestión users)
-  if (rolEfectivo() === 'sales' && vista === 'comerciales') {
+  // Plantillas solo admin REAL (no impersonando)
+  if (rolEfectivo() === 'sales' && (vista === 'comerciales' || vista === 'plantillas')) {
     vista = 'catalogos';
   }
   appState.vista = vista;
@@ -2303,6 +2307,217 @@ async function abrirAsignacionComerciales(catalogId) {
 }
 
 // ============================================================================
+// ===== D - PLANTILLAS DE ANOTACION (admin) =====
+// ============================================================================
+
+let _plantillasCache = null; // se rellena al cargar; null = aún no cargadas
+
+async function cargarPlantillas() {
+  try {
+    const r = await api('/api/annotation-templates');
+    _plantillasCache = r.templates || [];
+  } catch (e) {
+    _plantillasCache = [];
+  }
+  return _plantillasCache;
+}
+
+function invalidarPlantillasCache() {
+  _plantillasCache = null;
+}
+
+// Pantalla de gestión de plantillas (admin REAL)
+async function renderListaPlantillas() {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando plantillas…</div></div>`;
+  try {
+    await cargarPlantillas();
+    const tpls = _plantillasCache || [];
+
+    const iconoTipo = (t) => t === 'pedido' ? '🛒' : t === 'devolucion' ? '↩️' : '📝';
+    const colorTipo = (t) => t === 'pedido' ? 'tipo-pedido' : t === 'devolucion' ? 'tipo-devolucion' : 'tipo-nota';
+
+    let html = `
+      <div class="contenedor" style="max-width:780px">
+        <div class="titulo-pagina">
+          <div>
+            <h2>🏷️ Plantillas de anotación</h2>
+            <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+              Frases rápidas que los comerciales pueden insertar de un toque mientras anotan en una visita.
+            </div>
+          </div>
+          <button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevaPlantilla()">+ Nueva plantilla</button>
+        </div>
+
+        <div class="editor-panel">
+          ${tpls.length === 0
+            ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">No hay plantillas. Crea la primera con el botón "+ Nueva plantilla".</p>`
+            : `<div class="plantilla-lista" id="plantilla-lista">
+                ${tpls.map(t => `
+                  <div class="plantilla-fila" data-id="${t.id}" draggable="true">
+                    <div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>
+                    <span class="plantilla-tipo-badge ${colorTipo(t.tipo)}">${iconoTipo(t.tipo)} ${t.tipo}</span>
+                    <span class="plantilla-texto">${escape(t.texto)}</span>
+                    <div class="plantilla-acciones">
+                      <button onclick="editarPlantilla(${t.id})" title="Editar">✏️</button>
+                      <button class="btn-borrar" onclick="borrarPlantilla(${t.id})" title="Borrar">🗑️</button>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>`
+          }
+        </div>
+      </div>
+    `;
+    $v.innerHTML = html;
+
+    activarDragDropPlantillas();
+  } catch (err) {
+    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+function abrirModalNuevaPlantilla() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Nueva plantilla</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div id="modal-error"></div>
+      <form id="form-nueva-plantilla">
+        <div class="form-group">
+          <label>Tipo</label>
+          <select id="tpl-tipo">
+            <option value="pedido">🛒 Pedido</option>
+            <option value="devolucion">↩️ Devolución</option>
+            <option value="nota">📝 Nota</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Texto (máx 150 caracteres)</label>
+          <input type="text" id="tpl-texto" required maxlength="150" placeholder="Ej: 12+1 oferta">
+        </div>
+        <div class="modal-acciones">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Crear</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  setTimeout(() => { const t = document.getElementById('tpl-texto'); if (t) t.focus(); }, 50);
+  document.getElementById('form-nueva-plantilla').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const texto = document.getElementById('tpl-texto').value.trim();
+    const tipo = document.getElementById('tpl-tipo').value;
+    try {
+      await api('/api/annotation-templates', { method: 'POST', body: { texto, tipo } });
+      modal.remove();
+      invalidarPlantillasCache();
+      renderListaPlantillas();
+    } catch (err) {
+      document.getElementById('modal-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
+}
+
+async function editarPlantilla(id) {
+  const tpl = (_plantillasCache || []).find(t => t.id === id);
+  if (!tpl) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Editar plantilla</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div id="modal-error"></div>
+      <form id="form-editar-plantilla">
+        <div class="form-group">
+          <label>Tipo</label>
+          <select id="tpl-tipo">
+            <option value="pedido" ${tpl.tipo === 'pedido' ? 'selected' : ''}>🛒 Pedido</option>
+            <option value="devolucion" ${tpl.tipo === 'devolucion' ? 'selected' : ''}>↩️ Devolución</option>
+            <option value="nota" ${tpl.tipo === 'nota' ? 'selected' : ''}>📝 Nota</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Texto</label>
+          <input type="text" id="tpl-texto" required maxlength="150" value="${escape(tpl.texto)}">
+        </div>
+        <div class="modal-acciones">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Guardar</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('form-editar-plantilla').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const texto = document.getElementById('tpl-texto').value.trim();
+    const tipo = document.getElementById('tpl-tipo').value;
+    try {
+      await api('/api/annotation-templates/' + id, { method: 'PUT', body: { texto, tipo } });
+      modal.remove();
+      invalidarPlantillasCache();
+      renderListaPlantillas();
+    } catch (err) {
+      document.getElementById('modal-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
+}
+
+async function borrarPlantilla(id) {
+  if (!confirm('¿Borrar esta plantilla? Los comerciales ya no la verán.')) return;
+  try {
+    await api('/api/annotation-templates/' + id, { method: 'DELETE' });
+    invalidarPlantillasCache();
+    renderListaPlantillas();
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+function activarDragDropPlantillas() {
+  const lista = document.getElementById('plantilla-lista');
+  if (!lista) return;
+  let dragged = null;
+  lista.querySelectorAll('.plantilla-fila').forEach(fila => {
+    fila.addEventListener('dragstart', () => {
+      dragged = fila;
+      fila.classList.add('lamina-arrastrando');
+    });
+    fila.addEventListener('dragend', () => {
+      fila.classList.remove('lamina-arrastrando');
+      dragged = null;
+    });
+    fila.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (!dragged || dragged === fila) return;
+      const rect = fila.getBoundingClientRect();
+      const mitad = rect.top + rect.height / 2;
+      if (e.clientY < mitad) lista.insertBefore(dragged, fila);
+      else lista.insertBefore(dragged, fila.nextSibling);
+    });
+    fila.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const ids = Array.from(lista.querySelectorAll('.plantilla-fila')).map(f => Number(f.dataset.id));
+      try {
+        await api('/api/annotation-templates/reorder', { method: 'PUT', body: { ids } });
+        invalidarPlantillasCache();
+      } catch (err) {
+        alert('Error al reordenar: ' + err.message);
+      }
+    });
+  });
+}
+
+// ============================================================================
 // ===== B6 - VISITAS Y ANOTACIONES =====
 // ============================================================================
 
@@ -2550,11 +2765,17 @@ async function descartarVisitaActiva() {
 // ----- AÑADIR / EDITAR / BORRAR ANOTACIONES -----
 
 // Modal genérico para añadir anotación sobre una lámina
-function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
+async function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
   if (!appState.visitaActiva) {
     alert('Para anotar, primero inicia una visita desde la ficha del cliente.');
     return;
   }
+  // Cargar plantillas si aún no están en caché
+  if (_plantillasCache === null) {
+    await cargarPlantillas();
+  }
+  const tpls = _plantillasCache || [];
+
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
   modal.innerHTML = `
@@ -2574,9 +2795,23 @@ function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
             <option value="nota">📝 Nota</option>
           </select>
         </div>
+        ${tpls.length > 0 ? `
+          <div class="form-group">
+            <label style="display:flex;justify-content:space-between;align-items:center">
+              <span>Plantillas rápidas</span>
+              <span style="font-size:11px;color:var(--gris-texto);font-weight:normal">toca para insertar · arriba elige tipo o lo coge solo</span>
+            </label>
+            <div class="anot-chips-plantillas">
+              ${tpls.map(t => {
+                const ic = t.tipo === 'pedido' ? '🛒' : t.tipo === 'devolucion' ? '↩️' : '📝';
+                return `<button type="button" class="chip-plantilla" data-tipo="${t.tipo}" data-texto="${escape(t.texto)}">${ic} ${escape(t.texto)}</button>`;
+              }).join('')}
+            </div>
+          </div>
+        ` : ''}
         <div class="form-group">
           <label>Texto</label>
-          <textarea id="anot-texto" rows="4" required placeholder="Ej: 12+12 oferta · 6 cajas · revisar caducidad..."></textarea>
+          <textarea id="anot-texto" rows="3" required placeholder="Ej: 12+12 oferta · 6 cajas · revisar caducidad..."></textarea>
         </div>
         <div class="modal-acciones">
           <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
@@ -2586,8 +2821,26 @@ function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
     </div>
   `;
   document.body.appendChild(modal);
-  // foco
   setTimeout(() => { const t = document.getElementById('anot-texto'); if (t) t.focus(); }, 50);
+
+  // Click en chip de plantilla: inserta el texto y ajusta el tipo
+  modal.querySelectorAll('.chip-plantilla').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const txtArea = document.getElementById('anot-texto');
+      const tipoSel = document.getElementById('anot-tipo');
+      // Si el textarea está vacío -> reemplaza. Si tiene texto -> añade con separador " · "
+      const actual = txtArea.value.trim();
+      const nuevoFragmento = chip.dataset.texto;
+      txtArea.value = actual ? (actual + ' · ' + nuevoFragmento) : nuevoFragmento;
+      // Si el tipo aún es el default (pedido) y la plantilla tiene otro tipo, alinear el tipo
+      // (solo cambia automáticamente si el textarea estaba vacío para no contradecir al usuario)
+      if (!actual) {
+        tipoSel.value = chip.dataset.tipo;
+      }
+      txtArea.focus();
+    });
+  });
+
   document.getElementById('form-anotar').addEventListener('submit', async (e) => {
     e.preventDefault();
     const texto = document.getElementById('anot-texto').value.trim();
@@ -2599,7 +2852,6 @@ function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
         body: { sheet_id: sheetId, texto_libre: texto, tipo }
       });
       modal.remove();
-      // Refrescar la zona de anotaciones del visor si está pintado
       refrescarAnotacionesVisor(sheetId);
     } catch (err) {
       document.getElementById('modal-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
@@ -2686,6 +2938,9 @@ async function renderDetalleVisita(visitId) {
               ${cerrada ? ` · Cerrada: ${escape(cerrada)}` : ''}
             </div>
           </div>
+          <div style="display:flex; gap:6px; align-self:flex-start; flex-wrap:wrap">
+            <button class="btn btn-primary btn-pequeno" onclick="descargarPdfVisita(${v.id})">📄 Descargar PDF</button>
+          </div>
         </div>
 
         ${v.notas_generales ? `
@@ -2733,6 +2988,41 @@ function volverDesdeVisita(clientId) {
   appState.visitaVerId = null;
   appState.clienteActual = clientId;
   render();
+}
+
+// D: descargar PDF de visita
+async function descargarPdfVisita(visitId) {
+  try {
+    const headers = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    if (impersonating && user && user.role === 'admin') {
+      headers['X-Impersonate-User'] = String(impersonating.id);
+    }
+    const r = await fetch('/api/visits/' + visitId + '/pdf', { headers });
+    if (!r.ok) {
+      const txt = await r.text();
+      try { const data = JSON.parse(txt); throw new Error(data.error || 'Error ' + r.status); }
+      catch(e) { throw new Error('Error ' + r.status); }
+    }
+    // Obtener filename de Content-Disposition si existe
+    const cd = r.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="([^"]+)"/);
+    const filename = m ? m[1] : ('visita_' + visitId + '.pdf');
+    const blob = await r.blob();
+    // Forzar descarga
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 100);
+  } catch (err) {
+    alert('Error al descargar PDF: ' + err.message);
+  }
 }
 
 // ===== ARRANQUE =====

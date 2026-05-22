@@ -1484,3 +1484,98 @@ body {
   word-break: break-word;
   white-space: pre-wrap;
 }
+
+/* ============================================================================
+   D - PLANTILLAS DE ANOTACION
+   ============================================================================ */
+
+/* Pantalla de gestión */
+.plantilla-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plantilla-fila {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: white;
+  border: 1px solid var(--gris-borde);
+  border-radius: 8px;
+  cursor: grab;
+  transition: background 0.15s;
+}
+.plantilla-fila:hover {
+  background: #fafafa;
+}
+.plantilla-fila.lamina-arrastrando {
+  opacity: 0.4;
+}
+.plantilla-tipo-badge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.tipo-pedido { background: #dcfce7; color: #166534; }
+.tipo-devolucion { background: #fef3c7; color: #92400e; }
+.tipo-nota { background: #e5e7eb; color: #374151; }
+.plantilla-texto {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  min-width: 0;
+  word-break: break-word;
+}
+.plantilla-acciones {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.plantilla-acciones button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+.plantilla-acciones button:hover {
+  background: rgba(0,0,0,0.06);
+}
+.plantilla-acciones .btn-borrar:hover {
+  background: #fee2e2;
+}
+
+/* Chips de plantillas en el modal de anotar */
+.anot-chips-plantillas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 130px;
+  overflow-y: auto;
+  padding: 6px;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px solid #f3f4f6;
+}
+.chip-plantilla {
+  background: white;
+  border: 1px solid var(--gris-borde);
+  border-radius: 16px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.chip-plantilla:hover {
+  background: var(--rosa-claro);
+  border-color: var(--rosa);
+  color: var(--rosa);
+}
+.chip-plantilla:active {
+  transform: scale(0.96);
+}
