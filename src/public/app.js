@@ -471,9 +471,83 @@ function abrirModalEditarLamina(sheet, catalogId) {
 // ============================================================================
 // CLIENTES
 // ============================================================================
+let _busquedaTimer = null;
+let _busquedaTokenActual = 0;
+
 async function renderListaClientes() {
   const $v = document.getElementById('vista-contenido');
-  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando clientes…</div></div>`;
+  const esAdmin = user.role === 'admin';
+
+  // Estructura HTML fija (no se vuelve a renderizar al buscar)
+  $v.innerHTML = `
+    <div class="contenedor">
+      <div class="titulo-pagina">
+        <div>
+          <h2>Clientes</h2>
+          <div id="clientes-resumen" style="font-size:12px;color:var(--gris-texto);margin-top:4px">cargando…</div>
+        </div>
+        ${esAdmin ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalImportarSage()">📊 Importar Excel Sage</button>` : ''}
+      </div>
+
+      <div style="background:white;border:1px solid var(--gris-borde);border-radius:12px;padding:1rem;margin-bottom:1rem;position:relative">
+        <input type="text" id="clientes-buscar" placeholder="🔍 Buscar por nombre, CIF, código Sage o municipio (min. 2 letras)..."
+               value="${escape(appState.clientesBusqueda)}"
+               style="width:100%;padding:10px 14px;border:1px solid var(--gris-borde);border-radius:10px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">
+        <div id="clientes-spinner" style="position:absolute;right:24px;top:50%;transform:translateY(-50%);display:none">
+          <span class="spinner"></span>
+        </div>
+      </div>
+
+      <div id="clientes-lista-contenedor">
+        <div class="loading">Cargando clientes…</div>
+      </div>
+    </div>
+  `;
+
+  // Listener del input — buscamos con debounce
+  const $busca = document.getElementById('clientes-buscar');
+  $busca.focus();
+
+  $busca.addEventListener('input', () => {
+    clearTimeout(_busquedaTimer);
+    const valor = $busca.value.trim();
+
+    // Si vacío → buscar al instante
+    if (valor === '') {
+      _busquedaTimer = setTimeout(() => {
+        appState.clientesBusqueda = '';
+        appState.clientesPagina = 1;
+        cargarClientesYRefrescarLista();
+      }, 200);
+      return;
+    }
+
+    // Si menos de 2 caracteres → no buscar
+    if (valor.length < 2) return;
+
+    // Debounce 600ms
+    _busquedaTimer = setTimeout(() => {
+      appState.clientesBusqueda = valor;
+      appState.clientesPagina = 1;
+      cargarClientesYRefrescarLista();
+    }, 600);
+  });
+
+  // Primera carga
+  cargarClientesYRefrescarLista();
+}
+
+async function cargarClientesYRefrescarLista() {
+  const $resumen = document.getElementById('clientes-resumen');
+  const $contenedor = document.getElementById('clientes-lista-contenedor');
+  const $spinner = document.getElementById('clientes-spinner');
+  if (!$resumen || !$contenedor) return; // se cambió de pantalla
+
+  // Marcar token de búsqueda — solo procesamos la última
+  _busquedaTokenActual++;
+  const miToken = _busquedaTokenActual;
+  if ($spinner) $spinner.style.display = 'block';
+
   try {
     const params = new URLSearchParams({
       page: appState.clientesPagina,
@@ -481,39 +555,28 @@ async function renderListaClientes() {
       search: appState.clientesBusqueda || ''
     });
     const r = await api('/api/clients?' + params.toString());
+
+    // Si esta no es la búsqueda más reciente, ignoramos
+    if (miToken !== _busquedaTokenActual) return;
+    if ($spinner) $spinner.style.display = 'none';
+
     const clientes = r.clients || [];
     const esAdmin = user.role === 'admin';
 
-    let html = `
-      <div class="contenedor">
-        <div class="titulo-pagina">
-          <div>
-            <h2>Clientes</h2>
-            <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
-              ${r.total} total · página ${r.page} de ${r.pages || 1}
-            </div>
-          </div>
-          ${esAdmin ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalImportarSage()">📊 Importar Excel Sage</button>` : ''}
-        </div>
+    $resumen.textContent = `${r.total} ${appState.clientesBusqueda ? 'resultados' : 'clientes'} · página ${r.page} de ${r.pages || 1}`;
 
-        <div style="background:white;border:1px solid var(--gris-borde);border-radius:12px;padding:1rem;margin-bottom:1rem">
-          <input type="text" id="clientes-buscar" placeholder="🔍 Buscar por nombre, CIF, código Sage o municipio..."
-                 value="${escape(appState.clientesBusqueda)}"
-                 style="width:100%;padding:10px 14px;border:1px solid var(--gris-borde);border-radius:10px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">
-        </div>
-    `;
-
+    let html = '';
     if (clientes.length === 0) {
-      html += `
+      html = `
         <div class="empty-state">
           <div class="empty-state-icono">🏥</div>
-          <h3>${appState.clientesBusqueda ? 'No hay resultados' : 'No hay clientes todavía'}</h3>
-          <p>${appState.clientesBusqueda ? 'Prueba otra búsqueda.' : esAdmin ? 'Importa el Excel de Sage para empezar.' : 'Aún no tienes clientes asignados.'}</p>
+          <h3>${appState.clientesBusqueda ? 'Sin resultados' : 'No hay clientes todavía'}</h3>
+          <p>${appState.clientesBusqueda ? 'Prueba con otra búsqueda.' : esAdmin ? 'Importa el Excel de Sage para empezar.' : 'Aún no tienes clientes asignados.'}</p>
           ${esAdmin && !appState.clientesBusqueda ? `<button class="btn btn-primary" style="max-width:280px;margin:0 auto" onclick="abrirModalImportarSage()">📊 Importar Excel de Sage</button>` : ''}
         </div>
       `;
     } else {
-      html += `<div class="clientes-tabla">`;
+      html = '<div class="clientes-tabla">';
       clientes.forEach(c => {
         const inactive = !c.is_active ? ' cliente-fila-baja' : '';
         html += `
@@ -529,9 +592,8 @@ async function renderListaClientes() {
           </div>
         `;
       });
-      html += `</div>`;
+      html += '</div>';
 
-      // Paginación
       if (r.pages > 1) {
         html += `<div class="paginacion">
           <button class="btn btn-pequeno btn-secondary" ${r.page <= 1 ? 'disabled' : ''} onclick="paginaClientes(${r.page - 1})">← Anterior</button>
@@ -540,28 +602,18 @@ async function renderListaClientes() {
         </div>`;
       }
     }
-    html += `</div>`;
-    $v.innerHTML = html;
-
-    // Búsqueda con debounce
-    const $busca = document.getElementById('clientes-buscar');
-    let timer;
-    $busca.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        appState.clientesBusqueda = $busca.value.trim();
-        appState.clientesPagina = 1;
-        renderListaClientes();
-      }, 350);
-    });
+    $contenedor.innerHTML = html;
   } catch (err) {
-    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+    if (miToken !== _busquedaTokenActual) return;
+    if ($spinner) $spinner.style.display = 'none';
+    $contenedor.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
   }
 }
 
 function paginaClientes(p) {
   appState.clientesPagina = p;
-  renderListaClientes();
+  cargarClientesYRefrescarLista();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // ===== MODAL: IMPORTAR EXCEL SAGE =====
