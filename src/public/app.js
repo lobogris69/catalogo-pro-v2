@@ -1863,6 +1863,7 @@ function pintarVisor() {
           <div class="visor-subtitulo">${totalReal} láminas${busca ? ` · ${visibles.length} resultados` : ''}</div>
         </div>
         <div class="visor-modo-switch">
+          ${appState.visitaActiva ? `<button class="visor-modo-btn visor-modo-btn-notas" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Ver notas privadas de la última visita con este cliente">📋</button>` : ''}
           <button class="visor-modo-btn ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
             📺
           </button>
@@ -2743,6 +2744,144 @@ async function enviarEmailPrueba() {
 // ===== B6 - VISITAS Y ANOTACIONES =====
 // ============================================================================
 
+// F: Helper reutilizable que pinta el "resumen de última visita".
+// Se usa en 3 sitios: ficha cliente, modal iniciar visita, modal del visor.
+// modo: 'ficha' | 'modal' | 'visor' - solo cambia un poco el estilo de cabecera
+function renderPanelUltimaVisita(data, modo) {
+  if (!data || !data.visit) return '';
+  const v = data.visit;
+  const anots = data.annotations || [];
+  const fecha = v.confirmed_at
+    ? new Date(v.confirmed_at).toLocaleString('es-ES')
+    : new Date(v.created_at).toLocaleString('es-ES');
+
+  // Calcular dias desde la visita para chip visual
+  const fechaVisita = v.confirmed_at ? new Date(v.confirmed_at) : new Date(v.created_at);
+  const ahora = new Date();
+  const diasAtras = Math.floor((ahora - fechaVisita) / (1000 * 60 * 60 * 24));
+  const chipDias = diasAtras === 0 ? 'hoy'
+    : diasAtras === 1 ? 'ayer'
+    : diasAtras < 30 ? `hace ${diasAtras} días`
+    : diasAtras < 60 ? `hace 1 mes`
+    : diasAtras < 365 ? `hace ${Math.floor(diasAtras/30)} meses`
+    : `hace ${Math.floor(diasAtras/365)} año${Math.floor(diasAtras/365) === 1 ? '' : 's'}`;
+
+  const peds = anots.filter(a => a.tipo === 'pedido');
+  const devs = anots.filter(a => a.tipo === 'devolucion');
+  const nots = anots.filter(a => a.tipo === 'nota');
+
+  const pintarLista = (items, color, titulo, icono) => {
+    if (items.length === 0) return '';
+    return `
+      <div class="uv-grupo">
+        <div class="uv-grupo-titulo" style="color:${color}">${icono} ${titulo} (${items.length})</div>
+        <ul class="uv-grupo-lista">
+          ${items.map(a => `
+            <li>
+              <b>${a.sheet_orden ? 'Lám.' + a.sheet_orden : '—'}${a.sheet_titulo ? ' · ' + escape(a.sheet_titulo) : ''}</b>
+              <span class="uv-grupo-texto">${escape(a.texto_libre)}</span>
+            </li>
+          `).join('')}
+        </ul>
+      </div>
+    `;
+  };
+
+  // Cabecera distinta según modo (más sobria en modal del visor por privacidad)
+  let cabecera;
+  if (modo === 'visor') {
+    cabecera = `
+      <div class="uv-cabecera-privada">
+        <div class="uv-titulo-privada">📋 NOTAS PRIVADAS — NO MOSTRAR AL CLIENTE</div>
+        <div style="font-size:12px;color:#92400e;margin-top:2px">Resumen de la última visita con este cliente</div>
+      </div>
+    `;
+  } else if (modo === 'modal') {
+    cabecera = `
+      <div class="uv-cabecera-modal">
+        <div class="uv-titulo">🕐 Última visita con este cliente</div>
+        <div style="font-size:12px;color:var(--gris-texto)">${escape(fecha)} · <b>${escape(chipDias)}</b></div>
+      </div>
+    `;
+  } else {
+    cabecera = `
+      <div class="uv-cabecera">
+        <div>
+          <div class="uv-titulo">🕐 Última visita</div>
+          <div style="font-size:12px;color:var(--gris-texto)">${escape(fecha)} · <b>${escape(chipDias)}</b> · ${escape(v.comercial_nombre || '?')} · ${escape(v.catalog_nombre || '—')}</div>
+        </div>
+        <button class="btn btn-secondary btn-pequeno" onclick="abrirDetalleVisita(${v.id})">Ver visita completa →</button>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="ultima-visita-panel ${modo === 'visor' ? 'ultima-visita-panel-privada' : ''}">
+      ${cabecera}
+      ${anots.length === 0
+        ? `<div style="color:var(--gris-texto);font-size:13px;padding:8px 0;font-style:italic">Esta visita no tuvo anotaciones registradas.</div>`
+        : `
+          ${pintarLista(peds, '#166534', 'Pedidos', '🛒')}
+          ${pintarLista(devs, '#92400e', 'Devoluciones', '↩️')}
+          ${pintarLista(nots, '#374151', 'Notas', '📝')}
+        `
+      }
+      ${v.notas_generales ? `
+        <div class="uv-notas-generales">
+          <div class="uv-grupo-titulo" style="color:#374151">💬 Notas generales</div>
+          <div style="font-size:13px;white-space:pre-wrap;color:#444">${escape(v.notas_generales)}</div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+async function cargarResumenUltimaVisita(clientId) {
+  try {
+    const r = await api('/api/clients/' + clientId + '/last-visit-summary');
+    if (r.visit) return { visit: r.visit, annotations: r.annotations || [] };
+  } catch (_) {}
+  return null;
+}
+
+// F: Abre un modal con notas privadas de la última visita (botón 📋 del visor)
+async function abrirModalUltimaVisita(clientId) {
+  // Crear modal con loading
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card modal-card-ancho">
+      <div class="modal-header">
+        <h3 style="color:#92400e">📋 Notas privadas</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div id="uv-modal-contenido" class="loading">Cargando…</div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  // Cargar y pintar
+  const resumen = await cargarResumenUltimaVisita(clientId);
+  const $c = document.getElementById('uv-modal-contenido');
+  if (!$c) return;
+  if (!resumen) {
+    $c.innerHTML = `
+      <div style="text-align:center;padding:1rem;color:var(--gris-texto);font-size:14px">
+        Este cliente no tiene visitas anteriores cerradas registradas.
+      </div>
+      <div class="modal-acciones">
+        <button class="btn btn-primary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      </div>
+    `;
+    return;
+  }
+  $c.innerHTML = `
+    ${renderPanelUltimaVisita(resumen, 'visor')}
+    <div class="modal-acciones">
+      <button class="btn btn-primary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+    </div>
+  `;
+}
+
 // ----- ABRIR DETALLE CLIENTE -----
 function abrirDetalleCliente(id) {
   appState.clienteActual = id;
@@ -2766,6 +2905,13 @@ async function renderDetalleCliente(id) {
     const c = r.client;
     const visitas = r.visitas || [];
 
+    // F: cargar resumen de última visita (en paralelo con datos cliente)
+    let ultimaVisitaResumen = null;
+    try {
+      const rl = await api('/api/clients/' + id + '/last-visit-summary');
+      if (rl.visit) ultimaVisitaResumen = { visit: rl.visit, annotations: rl.annotations || [] };
+    } catch (_) {}
+
     // Fila auxiliar para imprimir un campo si existe
     const campo = (label, val) => val
       ? `<div class="kv-row"><div class="kv-label">${label}</div><div class="kv-val">${escape(String(val))}</div></div>`
@@ -2788,6 +2934,8 @@ async function renderDetalleCliente(id) {
             <button class="btn btn-primary" onclick="iniciarVisitaParaCliente(${c.id})">🛒 Empezar visita</button>
           </div>
         </div>
+
+        ${ultimaVisitaResumen ? renderPanelUltimaVisita(ultimaVisitaResumen, 'ficha') : ''}
 
         <div class="cliente-detalle-grid">
           <!-- Ficha de datos -->
@@ -2865,30 +3013,34 @@ async function iniciarVisitaParaCliente(clientId) {
     abrirVisitaActiva();
     return;
   }
-  // Pedir al usuario que elija el catálogo (de su cartera)
+  // Pedir al usuario que elija el catálogo (de su cartera) y cargar resumen ultima visita en paralelo
   try {
-    const r = await api('/api/catalogs');
+    const [r, resumen] = await Promise.all([
+      api('/api/catalogs'),
+      cargarResumenUltimaVisita(clientId)
+    ]);
     const cats = (r.catalogs || []);
     if (cats.length === 0) {
       alert('No tienes catálogos disponibles para iniciar la visita.');
       return;
     }
-    abrirModalElegirCatalogoVisita(clientId, cats);
+    abrirModalElegirCatalogoVisita(clientId, cats, resumen);
   } catch (err) {
     alert('Error: ' + err.message);
   }
 }
 
-function abrirModalElegirCatalogoVisita(clientId, cats) {
+function abrirModalElegirCatalogoVisita(clientId, cats, resumenUltima) {
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
   modal.innerHTML = `
-    <div class="modal-card">
+    <div class="modal-card modal-card-ancho">
       <div class="modal-header">
         <h3>Elige catálogo para la visita</h3>
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
       </div>
-      <p style="font-size:13px;color:var(--gris-texto);margin:0 0 12px">Selecciona el catálogo que vas a mostrar durante esta visita. Podrás añadir anotaciones lámina por lámina mientras navegas.</p>
+      ${resumenUltima ? renderPanelUltimaVisita(resumenUltima, 'modal') : ''}
+      <p style="font-size:13px;color:var(--gris-texto);margin:12px 0">Selecciona el catálogo que vas a mostrar durante esta visita. Podrás añadir anotaciones lámina por lámina mientras navegas.</p>
       <div class="lista-catalogos-visita">
         ${cats.map(c => {
           const icono = c.tipo === 'express' ? '📗' : c.tipo === 'maestro' ? '📕' : '📘';

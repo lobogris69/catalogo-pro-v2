@@ -1672,3 +1672,101 @@ body {
 .editor-panel .form-group {
   margin-bottom: 12px;
 }
+
+/* ============================================================================
+   F - PANEL ULTIMA VISITA
+   ============================================================================ */
+
+.ultima-visita-panel {
+  background: linear-gradient(180deg, #fffbeb, #fff);
+  border: 1px solid #fde68a;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 14px 0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+/* En el visor el panel se llama "privado" - rojo */
+.ultima-visita-panel-privada {
+  background: linear-gradient(180deg, #fef2f2, #fff);
+  border-color: #fecaca;
+}
+
+.uv-cabecera, .uv-cabecera-modal {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.uv-cabecera-privada {
+  background: #fee2e2;
+  margin: -14px -16px 12px -16px;
+  padding: 10px 16px;
+  border-radius: 12px 12px 0 0;
+  border-bottom: 1px solid #fca5a5;
+}
+.uv-titulo {
+  font-size: 14px;
+  font-weight: 600;
+  color: #78350f;
+}
+.uv-titulo-privada {
+  font-size: 14px;
+  font-weight: 700;
+  color: #991b1b;
+  letter-spacing: 0.3px;
+}
+.uv-grupo {
+  margin-bottom: 8px;
+}
+.uv-grupo:last-child {
+  margin-bottom: 0;
+}
+.uv-grupo-titulo {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.uv-grupo-lista {
+  margin: 0;
+  padding-left: 22px;
+  list-style: disc;
+}
+.uv-grupo-lista li {
+  font-size: 13px;
+  margin-bottom: 3px;
+  color: #333;
+}
+.uv-grupo-texto {
+  display: block;
+  font-size: 12px;
+  color: #555;
+  margin-left: 0;
+  margin-top: 1px;
+  font-style: italic;
+}
+.uv-notas-generales {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #fde68a;
+}
+.ultima-visita-panel-privada .uv-notas-generales {
+  border-top-color: #fecaca;
+}
+
+/* Modal ancho para mostrar lista de catalogos con resumen arriba */
+.modal-card-ancho {
+  max-width: 640px !important;
+}
+
+/* Botón "📋 Notas" en barra visor: estilo discreto pero localizable */
+.visor-modo-btn-notas {
+  background: #fef3c7 !important;
+  border: 1px solid #fde68a !important;
+  color: #92400e !important;
+}
+.visor-modo-btn-notas:hover {
+  background: #fde68a !important;
+}

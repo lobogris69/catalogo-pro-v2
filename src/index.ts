@@ -1570,6 +1570,62 @@ app.get('/api/visits/current', verifyToken, async (req: AuthRequest, res: Respon
   }
 });
 
+// F: GET resumen de la ULTIMA visita CERRADA de un cliente.
+// Devuelve fecha, comercial, catalogo, pedidos/devoluciones/notas, y notas generales.
+// Permisos: comercial solo ve sus propias visitas con ese cliente. Admin ve todas.
+// Devuelve {visit: null, annotations: []} si no hay visita cerrada con el cliente.
+app.get('/api/clients/:id/last-visit-summary', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    const clientId = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    let q, params;
+    if (isEffectiveSales(req)) {
+      // Comercial: solo SUS visitas con este cliente
+      q = `
+        SELECT v.*, u.name AS comercial_nombre, cat.name AS catalog_nombre
+        FROM visits v
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN catalogs cat ON cat.id = v.catalog_id
+        WHERE v.client_id = $1 AND v.user_id = $2
+          AND v.status IN ('confirmed', 'sent')
+        ORDER BY COALESCE(v.confirmed_at, v.created_at) DESC
+        LIMIT 1
+      `;
+      params = [clientId, userId];
+    } else {
+      // Admin: cualquier visita cerrada del cliente
+      q = `
+        SELECT v.*, u.name AS comercial_nombre, cat.name AS catalog_nombre
+        FROM visits v
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN catalogs cat ON cat.id = v.catalog_id
+        WHERE v.client_id = $1
+          AND v.status IN ('confirmed', 'sent')
+        ORDER BY COALESCE(v.confirmed_at, v.created_at) DESC
+        LIMIT 1
+      `;
+      params = [clientId];
+    }
+    const r = await pool.query(q, params);
+    if (r.rows.length === 0) {
+      res.json({ success: true, visit: null, annotations: [] });
+      return;
+    }
+    const visit = r.rows[0];
+    // Cargar anotaciones con datos lamina
+    const anots = await pool.query(`
+      SELECT a.*, s.titulo AS sheet_titulo, s.orden AS sheet_orden, s.imagen_path AS sheet_imagen
+      FROM annotations a
+      LEFT JOIN sheets s ON s.id = a.sheet_id
+      WHERE a.visit_id = $1
+      ORDER BY a.orden_en_visita, a.id`, [visit.id]);
+    res.json({ success: true, visit, annotations: anots.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
 // GET una visita concreta + sus anotaciones
 app.get('/api/visits/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
