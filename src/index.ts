@@ -495,7 +495,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'J-descarga-catalogo-24may',
+    build: 'J-fix-archiver-v6-24may',
     service: 'CatalogPRO v2'
   });
 });
