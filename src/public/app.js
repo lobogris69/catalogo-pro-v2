@@ -1870,7 +1870,7 @@ function pintarVisor() {
           <div class="visor-subtitulo">${totalReal} láminas${busca ? ` · ${visibles.length} resultados` : ''}</div>
         </div>
         <div class="visor-modo-switch">
-          ${appState.visitaActiva ? `<button class="visor-modo-btn visor-modo-btn-notas" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Ver notas privadas de la última visita con este cliente">📋</button>` : ''}
+          ${appState.visitaActiva ? `<button class="visor-modo-btn" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Última visita con este cliente">📋</button>` : ''}
           <button class="visor-modo-btn ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
             📺
           </button>
@@ -3284,13 +3284,15 @@ function renderPanelUltimaVisita(data, modo) {
     `;
   };
 
-  // Cabecera distinta según modo (más sobria en modal del visor por privacidad)
+  // Cabecera distinta según modo
   let cabecera;
   if (modo === 'visor') {
+    // Modal abierto por el comercial desde el visor: cabecera neutra, sin avisos rojos
+    // que puedan generar desconfianza si el cliente ve la pantalla por accidente
     cabecera = `
-      <div class="uv-cabecera-privada">
-        <div class="uv-titulo-privada">📋 NOTAS PRIVADAS — NO MOSTRAR AL CLIENTE</div>
-        <div style="font-size:12px;color:#92400e;margin-top:2px">Resumen de la última visita con este cliente</div>
+      <div class="uv-cabecera-modal">
+        <div class="uv-titulo">🕐 Última visita con este cliente</div>
+        <div style="font-size:12px;color:var(--gris-texto)">${escape(fecha)} · <b>${escape(chipDias)}</b></div>
       </div>
     `;
   } else if (modo === 'modal') {
@@ -3313,7 +3315,7 @@ function renderPanelUltimaVisita(data, modo) {
   }
 
   return `
-    <div class="ultima-visita-panel ${modo === 'visor' ? 'ultima-visita-panel-privada' : ''}">
+    <div class="ultima-visita-panel">
       ${cabecera}
       ${anots.length === 0
         ? `<div style="color:var(--gris-texto);font-size:13px;padding:8px 0;font-style:italic">Esta visita no tuvo anotaciones registradas.</div>`
@@ -3349,7 +3351,7 @@ async function abrirModalUltimaVisita(clientId) {
   modal.innerHTML = `
     <div class="modal-card modal-card-ancho">
       <div class="modal-header">
-        <h3 style="color:#92400e">📋 Notas privadas</h3>
+        <h3>🕐 Última visita</h3>
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
       </div>
       <div id="uv-modal-contenido" class="loading">Cargando…</div>
@@ -3658,20 +3660,13 @@ async function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
   const pinPos = window._pendingPinPos;
   window._pendingPinPos = null; // limpiar para que no afecte a la próxima
   const conPin = !!pinPos;
-  const esFullscreen = _fullscreenActivo;
-  // Si estamos en pantalla completa, usar variante discreta con cabecera roja PRIVADO
-  const modalClase = esFullscreen ? 'modal-bg modal-bg-discreto' : 'modal-bg';
-  const cardClase = esFullscreen ? 'modal-card modal-card-privado' : 'modal-card';
+  // Modal completamente normal en cualquier modo (incluido pantalla completa)
+  // El cliente ve un formulario profesional rutinario, sin avisos que generen sospechas.
 
   const modal = document.createElement('div');
-  modal.className = modalClase;
+  modal.className = 'modal-bg';
   modal.innerHTML = `
-    <div class="${cardClase}">
-      ${esFullscreen ? `
-        <div class="modal-cabecera-privada">
-          <div class="modal-cabecera-privada-titulo">📋 ANOTACIÓN PRIVADA — NO MOSTRAR AL CLIENTE</div>
-        </div>
-      ` : ''}
+    <div class="modal-card">
       <div class="modal-header">
         <h3>${conPin ? '📍 Nuevo pin' : 'Anotar lámina ' + sheetNumero}</h3>
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>

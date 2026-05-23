@@ -462,7 +462,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'B7-pins-fullscreen-23may-10h',
+    build: 'B7-sin-avisos-rojos-24may',
     service: 'CatalogPRO v2'
   });
 });
