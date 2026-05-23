@@ -2274,3 +2274,81 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
   background: #a00060;
   color: white;
 }
+
+/* ============================================================================
+   J - DESCARGAR CATALOGO
+   ============================================================================ */
+
+.catalogo-card-acciones {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e5e7eb;
+}
+
+.btn-card-mini {
+  background: white;
+  border: 1px solid var(--gris-borde);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  color: #444;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.btn-card-mini:hover {
+  background: #fef3f7;
+  border-color: var(--rosa);
+  color: var(--rosa);
+}
+
+.descargar-opciones {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.descargar-opcion {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 14px;
+  background: white;
+  border: 2px solid var(--gris-borde);
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.descargar-opcion:hover:not(:disabled) {
+  border-color: var(--rosa);
+  background: #fdf2f8;
+}
+.descargar-opcion:disabled {
+  cursor: wait;
+}
+
+.descargar-opcion-icono {
+  font-size: 32px;
+  flex-shrink: 0;
+}
+
+.descargar-opcion-info {
+  flex: 1;
+}
+
+.descargar-opcion-titulo {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 2px;
+}
+
+.descargar-opcion-desc {
+  font-size: 12px;
+  color: var(--gris-texto);
+  line-height: 1.4;
+}

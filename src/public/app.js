@@ -300,6 +300,11 @@ async function renderListaCatalogos() {
             <div class="catalogo-card-nombre">${escape(c.name)}</div>
             ${parentLine}
             <div class="catalogo-card-info">${c.sheet_count || 0} láminas · V${c.version}</div>
+            <div class="catalogo-card-acciones">
+              <button class="btn-card-mini" onclick="event.stopPropagation();abrirModalDescargarCatalogo(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">
+                📥 Descargar
+              </button>
+            </div>
           </div>
         `;
       });
@@ -1874,6 +1879,7 @@ function pintarVisor() {
         </div>
         <div class="visor-modo-switch">
           ${appState.visitaActiva ? `<button class="visor-modo-btn" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Última visita con este cliente">📋</button>` : ''}
+          <button class="visor-modo-btn" onclick="abrirModalDescargarCatalogo(${_visorCatalog.id}, '${escape((_visorCatalog.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">📥</button>
           <button class="visor-modo-btn ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
             📺
           </button>
@@ -3096,6 +3102,110 @@ async function enviarEmailPrueba() {
     alert('✅ Email de prueba enviado a ' + to + '\n\nRevisa la bandeja en unos segundos. Si no llega en 1-2 minutos, revisa configuración SMTP en Railway o la carpeta de spam.');
   } catch (err) {
     alert('❌ Error enviando prueba:\n\n' + err.message + '\n\nVerifica que SMTP_HOST, SMTP_USER y SMTP_PASS estén configurados en Railway.');
+  }
+}
+
+// ============================================================================
+// ===== J - DESCARGAR COPIA LOCAL DEL CATALOGO =====
+// ============================================================================
+
+// Modal con dos opciones: PDF o ZIP
+function abrirModalDescargarCatalogo(catalogId, nombreCatalogo) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>📥 Descargar catálogo</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p style="font-size:13px;color:var(--gris-texto);margin-bottom:14px">
+        <b>${escape(nombreCatalogo)}</b><br>
+        Elige el formato de descarga:
+      </p>
+      <div class="descargar-opciones">
+        <button class="descargar-opcion" onclick="descargarCatalogoPDF(${catalogId}, this)">
+          <div class="descargar-opcion-icono">📕</div>
+          <div class="descargar-opcion-info">
+            <div class="descargar-opcion-titulo">PDF</div>
+            <div class="descargar-opcion-desc">Un archivo PDF con todas las láminas en orden. Ideal para imprimir o enviar.</div>
+          </div>
+        </button>
+        <button class="descargar-opcion" onclick="descargarCatalogoZIP(${catalogId}, this)">
+          <div class="descargar-opcion-icono">📦</div>
+          <div class="descargar-opcion-info">
+            <div class="descargar-opcion-titulo">ZIP con originales</div>
+            <div class="descargar-opcion-desc">Archivo ZIP con las imágenes en alta resolución + manifiesto JSON. Ideal para archivar.</div>
+          </div>
+        </button>
+      </div>
+      <div style="font-size:11px;color:var(--gris-texto);margin-top:14px;font-style:italic">
+        💡 La descarga puede tardar unos segundos según el tamaño del catálogo. No cierres la ventana hasta que termine.
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function descargarCatalogoPDF(catalogId, botonEl) {
+  await iniciarDescargaCatalogo(catalogId, 'pdf', botonEl);
+}
+
+async function descargarCatalogoZIP(catalogId, botonEl) {
+  await iniciarDescargaCatalogo(catalogId, 'zip', botonEl);
+}
+
+// Helper que dispara la descarga real con manejo de loading y errores
+async function iniciarDescargaCatalogo(catalogId, formato, botonEl) {
+  const url = '/api/catalogs/' + catalogId + '/download-' + formato;
+  // Marcar botón como "descargando"
+  if (botonEl) {
+    botonEl.disabled = true;
+    botonEl.style.opacity = '0.6';
+    const $titulo = botonEl.querySelector('.descargar-opcion-titulo');
+    if ($titulo) $titulo.textContent = (formato === 'pdf' ? 'PDF' : 'ZIP con originales') + ' — preparando…';
+  }
+
+  try {
+    // Hacer petición con auth (porque api() pone el token automáticamente)
+    // Usamos fetch directo para poder manejar el blob
+    const token = localStorage.getItem('cpv2_token');
+    const resp = await fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!resp.ok) {
+      let errorMsg = 'Error ' + resp.status;
+      try {
+        const j = await resp.json();
+        if (j.error) errorMsg = j.error;
+      } catch (_) {}
+      throw new Error(errorMsg);
+    }
+    const blob = await resp.blob();
+    // Obtener nombre del fichero del header Content-Disposition
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="([^"]+)"/);
+    const filename = m ? m[1] : ('catalogo.' + formato);
+    // Disparar descarga
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+
+    // Cerrar modal
+    const modal = botonEl ? botonEl.closest('.modal-bg') : null;
+    if (modal) modal.remove();
+  } catch (err) {
+    alert('Error en la descarga: ' + err.message);
+    if (botonEl) {
+      botonEl.disabled = false;
+      botonEl.style.opacity = '1';
+      const $titulo = botonEl.querySelector('.descargar-opcion-titulo');
+      if ($titulo) $titulo.textContent = formato === 'pdf' ? 'PDF' : 'ZIP con originales';
+    }
   }
 }
 

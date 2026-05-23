@@ -495,7 +495,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'H-fix-indice-geo-24may',
+    build: 'J-descarga-catalogo-24may',
     service: 'CatalogPRO v2'
   });
 });
@@ -813,6 +813,249 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
     res.json({ success: true, catalog: cat, sheets: sheetsRows });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// J - DESCARGAR COPIA LOCAL DEL CATALOGO (PDF o ZIP)
+// ============================================================================
+// Helper: verifica acceso a un catalogo (admin = todos, comercial = solo asignados)
+// y devuelve catalog + sheets cargados, o null si no tiene acceso.
+async function cargarCatalogoConAcceso(catalogId: number, req: AuthRequest):
+  Promise<{ catalog: any, sheets: any[] } | { error: string, status: number } | null> {
+  try {
+    if (!req.user) return { error: 'Unauthorized', status: 401 };
+    const userId = effectiveUserId(req);
+
+    // Cargar catalogo
+    const c = await pool.query('SELECT * FROM catalogs WHERE id = $1', [catalogId]);
+    if (c.rows.length === 0) return { error: 'Catalogo no encontrado', status: 404 };
+    const cat = c.rows[0];
+
+    // Si es comercial, verificar que el catalogo está asignado a él
+    if (isEffectiveSales(req)) {
+      const a = await pool.query(
+        'SELECT 1 FROM catalog_assignments WHERE user_id = $1 AND catalog_id = $2',
+        [userId, catalogId]
+      );
+      if (a.rows.length === 0) {
+        return { error: 'No tienes acceso a este catalogo', status: 403 };
+      }
+    }
+
+    // Cargar laminas (igual que GET /api/catalogs/:id)
+    let sheetsRows;
+    if (cat.tipo === 'express') {
+      const r = await pool.query(`
+        SELECT s.*, es.orden AS orden, es.id AS express_sheet_id
+        FROM express_sheets es
+        JOIN sheets s ON s.id = es.sheet_id
+        WHERE es.express_catalog_id = $1
+        ORDER BY es.orden, es.id
+      `, [catalogId]);
+      sheetsRows = r.rows;
+    } else {
+      const r = await pool.query(
+        'SELECT * FROM sheets WHERE catalog_id = $1 AND oculta = FALSE ORDER BY orden, id',
+        [catalogId]
+      );
+      sheetsRows = r.rows;
+    }
+    return { catalog: cat, sheets: sheetsRows };
+  } catch (e) {
+    return { error: (e as Error).message, status: 500 };
+  }
+}
+
+// Helper: dado un sheet, devuelve el path local en disco de su imagen.
+// Las imagenes se guardan en UPLOADS_DIR (/app/data/uploads por defecto)
+function getSheetImagePath(sheet: any): string {
+  const uploadsDir = process.env.UPLOADS_DIR || '/app/data/uploads';
+  // sheet.imagen_path puede venir como "/uploads/abc.jpg" o "abc.jpg"
+  let rel = sheet.imagen_path || '';
+  if (rel.startsWith('/uploads/')) rel = rel.substring('/uploads/'.length);
+  else if (rel.startsWith('uploads/')) rel = rel.substring('uploads/'.length);
+  const path = require('path');
+  return path.join(uploadsDir, rel);
+}
+
+// Sanitizar nombre de fichero (quitar caracteres no validos)
+function nombreFicheroSeguro(s: string): string {
+  return String(s || 'catalogo')
+    .replace(/[\/\\?%*:|"<>]/g, '_')
+    .replace(/\s+/g, '_')
+    .substring(0, 60);
+}
+
+// GET descargar catalogo como PDF (todas las laminas en orden)
+app.get('/api/catalogs/:id/download-pdf', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const acceso = await cargarCatalogoConAcceso(id, req);
+    if (!acceso || 'error' in acceso) {
+      const a = acceso as any;
+      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
+      return;
+    }
+    const { catalog, sheets } = acceso;
+    if (sheets.length === 0) {
+      res.status(400).json({ success: false, error: 'Este catálogo no tiene láminas' });
+      return;
+    }
+
+    const fs = require('fs');
+    const PDFDocumentLib = require('pdfkit');
+    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    // Crear PDF A4 horizontal (mejor para láminas de catálogo que suelen ser apaisadas)
+    const doc = new PDFDocumentLib({ size: 'A4', margin: 0, autoFirstPage: false });
+    doc.pipe(res);
+
+    // Página de portada
+    doc.addPage({ size: 'A4', margin: 50 });
+    doc.fontSize(22).fillColor('#cc007a').text('LOMHIFAR', { align: 'center' });
+    doc.fontSize(10).fillColor('#666').text('Distribución de productos parafarmacéuticos', { align: 'center' });
+    doc.moveDown(2);
+    doc.fontSize(20).fillColor('#000').text(catalog.name, { align: 'center' });
+    if (catalog.description) {
+      doc.moveDown(0.5);
+      doc.fontSize(11).fillColor('#666').text(catalog.description, { align: 'center' });
+    }
+    doc.moveDown(2);
+    doc.fontSize(10).fillColor('#666').text(
+      `Versión ${catalog.version || 1} · ${sheets.length} láminas`,
+      { align: 'center' }
+    );
+    doc.fontSize(9).fillColor('#999').text(
+      `Generado: ${new Date().toLocaleString('es-ES')}`,
+      { align: 'center' }
+    );
+
+    // Cada lámina en una página, ajustada al tamaño
+    for (const sheet of sheets) {
+      const imgPath = getSheetImagePath(sheet);
+      if (!fs.existsSync(imgPath)) {
+        console.warn('[J/PDF] Imagen no encontrada: ' + imgPath);
+        continue;
+      }
+      try {
+        doc.addPage({ size: 'A4', layout: 'landscape', margin: 20 });
+        // Cabecera pequeña
+        doc.fontSize(8).fillColor('#666').text(
+          `${catalog.name} · Lám. ${sheet.orden || '?'}${sheet.titulo ? ' · ' + sheet.titulo : ''}`,
+          20, 10, { width: 800, align: 'left' }
+        );
+        // Imagen ajustada al área disponible (manteniendo aspect ratio)
+        doc.image(imgPath, 20, 25, {
+          fit: [800, 540],
+          align: 'center',
+          valign: 'center'
+        });
+        // Pie con número de página
+        doc.fontSize(8).fillColor('#999').text(
+          `Página ${sheet.orden || '?'}`,
+          20, 575, { width: 800, align: 'center' }
+        );
+      } catch (err) {
+        console.error('[J/PDF] Error añadiendo lámina ' + sheet.id + ':', (err as Error).message);
+      }
+    }
+
+    doc.end();
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: (e as Error).message });
+    }
+  }
+});
+
+// GET descargar catalogo como ZIP (laminas originales + manifest)
+app.get('/api/catalogs/:id/download-zip', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const acceso = await cargarCatalogoConAcceso(id, req);
+    if (!acceso || 'error' in acceso) {
+      const a = acceso as any;
+      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
+      return;
+    }
+    const { catalog, sheets } = acceso;
+    if (sheets.length === 0) {
+      res.status(400).json({ success: false, error: 'Este catálogo no tiene láminas' });
+      return;
+    }
+
+    const fs = require('fs');
+    const path = require('path');
+    const archiver = require('archiver');
+    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.on('error', (err: any) => {
+      console.error('[J/ZIP] Error:', err.message);
+      if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
+    });
+    archive.pipe(res);
+
+    // Manifest con metadatos
+    const manifest: any = {
+      catalogo: {
+        id: catalog.id,
+        nombre: catalog.name,
+        descripcion: catalog.description,
+        version: catalog.version,
+        tipo: catalog.tipo,
+        fecha_descarga: new Date().toISOString(),
+        total_laminas: sheets.length
+      },
+      laminas: sheets.map((s: any) => ({
+        orden: s.orden,
+        titulo: s.titulo,
+        notas: s.notas,
+        tags: s.tags,
+        fichero: `laminas/${String(s.orden || 0).padStart(3, '0')}${path.extname(s.imagen_path || '.jpg')}`
+      }))
+    };
+    archive.append(JSON.stringify(manifest, null, 2), { name: 'manifiesto.json' });
+
+    // README explicativo
+    const readme = `CATALOGO: ${catalog.name}
+Versión: ${catalog.version || 1}
+Tipo: ${catalog.tipo}
+Total láminas: ${sheets.length}
+Fecha de descarga: ${new Date().toLocaleString('es-ES')}
+
+CONTENIDO DEL ZIP:
+- /laminas/      Las imágenes originales en alta resolución, numeradas en orden.
+- manifiesto.json  Metadatos del catálogo (títulos, notas, tags).
+- README.txt     Este archivo.
+
+Generado por CatalogPRO v2 — LOMHIFAR S.L.
+`;
+    archive.append(readme, { name: 'README.txt' });
+
+    // Añadir cada lámina
+    for (const sheet of sheets) {
+      const imgPath = getSheetImagePath(sheet);
+      if (!fs.existsSync(imgPath)) {
+        console.warn('[J/ZIP] Imagen no encontrada: ' + imgPath);
+        continue;
+      }
+      const ext = path.extname(sheet.imagen_path || '.jpg');
+      const nombreEnZip = `laminas/${String(sheet.orden || 0).padStart(3, '0')}${ext}`;
+      archive.file(imgPath, { name: nombreEnZip });
+    }
+
+    await archive.finalize();
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: (e as Error).message });
+    }
   }
 });
 
