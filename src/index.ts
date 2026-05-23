@@ -1668,43 +1668,60 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
     // Decidir filtro por comercial:
     //   - Admin real: si pasa ?comercial=X usa ese; si no, todos
     //   - Comercial (o admin impersonando): solo SUS clientes via sage_commercial_code
+    // FIX: construimos los parametros con posiciones EXPLICITAS para evitar bugs de
+    // off-by-one que tuvimos en la version anterior con paramIdx aritmetica.
     let comercialFilterClause = '';
     const params: any[] = [];
-    let paramIdx = 1;
 
     if (isEffectiveSales(req)) {
-      // Necesito el commercial_code del usuario
       const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
       const ccode = uR.rows[0]?.sage_commercial_code;
       if (!ccode) {
         res.json({ success: true, clientes: [], total: 0, config: { cicloDefault, ventanaProxima, ventanaUrgente } });
         return;
       }
-      comercialFilterClause = ` AND c.commercial_code = $${paramIdx++}`;
       params.push(String(ccode));
+      comercialFilterClause = ` AND c.commercial_code = $${params.length}`;
     } else {
       const adminCom = String(req.query.comercial || '').trim();
       if (adminCom) {
-        comercialFilterClause = ` AND c.commercial_code = $${paramIdx++}`;
         params.push(adminCom);
+        comercialFilterClause = ` AND c.commercial_code = $${params.length}`;
       }
     }
 
-    // Filtros varios
+    // Filtros varios - cada uno añade su parametro y captura su posicion
     let extraClauses = '';
     if (q) {
-      extraClauses += ` AND (LOWER(c.razon_social) LIKE $${paramIdx} OR LOWER(c.sage_code) LIKE $${paramIdx})`;
       params.push('%' + q + '%');
-      paramIdx++;
+      const pos = params.length;
+      extraClauses += ` AND (LOWER(c.razon_social) LIKE $${pos} OR LOWER(c.sage_code) LIKE $${pos})`;
     }
     if (provincia) {
-      extraClauses += ` AND c.provincia = $${paramIdx++}`;
       params.push(provincia);
+      extraClauses += ` AND c.provincia = $${params.length}`;
     }
     if (municipio) {
-      extraClauses += ` AND c.municipio = $${paramIdx++}`;
       params.push(municipio);
+      extraClauses += ` AND c.municipio = $${params.length}`;
     }
+
+    // Añadir ciclo + ventanas + (estado si filtra) + limit + offset CON SUS POSICIONES
+    params.push(cicloDefault);
+    const posCiclo = params.length;
+    params.push(ventanaProxima);
+    const posProxima = params.length;
+    params.push(ventanaUrgente);
+    const posUrgente = params.length;
+    let posEstado = 0;
+    if (estado !== 'todos') {
+      params.push(estado);
+      posEstado = params.length;
+    }
+    params.push(limit);
+    const posLimit = params.length;
+    params.push(offset);
+    const posOffset = params.length;
 
     // Query principal:
     // - Calculamos ciclo efectivo (cliente.ciclo_visita_dias o cicloDefault)
@@ -1729,7 +1746,7 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
           c.municipio, c.provincia, c.categoria, c.email, c.email_alternativo,
           c.telefono, c.ciclo_visita_dias,
           uv.fecha_ultima, uv.comercial_ultima_visita, uv.visita_id AS ultima_visita_id,
-          COALESCE(c.ciclo_visita_dias, $${paramIdx}) AS ciclo_efectivo,
+          COALESCE(c.ciclo_visita_dias, $${posCiclo}) AS ciclo_efectivo,
           CASE WHEN uv.fecha_ultima IS NULL THEN NULL
                ELSE EXTRACT(DAY FROM (NOW() - uv.fecha_ultima))::int
           END AS dias_desde_ultima
@@ -1744,8 +1761,8 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
           b.*,
           CASE
             WHEN b.dias_desde_ultima IS NULL THEN 'sin_historial'
-            WHEN b.dias_desde_ultima > (b.ciclo_efectivo + $${paramIdx + 2}) THEN 'urgente'
-            WHEN b.dias_desde_ultima >= (b.ciclo_efectivo - $${paramIdx + 1}) THEN 'proxima'
+            WHEN b.dias_desde_ultima > (b.ciclo_efectivo + $${posUrgente}) THEN 'urgente'
+            WHEN b.dias_desde_ultima >= (b.ciclo_efectivo - $${posProxima}) THEN 'proxima'
             ELSE 'al_dia'
           END AS estado,
           CASE
@@ -1755,7 +1772,7 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
         FROM base b
       )
       SELECT * FROM conEstado
-      ${estado !== 'todos' ? `WHERE estado = $${paramIdx + 3}` : ''}
+      ${posEstado ? `WHERE estado = $${posEstado}` : ''}
       ORDER BY
         CASE estado
           WHEN 'urgente' THEN 1
@@ -1765,17 +1782,9 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
         END,
         dias_retraso DESC NULLS LAST,
         razon_social ASC
-      LIMIT $${paramIdx + (estado !== 'todos' ? 4 : 3)}
-      OFFSET $${paramIdx + (estado !== 'todos' ? 5 : 4)}
+      LIMIT $${posLimit}
+      OFFSET $${posOffset}
     `;
-
-    // Añadir parámetros en orden
-    params.push(cicloDefault);          // $paramIdx
-    params.push(ventanaProxima);        // $paramIdx+1
-    params.push(ventanaUrgente);        // $paramIdx+2
-    if (estado !== 'todos') params.push(estado); // $paramIdx+3
-    params.push(limit);
-    params.push(offset);
 
     const r = await pool.query(sql, params);
 
