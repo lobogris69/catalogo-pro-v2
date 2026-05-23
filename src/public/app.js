@@ -16,7 +16,8 @@ let appState = {
   visorBusqueda: '',
   visorZoom: 1,
   visitaActiva: null,         // B6: { id, client_id, cliente_nombre, catalog_id, ... } o null
-  visitaVerId: null           // B6: si !=null se muestra detalle de una visita pasada
+  visitaVerId: null,          // B6: si !=null se muestra detalle de una visita pasada
+  editorPestana: 'laminas'    // E: 'laminas' | 'historial' - pestaña activa en editor catálogo
 };
 
 const $app = document.getElementById('app');
@@ -414,11 +415,13 @@ async function abrirModalNuevoCatalogo() {
 // ===== ABRIR CATALOGO =====
 function abrirCatalogo(id) {
   appState.catalogoActual = id;
+  appState.editorPestana = 'laminas'; // E: siempre abre en láminas
   render();
 }
 
 function volverACatalogos() {
   appState.catalogoActual = null;
+  appState.editorPestana = 'laminas';
   render();
 }
 
@@ -450,11 +453,32 @@ async function renderEditorCatalogo(id) {
           ${esAdmin ? `
             <div style="display:flex;gap:6px;align-self:flex-start;flex-wrap:wrap">
               <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
+              ${sheets.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="borrarTodasLaminas(${id}, ${sheets.length})">🗑️ Borrar todas</button>` : ''}
             </div>
           ` : ''}
         </div>
 
+        <!-- Pestañas Láminas / Historial -->
+        <div class="editor-pestanas">
+          <button class="editor-pestana ${appState.editorPestana !== 'historial' ? 'editor-pestana-activa' : ''}" onclick="cambiarPestanaEditor('laminas')">📄 Láminas (${sheets.length})</button>
+          <button class="editor-pestana ${appState.editorPestana === 'historial' ? 'editor-pestana-activa' : ''}" onclick="cambiarPestanaEditor('historial')">📚 Historial</button>
+        </div>
+
+        <div id="editor-pestana-contenido">
+          <!-- Se rellena según pestaña activa -->
+        </div>
+      </div>
+    `;
+    $v.innerHTML = html;
+    // Pintar contenido de la pestaña activa
+    if (appState.editorPestana === 'historial') {
+      pintarPestanaHistorial(id);
+      return;
+    }
+
+    // Pintar pestaña láminas (contenido normal)
+    const htmlContenido = `
         <div class="editor-grid">
           ${esAdmin ? `
           <div class="editor-panel">
@@ -517,9 +541,10 @@ async function renderEditorCatalogo(id) {
             </div>
           </div>
         </div>
-      </div>
     `;
-    $v.innerHTML = html;
+    // Pintamos el contenido en la pestaña láminas (el contenedor exterior ya está en $v)
+    const $pestContenido = document.getElementById('editor-pestana-contenido');
+    if ($pestContenido) $pestContenido.innerHTML = htmlContenido;
 
     // Listeners para la edición inline de tags
     if (esAdmin) {
@@ -3102,6 +3127,172 @@ async function enviarEmailPrueba() {
     alert('✅ Email de prueba enviado a ' + to + '\n\nRevisa la bandeja en unos segundos. Si no llega en 1-2 minutos, revisa configuración SMTP en Railway o la carpeta de spam.');
   } catch (err) {
     alert('❌ Error enviando prueba:\n\n' + err.message + '\n\nVerifica que SMTP_HOST, SMTP_USER y SMTP_PASS estén configurados en Railway.');
+  }
+}
+
+// ============================================================================
+// ===== E - VERSIONES V1/V2/V3 CON HISTORIAL =====
+// ============================================================================
+
+// Cambia entre pestañas del editor de catálogo (Láminas / Historial)
+function cambiarPestanaEditor(pestana) {
+  appState.editorPestana = pestana;
+  if (appState.catalogoActual) renderEditorCatalogo(appState.catalogoActual);
+}
+
+// Pinta la pestaña Historial dentro del editor de catálogo
+async function pintarPestanaHistorial(catalogId) {
+  const $cont = document.getElementById('editor-pestana-contenido');
+  if (!$cont) return;
+  $cont.innerHTML = '<div class="loading">Cargando historial…</div>';
+  try {
+    const r = await api('/api/catalogs/' + catalogId + '/versions');
+    const versions = r.versions || [];
+    const esAdmin = rolEfectivo() === 'admin';
+
+    if (versions.length === 0) {
+      $cont.innerHTML = `
+        <div class="editor-panel">
+          <div class="empty-state" style="padding:2rem 1rem">
+            <div class="empty-state-icono">📚</div>
+            <h3>Sin versiones cerradas todavía</h3>
+            <p style="font-size:13px;color:var(--gris-texto);max-width:480px;margin:1rem auto">
+              ${esAdmin
+                ? 'Cuando termines una temporada o quieras dejar constancia del catálogo actual, pulsa <b>📌 Cerrar versión</b> arriba. Se guardará un PDF y un ZIP de respaldo que podrás descargar en cualquier momento.'
+                : 'Aún no hay versiones cerradas de este catálogo.'}
+            </p>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    $cont.innerHTML = `
+      <div class="editor-panel">
+        <h3 style="margin-top:0">📚 Historial de versiones</h3>
+        <p style="font-size:12px;color:var(--gris-texto);margin-bottom:14px">
+          Cada versión es una "foto" del catálogo en el momento de cerrarla. Los PDF y ZIP están conservados en el servidor.
+        </p>
+        <div class="versiones-lista">
+          ${versions.map(v => {
+            const fecha = new Date(v.published_at).toLocaleString('es-ES');
+            const pdfSizeMB = v.pdf_size_bytes ? (v.pdf_size_bytes / 1024 / 1024).toFixed(1) : null;
+            const zipSizeMB = v.zip_size_bytes ? (v.zip_size_bytes / 1024 / 1024).toFixed(1) : null;
+            return `
+              <div class="version-fila">
+                <div class="version-badge">V${v.version_number}</div>
+                <div class="version-info">
+                  <div class="version-cabecera">
+                    <span class="version-titulo">Versión ${v.version_number}</span>
+                    <span class="version-meta">${v.total_laminas || '?'} láminas</span>
+                  </div>
+                  <div class="version-fecha">
+                    📅 Cerrada el ${escape(fecha)}${v.published_by_name ? ' · por ' + escape(v.published_by_name) : ''}
+                  </div>
+                  ${v.notas_version ? `<div class="version-notas">"${escape(v.notas_version)}"</div>` : ''}
+                </div>
+                <div class="version-acciones">
+                  ${v.tiene_pdf ? `<button class="btn-card-mini" onclick="descargarVersionPDF(${v.id})" title="${pdfSizeMB ? pdfSizeMB + ' MB' : ''}">📕 PDF${pdfSizeMB ? ` <span style="color:var(--gris-texto);font-weight:normal">(${pdfSizeMB} MB)</span>` : ''}</button>` : ''}
+                  ${v.tiene_zip ? `<button class="btn-card-mini" onclick="descargarVersionZIP(${v.id})" title="${zipSizeMB ? zipSizeMB + ' MB' : ''}">📦 ZIP${zipSizeMB ? ` <span style="color:var(--gris-texto);font-weight:normal">(${zipSizeMB} MB)</span>` : ''}</button>` : ''}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    $cont.innerHTML = `<div class="error-msg">Error: ${escape(err.message)}</div>`;
+  }
+}
+
+// Modal para confirmar el cierre de versión, con campo opcional de notas
+function abrirCerrarVersion(catalogId, versionActual, nombreCatalogo) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>📌 Cerrar versión V${versionActual}</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p style="font-size:13px;margin-bottom:14px;line-height:1.5">
+        Vas a cerrar la <b>versión ${versionActual}</b> de <b>${escape(nombreCatalogo)}</b>.<br><br>
+        Al cerrarla:<br>
+        ✅ Se generará un PDF y un ZIP de respaldo de este momento exacto<br>
+        ✅ Quedará en el historial para auditoría<br>
+        ✅ El catálogo seguirá editable como <b>V${versionActual + 1}</b><br>
+      </p>
+      <div class="form-group">
+        <label>Notas de esta versión <span style="color:var(--gris-texto);font-weight:normal">(opcional, ej: "Catálogo primavera 2026")</span></label>
+        <textarea id="cerrar-version-notas" rows="2" placeholder="Describir brevemente esta versión..."></textarea>
+      </div>
+      <div id="cerrar-version-error"></div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn btn-primary" id="btn-confirmar-cerrar">📌 Cerrar versión</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  document.getElementById('btn-confirmar-cerrar').addEventListener('click', async () => {
+    const $btn = document.getElementById('btn-confirmar-cerrar');
+    const $err = document.getElementById('cerrar-version-error');
+    const notas = (document.getElementById('cerrar-version-notas').value || '').trim();
+    $btn.disabled = true;
+    $btn.textContent = '⏳ Generando PDF y ZIP…';
+    $err.innerHTML = '';
+    try {
+      const r = await api('/api/catalogs/' + catalogId + '/close-version', {
+        method: 'POST',
+        body: { notas_version: notas }
+      });
+      modal.remove();
+      // Refrescar editor — ahora mostrando el historial
+      appState.editorPestana = 'historial';
+      renderEditorCatalogo(catalogId);
+      alert(`✅ Versión V${r.version_cerrada} cerrada con éxito.\n\nEl catálogo ahora es V${r.nueva_version} y sigue editable.`);
+    } catch (err) {
+      $err.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+      $btn.disabled = false;
+      $btn.textContent = '📌 Cerrar versión';
+    }
+  });
+}
+
+// Descargar PDF de una versión cerrada
+async function descargarVersionPDF(versionId) {
+  await iniciarDescargaVersion(versionId, 'pdf');
+}
+async function descargarVersionZIP(versionId) {
+  await iniciarDescargaVersion(versionId, 'zip');
+}
+async function iniciarDescargaVersion(versionId, formato) {
+  const url = '/api/catalog-versions/' + versionId + '/download-' + formato;
+  try {
+    const token = localStorage.getItem('cpv2_token');
+    const resp = await fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!resp.ok) {
+      let errorMsg = 'Error ' + resp.status;
+      try { const j = await resp.json(); if (j.error) errorMsg = j.error; } catch (_) {}
+      throw new Error(errorMsg);
+    }
+    const blob = await resp.blob();
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="([^"]+)"/);
+    const filename = m ? m[1] : ('version.' + formato);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    alert('Error en la descarga: ' + err.message);
   }
 }
 

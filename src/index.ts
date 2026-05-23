@@ -418,6 +418,29 @@ async function initDB(): Promise<void> {
       console.error('⚠️ Error creando índice geo:', e.message);
     }
 
+    // E: migración idempotente — añadir columnas pdf_path/zip_path/tamano_bytes
+    // a catalog_versions si no existen.
+    const versionAlters = [
+      `ALTER TABLE catalog_versions ADD COLUMN pdf_path VARCHAR(500)`,
+      `ALTER TABLE catalog_versions ADD COLUMN zip_path VARCHAR(500)`,
+      `ALTER TABLE catalog_versions ADD COLUMN pdf_size_bytes BIGINT`,
+      `ALTER TABLE catalog_versions ADD COLUMN zip_size_bytes BIGINT`,
+      `ALTER TABLE catalog_versions ADD COLUMN total_laminas INTEGER`,
+      `ALTER TABLE catalog_versions ADD COLUMN status VARCHAR(20) DEFAULT 'ok'`
+    ];
+    for (const sql of versionAlters) {
+      try {
+        await pool.query(sql);
+        console.log('✅ Aplicado: ' + sql);
+      } catch (e: any) {
+        if (e.code === '42701') {
+          // Columna ya existe
+        } else {
+          console.error('⚠️ Error en migración catalog_versions:', sql, e.message);
+        }
+      }
+    }
+
     // Sembrar configuracion email por defecto si no existe
     const emailDefaults = [
       ['modo', 'pruebas', 'Modo actual: pruebas (redirige a emails de test) o produccion (envio real)'],
@@ -495,7 +518,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'J-fix-archiver-v6-24may',
+    build: 'E-versiones-historial-24may',
     service: 'CatalogPRO v2'
   });
 });
@@ -887,31 +910,17 @@ function nombreFicheroSeguro(s: string): string {
     .substring(0, 60);
 }
 
-// GET descargar catalogo como PDF (todas las laminas en orden)
-app.get('/api/catalogs/:id/download-pdf', verifyToken, async (req: AuthRequest, res: Response) => {
-  try {
-    const id = Number(req.params.id);
-    const acceso = await cargarCatalogoConAcceso(id, req);
-    if (!acceso || 'error' in acceso) {
-      const a = acceso as any;
-      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
-      return;
-    }
-    const { catalog, sheets } = acceso;
-    if (sheets.length === 0) {
-      res.status(400).json({ success: false, error: 'Este catálogo no tiene láminas' });
-      return;
-    }
-
+// J/E: Generar PDF del catálogo a un stream cualquiera (res HTTP o fichero).
+// Devuelve una promesa que resuelve cuando el PDF está completo.
+function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream: any): Promise<void> {
+  return new Promise((resolve, reject) => {
     const fs = require('fs');
     const PDFDocumentLib = require('pdfkit');
-    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}.pdf`;
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-
-    // Crear PDF A4 horizontal (mejor para láminas de catálogo que suelen ser apaisadas)
     const doc = new PDFDocumentLib({ size: 'A4', margin: 0, autoFirstPage: false });
-    doc.pipe(res);
+    doc.pipe(destStream);
+    destStream.on('finish', () => resolve());
+    destStream.on('error', (e: any) => reject(e));
+    doc.on('error', (e: any) => reject(e));
 
     // Página de portada
     doc.addPage({ size: 'A4', margin: 50 });
@@ -937,72 +946,48 @@ app.get('/api/catalogs/:id/download-pdf', verifyToken, async (req: AuthRequest, 
     for (const sheet of sheets) {
       const imgPath = getSheetImagePath(sheet);
       if (!fs.existsSync(imgPath)) {
-        console.warn('[J/PDF] Imagen no encontrada: ' + imgPath);
+        console.warn('[PDF] Imagen no encontrada: ' + imgPath);
         continue;
       }
       try {
         doc.addPage({ size: 'A4', layout: 'landscape', margin: 20 });
-        // Cabecera pequeña
         doc.fontSize(8).fillColor('#666').text(
           `${catalog.name} · Lám. ${sheet.orden || '?'}${sheet.titulo ? ' · ' + sheet.titulo : ''}`,
           20, 10, { width: 800, align: 'left' }
         );
-        // Imagen ajustada al área disponible (manteniendo aspect ratio)
         doc.image(imgPath, 20, 25, {
           fit: [800, 540],
           align: 'center',
           valign: 'center'
         });
-        // Pie con número de página
         doc.fontSize(8).fillColor('#999').text(
           `Página ${sheet.orden || '?'}`,
           20, 575, { width: 800, align: 'center' }
         );
       } catch (err) {
-        console.error('[J/PDF] Error añadiendo lámina ' + sheet.id + ':', (err as Error).message);
+        console.error('[PDF] Error añadiendo lámina ' + sheet.id + ':', (err as Error).message);
       }
     }
-
     doc.end();
-  } catch (e) {
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, error: (e as Error).message });
-    }
-  }
-});
+  });
+}
 
-// GET descargar catalogo como ZIP (laminas originales + manifest)
-app.get('/api/catalogs/:id/download-zip', verifyToken, async (req: AuthRequest, res: Response) => {
-  try {
-    const id = Number(req.params.id);
-    const acceso = await cargarCatalogoConAcceso(id, req);
-    if (!acceso || 'error' in acceso) {
-      const a = acceso as any;
-      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
-      return;
-    }
-    const { catalog, sheets } = acceso;
-    if (sheets.length === 0) {
-      res.status(400).json({ success: false, error: 'Este catálogo no tiene láminas' });
-      return;
-    }
-
-    const fs = require('fs');
-    const path = require('path');
-    const archiver = require('archiver');
-    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}.zip`;
-
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-
+// J/E: Generar ZIP del catálogo a un stream cualquiera (res HTTP o fichero).
+async function generarZipCatalogoStream(catalog: any, sheets: any[], destStream: any): Promise<void> {
+  const fs = require('fs');
+  const path = require('path');
+  const archiver = require('archiver');
+  return new Promise(async (resolve, reject) => {
     const archive = archiver('zip', { zlib: { level: 6 } });
     archive.on('error', (err: any) => {
-      console.error('[J/ZIP] Error:', err.message);
-      if (!res.headersSent) res.status(500).json({ success: false, error: err.message });
+      console.error('[ZIP] Error:', err.message);
+      reject(err);
     });
-    archive.pipe(res);
+    destStream.on('finish', () => resolve());
+    destStream.on('error', (e: any) => reject(e));
+    archive.pipe(destStream);
 
-    // Manifest con metadatos
+    // Manifest
     const manifest: any = {
       catalogo: {
         id: catalog.id,
@@ -1023,7 +1008,7 @@ app.get('/api/catalogs/:id/download-zip', verifyToken, async (req: AuthRequest, 
     };
     archive.append(JSON.stringify(manifest, null, 2), { name: 'manifiesto.json' });
 
-    // README explicativo
+    // README
     const readme = `CATALOGO: ${catalog.name}
 Versión: ${catalog.version || 1}
 Tipo: ${catalog.tipo}
@@ -1039,23 +1024,314 @@ Generado por CatalogPRO v2 — LOMHIFAR S.L.
 `;
     archive.append(readme, { name: 'README.txt' });
 
-    // Añadir cada lámina
+    // Láminas
     for (const sheet of sheets) {
       const imgPath = getSheetImagePath(sheet);
       if (!fs.existsSync(imgPath)) {
-        console.warn('[J/ZIP] Imagen no encontrada: ' + imgPath);
+        console.warn('[ZIP] Imagen no encontrada: ' + imgPath);
         continue;
       }
       const ext = path.extname(sheet.imagen_path || '.jpg');
       const nombreEnZip = `laminas/${String(sheet.orden || 0).padStart(3, '0')}${ext}`;
       archive.file(imgPath, { name: nombreEnZip });
     }
-
     await archive.finalize();
+  });
+}
+
+// GET descargar catalogo como PDF (todas las laminas en orden)
+app.get('/api/catalogs/:id/download-pdf', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const acceso = await cargarCatalogoConAcceso(id, req);
+    if (!acceso || 'error' in acceso) {
+      const a = acceso as any;
+      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
+      return;
+    }
+    const { catalog, sheets } = acceso;
+    if (sheets.length === 0) {
+      res.status(400).json({ success: false, error: 'Este catálogo no tiene láminas' });
+      return;
+    }
+    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    await generarPdfCatalogoStream(catalog, sheets, res);
   } catch (e) {
     if (!res.headersSent) {
       res.status(500).json({ success: false, error: (e as Error).message });
     }
+  }
+});
+
+// GET descargar catalogo como ZIP
+app.get('/api/catalogs/:id/download-zip', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const acceso = await cargarCatalogoConAcceso(id, req);
+    if (!acceso || 'error' in acceso) {
+      const a = acceso as any;
+      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
+      return;
+    }
+    const { catalog, sheets } = acceso;
+    if (sheets.length === 0) {
+      res.status(400).json({ success: false, error: 'Este catálogo no tiene láminas' });
+      return;
+    }
+    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    await generarZipCatalogoStream(catalog, sheets, res);
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: (e as Error).message });
+    }
+  }
+});
+
+// ============================================================================
+// E - VERSIONES V1/V2/V3 CON HISTORIAL
+// ============================================================================
+
+// Helper: directorio donde se guardan los PDF/ZIP de versiones cerradas
+function getVersionsDir(): string {
+  const uploadsDir = process.env.UPLOADS_DIR || '/app/data/uploads';
+  const path = require('path');
+  const fs = require('fs');
+  const dir = path.join(uploadsDir, 'versions');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// POST cerrar versión actual del catálogo (solo admin real)
+// Body: { notas_version: string } (opcional)
+app.post('/api/catalogs/:id/close-version', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { notas_version } = req.body;
+
+    // Cargar catálogo y láminas
+    const acceso = await cargarCatalogoConAcceso(id, req);
+    if (!acceso || 'error' in acceso) {
+      const a = acceso as any;
+      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
+      return;
+    }
+    const { catalog, sheets } = acceso;
+    if (sheets.length === 0) {
+      res.status(400).json({ success: false, error: 'No puedes cerrar versión de un catálogo vacío' });
+      return;
+    }
+
+    // Calcular versión a cerrar y siguiente
+    const versionACerrar = catalog.version || 1;
+
+    // Comprobar que no exista ya esta versión cerrada (idempotencia)
+    const yaCerrada = await pool.query(
+      `SELECT id FROM catalog_versions WHERE catalog_id = $1 AND version_number = $2`,
+      [id, versionACerrar]
+    );
+    if (yaCerrada.rows.length > 0) {
+      res.status(400).json({ success: false, error: `La versión ${versionACerrar} ya está cerrada. Sigue editando el catálogo y vuelve a cerrar.` });
+      return;
+    }
+
+    const fs = require('fs');
+    const path = require('path');
+    const versionsDir = getVersionsDir();
+    const baseName = `${nombreFicheroSeguro(catalog.name)}_v${versionACerrar}_${Date.now()}`;
+    const pdfFile = path.join(versionsDir, baseName + '.pdf');
+    const zipFile = path.join(versionsDir, baseName + '.zip');
+
+    // Snapshot JSON con metadatos completos de las láminas (orden, titulos, tags, etc)
+    const snapshot = {
+      version: versionACerrar,
+      fecha_cierre: new Date().toISOString(),
+      catalog: {
+        id: catalog.id,
+        name: catalog.name,
+        description: catalog.description,
+        tipo: catalog.tipo
+      },
+      sheets: sheets.map((s: any) => ({
+        id: s.id,
+        orden: s.orden,
+        titulo: s.titulo,
+        notas: s.notas,
+        tags: s.tags,
+        imagen_path: s.imagen_path
+      }))
+    };
+
+    // Generar PDF a disco
+    console.log(`[E] Generando PDF versión ${versionACerrar} de catálogo ${catalog.name}...`);
+    let pdfSize = 0;
+    try {
+      await generarPdfCatalogoStream(catalog, sheets, fs.createWriteStream(pdfFile));
+      pdfSize = fs.statSync(pdfFile).size;
+      console.log(`[E] PDF OK: ${pdfFile} (${pdfSize} bytes)`);
+    } catch (err) {
+      console.error('[E] Error generando PDF:', err);
+      throw new Error('Error generando PDF de la versión: ' + (err as Error).message);
+    }
+
+    // Generar ZIP a disco
+    console.log(`[E] Generando ZIP versión ${versionACerrar}...`);
+    let zipSize = 0;
+    try {
+      await generarZipCatalogoStream(catalog, sheets, fs.createWriteStream(zipFile));
+      zipSize = fs.statSync(zipFile).size;
+      console.log(`[E] ZIP OK: ${zipFile} (${zipSize} bytes)`);
+    } catch (err) {
+      console.error('[E] Error generando ZIP:', err);
+      // No bloqueante - guardamos solo PDF si ZIP falla
+    }
+
+    // Guardar registro en catalog_versions
+    const r = await pool.query(
+      `INSERT INTO catalog_versions (
+         catalog_id, version_number, snapshot_json, notas_version,
+         published_by, pdf_path, zip_path, pdf_size_bytes, zip_size_bytes,
+         total_laminas, status
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING *`,
+      [
+        id,
+        versionACerrar,
+        JSON.stringify(snapshot),
+        (notas_version || '').toString().trim() || null,
+        req.user?.id || null,
+        pdfFile,
+        zipSize > 0 ? zipFile : null,
+        pdfSize,
+        zipSize > 0 ? zipSize : null,
+        sheets.length,
+        'ok'
+      ]
+    );
+
+    // Incrementar la versión "viva" del catálogo
+    await pool.query(
+      `UPDATE catalogs SET version = $1, updated_at = NOW() WHERE id = $2`,
+      [versionACerrar + 1, id]
+    );
+
+    res.json({
+      success: true,
+      version_cerrada: versionACerrar,
+      nueva_version: versionACerrar + 1,
+      registro: r.rows[0]
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET listado de versiones cerradas de un catálogo (admin y comerciales asignados)
+app.get('/api/catalogs/:id/versions', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    // Verificar acceso al catálogo
+    const acceso = await cargarCatalogoConAcceso(id, req);
+    if (!acceso || 'error' in acceso) {
+      const a = acceso as any;
+      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
+      return;
+    }
+    const r = await pool.query(
+      `SELECT cv.id, cv.version_number, cv.notas_version, cv.published_at,
+              cv.pdf_path IS NOT NULL AS tiene_pdf,
+              cv.zip_path IS NOT NULL AS tiene_zip,
+              cv.pdf_size_bytes, cv.zip_size_bytes, cv.total_laminas, cv.status,
+              u.name AS published_by_name, u.email AS published_by_email
+       FROM catalog_versions cv
+       LEFT JOIN users u ON u.id = cv.published_by
+       WHERE cv.catalog_id = $1
+       ORDER BY cv.version_number DESC`,
+      [id]
+    );
+    res.json({ success: true, versions: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET descargar PDF de una versión cerrada (admin + comerciales asignados al catálogo)
+app.get('/api/catalog-versions/:id/download-pdf', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const versionId = Number(req.params.id);
+    const r = await pool.query(
+      `SELECT cv.*, c.name AS catalog_name FROM catalog_versions cv
+       JOIN catalogs c ON c.id = cv.catalog_id WHERE cv.id = $1`,
+      [versionId]
+    );
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Versión no encontrada' });
+      return;
+    }
+    const v = r.rows[0];
+    // Verificar acceso al catálogo
+    const acceso = await cargarCatalogoConAcceso(v.catalog_id, req);
+    if (!acceso || 'error' in acceso) {
+      const a = acceso as any;
+      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
+      return;
+    }
+    if (!v.pdf_path) {
+      res.status(404).json({ success: false, error: 'Esta versión no tiene PDF' });
+      return;
+    }
+    const fs = require('fs');
+    if (!fs.existsSync(v.pdf_path)) {
+      res.status(404).json({ success: false, error: 'Archivo PDF no encontrado en disco' });
+      return;
+    }
+    const filename = `${nombreFicheroSeguro(v.catalog_name)}_v${v.version_number}_historico.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    fs.createReadStream(v.pdf_path).pipe(res);
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET descargar ZIP de una versión cerrada
+app.get('/api/catalog-versions/:id/download-zip', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const versionId = Number(req.params.id);
+    const r = await pool.query(
+      `SELECT cv.*, c.name AS catalog_name FROM catalog_versions cv
+       JOIN catalogs c ON c.id = cv.catalog_id WHERE cv.id = $1`,
+      [versionId]
+    );
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Versión no encontrada' });
+      return;
+    }
+    const v = r.rows[0];
+    const acceso = await cargarCatalogoConAcceso(v.catalog_id, req);
+    if (!acceso || 'error' in acceso) {
+      const a = acceso as any;
+      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
+      return;
+    }
+    if (!v.zip_path) {
+      res.status(404).json({ success: false, error: 'Esta versión no tiene ZIP' });
+      return;
+    }
+    const fs = require('fs');
+    if (!fs.existsSync(v.zip_path)) {
+      res.status(404).json({ success: false, error: 'Archivo ZIP no encontrado en disco' });
+      return;
+    }
+    const filename = `${nombreFicheroSeguro(v.catalog_name)}_v${v.version_number}_historico.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    fs.createReadStream(v.zip_path).pipe(res);
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ success: false, error: (e as Error).message });
   }
 });
 

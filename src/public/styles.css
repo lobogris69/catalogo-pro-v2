@@ -2352,3 +2352,129 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
   color: var(--gris-texto);
   line-height: 1.4;
 }
+
+/* ============================================================================
+   E - PESTAÑAS DEL EDITOR DE CATALOGO + HISTORIAL DE VERSIONES
+   ============================================================================ */
+
+.editor-pestanas {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 2px solid var(--gris-borde);
+  flex-wrap: wrap;
+}
+
+.editor-pestana {
+  background: transparent;
+  border: none;
+  border-bottom: 3px solid transparent;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  color: #666;
+  margin-bottom: -2px;
+  transition: all 0.15s;
+}
+.editor-pestana:hover {
+  color: var(--rosa);
+}
+.editor-pestana-activa {
+  color: var(--rosa);
+  font-weight: 600;
+  border-bottom-color: var(--rosa);
+}
+
+.versiones-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.version-fila {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  background: #fafafa;
+  border: 1px solid var(--gris-borde);
+  border-radius: 10px;
+}
+.version-fila:hover {
+  background: #fdf2f8;
+  border-color: var(--rosa);
+}
+
+.version-badge {
+  background: linear-gradient(135deg, #cc007a, #dc2675);
+  color: white;
+  font-weight: 700;
+  font-size: 18px;
+  width: 50px;
+  height: 50px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(204, 0, 122, 0.3);
+}
+
+.version-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.version-cabecera {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.version-titulo {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+}
+
+.version-meta {
+  font-size: 12px;
+  color: var(--gris-texto);
+}
+
+.version-fecha {
+  font-size: 12px;
+  color: var(--gris-texto);
+  margin-bottom: 4px;
+}
+
+.version-notas {
+  font-size: 13px;
+  color: #555;
+  font-style: italic;
+  margin-top: 6px;
+  padding-left: 12px;
+  border-left: 3px solid var(--rosa);
+}
+
+.version-acciones {
+  display: flex;
+  gap: 6px;
+  flex-direction: column;
+}
+
+@media (max-width: 600px) {
+  .version-fila {
+    flex-wrap: wrap;
+  }
+  .version-acciones {
+    flex-direction: row;
+    width: 100%;
+  }
+  .version-acciones .btn-card-mini {
+    flex: 1;
+  }
+}
