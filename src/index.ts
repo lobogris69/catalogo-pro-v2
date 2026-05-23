@@ -1780,9 +1780,60 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
     const r = await pool.query(sql, params);
 
     // Total para paginación (solo si limit < clientes)
+    // FIX bug: la query de conteo se construye DESDE CERO con sus propios parametros
+    // para no liar el indice. Si la lista trajo menos resultados que el limite, no
+    // hace falta contar (ya sabemos el total).
     let total = r.rows.length;
     if (r.rows.length === limit) {
-      // Hacer count separado (sin order)
+      const cParams: any[] = [];
+      let cIdx = 1;
+      let cComClause = '';
+      let cExtraClauses = '';
+
+      // Filtro por comercial (mismas reglas que la query principal)
+      if (isEffectiveSales(req)) {
+        const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
+        const ccode = uR.rows[0]?.sage_commercial_code;
+        if (ccode) {
+          cComClause = ` AND c.commercial_code = $${cIdx++}`;
+          cParams.push(String(ccode));
+        }
+      } else {
+        const adminCom = String(req.query.comercial || '').trim();
+        if (adminCom) {
+          cComClause = ` AND c.commercial_code = $${cIdx++}`;
+          cParams.push(adminCom);
+        }
+      }
+      if (q) {
+        cExtraClauses += ` AND (LOWER(c.razon_social) LIKE $${cIdx} OR LOWER(c.sage_code) LIKE $${cIdx})`;
+        cParams.push('%' + q + '%');
+        cIdx++;
+      }
+      if (provincia) {
+        cExtraClauses += ` AND c.provincia = $${cIdx++}`;
+        cParams.push(provincia);
+      }
+      if (municipio) {
+        cExtraClauses += ` AND c.municipio = $${cIdx++}`;
+        cParams.push(municipio);
+      }
+
+      // Añadir ciclo + ventanas + (estado si filtra)
+      const cicloPos = cIdx; cParams.push(cicloDefault); cIdx++;
+      const proxPos = cIdx;  cParams.push(ventanaProxima); cIdx++;
+      const urgPos  = cIdx;  cParams.push(ventanaUrgente); cIdx++;
+      let estadoClause = '';
+      if (estado !== 'todos') {
+        const estPos = cIdx; cParams.push(estado); cIdx++;
+        estadoClause = `WHERE CASE
+            WHEN b.dias_desde_ultima IS NULL THEN 'sin_historial'
+            WHEN b.dias_desde_ultima > (b.ciclo_efectivo + $${urgPos}) THEN 'urgente'
+            WHEN b.dias_desde_ultima >= (b.ciclo_efectivo - $${proxPos}) THEN 'proxima'
+            ELSE 'al_dia'
+          END = $${estPos}`;
+      }
+
       const countSql = `
         WITH ultima_visita AS (
           SELECT DISTINCT ON (v.client_id) v.client_id,
@@ -1793,24 +1844,18 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
         ),
         base AS (
           SELECT c.id, uv.fecha_ultima,
-            COALESCE(c.ciclo_visita_dias, $${paramIdx}) AS ciclo_efectivo,
+            COALESCE(c.ciclo_visita_dias, $${cicloPos}) AS ciclo_efectivo,
             CASE WHEN uv.fecha_ultima IS NULL THEN NULL
                  ELSE EXTRACT(DAY FROM (NOW() - uv.fecha_ultima))::int
             END AS dias_desde_ultima
           FROM clients c
           LEFT JOIN ultima_visita uv ON uv.client_id = c.id
-          WHERE c.is_active = TRUE ${comercialFilterClause} ${extraClauses}
+          WHERE c.is_active = TRUE ${cComClause} ${cExtraClauses}
         )
         SELECT COUNT(*)::int AS n FROM base b
-        ${estado !== 'todos' ? `WHERE CASE
-            WHEN b.dias_desde_ultima IS NULL THEN 'sin_historial'
-            WHEN b.dias_desde_ultima > (b.ciclo_efectivo + $${paramIdx + 2}) THEN 'urgente'
-            WHEN b.dias_desde_ultima >= (b.ciclo_efectivo - $${paramIdx + 1}) THEN 'proxima'
-            ELSE 'al_dia'
-          END = $${paramIdx + 3}` : ''}
+        ${estadoClause}
       `;
-      const countParams = params.slice(0, paramIdx + (estado !== 'todos' ? 4 : 3) - 1);
-      const cR = await pool.query(countSql, countParams);
+      const cR = await pool.query(countSql, cParams);
       total = cR.rows[0].n;
     }
 
