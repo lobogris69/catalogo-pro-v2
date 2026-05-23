@@ -3173,6 +3173,7 @@ async function renderDetalleVisita(visitId) {
           <div style="display:flex; gap:6px; align-self:flex-start; flex-wrap:wrap">
             <button class="btn btn-primary btn-pequeno" onclick="descargarPdfVisita(${v.id})">📄 Descargar PDF</button>
             ${(v.status === 'confirmed' || v.status === 'sent') ? `<button class="btn btn-secondary btn-pequeno" onclick="reenviarEmailsVisita(${v.id})">📧 Reenviar emails</button>` : ''}
+            ${(v.status === 'confirmed' || v.status === 'sent') ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalReenviarOtro(${v.id}, ${v.client_id})">✉️ Enviar a otro email</button>` : ''}
           </div>
         </div>
 
@@ -3251,6 +3252,84 @@ async function reenviarEmailsVisita(visitId) {
   } catch (err) {
     alert('Error: ' + err.message);
   }
+}
+
+// Modal: reenviar el email del cliente a una direccion puntual.
+// Caso de uso: el cliente llama y dice "no me ha llegado, mándalo a X@Y.com".
+async function abrirModalReenviarOtro(visitId, clientId) {
+  // Cargar email_alternativo actual del cliente para pre-rellenar
+  let alternativoActual = '';
+  let nombreCliente = '';
+  try {
+    const r = await api('/api/clients/' + clientId);
+    alternativoActual = (r.client && r.client.email_alternativo) || '';
+    nombreCliente = (r.client && r.client.razon_social) || '';
+  } catch (_) {}
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>✉️ Enviar a otro email</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      ${nombreCliente ? `<div style="font-size:13px;color:var(--gris-texto);margin-bottom:8px">Cliente: <b>${escape(nombreCliente)}</b></div>` : ''}
+      <p style="font-size:13px;color:#444;margin-bottom:12px">
+        Se enviará el resumen de la visita (con el PDF adjunto) a la dirección que indiques.
+        Útil cuando el cliente llama diciendo que no le ha llegado al correo habitual.
+      </p>
+      <div id="modal-error"></div>
+      <form id="form-reenviar-otro">
+        <div class="form-group">
+          <label>Email destinatario</label>
+          <input type="email" id="reenv-email" required placeholder="cliente@otra-direccion.com"
+                 value="${escape(alternativoActual)}">
+          ${alternativoActual ? `<div style="font-size:11px;color:var(--gris-texto);margin-top:4px">📌 Pre-rellenado con el "email alternativo" actual del cliente</div>` : ''}
+        </div>
+        <div class="form-group">
+          <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">
+            <input type="checkbox" id="reenv-guardar" checked style="margin-top:3px;width:18px;height:18px;flex-shrink:0">
+            <span>
+              💾 <b>Guardar este email para futuras visitas</b> con este cliente
+              <div style="font-size:11px;color:var(--gris-texto);font-weight:normal;margin-top:2px">
+                Se guardará en el campo "email alternativo" del cliente. La próxima visita irá automáticamente a esta dirección además del email principal del Sage.
+              </div>
+            </span>
+          </label>
+        </div>
+        <div class="modal-acciones">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+          <button type="submit" class="btn btn-primary">📧 Enviar</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  setTimeout(() => { const i = document.getElementById('reenv-email'); if (i && !alternativoActual) i.focus(); }, 50);
+
+  document.getElementById('form-reenviar-otro').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('reenv-email').value.trim();
+    const guardar = document.getElementById('reenv-guardar').checked;
+    if (!email) return;
+    const $err = document.getElementById('modal-error');
+    $err.innerHTML = `<div style="background:#eff6ff;color:#1e3a8a;padding:8px;border-radius:6px;font-size:13px">Enviando…</div>`;
+    try {
+      const r = await api('/api/visits/' + visitId + '/resend-to-custom', {
+        method: 'POST',
+        body: { email, guardar_en_cliente: guardar }
+      });
+      modal.remove();
+      let msg = '✅ Email reenviado correctamente a ' + (r.destinatario || email);
+      if (r.modo === 'pruebas') msg += '\n\n⚠️ Estás en MODO PRUEBAS — el destinatario real (' + email + ') NO ha recibido nada. Llegó al email de prueba configurado.';
+      if (r.guardado) msg += '\n\n💾 Guardado como email alternativo del cliente para futuras visitas.';
+      alert(msg);
+      setTimeout(() => renderDetalleVisita(visitId), 1500);
+    } catch (err) {
+      $err.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
 }
 
 function abrirDetalleVisita(visitId) {

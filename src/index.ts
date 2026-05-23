@@ -1429,6 +1429,11 @@ app.post('/api/clients/import-sage', verifyToken, requireAdmin, uploadExcel.sing
         }
 
         // INSERT o UPDATE (por sage_code)
+        // NOTA: email_alternativo NO se incluye en UPDATE intencionalmente.
+        // Si un comercial añadió un email_alternativo durante una visita
+        // (caso "el cliente pide enviar a otra direccion"), debe persistir
+        // entre re-importaciones del Sage. Solo se machaca con un UPDATE
+        // manual o desde el endpoint resend-to-custom con guardar_en_cliente=true.
         const existe = await pool.query('SELECT id FROM clients WHERE sage_code = $1', [sage_code]);
         if (existe.rows.length > 0) {
           // UPDATE
@@ -2444,6 +2449,94 @@ app.post('/api/visits/:id/resend-emails', verifyToken, async (req: AuthRequest, 
     // Lanzar reenvio (async, no esperamos)
     enviarEmailsVisita(id).catch(e => console.error('Error reenvio emails visita ' + id + ':', e));
     res.json({ success: true, message: 'Reenvío en curso. Revisa el log en unos segundos.' });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST reenviar SOLO el email del cliente a una direccion puntual (caso "el cliente
+// llama diciendo que no lo recibe y pide que lo mandes a otra direccion").
+// Body: { email: 'destino@ej.com', guardar_en_cliente?: boolean }
+// Si guardar_en_cliente=true ademas sobrescribe clients.email_alternativo.
+app.post('/api/visits/:id/resend-to-custom', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    const { email, guardar_en_cliente } = req.body;
+    if (!email || !String(email).trim()) {
+      res.status(400).json({ success: false, error: 'Falta email destino' });
+      return;
+    }
+    const emailDest = String(email).trim();
+    // Validación básica de email
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailDest)) {
+      res.status(400).json({ success: false, error: 'Email no válido' });
+      return;
+    }
+    // Cargar visita completa para verificar permisos y generar email
+    const datos = await cargarDatosVisitaCompleta(id);
+    if (!datos) {
+      res.status(404).json({ success: false, error: 'Visita no encontrada' });
+      return;
+    }
+    const { visit, annotations } = datos;
+    if (isEffectiveSales(req) && visit.user_id !== userId) {
+      res.status(403).json({ success: false, error: 'No tienes acceso a esta visita' });
+      return;
+    }
+    if (visit.status !== 'confirmed' && visit.status !== 'sent') {
+      res.status(400).json({ success: false, error: 'Solo se pueden reenviar emails de visitas cerradas' });
+      return;
+    }
+
+    const cfg = await leerEmailConfig();
+    const fecha = visit.confirmed_at ? new Date(visit.confirmed_at).toLocaleDateString('es-ES') : new Date(visit.created_at).toLocaleDateString('es-ES');
+    const asuntoBase = `Visita ${fecha} · ${visit.cliente_nombre || 'Cliente'}`;
+
+    // Generar PDF (mismo que email cliente original) y adjuntarlo
+    let pdfBuffer: Buffer | null = null;
+    try {
+      pdfBuffer = await generarPdfVisitaBuffer(visit, annotations);
+    } catch (e) {
+      console.error('Error generando PDF para visita ' + id + ':', (e as Error).message);
+    }
+    const adjuntoPdf = pdfBuffer ? [{ filename: nombrePdfVisita(visit), content: pdfBuffer, contentType: 'application/pdf' }] : [];
+
+    // En este endpoint el "destinatario real" es el email que el comercial ha indicado
+    // (no el del Sage). En modo pruebas igualmente se redirige al email de pruebas
+    // del rol cliente para no enviar nada real durante el desarrollo.
+    const r = await enviarEmailConRedireccion({
+      rol: 'cliente',
+      destinatarioReal: emailDest,
+      asunto: `[REENVÍO] ${asuntoBase}`,
+      html: plantillaEmailCliente(visit, annotations, cfg),
+      attachments: adjuntoPdf,
+      visitId: id
+    });
+
+    // Loguearlo
+    await pool.query(
+      `INSERT INTO visit_emails (visit_id, destinatario, destinatario_real, rol, modo, asunto, ok, error, message_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [id, r.destinatarioFinal, emailDest, 'cliente', r.modo, `[REENVÍO] ${asuntoBase}`, r.ok, r.error || null, r.messageId || null]
+    );
+
+    // Si el envio fue OK y el usuario quiere guardar el email para futuras visitas,
+    // sobrescribir clients.email_alternativo del cliente de esta visita
+    let guardado = false;
+    if (r.ok && guardar_en_cliente) {
+      await pool.query(
+        `UPDATE clients SET email_alternativo = $1 WHERE id = $2`,
+        [emailDest, visit.client_id]
+      );
+      guardado = true;
+    }
+
+    if (!r.ok) {
+      res.status(400).json({ success: false, error: r.error, guardado });
+      return;
+    }
+    res.json({ success: true, destinatario: r.destinatarioFinal, modo: r.modo, guardado });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
   }
