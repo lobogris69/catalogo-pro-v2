@@ -518,7 +518,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'I.2-visor-listado-offline-24may',
+    build: 'I.3-clientes-y-sync-offline-24may',
     service: 'CatalogPRO v2'
   });
 });
@@ -2126,6 +2126,147 @@ app.post('/api/visits/start', verifyToken, async (req: AuthRequest, res: Respons
     res.json({ success: true, visit: r.rows[0], continued: false });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// I.3: SINCRONIZACION de visita offline + sus anotaciones de golpe.
+// Recibe: { client_id, catalog_id, created_at, confirm: bool, annotations: [{ sheet_id, texto_libre, tipo, pos_x, pos_y, orden_en_visita }] }
+// Devuelve: { success: true, visit_id, annotation_ids_map: { local_id_anot: id_real } }
+app.post('/api/sync/visit-batch', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = effectiveUserId(req);
+    const { client_id, catalog_id, created_at, confirm, annotations, notas_generales } = req.body;
+
+    if (!client_id || !catalog_id) {
+      res.status(400).json({ success: false, error: 'client_id y catalog_id obligatorios' });
+      return;
+    }
+
+    // Validar que el cliente existe (puede haber sido borrado entre que se creó offline y ahora)
+    const cliCheck = await pool.query(`SELECT id FROM clients WHERE id = $1 AND is_active = TRUE`, [Number(client_id)]);
+    if (cliCheck.rows.length === 0) {
+      res.status(400).json({ success: false, error: 'El cliente ya no existe o está inactivo' });
+      return;
+    }
+
+    // Validar catálogo
+    const catCheck = await pool.query(`SELECT version FROM catalogs WHERE id = $1`, [Number(catalog_id)]);
+    if (catCheck.rows.length === 0) {
+      res.status(400).json({ success: false, error: 'El catálogo ya no existe' });
+      return;
+    }
+    const versionCat = catCheck.rows[0].version || 1;
+
+    // Crear visita con timestamp original (created_at offline) preservado
+    const createdAtPg = created_at ? new Date(created_at).toISOString() : new Date().toISOString();
+    const visitR = await pool.query(
+      `INSERT INTO visits (client_id, user_id, catalog_id, version_catalog, status, created_at, notas_generales)
+       VALUES ($1, $2, $3, $4, 'draft', $5::timestamp, $6) RETURNING *`,
+      [Number(client_id), userId, Number(catalog_id), versionCat, createdAtPg, notas_generales || null]
+    );
+    const visitId = visitR.rows[0].id;
+
+    // Crear anotaciones (mapeando local_id → id real)
+    const annIdMap: any = {};
+    let ordenContador = 1;
+    if (Array.isArray(annotations)) {
+      for (const ann of annotations) {
+        try {
+          const tipoFinal = ['pedido', 'devolucion', 'nota'].includes(ann.tipo) ? ann.tipo : 'pedido';
+          // pos_x/pos_y opcionales
+          let posX: number | null = null, posY: number | null = null;
+          if (ann.pos_x != null && ann.pos_x !== '') {
+            const px = Number(ann.pos_x);
+            if (Number.isFinite(px) && px >= 0 && px <= 1) posX = px;
+          }
+          if (ann.pos_y != null && ann.pos_y !== '') {
+            const py = Number(ann.pos_y);
+            if (Number.isFinite(py) && py >= 0 && py <= 1) posY = py;
+          }
+          const orden = Number(ann.orden_en_visita) || ordenContador++;
+          const annR = await pool.query(
+            `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y)
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+            [
+              visitId,
+              ann.sheet_id ? Number(ann.sheet_id) : null,
+              orden,
+              String(ann.texto_libre || '').trim() || '(sin texto)',
+              tipoFinal,
+              posX,
+              posY
+            ]
+          );
+          if (ann.local_id) annIdMap[ann.local_id] = annR.rows[0].id;
+        } catch (errAnn) {
+          console.error('[SYNC] Error insertando anotación:', (errAnn as Error).message);
+        }
+      }
+    }
+
+    // Si confirm=true, confirmar la visita (mantiene comportamiento de POST /:id/confirm)
+    let confirmed = false;
+    if (confirm) {
+      try {
+        await pool.query(
+          `UPDATE visits SET status = 'confirmed', confirmed_at = NOW() WHERE id = $1`,
+          [visitId]
+        );
+        // ultima_visita_at del cliente
+        await pool.query(`UPDATE clients SET ultima_visita_at = NOW() WHERE id = $1`, [Number(client_id)]);
+        confirmed = true;
+        // NOTA: NO disparamos emails automáticos al sincronizar (Fernando decidirá si los envía manualmente)
+        // Esto evita spam si por error se sincronizan visitas viejas.
+      } catch (errConf) {
+        console.error('[SYNC] Error confirmando visita:', (errConf as Error).message);
+      }
+    }
+
+    res.json({
+      success: true,
+      visit_id: visitId,
+      confirmed,
+      annotation_ids_map: annIdMap,
+      annotations_count: Object.keys(annIdMap).length
+    });
+  } catch (e) {
+    console.error('[SYNC/VISIT-BATCH] ERROR:', (e as Error).message);
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// I.3: descargar lista de clientes asignados al comercial para uso offline.
+// Devuelve solo los campos necesarios para la ficha + alta de visita.
+app.get('/api/sync/my-clients', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    const userId = effectiveUserId(req);
+
+    const params: any[] = [];
+    let whereClause = `c.is_active = TRUE`;
+
+    if (isEffectiveSales(req)) {
+      // Comercial: solo sus clientes asignados (por commercial_code)
+      const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
+      const ccode = uR.rows[0]?.sage_commercial_code;
+      if (!ccode) { res.json({ success: true, clientes: [] }); return; }
+      params.push(String(ccode));
+      whereClause += ` AND c.commercial_code = $${params.length}`;
+    }
+
+    const r = await pool.query(
+      `SELECT id, sage_code, razon_social, cif, cp, direccion, municipio, provincia,
+              telefono, whatsapp, email, email_alternativo, commercial_code, categoria,
+              latitude, longitude, ciclo_visita_dias, ultima_visita_at, notas_internas
+       FROM clients c
+       WHERE ${whereClause}
+       ORDER BY razon_social
+       LIMIT 5000`,
+      params
+    );
+    res.json({ success: true, clientes: r.rows, total: r.rows.length });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
   }
 });
 

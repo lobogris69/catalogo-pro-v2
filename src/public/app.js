@@ -213,8 +213,9 @@ async function renderApp() {
 }
 
 function routerVista() {
-  // I.2: vistas que NO funcionan offline (requieren API)
-  const vistasOnlineOnly = ['clientes', 'comerciales', 'planning', 'mapa', 'plantillas', 'configuracion'];
+  // I.2: vistas que NO funcionan offline (requieren API y no tienen cache offline)
+  // Clientes SÍ funciona offline (I.3) leyendo desde IndexedDB
+  const vistasOnlineOnly = ['comerciales', 'planning', 'mapa', 'plantillas', 'configuracion'];
   if (!navigator.onLine && vistasOnlineOnly.includes(appState.vista)) {
     renderVistaNoDisponibleOffline(appState.vista);
     return;
@@ -328,7 +329,10 @@ async function renderListaCatalogos() {
       <div class="contenedor">
         <div class="titulo-pagina">
           <h2>Catálogos${modoOffline ? ' <span style="font-size:13px;color:var(--gris-texto);font-weight:normal">(modo offline)</span>' : ''}</h2>
-          ${esAdmin && !modoOffline ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoCatalogo()">+ Nuevo catálogo</button>` : ''}
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${esAdmin && !modoOffline ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoCatalogo()">+ Nuevo catálogo</button>` : ''}
+            ${!modoOffline ? `<button class="btn btn-secondary btn-pequeno" onclick="descargarMisClientes()" title="Descargar tu lista de clientes a este dispositivo para uso offline">👥 Descargar clientes</button>` : ''}
+          </div>
         </div>
         ${modoOffline ? `
           <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#78350f">
@@ -1469,30 +1473,68 @@ async function cargarClientesYRefrescarLista() {
   if ($spinner) $spinner.style.display = 'block';
 
   try {
-    const params = new URLSearchParams({
-      page: appState.clientesPagina,
-      limit: 50,
-      search: appState.clientesBusqueda || ''
-    });
-    const r = await api('/api/clients?' + params.toString());
+    let clientes;
+    let total;
+    let pagina = appState.clientesPagina;
+    let totalPaginas = 1;
+    let modoOffline = false;
+
+    // I.3: si offline, leer de IndexedDB
+    if (!navigator.onLine) {
+      modoOffline = true;
+      try {
+        clientes = await CpDB.listarClientes(appState.clientesBusqueda || '');
+        total = clientes.length;
+        totalPaginas = 1; // sin paginación offline
+      } catch (errOff) {
+        clientes = [];
+        total = 0;
+      }
+    } else {
+      const params = new URLSearchParams({
+        page: appState.clientesPagina,
+        limit: 50,
+        search: appState.clientesBusqueda || ''
+      });
+      try {
+        const r = await api('/api/clients?' + params.toString());
+        clientes = r.clients || [];
+        total = r.total;
+        pagina = r.page;
+        totalPaginas = r.pages || 1;
+      } catch (err) {
+        // Si online API falla, fallback IndexedDB
+        console.warn('[I.3] API clients falló, usando IndexedDB:', err.message);
+        modoOffline = true;
+        try {
+          clientes = await CpDB.listarClientes(appState.clientesBusqueda || '');
+          total = clientes.length;
+          totalPaginas = 1;
+        } catch (errOff) {
+          clientes = [];
+          total = 0;
+        }
+      }
+    }
 
     // Si esta no es la búsqueda más reciente, ignoramos
     if (miToken !== _busquedaTokenActual) return;
     if ($spinner) $spinner.style.display = 'none';
 
-    const clientes = r.clients || [];
     const esAdmin = rolEfectivo() === 'admin';
 
-    $resumen.textContent = `${r.total} ${appState.clientesBusqueda ? 'resultados' : 'clientes'} · página ${r.page} de ${r.pages || 1}`;
+    $resumen.innerHTML = `${total} ${appState.clientesBusqueda ? 'resultados' : 'clientes'}${modoOffline ? ' · <span style="color:#d97706">📲 offline (descargados)</span>' : ` · página ${pagina} de ${totalPaginas}`}`;
 
     let html = '';
     if (clientes.length === 0) {
       html = `
         <div class="empty-state">
           <div class="empty-state-icono">🏥</div>
-          <h3>${appState.clientesBusqueda ? 'Sin resultados' : 'No hay clientes todavía'}</h3>
-          <p>${appState.clientesBusqueda ? 'Prueba con otra búsqueda.' : esAdmin ? 'Importa el Excel de Sage para empezar.' : 'Aún no tienes clientes asignados.'}</p>
-          ${esAdmin && !appState.clientesBusqueda ? `<button class="btn btn-primary" style="max-width:280px;margin:0 auto" onclick="abrirModalImportarSage()">📊 Importar Excel de Sage</button>` : ''}
+          <h3>${modoOffline && !appState.clientesBusqueda ? 'Sin clientes descargados' : (appState.clientesBusqueda ? 'Sin resultados' : 'No hay clientes todavía')}</h3>
+          <p>${modoOffline && !appState.clientesBusqueda
+            ? 'Vuelve a conectarte e usa el botón "👥 Descargar clientes" en la pestaña Catálogos.'
+            : (appState.clientesBusqueda ? 'Prueba con otra búsqueda.' : esAdmin ? 'Importa el Excel de Sage para empezar.' : 'Aún no tienes clientes asignados.')}</p>
+          ${esAdmin && !appState.clientesBusqueda && !modoOffline ? `<button class="btn btn-primary" style="max-width:280px;margin:0 auto" onclick="abrirModalImportarSage()">📊 Importar Excel de Sage</button>` : ''}
         </div>
       `;
     } else {
@@ -1501,7 +1543,7 @@ async function cargarClientesYRefrescarLista() {
         const inactive = !c.is_active ? ' cliente-fila-baja' : '';
         html += `
           <div class="cliente-fila cliente-fila-clickable${inactive}" onclick="abrirDetalleCliente(${c.id})">
-            <div class="planning-chip-mini" id="estado-cli-${c.id}" title="Estado pendiente de cargar...">⏳</div>
+            <div class="planning-chip-mini" id="estado-cli-${c.id}" title="Estado pendiente de cargar...">${modoOffline ? '📲' : '⏳'}</div>
             <div class="cliente-fila-codigo">${escape(c.sage_code || '?')}</div>
             <div class="cliente-fila-info">
               <div class="cliente-fila-nombre">${escape(c.razon_social)} ${!c.is_active ? '<span class="cliente-baja-badge">BAJA</span>' : ''}</div>
@@ -3278,13 +3320,18 @@ function actualizarIndicadorOnline() {
   _estaOnline = navigator.onLine;
   const $ind = document.getElementById('indicador-online');
   if (!$ind) return;
+  const pendientes = _visitasPendientes || 0;
+  let badgePendientes = '';
+  if (pendientes > 0) {
+    badgePendientes = `<span class="indicador-pendientes" onclick="event.stopPropagation();abrirModalPendientes()" title="${pendientes} visita(s) pendiente(s) de sincronizar">⏳ ${pendientes}</span>`;
+  }
   if (_estaOnline) {
     $ind.className = 'indicador-online indicador-online-on';
-    $ind.innerHTML = '🟢 Online';
+    $ind.innerHTML = `🟢 Online${badgePendientes}`;
     $ind.title = 'Conectado a internet';
   } else {
     $ind.className = 'indicador-online indicador-online-off';
-    $ind.innerHTML = '🔴 Sin conexión';
+    $ind.innerHTML = `🔴 Sin conexión${badgePendientes}`;
     $ind.title = 'Sin conexión a internet. Trabajando offline.';
   }
 }
@@ -3469,7 +3516,256 @@ async function inicializarOffline() {
     await refrescarCacheCatalogosDescargados();
   } catch (_) {}
   actualizarIndicadorOnline();
+  // I.3: refrescar contador de visitas pendientes
+  refrescarContadorPendientes();
 }
+
+// ============================================================================
+// ===== I.3 - VISITAS Y CLIENTES OFFLINE + SINCRONIZACIÓN =====
+// ============================================================================
+
+// Descargar lista de clientes asignados a IndexedDB
+async function descargarMisClientes() {
+  if (!navigator.onLine) {
+    alert('Necesitas conexión para descargar tus clientes.');
+    return;
+  }
+  // Modal con progreso
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>👥 Descargando clientes</h3>
+      </div>
+      <p style="font-size:13px;color:var(--gris-texto);margin-bottom:14px">
+        Bajando lista de tus clientes asignados al dispositivo para uso sin conexión…
+      </p>
+      <div class="loading">Descargando…</div>
+      <div id="dl-clientes-msg" style="font-size:13px;text-align:center;margin-top:10px"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  try {
+    const r = await api('/api/sync/my-clients');
+    const clientes = r.clientes || [];
+    if (clientes.length === 0) {
+      document.getElementById('dl-clientes-msg').textContent = 'No tienes clientes asignados.';
+      setTimeout(() => modal.remove(), 2500);
+      return;
+    }
+    await CpDB.guardarClientesBatch(clientes);
+    document.getElementById('dl-clientes-msg').innerHTML = `✅ <b>${clientes.length}</b> clientes guardados offline`;
+    setTimeout(() => {
+      modal.remove();
+      mostrarNotificacionOnline(`👥 ${clientes.length} clientes descargados`, '#16a34a');
+    }, 2500);
+  } catch (err) {
+    document.getElementById('dl-clientes-msg').innerHTML = `<div class="error-msg">Error: ${escape(err.message)}</div>`;
+    setTimeout(() => modal.remove(), 4000);
+  }
+}
+
+// Contador de visitas pendientes de sincronizar (lo refresca el indicador)
+let _visitasPendientes = 0;
+async function refrescarContadorPendientes() {
+  try {
+    _visitasPendientes = await CpDB.contarVisitasPendientes();
+  } catch (_) {
+    _visitasPendientes = 0;
+  }
+  // Repintar indicador si está visible
+  actualizarIndicadorOnline();
+  // Indicador en navtabs
+  const $badge = document.getElementById('badge-pendientes-sync');
+  if ($badge) {
+    if (_visitasPendientes > 0) {
+      $badge.style.display = 'inline-flex';
+      $badge.textContent = _visitasPendientes;
+    } else {
+      $badge.style.display = 'none';
+    }
+  }
+}
+
+// Iniciar una visita offline (cliente debe estar en IndexedDB)
+async function iniciarVisitaOffline(clientId, catalogId) {
+  const cliente = await CpDB.obtenerCliente(clientId);
+  if (!cliente) {
+    alert('Este cliente no está descargado offline. Conéctate a internet o descarga tus clientes primero.');
+    return null;
+  }
+  const catalog = await CpDB.obtenerCatalogo(catalogId);
+  if (!catalog) {
+    alert('Este catálogo no está descargado offline. No puedes iniciar visita sin catálogo descargado.');
+    return null;
+  }
+  // Crear visita local
+  const visita = await CpDB.crearVisitaOffline({
+    client_id: clientId,
+    catalog_id: catalogId,
+    cliente_nombre: cliente.razon_social,
+    catalog_nombre: catalog.name,
+    status: 'draft',
+    estado_sync: 'pendiente'
+  });
+  await refrescarContadorPendientes();
+  return visita;
+}
+
+// Crear anotación offline (en una visita offline)
+async function crearAnotacionOfflineAPI(visitLocalId, sheetId, texto_libre, tipo, pos_x, pos_y) {
+  // Buscar orden actual
+  const existentes = await CpDB.listarAnotacionesDeVisitaOffline(visitLocalId);
+  const orden = existentes.length + 1;
+  const ann = await CpDB.crearAnotacionOffline({
+    visit_local_id: visitLocalId,
+    sheet_id: sheetId,
+    texto_libre,
+    tipo,
+    pos_x: pos_x != null ? pos_x : null,
+    pos_y: pos_y != null ? pos_y : null,
+    orden_en_visita: orden
+  });
+  return ann;
+}
+
+// SINCRONIZACIÓN automática + manual
+let _syncEnCurso = false;
+async function sincronizarPendientes(esManual = false) {
+  if (_syncEnCurso) {
+    if (esManual) alert('Ya hay una sincronización en curso.');
+    return;
+  }
+  if (!navigator.onLine) {
+    if (esManual) alert('Necesitas conexión a internet para sincronizar.');
+    return;
+  }
+  const pendientes = await CpDB.listarVisitasOffline('pendiente');
+  if (pendientes.length === 0) {
+    if (esManual) alert('No hay visitas pendientes de sincronizar.');
+    return;
+  }
+  _syncEnCurso = true;
+  mostrarNotificacionOnline(`🔄 Sincronizando ${pendientes.length} visita(s)…`, '#3b82f6');
+
+  let okCount = 0;
+  let errCount = 0;
+  for (const visita of pendientes) {
+    try {
+      // Marcar como "sincronizando"
+      await CpDB.actualizarVisitaOffline(visita.local_id, { estado_sync: 'sincronizando' });
+      // Obtener anotaciones de esta visita
+      const anots = await CpDB.listarAnotacionesDeVisitaOffline(visita.local_id);
+      // Llamar al endpoint batch
+      const r = await api('/api/sync/visit-batch', {
+        method: 'POST',
+        body: {
+          client_id: visita.client_id,
+          catalog_id: visita.catalog_id,
+          created_at: visita.created_at,
+          notas_generales: visita.notas_generales || null,
+          confirm: visita.status === 'confirmed' || visita.cerrar_al_sincronizar === true,
+          annotations: anots.map(a => ({
+            local_id: a.local_id,
+            sheet_id: a.sheet_id,
+            texto_libre: a.texto_libre,
+            tipo: a.tipo,
+            pos_x: a.pos_x,
+            pos_y: a.pos_y,
+            orden_en_visita: a.orden_en_visita
+          }))
+        }
+      });
+      if (r.success) {
+        // Borrar visita local + anotaciones (ya está en servidor)
+        await CpDB.borrarVisitaOffline(visita.local_id);
+        okCount++;
+      } else {
+        await CpDB.actualizarVisitaOffline(visita.local_id, { estado_sync: 'error', error_msg: r.error || 'Error desconocido' });
+        errCount++;
+      }
+    } catch (err) {
+      console.error('[SYNC] Error en visita ' + visita.local_id + ':', err.message);
+      await CpDB.actualizarVisitaOffline(visita.local_id, { estado_sync: 'error', error_msg: err.message });
+      errCount++;
+    }
+  }
+
+  _syncEnCurso = false;
+  await refrescarContadorPendientes();
+
+  // Notificación final
+  if (errCount === 0) {
+    mostrarNotificacionOnline(`✅ ${okCount} visita(s) sincronizada(s) correctamente`, '#16a34a');
+  } else if (okCount === 0) {
+    mostrarNotificacionOnline(`⚠️ ${errCount} visita(s) con error — revisa la cola`, '#dc2626');
+  } else {
+    mostrarNotificacionOnline(`✅ ${okCount} OK · ⚠️ ${errCount} con error`, '#d97706');
+  }
+}
+
+// Pantalla de visitas pendientes (modal con lista + acciones)
+async function abrirModalPendientes() {
+  const pendientes = await CpDB.listarVisitasOffline();
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card modal-card-ancho">
+      <div class="modal-header">
+        <h3>🔄 Visitas pendientes de sincronizar (${pendientes.length})</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      ${pendientes.length === 0 ? `
+        <p style="text-align:center;color:var(--gris-texto);padding:2rem">
+          ✅ No hay visitas pendientes — todo sincronizado.
+        </p>
+      ` : `
+        <div style="max-height:400px;overflow-y:auto">
+          ${pendientes.map(v => {
+            const fecha = new Date(v.created_at).toLocaleString('es-ES');
+            const colorEstado = v.estado_sync === 'pendiente' ? '#d97706' :
+                                v.estado_sync === 'error' ? '#dc2626' :
+                                v.estado_sync === 'sincronizando' ? '#3b82f6' : '#16a34a';
+            const iconoEstado = v.estado_sync === 'pendiente' ? '⏳' :
+                                v.estado_sync === 'error' ? '⚠️' :
+                                v.estado_sync === 'sincronizando' ? '🔄' : '✅';
+            return `
+              <div class="visita-pendiente-fila">
+                <div class="visita-pendiente-info">
+                  <div style="font-weight:600">${escape(v.cliente_nombre || 'Cliente ' + v.client_id)}</div>
+                  <div style="font-size:12px;color:var(--gris-texto)">${escape(fecha)} · ${escape(v.catalog_nombre || '')}</div>
+                  ${v.error_msg ? `<div style="font-size:11px;color:#dc2626;margin-top:4px">⚠️ ${escape(v.error_msg)}</div>` : ''}
+                </div>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <span style="color:${colorEstado};font-size:12px;font-weight:600">${iconoEstado} ${v.estado_sync}</span>
+                  <button class="btn-card-mini" onclick="if(confirm('¿Borrar esta visita offline? No se subirá al servidor.')){CpDB.borrarVisitaOffline('${v.local_id}').then(()=>{this.closest('.modal-bg').remove();refrescarContadorPendientes();});}" title="Borrar definitivamente">🗑️</button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <div class="modal-acciones" style="margin-top:14px">
+          <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+          ${navigator.onLine ? `<button class="btn btn-primary" onclick="this.closest('.modal-bg').remove();sincronizarPendientes(true);">🔄 Sincronizar ahora</button>` : `<span style="color:#dc2626;font-size:12px">Sin conexión — no se puede sincronizar</span>`}
+        </div>
+      `}
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+// Hook: cuando se recupera conexión, intentar sincronizar automáticamente
+window.addEventListener('online', async () => {
+  // Esperar 2 segundos por estabilidad de red antes de intentar
+  setTimeout(async () => {
+    const pendientes = await CpDB.contarVisitasPendientes();
+    if (pendientes > 0) {
+      console.log('[I.3] Sincronización automática: ' + pendientes + ' pendientes');
+      sincronizarPendientes(false);
+    }
+  }, 2000);
+});
 
 // ============================================================================
 // ===== E - VERSIONES V1/V2/V3 CON HISTORIAL =====

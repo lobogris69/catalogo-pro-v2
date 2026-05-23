@@ -2560,3 +2560,42 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
   border-bottom: 1px solid #fcd34d;
   text-align: center;
 }
+
+/* ============================================================================
+   I.3 - SINCRONIZACIÓN Y VISITAS PENDIENTES
+   ============================================================================ */
+
+.indicador-pendientes {
+  background: #d97706;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 6px;
+  cursor: pointer;
+  animation: pulso-pendiente 2.5s infinite;
+}
+.indicador-pendientes:hover {
+  background: #b45309;
+}
+@keyframes pulso-pendiente {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+.visita-pendiente-fila {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.visita-pendiente-fila:last-child {
+  border-bottom: none;
+}
+.visita-pendiente-info {
+  flex: 1;
+  min-width: 0;
+}
