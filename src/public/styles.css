@@ -1770,3 +1770,163 @@ body {
 .visor-modo-btn-notas:hover {
   background: #fde68a !important;
 }
+
+/* ============================================================================
+   G - PLANNING / RUTERO
+   ============================================================================ */
+
+.planning-filtros {
+  background: white;
+  border: 1px solid var(--gris-borde);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 14px 0;
+}
+
+.planning-chips-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.planning-chip {
+  background: #f3f4f6;
+  border: 1px solid var(--gris-borde);
+  border-radius: 16px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.planning-chip:hover {
+  background: #e5e7eb;
+}
+.planning-chip-activo {
+  background: var(--rosa);
+  color: white;
+  border-color: var(--rosa);
+  font-weight: 500;
+}
+
+.planning-inputs-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.planning-input {
+  padding: 8px 12px;
+  border: 1px solid var(--gris-borde);
+  border-radius: 8px;
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+  flex: 1;
+  min-width: 180px;
+}
+.planning-input:focus { border-color: var(--rosa); }
+
+.planning-resumen {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--gris-texto);
+  margin-bottom: 10px;
+}
+.planning-resumen-chip {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+
+.planning-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.planning-fila {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: white;
+  border-radius: 8px;
+  border-left: 4px solid #6b7280;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.planning-fila:hover {
+  background: #fafafa;
+}
+
+.planning-chip-estado {
+  font-size: 18px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.planning-fila-info {
+  flex: 1;
+  min-width: 0;
+}
+.planning-fila-nombre {
+  font-weight: 500;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.planning-fila-meta {
+  font-size: 12px;
+  color: #555;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.planning-fila-tiempo {
+  font-size: 12px;
+  color: var(--gris-texto);
+  margin-top: 2px;
+}
+
+.planning-btn-visita {
+  flex-shrink: 0;
+}
+
+/* Chip mini en lista clientes */
+.planning-chip-mini {
+  font-size: 14px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #f3f4f6;
+  margin-right: 8px;
+}
+
+/* Botón link sutil dentro de la ficha */
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--rosa);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  margin-left: 6px;
+  text-decoration: underline;
+  font-family: inherit;
+}
+.btn-link:hover {
+  color: #a00060;
+}

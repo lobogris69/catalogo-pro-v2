@@ -195,6 +195,7 @@ async function renderApp() {
       <div class="navtabs">
         <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
         <button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>
+        <button class="navtab ${appState.vista === 'planning' ? 'navtab-activa' : ''}" onclick="irA('planning')">🗓️ Planning</button>
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'configuracion' ? 'navtab-activa' : ''}" onclick="irA('configuracion')">⚙️ Configuración</button>` : ''}
@@ -217,6 +218,8 @@ function routerVista() {
     }
   } else if (appState.vista === 'comerciales') {
     renderListaComerciales();
+  } else if (appState.vista === 'planning') {
+    renderPlanning();
   } else if (appState.vista === 'plantillas') {
     renderListaPlantillas();
   } else if (appState.vista === 'configuracion') {
@@ -1388,6 +1391,7 @@ async function cargarClientesYRefrescarLista() {
         const inactive = !c.is_active ? ' cliente-fila-baja' : '';
         html += `
           <div class="cliente-fila cliente-fila-clickable${inactive}" onclick="abrirDetalleCliente(${c.id})">
+            <div class="planning-chip-mini" id="estado-cli-${c.id}" title="Estado pendiente de cargar...">⏳</div>
             <div class="cliente-fila-codigo">${escape(c.sage_code || '?')}</div>
             <div class="cliente-fila-info">
               <div class="cliente-fila-nombre">${escape(c.razon_social)} ${!c.is_active ? '<span class="cliente-baja-badge">BAJA</span>' : ''}</div>
@@ -1401,6 +1405,9 @@ async function cargarClientesYRefrescarLista() {
         `;
       });
       html += '</div>';
+
+      // Cargar estados planning para esta página (async, no bloquea)
+      cargarEstadosClientesEnFondo(clientes.filter(c => c.is_active).map(c => c.id));
 
       if (r.pages > 1) {
         html += `<div class="paginacion">
@@ -2672,6 +2679,27 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE 5: Planning de visitas -->
+        <div class="editor-panel" style="margin-bottom:14px">
+          <h3 style="margin-top:0">🗓️ Planning de visitas</h3>
+          <p style="font-size:13px;color:var(--gris-texto)">Reglas globales para calcular cuándo un cliente está al día, próximo o urgente. Cada cliente puede tener su propio ciclo (sobrescribe estos valores).</p>
+          <div class="form-group">
+            <label>Ciclo por defecto (días)</label>
+            <input type="number" id="cfg-planning_ciclo_default" value="${escape(cfg.planning_ciclo_default && cfg.planning_ciclo_default.valor || '90')}" min="1" max="730">
+            <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Cada cuántos días se debe visitar a un cliente que NO tenga ciclo propio. Por defecto: 90 días.</div>
+          </div>
+          <div class="form-group">
+            <label>Ventana "próxima" (días antes del ciclo)</label>
+            <input type="number" id="cfg-planning_ventana_proxima_dias" value="${escape(cfg.planning_ventana_proxima_dias && cfg.planning_ventana_proxima_dias.valor || '15')}" min="0" max="365">
+            <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Cuando faltan estos días para cumplir el ciclo, el cliente pasa a 🟡 amarillo. Ej: ciclo 90d + ventana 15d → amarillo desde día 75.</div>
+          </div>
+          <div class="form-group">
+            <label>Ventana "urgente" (días después del ciclo)</label>
+            <input type="number" id="cfg-planning_ventana_urgente_dias" value="${escape(cfg.planning_ventana_urgente_dias && cfg.planning_ventana_urgente_dias.valor || '15')}" min="0" max="365">
+            <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Cuando pasan estos días por encima del ciclo sin visitar, el cliente pasa a 🔴 rojo (urgente). Ej: ciclo 90d + ventana 15d → rojo a partir de día 106.</div>
+          </div>
+        </div>
+
         <!-- ACCIONES -->
         <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:14px">
           <button class="btn btn-secondary" onclick="enviarEmailPrueba()">📨 Enviar email de prueba</button>
@@ -2710,7 +2738,10 @@ async function guardarConfiguracion() {
     'pruebas_email_cliente',
     'pruebas_email_comercial',
     'remitente_from',
-    'firma_html'
+    'firma_html',
+    'planning_ciclo_default',
+    'planning_ventana_proxima_dias',
+    'planning_ventana_urgente_dias'
   ];
   const values = {};
   claves.forEach(k => {
@@ -2737,6 +2768,250 @@ async function enviarEmailPrueba() {
     alert('✅ Email de prueba enviado a ' + to + '\n\nRevisa la bandeja en unos segundos. Si no llega en 1-2 minutos, revisa configuración SMTP en Railway o la carpeta de spam.');
   } catch (err) {
     alert('❌ Error enviando prueba:\n\n' + err.message + '\n\nVerifica que SMTP_HOST, SMTP_USER y SMTP_PASS estén configurados en Railway.');
+  }
+}
+
+// ============================================================================
+// ===== G - PLANNING / RUTERO DE VISITAS =====
+// ============================================================================
+
+let _planningState = {
+  estado: 'todos',
+  q: '',
+  provincia: '',
+  municipio: '',
+  comercial: '',
+  loading: false,
+  clientes: [],
+  total: 0,
+  config: null,
+  filtrosCache: null   // {provincias:[], municipios:[], comerciales:[]}
+};
+
+const ESTADOS_PLANNING = {
+  urgente:       { color: '#dc2626', bg: '#fef2f2', emoji: '🔴', label: 'Urgente' },
+  proxima:       { color: '#d97706', bg: '#fffbeb', emoji: '🟡', label: 'Próxima' },
+  al_dia:        { color: '#16a34a', bg: '#f0fdf4', emoji: '🟢', label: 'Al día' },
+  sin_historial: { color: '#6b7280', bg: '#f9fafb', emoji: '⚪', label: 'Sin historial' }
+};
+
+// G: carga estados planning en background y rellena los chips ⏳ de la lista de clientes
+async function cargarEstadosClientesEnFondo(ids) {
+  if (!ids || ids.length === 0) return;
+  try {
+    const r = await api('/api/clients/states-batch', { method: 'POST', body: { ids } });
+    const states = r.states || {};
+    Object.keys(states).forEach(id => {
+      const $el = document.getElementById('estado-cli-' + id);
+      if ($el) {
+        const e = ESTADOS_PLANNING[states[id].estado] || ESTADOS_PLANNING.sin_historial;
+        $el.textContent = e.emoji;
+        $el.title = e.label + (states[id].dias !== null ? ' · ' + states[id].dias + 'd desde última visita · ciclo ' + states[id].ciclo + 'd' : ' · sin visitas');
+        $el.style.background = e.bg;
+        $el.style.color = e.color;
+      }
+    });
+  } catch (_) {
+    // si falla silenciosamente, los chips se quedan en ⏳
+  }
+}
+
+async function renderPlanning() {
+  const $v = document.getElementById('vista-contenido');
+  // Pintar shell con filtros (si no se cargaron filtros, cargarlos)
+  if (!_planningState.filtrosCache) {
+    try {
+      const r = await api('/api/planning/filtros');
+      _planningState.filtrosCache = r;
+    } catch (_) {
+      _planningState.filtrosCache = { provincias: [], municipios: [], comerciales: [] };
+    }
+  }
+  pintarPlanning();
+  // Cargar lista
+  await recargarPlanning();
+}
+
+function pintarPlanning() {
+  const $v = document.getElementById('vista-contenido');
+  const f = _planningState.filtrosCache || { provincias: [], municipios: [], comerciales: [] };
+  const s = _planningState;
+  const esAdmin = rolEfectivo() === 'admin';
+
+  // Botones de estado (chips)
+  const estadosChips = ['todos','urgente','proxima','al_dia','sin_historial'].map(e => {
+    const label = e === 'todos' ? 'Todos' : (ESTADOS_PLANNING[e].emoji + ' ' + ESTADOS_PLANNING[e].label);
+    const activo = s.estado === e;
+    return `<button class="planning-chip ${activo ? 'planning-chip-activo' : ''}" onclick="cambiarFiltroPlanning('estado','${e}')">${label}</button>`;
+  }).join('');
+
+  $v.innerHTML = `
+    <div class="contenedor">
+      <div class="titulo-pagina">
+        <div>
+          <h2>🗓️ Planning de visitas</h2>
+          <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+            Clientes ordenados por urgencia. Pulsa una fila para abrir su ficha.
+          </div>
+        </div>
+      </div>
+
+      <!-- Filtros -->
+      <div class="planning-filtros">
+        <div class="planning-chips-row">${estadosChips}</div>
+        <div class="planning-inputs-row">
+          <input type="text" id="planning-q" class="planning-input" placeholder="🔍 Buscar por nombre o código Sage…" value="${escape(s.q)}">
+          <select id="planning-provincia" class="planning-input">
+            <option value="">📍 Todas las provincias</option>
+            ${f.provincias.map(p => `<option value="${escape(p)}" ${p === s.provincia ? 'selected' : ''}>${escape(p)}</option>`).join('')}
+          </select>
+          <select id="planning-municipio" class="planning-input">
+            <option value="">🏘️ Todos los municipios</option>
+            ${f.municipios.map(m => `<option value="${escape(m)}" ${m === s.municipio ? 'selected' : ''}>${escape(m)}</option>`).join('')}
+          </select>
+          ${esAdmin && f.comerciales && f.comerciales.length > 0 ? `
+            <select id="planning-comercial" class="planning-input">
+              <option value="">👤 Todos los comerciales</option>
+              ${f.comerciales.map(c => `<option value="${escape(c)}" ${c === s.comercial ? 'selected' : ''}>${escape(c)}</option>`).join('')}
+            </select>
+          ` : ''}
+        </div>
+      </div>
+
+      <!-- Resultado -->
+      <div id="planning-resultado">
+        ${s.loading ? '<div class="loading">Cargando…</div>' : ''}
+      </div>
+    </div>
+  `;
+
+  // Listeners (debounce en búsqueda)
+  const $q = document.getElementById('planning-q');
+  if ($q) {
+    let t;
+    $q.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        _planningState.q = $q.value.trim();
+        recargarPlanning();
+      }, 350);
+    });
+  }
+  const $prov = document.getElementById('planning-provincia');
+  if ($prov) $prov.addEventListener('change', () => { _planningState.provincia = $prov.value; recargarPlanning(); });
+  const $muni = document.getElementById('planning-municipio');
+  if ($muni) $muni.addEventListener('change', () => { _planningState.municipio = $muni.value; recargarPlanning(); });
+  const $com = document.getElementById('planning-comercial');
+  if ($com) $com.addEventListener('change', () => { _planningState.comercial = $com.value; recargarPlanning(); });
+}
+
+function cambiarFiltroPlanning(campo, valor) {
+  _planningState[campo] = valor;
+  pintarPlanning(); // re-pinta los chips marcando el activo
+  recargarPlanning();
+}
+
+async function recargarPlanning() {
+  const s = _planningState;
+  const $res = document.getElementById('planning-resultado');
+  if ($res) $res.innerHTML = '<div class="loading">Cargando…</div>';
+  try {
+    const params = new URLSearchParams();
+    if (s.estado && s.estado !== 'todos') params.set('estado', s.estado);
+    if (s.q) params.set('q', s.q.toLowerCase());
+    if (s.provincia) params.set('provincia', s.provincia);
+    if (s.municipio) params.set('municipio', s.municipio);
+    if (s.comercial) params.set('comercial', s.comercial);
+    params.set('limit', '200');
+    const r = await api('/api/planning?' + params.toString());
+    _planningState.clientes = r.clientes || [];
+    _planningState.total = r.total || 0;
+    _planningState.config = r.config || null;
+    pintarPlanningResultado();
+  } catch (err) {
+    if ($res) $res.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+  }
+}
+
+function pintarPlanningResultado() {
+  const $res = document.getElementById('planning-resultado');
+  if (!$res) return;
+  const clientes = _planningState.clientes;
+  const total = _planningState.total;
+  if (clientes.length === 0) {
+    $res.innerHTML = '<p style="text-align:center;color:var(--gris-texto);padding:2rem">No hay clientes que coincidan con los filtros.</p>';
+    return;
+  }
+  const conteo = {urgente:0, proxima:0, al_dia:0, sin_historial:0};
+  clientes.forEach(c => { conteo[c.estado] = (conteo[c.estado]||0) + 1; });
+
+  // Resumen arriba
+  const resumen = `
+    <div class="planning-resumen">
+      <span>${clientes.length}${total > clientes.length ? '/' + total : ''} clientes</span>
+      ${conteo.urgente > 0 ? `<span class="planning-resumen-chip" style="background:${ESTADOS_PLANNING.urgente.bg};color:${ESTADOS_PLANNING.urgente.color}">${ESTADOS_PLANNING.urgente.emoji} ${conteo.urgente} urgentes</span>` : ''}
+      ${conteo.proxima > 0 ? `<span class="planning-resumen-chip" style="background:${ESTADOS_PLANNING.proxima.bg};color:${ESTADOS_PLANNING.proxima.color}">${ESTADOS_PLANNING.proxima.emoji} ${conteo.proxima} próximas</span>` : ''}
+      ${conteo.al_dia > 0 ? `<span class="planning-resumen-chip" style="background:${ESTADOS_PLANNING.al_dia.bg};color:${ESTADOS_PLANNING.al_dia.color}">${ESTADOS_PLANNING.al_dia.emoji} ${conteo.al_dia} al día</span>` : ''}
+      ${conteo.sin_historial > 0 ? `<span class="planning-resumen-chip" style="background:${ESTADOS_PLANNING.sin_historial.bg};color:${ESTADOS_PLANNING.sin_historial.color}">${ESTADOS_PLANNING.sin_historial.emoji} ${conteo.sin_historial} sin historial</span>` : ''}
+    </div>
+  `;
+
+  const filas = clientes.map(c => {
+    const e = ESTADOS_PLANNING[c.estado] || ESTADOS_PLANNING.sin_historial;
+    let infoTiempo;
+    if (c.estado === 'sin_historial') {
+      infoTiempo = 'Sin visitas previas';
+    } else if (c.dias_retraso > 0) {
+      infoTiempo = `Retraso ${c.dias_retraso}d · ciclo ${c.ciclo_efectivo}d`;
+    } else {
+      const dias = c.dias_desde_ultima;
+      infoTiempo = `Hace ${dias}d · ciclo ${c.ciclo_efectivo}d`;
+    }
+    const fechaUlt = c.fecha_ultima ? new Date(c.fecha_ultima).toLocaleDateString('es-ES') : '—';
+    return `
+      <div class="planning-fila" onclick="abrirDetalleCliente(${c.id})" style="border-left-color:${e.color}">
+        <div class="planning-chip-estado" style="background:${e.bg};color:${e.color}" title="${e.label}">${e.emoji}</div>
+        <div class="planning-fila-info">
+          <div class="planning-fila-nombre">${escape(c.razon_social)}</div>
+          <div class="planning-fila-meta">
+            <span><b>${escape(c.sage_code || '?')}</b></span>
+            ${c.municipio ? `<span>· ${escape(c.municipio)}</span>` : ''}
+            ${c.provincia && c.provincia !== c.municipio ? `<span>· ${escape(c.provincia)}</span>` : ''}
+            ${c.commercial_code ? `<span>· Com.${escape(c.commercial_code)}</span>` : ''}
+            ${c.categoria ? `<span>· cat.${escape(c.categoria)}</span>` : ''}
+          </div>
+          <div class="planning-fila-tiempo">
+            🕐 Última visita: <b>${escape(fechaUlt)}</b> · ${escape(infoTiempo)}
+          </div>
+        </div>
+        <button class="btn btn-primary btn-pequeno planning-btn-visita" onclick="event.stopPropagation();iniciarVisitaParaCliente(${c.id})" title="Empezar visita">🛒</button>
+      </div>
+    `;
+  }).join('');
+
+  $res.innerHTML = `${resumen}<div class="planning-lista">${filas}</div>`;
+}
+
+// G: editar ciclo individual de un cliente (prompt simple)
+async function editarCicloCliente(clientId, cicloActual) {
+  const txt = prompt(
+    'Ciclo de visita en días para este cliente.\n\n' +
+    '• Deja vacío para usar el ciclo global por defecto.\n' +
+    '• Mínimo 1, máximo 730 días.\n\n' +
+    'Ciclo actual: ' + (cicloActual === null || cicloActual === 'null' ? 'por defecto (global)' : cicloActual + ' días'),
+    cicloActual === null || cicloActual === 'null' ? '' : String(cicloActual)
+  );
+  if (txt === null) return; // canceló
+  const valor = txt.trim() === '' ? null : Number(txt.trim());
+  if (valor !== null && (!Number.isFinite(valor) || valor < 1 || valor > 730)) {
+    alert('Valor inválido. Debe ser un número entre 1 y 730, o vacío para usar el global.');
+    return;
+  }
+  try {
+    await api('/api/clients/' + clientId + '/ciclo', { method: 'PUT', body: { ciclo_visita_dias: valor } });
+    renderDetalleCliente(clientId);
+  } catch (err) {
+    alert('Error: ' + err.message);
   }
 }
 
@@ -2953,7 +3228,14 @@ async function renderDetalleCliente(id) {
               ${campo('Email', c.email)}
               ${campo('Email alternativo', c.email_alternativo)}
               ${campo('Nº cuenta', c.numero_cuenta)}
-              ${campo('Ciclo visita (días)', c.ciclo_visita_dias)}
+              <div class="kv-row">
+                <div class="kv-label">Ciclo visita (días)</div>
+                <div class="kv-val">
+                  ${c.ciclo_visita_dias ? `<b>${c.ciclo_visita_dias}</b> días`
+                    : `<span style="color:var(--gris-texto);font-style:italic">por defecto (global)</span>`}
+                  <button class="btn-link" onclick="editarCicloCliente(${c.id}, ${c.ciclo_visita_dias || 'null'})">✏️ cambiar</button>
+                </div>
+              </div>
               ${campo('Última visita', c.ultima_visita_at ? new Date(c.ultima_visita_at).toLocaleString('es-ES') : '—')}
               ${c.notas_internas ? `<div class="kv-row"><div class="kv-label">Notas internas</div><div class="kv-val">${escape(c.notas_internas)}</div></div>` : ''}
             </div>

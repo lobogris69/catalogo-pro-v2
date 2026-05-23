@@ -376,7 +376,11 @@ async function initDB(): Promise<void> {
       ['pruebas_email_cliente', '', 'Email donde llegan los emails "al cliente" en modo pruebas'],
       ['pruebas_email_comercial', '', 'Email donde llegan los emails "al comercial" en modo pruebas'],
       ['remitente_from', '"CatalogPRO LOMHIFAR" <f.ayllon66@gmail.com>', 'Remitente FROM de todos los emails enviados'],
-      ['firma_html', '<p style="color:#888;font-size:12px">LOMHIFAR S.L. · Distribución parafarmacéutica</p>', 'Firma HTML al pie de los emails']
+      ['firma_html', '<p style="color:#888;font-size:12px">LOMHIFAR S.L. · Distribución parafarmacéutica</p>', 'Firma HTML al pie de los emails'],
+      // G - Planning/rutero
+      ['planning_ciclo_default', '90', 'Ciclo de visita por defecto en días (se aplica a clientes sin ciclo propio)'],
+      ['planning_ventana_proxima_dias', '15', 'Días ANTES del ciclo en que el cliente pasa a amarillo (próxima visita)'],
+      ['planning_ventana_urgente_dias', '15', 'Días DESPUÉS del ciclo en que el cliente pasa a rojo (urgente)']
     ];
     for (const [k, v, d] of emailDefaults) {
       await pool.query(
@@ -1621,6 +1625,317 @@ app.get('/api/clients/:id/last-visit-summary', verifyToken, async (req: AuthRequ
       WHERE a.visit_id = $1
       ORDER BY a.orden_en_visita, a.id`, [visit.id]);
     res.json({ success: true, visit, annotations: anots.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// G - PLANNING/RUTERO
+// ============================================================================
+// Listado de clientes con su estado de visita (semaforo). Calculo SQL para que
+// sea rapido aunque haya 3000 clientes.
+// Query params (todos opcionales):
+//   estado: urgente | proxima | al_dia | sin_historial | todos (default todos)
+//   q: busqueda razon_social o sage_code
+//   provincia: filtro provincia exacto
+//   municipio: filtro municipio exacto
+//   comercial: codigo_comercial (solo admin lo usa). Comerciales solo ven los suyos.
+//   limit / offset (default 100 / 0)
+app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    const userId = effectiveUserId(req);
+
+    // Leer config de planning de email_config (reutilizamos tabla clave-valor)
+    const cfgR = await pool.query(
+      `SELECT clave, valor FROM email_config WHERE clave IN
+       ('planning_ciclo_default','planning_ventana_proxima_dias','planning_ventana_urgente_dias')`
+    );
+    const cfg: any = {};
+    cfgR.rows.forEach((r: any) => { cfg[r.clave] = r.valor; });
+    const cicloDefault = Number(cfg.planning_ciclo_default || 90);
+    const ventanaProxima = Number(cfg.planning_ventana_proxima_dias || 15);
+    const ventanaUrgente = Number(cfg.planning_ventana_urgente_dias || 15);
+
+    // Params
+    const estado = String(req.query.estado || 'todos');
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const provincia = String(req.query.provincia || '').trim();
+    const municipio = String(req.query.municipio || '').trim();
+    const limit = Math.min(Number(req.query.limit || 100), 500);
+    const offset = Math.max(Number(req.query.offset || 0), 0);
+
+    // Decidir filtro por comercial:
+    //   - Admin real: si pasa ?comercial=X usa ese; si no, todos
+    //   - Comercial (o admin impersonando): solo SUS clientes via sage_commercial_code
+    let comercialFilterClause = '';
+    const params: any[] = [];
+    let paramIdx = 1;
+
+    if (isEffectiveSales(req)) {
+      // Necesito el commercial_code del usuario
+      const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
+      const ccode = uR.rows[0]?.sage_commercial_code;
+      if (!ccode) {
+        res.json({ success: true, clientes: [], total: 0, config: { cicloDefault, ventanaProxima, ventanaUrgente } });
+        return;
+      }
+      comercialFilterClause = ` AND c.commercial_code = $${paramIdx++}`;
+      params.push(String(ccode));
+    } else {
+      const adminCom = String(req.query.comercial || '').trim();
+      if (adminCom) {
+        comercialFilterClause = ` AND c.commercial_code = $${paramIdx++}`;
+        params.push(adminCom);
+      }
+    }
+
+    // Filtros varios
+    let extraClauses = '';
+    if (q) {
+      extraClauses += ` AND (LOWER(c.razon_social) LIKE $${paramIdx} OR LOWER(c.sage_code) LIKE $${paramIdx})`;
+      params.push('%' + q + '%');
+      paramIdx++;
+    }
+    if (provincia) {
+      extraClauses += ` AND c.provincia = $${paramIdx++}`;
+      params.push(provincia);
+    }
+    if (municipio) {
+      extraClauses += ` AND c.municipio = $${paramIdx++}`;
+      params.push(municipio);
+    }
+
+    // Query principal:
+    // - Calculamos ciclo efectivo (cliente.ciclo_visita_dias o cicloDefault)
+    // - Dias_desde_ultima_visita = NULL si nunca tuvo visita
+    // - Estado: urgente / proxima / al_dia / sin_historial segun ventanas
+    // - LEFT JOIN con la ultima visita confirmada del cliente para mostrar fecha y comercial
+    const sql = `
+      WITH ultima_visita AS (
+        SELECT DISTINCT ON (v.client_id)
+          v.client_id,
+          COALESCE(v.confirmed_at, v.created_at) AS fecha_ultima,
+          u.name AS comercial_ultima_visita,
+          v.id AS visita_id
+        FROM visits v
+        LEFT JOIN users u ON u.id = v.user_id
+        WHERE v.status IN ('confirmed','sent')
+        ORDER BY v.client_id, COALESCE(v.confirmed_at, v.created_at) DESC
+      ),
+      base AS (
+        SELECT
+          c.id, c.sage_code, c.razon_social, c.cif, c.commercial_code,
+          c.municipio, c.provincia, c.categoria, c.email, c.email_alternativo,
+          c.telefono, c.ciclo_visita_dias,
+          uv.fecha_ultima, uv.comercial_ultima_visita, uv.visita_id AS ultima_visita_id,
+          COALESCE(c.ciclo_visita_dias, $${paramIdx}) AS ciclo_efectivo,
+          CASE WHEN uv.fecha_ultima IS NULL THEN NULL
+               ELSE EXTRACT(DAY FROM (NOW() - uv.fecha_ultima))::int
+          END AS dias_desde_ultima
+        FROM clients c
+        LEFT JOIN ultima_visita uv ON uv.client_id = c.id
+        WHERE c.is_active = TRUE
+          ${comercialFilterClause}
+          ${extraClauses}
+      ),
+      conEstado AS (
+        SELECT
+          b.*,
+          CASE
+            WHEN b.dias_desde_ultima IS NULL THEN 'sin_historial'
+            WHEN b.dias_desde_ultima > (b.ciclo_efectivo + $${paramIdx + 2}) THEN 'urgente'
+            WHEN b.dias_desde_ultima >= (b.ciclo_efectivo - $${paramIdx + 1}) THEN 'proxima'
+            ELSE 'al_dia'
+          END AS estado,
+          CASE
+            WHEN b.dias_desde_ultima IS NULL THEN 0
+            ELSE (b.dias_desde_ultima - b.ciclo_efectivo)
+          END AS dias_retraso
+        FROM base b
+      )
+      SELECT * FROM conEstado
+      ${estado !== 'todos' ? `WHERE estado = $${paramIdx + 3}` : ''}
+      ORDER BY
+        CASE estado
+          WHEN 'urgente' THEN 1
+          WHEN 'proxima' THEN 2
+          WHEN 'sin_historial' THEN 3
+          WHEN 'al_dia' THEN 4
+        END,
+        dias_retraso DESC NULLS LAST,
+        razon_social ASC
+      LIMIT $${paramIdx + (estado !== 'todos' ? 4 : 3)}
+      OFFSET $${paramIdx + (estado !== 'todos' ? 5 : 4)}
+    `;
+
+    // Añadir parámetros en orden
+    params.push(cicloDefault);          // $paramIdx
+    params.push(ventanaProxima);        // $paramIdx+1
+    params.push(ventanaUrgente);        // $paramIdx+2
+    if (estado !== 'todos') params.push(estado); // $paramIdx+3
+    params.push(limit);
+    params.push(offset);
+
+    const r = await pool.query(sql, params);
+
+    // Total para paginación (solo si limit < clientes)
+    let total = r.rows.length;
+    if (r.rows.length === limit) {
+      // Hacer count separado (sin order)
+      const countSql = `
+        WITH ultima_visita AS (
+          SELECT DISTINCT ON (v.client_id) v.client_id,
+            COALESCE(v.confirmed_at, v.created_at) AS fecha_ultima
+          FROM visits v
+          WHERE v.status IN ('confirmed','sent')
+          ORDER BY v.client_id, COALESCE(v.confirmed_at, v.created_at) DESC
+        ),
+        base AS (
+          SELECT c.id, uv.fecha_ultima,
+            COALESCE(c.ciclo_visita_dias, $${paramIdx}) AS ciclo_efectivo,
+            CASE WHEN uv.fecha_ultima IS NULL THEN NULL
+                 ELSE EXTRACT(DAY FROM (NOW() - uv.fecha_ultima))::int
+            END AS dias_desde_ultima
+          FROM clients c
+          LEFT JOIN ultima_visita uv ON uv.client_id = c.id
+          WHERE c.is_active = TRUE ${comercialFilterClause} ${extraClauses}
+        )
+        SELECT COUNT(*)::int AS n FROM base b
+        ${estado !== 'todos' ? `WHERE CASE
+            WHEN b.dias_desde_ultima IS NULL THEN 'sin_historial'
+            WHEN b.dias_desde_ultima > (b.ciclo_efectivo + $${paramIdx + 2}) THEN 'urgente'
+            WHEN b.dias_desde_ultima >= (b.ciclo_efectivo - $${paramIdx + 1}) THEN 'proxima'
+            ELSE 'al_dia'
+          END = $${paramIdx + 3}` : ''}
+      `;
+      const countParams = params.slice(0, paramIdx + (estado !== 'todos' ? 4 : 3) - 1);
+      const cR = await pool.query(countSql, countParams);
+      total = cR.rows[0].n;
+    }
+
+    res.json({
+      success: true,
+      clientes: r.rows,
+      total,
+      config: { cicloDefault, ventanaProxima, ventanaUrgente }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Endpoint sencillo para actualizar el ciclo de UN cliente individual.
+// PUT /api/clients/:id/ciclo  body: { ciclo_visita_dias: 60|null }
+// null = usa el default global
+app.put('/api/clients/:id/ciclo', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    const id = Number(req.params.id);
+    const ciclo = req.body.ciclo_visita_dias;
+    const val = (ciclo === null || ciclo === '' || ciclo === undefined) ? null : Number(ciclo);
+    if (val !== null && (val < 1 || val > 730 || !Number.isFinite(val))) {
+      res.status(400).json({ success: false, error: 'Ciclo debe estar entre 1 y 730 días, o null para usar el default' });
+      return;
+    }
+    await pool.query(`UPDATE clients SET ciclo_visita_dias = $1, updated_at = NOW() WHERE id = $2`, [val, id]);
+    res.json({ success: true, ciclo_visita_dias: val });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET listas para filtros del planning (provincias y municipios distintos)
+app.get('/api/planning/filtros', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    const userId = effectiveUserId(req);
+    let where = `WHERE c.is_active = TRUE`;
+    const params: any[] = [];
+    if (isEffectiveSales(req)) {
+      const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
+      const ccode = uR.rows[0]?.sage_commercial_code;
+      if (!ccode) { res.json({ success: true, provincias: [], municipios: [], comerciales: [] }); return; }
+      where += ` AND c.commercial_code = $1`;
+      params.push(String(ccode));
+    }
+    const provR = await pool.query(`SELECT DISTINCT provincia FROM clients c ${where} AND provincia IS NOT NULL AND provincia <> '' ORDER BY provincia`, params);
+    const muniR = await pool.query(`SELECT DISTINCT municipio FROM clients c ${where} AND municipio IS NOT NULL AND municipio <> '' ORDER BY municipio`, params);
+    // Comerciales solo si admin (codigos distintos en clients)
+    let comerciales: string[] = [];
+    if (!isEffectiveSales(req)) {
+      const comR = await pool.query(`SELECT DISTINCT commercial_code FROM clients WHERE is_active = TRUE AND commercial_code IS NOT NULL AND commercial_code <> '' ORDER BY commercial_code`);
+      comerciales = comR.rows.map((r: any) => r.commercial_code);
+    }
+    res.json({
+      success: true,
+      provincias: provR.rows.map((r: any) => r.provincia),
+      municipios: muniR.rows.map((r: any) => r.municipio),
+      comerciales
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// G - Estado planning para un conjunto de IDs (usado por lista de Clientes
+// para mostrar el semaforo 🔴🟡🟢 sin cargar el listado completo de planning)
+// POST /api/clients/states-batch body: { ids: [1,2,3,...] }
+app.post('/api/clients/states-batch', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      res.json({ success: true, states: {} });
+      return;
+    }
+    // Leer config
+    const cfgR = await pool.query(
+      `SELECT clave, valor FROM email_config WHERE clave IN
+       ('planning_ciclo_default','planning_ventana_proxima_dias','planning_ventana_urgente_dias')`
+    );
+    const cfg: any = {};
+    cfgR.rows.forEach((r: any) => { cfg[r.clave] = r.valor; });
+    const cicloDefault = Number(cfg.planning_ciclo_default || 90);
+    const ventanaProxima = Number(cfg.planning_ventana_proxima_dias || 15);
+    const ventanaUrgente = Number(cfg.planning_ventana_urgente_dias || 15);
+
+    const idsInt = ids.map((x: any) => Number(x)).filter(Number.isFinite);
+    if (idsInt.length === 0) { res.json({ success: true, states: {} }); return; }
+
+    const r = await pool.query(`
+      WITH ultima AS (
+        SELECT DISTINCT ON (v.client_id)
+          v.client_id, COALESCE(v.confirmed_at, v.created_at) AS fecha_ultima
+        FROM visits v WHERE v.status IN ('confirmed','sent')
+        ORDER BY v.client_id, COALESCE(v.confirmed_at, v.created_at) DESC
+      )
+      SELECT c.id,
+        COALESCE(c.ciclo_visita_dias, $1) AS ciclo_efectivo,
+        CASE WHEN u.fecha_ultima IS NULL THEN NULL
+             ELSE EXTRACT(DAY FROM (NOW() - u.fecha_ultima))::int
+        END AS dias,
+        u.fecha_ultima
+      FROM clients c
+      LEFT JOIN ultima u ON u.client_id = c.id
+      WHERE c.id = ANY($2::int[])
+    `, [cicloDefault, idsInt]);
+
+    const states: any = {};
+    r.rows.forEach((row: any) => {
+      let estado;
+      if (row.dias === null) estado = 'sin_historial';
+      else if (row.dias > row.ciclo_efectivo + ventanaUrgente) estado = 'urgente';
+      else if (row.dias >= row.ciclo_efectivo - ventanaProxima) estado = 'proxima';
+      else estado = 'al_dia';
+      states[row.id] = {
+        estado,
+        dias: row.dias,
+        ciclo: row.ciclo_efectivo,
+        fecha_ultima: row.fecha_ultima
+      };
+    });
+    res.json({ success: true, states });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
