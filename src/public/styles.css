@@ -2550,3 +2550,13 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
   background: #bbf7d0 !important;
   color: #14532d !important;
 }
+
+/* I.2 - Aviso offline en visor */
+.visor-aviso-offline {
+  background: #fef3c7;
+  color: #78350f;
+  padding: 8px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid #fcd34d;
+  text-align: center;
+}

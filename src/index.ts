@@ -518,7 +518,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'I.1-pwa-offline-base-24may',
+    build: 'I.2-visor-listado-offline-24may',
     service: 'CatalogPRO v2'
   });
 });

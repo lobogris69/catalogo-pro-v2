@@ -213,6 +213,13 @@ async function renderApp() {
 }
 
 function routerVista() {
+  // I.2: vistas que NO funcionan offline (requieren API)
+  const vistasOnlineOnly = ['clientes', 'comerciales', 'planning', 'mapa', 'plantillas', 'configuracion'];
+  if (!navigator.onLine && vistasOnlineOnly.includes(appState.vista)) {
+    renderVistaNoDisponibleOffline(appState.vista);
+    return;
+  }
+
   if (appState.vista === 'clientes') {
     if (appState.clienteActual) {
       renderDetalleCliente(appState.clienteActual);
@@ -235,7 +242,8 @@ function routerVista() {
     renderMiCuenta();
   } else if (appState.catalogoActual) {
     // Si admin → editor. Si comercial (o admin impersonando) → visor
-    if (rolEfectivo() === 'admin') {
+    // I.2: si offline, siempre visor (el editor requiere API)
+    if (rolEfectivo() === 'admin' && navigator.onLine) {
       renderEditorCatalogo(appState.catalogoActual);
     } else {
       renderVisorComercial(appState.catalogoActual);
@@ -243,6 +251,36 @@ function routerVista() {
   } else {
     renderListaCatalogos();
   }
+}
+
+// I.2: pantalla "esta vista necesita conexión" cuando estás offline en una vista que la requiere
+function renderVistaNoDisponibleOffline(vista) {
+  const nombres = {
+    'clientes': '🏥 Clientes',
+    'comerciales': '👥 Comerciales',
+    'planning': '🗓️ Planning',
+    'mapa': '🗺️ Mapa',
+    'plantillas': '🏷️ Plantillas',
+    'configuracion': '⚙️ Configuración'
+  };
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `
+    <div class="contenedor">
+      <div class="empty-state">
+        <div class="empty-state-icono">📡</div>
+        <h3>${nombres[vista] || vista} no disponible offline</h3>
+        <p style="max-width:500px;margin:1rem auto;color:var(--gris-texto)">
+          Esta sección necesita conexión a internet. Cuando recuperes la conexión podrás volver a usarla.
+        </p>
+        <p style="font-size:13px;color:var(--gris-texto);max-width:500px;margin:1rem auto">
+          Mientras tanto, puedes consultar los <b>catálogos descargados</b> que tienes en este dispositivo.
+        </p>
+        <button class="btn btn-primary" style="max-width:280px;margin:1rem auto 0" onclick="irA('catalogos')">
+          📚 Ver catálogos descargados
+        </button>
+      </div>
+    </div>
+  `;
 }
 
 function irA(vista) {
@@ -265,25 +303,49 @@ async function renderListaCatalogos() {
   // I: refrescar cache de catálogos descargados offline para mostrar badges correctos
   try { if (typeof refrescarCacheCatalogosDescargados === 'function') await refrescarCacheCatalogosDescargados(); } catch (_) {}
   try {
-    const r = await api('/api/catalogs');
-    const catalogos = r.catalogs || [];
+    // I.2: si estamos offline, ir directos a IndexedDB sin intentar la API
+    let catalogos = [];
+    let modoOffline = false;
+    if (!navigator.onLine) {
+      modoOffline = true;
+      const descargados = await CpDB.listarCatalogosDescargados();
+      catalogos = descargados.map(c => ({ ...c, _offline: true }));
+    } else {
+      try {
+        const r = await api('/api/catalogs');
+        catalogos = r.catalogs || [];
+      } catch (err) {
+        // Si falla la API pero el navegador dice online, intentar IndexedDB como fallback
+        console.warn('[I.2] API falló, usando IndexedDB:', err.message);
+        modoOffline = true;
+        const descargados = await CpDB.listarCatalogosDescargados();
+        catalogos = descargados.map(c => ({ ...c, _offline: true }));
+      }
+    }
     const esAdmin = rolEfectivo() === 'admin';
 
     let html = `
       <div class="contenedor">
         <div class="titulo-pagina">
-          <h2>Catálogos</h2>
-          ${esAdmin ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoCatalogo()">+ Nuevo catálogo</button>` : ''}
+          <h2>Catálogos${modoOffline ? ' <span style="font-size:13px;color:var(--gris-texto);font-weight:normal">(modo offline)</span>' : ''}</h2>
+          ${esAdmin && !modoOffline ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoCatalogo()">+ Nuevo catálogo</button>` : ''}
         </div>
+        ${modoOffline ? `
+          <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#78350f">
+            📲 <b>Modo offline:</b> mostrando solo los catálogos descargados a este dispositivo.
+          </div>
+        ` : ''}
     `;
 
     if (catalogos.length === 0) {
       html += `
         <div class="empty-state">
           <div class="empty-state-icono">📚</div>
-          <h3>No hay catálogos todavía</h3>
-          <p>${esAdmin ? 'Crea tu primer catálogo maestro para empezar a subir láminas.' : 'Aún no tienes catálogos asignados.'}</p>
-          ${esAdmin ? `<button class="btn btn-primary" style="max-width:280px;margin:0 auto" onclick="abrirModalNuevoCatalogo()">+ Crear primer catálogo</button>` : ''}
+          <h3>${modoOffline ? 'Sin catálogos descargados' : 'No hay catálogos todavía'}</h3>
+          <p>${modoOffline
+            ? 'Cuando recuperes la conexión, podrás descargar catálogos para usarlos offline.'
+            : (esAdmin ? 'Crea tu primer catálogo maestro para empezar a subir láminas.' : 'Aún no tienes catálogos asignados.')}</p>
+          ${esAdmin && !modoOffline ? `<button class="btn btn-primary" style="max-width:280px;margin:0 auto" onclick="abrirModalNuevoCatalogo()">+ Crear primer catálogo</button>` : ''}
         </div>
       `;
     } else {
@@ -1855,13 +1917,55 @@ async function renderVisorComercial(catalogId) {
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogo…</div></div>`;
   try {
-    const r = await api('/api/catalogs/' + catalogId);
-    _visorCatalog = r.catalog;
-    _visorSheets = (r.sheets || []).filter(s => !s.oculta);
+    let catalog, sheets;
+    let modoOffline = false;
+
+    // I.2: si offline o si la API falla, intentar cargar desde IndexedDB
+    if (!navigator.onLine) {
+      modoOffline = true;
+      catalog = await CpDB.obtenerCatalogo(catalogId);
+      if (!catalog) throw new Error('Este catálogo no está descargado offline. Vuelve a conectarte para usarlo.');
+      const laminasDB = await CpDB.obtenerLaminasDeCatalogo(catalogId);
+      // Convertir Blobs a URLs object para que las <img> los muestren
+      sheets = laminasDB.map(s => ({
+        ...s,
+        imagen_path: s.imagen_blob ? URL.createObjectURL(s.imagen_blob) : s.imagen_path_original,
+        _es_blob_url: !!s.imagen_blob
+      }));
+    } else {
+      try {
+        const r = await api('/api/catalogs/' + catalogId);
+        catalog = r.catalog;
+        sheets = (r.sheets || []).filter(s => !s.oculta);
+      } catch (err) {
+        // Si la API falla pero navegador dice online, intentar IndexedDB
+        console.warn('[I.2] API falló en visor, probando IndexedDB:', err.message);
+        catalog = await CpDB.obtenerCatalogo(catalogId);
+        if (!catalog) throw err; // sin copia offline, devuelve el error original
+        modoOffline = true;
+        const laminasDB = await CpDB.obtenerLaminasDeCatalogo(catalogId);
+        sheets = laminasDB.map(s => ({
+          ...s,
+          imagen_path: s.imagen_blob ? URL.createObjectURL(s.imagen_blob) : s.imagen_path_original,
+          _es_blob_url: !!s.imagen_blob
+        }));
+      }
+    }
+
+    _visorCatalog = catalog;
+    _visorSheets = sheets;
+    // I.2: guardar flag de offline para mostrar aviso en cabecera
+    _visorModoOffline = modoOffline;
 
     // B6: si hay visita activa, cargar anotaciones para pintarlas en el visor
     if (appState.visitaActiva) {
-      await cargarAnotacionesDeVisita();
+      // En offline las anotaciones también vienen de IndexedDB (próxima sesión I.3)
+      // De momento: si offline, dejar vacío. Si online, cargar normalmente.
+      if (!modoOffline) {
+        await cargarAnotacionesDeVisita();
+      } else {
+        _anotacionesVisita = {};
+      }
     } else {
       _anotacionesVisita = {};
     }
@@ -1875,7 +1979,7 @@ async function renderVisorComercial(catalogId) {
           <div class="empty-state">
             <div class="empty-state-icono">📄</div>
             <h3>Este catálogo está vacío</h3>
-            <p>El administrador aún no ha subido láminas.</p>
+            <p>${modoOffline ? 'No hay láminas descargadas para uso offline.' : 'El administrador aún no ha subido láminas.'}</p>
           </div>
         </div>
       `;
@@ -1887,9 +1991,19 @@ async function renderVisorComercial(catalogId) {
 
     pintarVisor();
   } catch (err) {
-    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+    $v.innerHTML = `
+      <div class="contenedor">
+        <div class="titulo-pagina">
+          <button class="btn btn-secondary btn-pequeno" onclick="volverACatalogos()">← Catálogos</button>
+        </div>
+        <div class="error-msg" style="margin-top:1rem">${escape(err.message)}</div>
+      </div>
+    `;
   }
 }
+
+// I.2: flag global del visor offline
+let _visorModoOffline = false;
 
 function pintarVisor() {
   const $v = document.getElementById('vista-contenido');
@@ -1911,6 +2025,11 @@ function pintarVisor() {
   // Cabecera (común a los dos modos)
   const cabecera = `
     <div class="visor-cabecera">
+      ${_visorModoOffline ? `
+        <div class="visor-aviso-offline">
+          📲 Estás viendo este catálogo <b>desde la copia descargada en este dispositivo</b> (modo offline)
+        </div>
+      ` : ''}
       <div class="visor-cabecera-fila">
         <button class="btn-icon-volver" onclick="volverACatalogos()" title="Volver a catálogos">←</button>
         <div class="visor-titulo-bloque">
@@ -3175,11 +3294,15 @@ window.addEventListener('online', () => {
   console.log('[I] Conexión recuperada');
   actualizarIndicadorOnline();
   mostrarNotificacionOnline('🟢 Conexión recuperada', '#16a34a');
+  // I.2: re-renderizar para volver a cargar de la API
+  if (typeof render === 'function') setTimeout(() => render(), 500);
 });
 window.addEventListener('offline', () => {
   console.log('[I] Conexión perdida');
   actualizarIndicadorOnline();
   mostrarNotificacionOnline('🔴 Sin conexión — trabajando offline', '#dc2626');
+  // I.2: re-renderizar para activar fallbacks IndexedDB
+  if (typeof render === 'function') setTimeout(() => render(), 500);
 });
 
 // Mostrar notificación in-app (banner que aparece y desaparece)
