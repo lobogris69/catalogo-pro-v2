@@ -197,6 +197,7 @@ async function renderApp() {
         <button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
+        ${esAdmin ? `<button class="navtab ${appState.vista === 'configuracion' ? 'navtab-activa' : ''}" onclick="irA('configuracion')">⚙️ Configuración</button>` : ''}
         <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')" style="margin-left:auto">⚙️ Mi cuenta</button>
       </div>
       <div id="vista-contenido"></div>
@@ -218,6 +219,8 @@ function routerVista() {
     renderListaComerciales();
   } else if (appState.vista === 'plantillas') {
     renderListaPlantillas();
+  } else if (appState.vista === 'configuracion') {
+    renderConfiguracion();
   } else if (appState.vista === 'cuenta') {
     renderMiCuenta();
   } else if (appState.catalogoActual) {
@@ -235,7 +238,7 @@ function routerVista() {
 function irA(vista) {
   // Comerciales (incluido admin impersonando) NO pueden entrar a comerciales (gestión users)
   // Plantillas solo admin REAL (no impersonando)
-  if (rolEfectivo() === 'sales' && (vista === 'comerciales' || vista === 'plantillas')) {
+  if (rolEfectivo() === 'sales' && (vista === 'comerciales' || vista === 'plantillas' || vista === 'configuracion')) {
     vista = 'catalogos';
   }
   appState.vista = vista;
@@ -2583,6 +2586,160 @@ function activarDragDropPlantillas() {
 }
 
 // ============================================================================
+// ===== C - CONFIGURACION DE EMAILS (admin real) =====
+// ============================================================================
+
+async function renderConfiguracion() {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando configuración…</div></div>`;
+  try {
+    const r = await api('/api/email-config');
+    const cfg = {};
+    (r.config || []).forEach(row => { cfg[row.clave] = { valor: row.valor || '', descripcion: row.descripcion || '' }; });
+
+    const modoActual = (cfg.modo && cfg.modo.valor) || 'pruebas';
+    const esProd = modoActual === 'produccion';
+
+    let html = `
+      <div class="contenedor" style="max-width:780px">
+        <div class="titulo-pagina">
+          <div>
+            <h2>⚙️ Configuración de emails</h2>
+            <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+              Controla cómo se envían los emails automáticos al cerrar una visita.
+            </div>
+          </div>
+        </div>
+
+        <!-- BLOQUE 1: Modo (interruptor pruebas/producción) -->
+        <div class="editor-panel" style="margin-bottom:14px">
+          <h3 style="margin-top:0">Modo de envío</h3>
+          <div class="modo-switch-bg" id="modo-switch-bg">
+            <button class="modo-btn ${!esProd ? 'modo-btn-activo modo-btn-pruebas' : ''}" onclick="cambiarModo('pruebas')">🔴 MODO PRUEBAS</button>
+            <button class="modo-btn ${esProd ? 'modo-btn-activo modo-btn-prod' : ''}" onclick="cambiarModo('produccion')">🟢 MODO PRODUCCIÓN</button>
+          </div>
+          <div style="font-size:13px;color:var(--gris-texto);margin-top:10px">
+            ${esProd
+              ? '🟢 <b>PRODUCCIÓN</b>: cada visita cerrada envía los 3 emails reales (oficina, cliente, comercial). ⚠️ Estás en modo real.'
+              : '🔴 <b>PRUEBAS</b>: todos los emails se redirigen a los emails de prueba configurados abajo. El destinatario real aparece en el asunto. Seguro para desarrollar.'
+            }
+          </div>
+        </div>
+
+        <!-- BLOQUE 2: Emails de oficina (producción) -->
+        <div class="editor-panel" style="margin-bottom:14px">
+          <h3 style="margin-top:0">📧 Emails de oficina <span style="font-size:11px;font-weight:normal;color:var(--gris-texto)">(modo producción)</span></h3>
+          <p style="font-size:13px;color:var(--gris-texto)">Direcciones que reciben el resumen + PDF al cerrar cada visita. Separa con comas.</p>
+          <input type="text" id="cfg-oficina_emails" value="${escape(cfg.oficina_emails && cfg.oficina_emails.valor || '')}"
+                 placeholder="pedidos@lomhifar.net, eva@lomhifar.net" style="width:100%;padding:8px 12px;border:1px solid var(--gris-borde);border-radius:8px;font-size:14px;outline:none">
+        </div>
+
+        <!-- BLOQUE 3: Emails de prueba -->
+        <div class="editor-panel" style="margin-bottom:14px">
+          <h3 style="margin-top:0">🧪 Emails de prueba <span style="font-size:11px;font-weight:normal;color:var(--gris-texto)">(modo pruebas)</span></h3>
+          <p style="font-size:13px;color:var(--gris-texto)">A donde se redirigen los emails cuando el modo es PRUEBAS. Puedes poner el mismo email en los tres para recibir todo.</p>
+          <div class="form-group">
+            <label>📧 Para "oficina"</label>
+            <input type="email" id="cfg-pruebas_email_oficina" value="${escape(cfg.pruebas_email_oficina && cfg.pruebas_email_oficina.valor || '')}" placeholder="tucorreo@gmail.com">
+          </div>
+          <div class="form-group">
+            <label>👤 Para "cliente"</label>
+            <input type="email" id="cfg-pruebas_email_cliente" value="${escape(cfg.pruebas_email_cliente && cfg.pruebas_email_cliente.valor || '')}" placeholder="tucorreo+cliente@gmail.com">
+          </div>
+          <div class="form-group">
+            <label>👨‍💼 Para "comercial"</label>
+            <input type="email" id="cfg-pruebas_email_comercial" value="${escape(cfg.pruebas_email_comercial && cfg.pruebas_email_comercial.valor || '')}" placeholder="tucorreo+comercial@gmail.com">
+          </div>
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:6px">
+            💡 Truco: en Gmail, "tucorreo+algo@gmail.com" llega al mismo buzón pero se puede filtrar. Útil para distinguir los 3 tipos durante pruebas.
+          </div>
+        </div>
+
+        <!-- BLOQUE 4: Remitente y firma -->
+        <div class="editor-panel" style="margin-bottom:14px">
+          <h3 style="margin-top:0">✍️ Remitente y firma</h3>
+          <div class="form-group">
+            <label>Remitente FROM (visible en el "De:")</label>
+            <input type="text" id="cfg-remitente_from" value="${escape(cfg.remitente_from && cfg.remitente_from.valor || '')}" placeholder='"CatalogPRO LOMHIFAR" <f.ayllon66@gmail.com>'>
+            <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">
+              ⚠️ Si está configurado SMTP_FROM en Railway, ese tiene prioridad sobre este campo.
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Firma HTML al pie de los emails</label>
+            <textarea id="cfg-firma_html" rows="3">${escape(cfg.firma_html && cfg.firma_html.valor || '')}</textarea>
+          </div>
+        </div>
+
+        <!-- ACCIONES -->
+        <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:14px">
+          <button class="btn btn-secondary" onclick="enviarEmailPrueba()">📨 Enviar email de prueba</button>
+          <button class="btn btn-primary" onclick="guardarConfiguracion()">💾 Guardar cambios</button>
+        </div>
+
+        <div id="config-msg"></div>
+      </div>
+    `;
+    $v.innerHTML = html;
+  } catch (err) {
+    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+async function cambiarModo(nuevoModo) {
+  // Confirmar si pasamos a producción
+  if (nuevoModo === 'produccion') {
+    if (!confirm('⚠️ Vas a activar MODO PRODUCCIÓN.\n\nLos próximos cierres de visita enviarán emails REALES a oficina, cliente y comercial.\n\n¿Estás seguro?')) return;
+  }
+  try {
+    await api('/api/email-config', {
+      method: 'PUT',
+      body: { values: { modo: nuevoModo } }
+    });
+    renderConfiguracion();
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+async function guardarConfiguracion() {
+  const claves = [
+    'oficina_emails',
+    'pruebas_email_oficina',
+    'pruebas_email_cliente',
+    'pruebas_email_comercial',
+    'remitente_from',
+    'firma_html'
+  ];
+  const values = {};
+  claves.forEach(k => {
+    const el = document.getElementById('cfg-' + k);
+    if (el) values[k] = el.value.trim();
+  });
+  try {
+    await api('/api/email-config', { method: 'PUT', body: { values } });
+    const $msg = document.getElementById('config-msg');
+    if ($msg) {
+      $msg.innerHTML = '<div class="exito-msg">✓ Configuración guardada</div>';
+      setTimeout(() => { $msg.innerHTML = ''; }, 2500);
+    }
+  } catch (err) {
+    alert('Error al guardar: ' + err.message);
+  }
+}
+
+async function enviarEmailPrueba() {
+  const to = prompt('Email donde quieres recibir el mensaje de prueba:', user && user.email || '');
+  if (!to) return;
+  try {
+    const r = await api('/api/email-config/test', { method: 'POST', body: { to } });
+    alert('✅ Email de prueba enviado a ' + to + '\n\nRevisa la bandeja en unos segundos. Si no llega en 1-2 minutos, revisa configuración SMTP en Railway o la carpeta de spam.');
+  } catch (err) {
+    alert('❌ Error enviando prueba:\n\n' + err.message + '\n\nVerifica que SMTP_HOST, SMTP_USER y SMTP_PASS estén configurados en Railway.');
+  }
+}
+
+// ============================================================================
 // ===== B6 - VISITAS Y ANOTACIONES =====
 // ============================================================================
 
@@ -2990,6 +3147,16 @@ async function renderDetalleVisita(visitId) {
       : v.status === 'confirmed'
         ? '<span class="visita-badge visita-badge-confirmed">cerrada</span>'
         : '<span class="visita-badge">enviada</span>';
+
+    // C: cargar log de emails (solo si visita confirmada)
+    let emailsLog = [];
+    if (v.status === 'confirmed' || v.status === 'sent') {
+      try {
+        const re = await api('/api/visits/' + visitId + '/emails');
+        emailsLog = re.emails || [];
+      } catch (_) {}
+    }
+
     let html = `
       <div class="contenedor">
         <div class="titulo-pagina">
@@ -3005,6 +3172,7 @@ async function renderDetalleVisita(visitId) {
           </div>
           <div style="display:flex; gap:6px; align-self:flex-start; flex-wrap:wrap">
             <button class="btn btn-primary btn-pequeno" onclick="descargarPdfVisita(${v.id})">📄 Descargar PDF</button>
+            ${(v.status === 'confirmed' || v.status === 'sent') ? `<button class="btn btn-secondary btn-pequeno" onclick="reenviarEmailsVisita(${v.id})">📧 Reenviar emails</button>` : ''}
           </div>
         </div>
 
@@ -3012,6 +3180,38 @@ async function renderDetalleVisita(visitId) {
           <div class="editor-panel" style="margin-bottom:16px">
             <h3>Notas generales</h3>
             <p style="white-space:pre-wrap; font-size:14px">${escape(v.notas_generales)}</p>
+          </div>
+        ` : ''}
+
+        ${(v.status === 'confirmed' || v.status === 'sent') ? `
+          <div class="editor-panel" style="margin-bottom:16px">
+            <h3>📧 Emails enviados (${emailsLog.length})</h3>
+            ${emailsLog.length === 0
+              ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">Aún no hay emails registrados. Si la visita se cerró hace poco, espera unos segundos y refresca la página.</p>`
+              : `<div class="emails-lista">
+                  ${emailsLog.map(e => {
+                    const rolIcon = e.rol === 'oficina' ? '🏢' : e.rol === 'cliente' ? '👤' : '👨‍💼';
+                    const okBadge = e.ok ? '<span class="email-badge email-badge-ok">✓ enviado</span>' : '<span class="email-badge email-badge-fail">✗ falló</span>';
+                    const modoBadge = e.modo === 'pruebas' ? '<span class="email-badge email-badge-pruebas">🔴 prueba</span>' : '<span class="email-badge email-badge-prod">🟢 prod</span>';
+                    const fechaE = new Date(e.sent_at).toLocaleString('es-ES');
+                    return `
+                      <div class="email-fila ${e.ok ? '' : 'email-fila-error'}">
+                        <div style="font-size:18px">${rolIcon}</div>
+                        <div style="flex:1;min-width:0">
+                          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px">
+                            <b style="font-size:13px">${escape(e.rol)}</b>
+                            ${okBadge} ${modoBadge}
+                          </div>
+                          <div style="font-size:12px;color:#444">→ <b>${escape(e.destinatario)}</b>${e.destinatario_real && e.destinatario_real !== e.destinatario ? ` <span style="color:#888">(real: ${escape(e.destinatario_real)})</span>` : ''}</div>
+                          ${e.asunto ? `<div style="font-size:11px;color:#666;margin-top:2px">${escape(e.asunto)}</div>` : ''}
+                          ${e.error ? `<div style="font-size:11px;color:#c00;margin-top:4px;background:#fee;padding:4px 6px;border-radius:4px">⚠️ ${escape(e.error)}</div>` : ''}
+                          <div style="font-size:10px;color:#999;margin-top:2px">${escape(fechaE)}</div>
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>`
+            }
           </div>
         ` : ''}
 
@@ -3038,6 +3238,18 @@ async function renderDetalleVisita(visitId) {
     $v.innerHTML = html;
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+async function reenviarEmailsVisita(visitId) {
+  if (!confirm('¿Reenviar los 3 emails de esta visita?\n\nSe volverán a enviar al destinatario actual (depende del modo Pruebas/Producción).')) return;
+  try {
+    await api('/api/visits/' + visitId + '/resend-emails', { method: 'POST' });
+    alert('✅ Reenvío en curso. Refresca la página en unos segundos para ver el resultado.');
+    // Refrescar tras 3 segundos para que dé tiempo a que se actualice el log
+    setTimeout(() => renderDetalleVisita(visitId), 3000);
+  } catch (err) {
+    alert('Error: ' + err.message);
   }
 }
 

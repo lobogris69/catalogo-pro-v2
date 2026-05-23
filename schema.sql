@@ -213,6 +213,39 @@ CREATE TABLE IF NOT EXISTS annotation_templates (
 CREATE INDEX IF NOT EXISTS idx_templates_orden ON annotation_templates(orden, id);
 
 -- ============================================================================
+-- C: EMAIL_CONFIG - configuracion global emails (clave-valor)
+-- ============================================================================
+-- Almacena modo (pruebas/produccion), emails de oficina, emails de redireccion
+-- en modo pruebas, remitente y firma.
+-- Se siembra en codigo TS con valores por defecto.
+CREATE TABLE IF NOT EXISTS email_config (
+  clave           VARCHAR(80) PRIMARY KEY,
+  valor           TEXT NOT NULL DEFAULT '',
+  descripcion     VARCHAR(255),
+  updated_at      TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- C: VISIT_EMAILS - log de emails enviados por cada visita
+-- ============================================================================
+-- Auditoria de los 3 emails (oficina/cliente/comercial) generados al cerrar
+-- una visita. Permite ver estado, errores y reenviar si hace falta.
+CREATE TABLE IF NOT EXISTS visit_emails (
+  id              SERIAL PRIMARY KEY,
+  visit_id        INTEGER NOT NULL REFERENCES visits(id) ON DELETE CASCADE,
+  destinatario    VARCHAR(255) NOT NULL,
+  destinatario_real VARCHAR(255),
+  rol             VARCHAR(20) NOT NULL CHECK (rol IN ('oficina','cliente','comercial')),
+  modo            VARCHAR(20) NOT NULL CHECK (modo IN ('pruebas','produccion')),
+  asunto          VARCHAR(255),
+  ok              BOOLEAN NOT NULL DEFAULT FALSE,
+  error           TEXT,
+  message_id      VARCHAR(255),
+  sent_at         TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_visit_emails_visit ON visit_emails(visit_id);
+
+-- ============================================================================
 -- USUARIO ADMIN POR DEFECTO
 -- ============================================================================
 -- Se crea en codigo TS si la tabla esta vacia (con bcrypt)

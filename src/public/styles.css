@@ -1579,3 +1579,96 @@ body {
 .chip-plantilla:active {
   transform: scale(0.96);
 }
+
+/* ============================================================================
+   C - CONFIGURACION DE EMAILS
+   ============================================================================ */
+
+/* Interruptor modo pruebas/produccion */
+.modo-switch-bg {
+  display: flex;
+  background: #f3f4f6;
+  border-radius: 12px;
+  padding: 4px;
+  gap: 4px;
+}
+.modo-btn {
+  flex: 1;
+  padding: 14px;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+  color: #6b7280;
+}
+.modo-btn-activo.modo-btn-pruebas {
+  background: white;
+  color: #b91c1c;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.modo-btn-activo.modo-btn-prod {
+  background: white;
+  color: #166534;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+/* Log de emails enviados en detalle visita */
+.emails-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.email-fila {
+  display: flex;
+  gap: 12px;
+  padding: 10px;
+  background: #fafafa;
+  border-radius: 8px;
+  border-left: 3px solid #166534;
+  align-items: flex-start;
+}
+.email-fila-error {
+  border-left-color: #dc2626;
+  background: #fef2f2;
+}
+.email-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+.email-badge-ok { background: #dcfce7; color: #166534; }
+.email-badge-fail { background: #fee2e2; color: #991b1b; }
+.email-badge-pruebas { background: #fee2e2; color: #b91c1c; }
+.email-badge-prod { background: #dcfce7; color: #166534; }
+
+/* form-group consistente con el resto de la app */
+.editor-panel .form-group label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 4px;
+}
+.editor-panel .form-group input,
+.editor-panel .form-group textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--gris-borde);
+  border-radius: 8px;
+  font-size: 14px;
+  outline: none;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.editor-panel .form-group input:focus,
+.editor-panel .form-group textarea:focus {
+  border-color: var(--rosa);
+}
+.editor-panel .form-group {
+  margin-bottom: 12px;
+}

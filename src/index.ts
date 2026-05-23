@@ -339,8 +339,52 @@ async function initDB(): Promise<void> {
         updated_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_templates_orden ON annotation_templates(orden, id);
+
+      -- C: configuracion global de emails (clave-valor, gestion admin real)
+      -- Permite cambiar entre modo "pruebas" (redirige a emails de test) y "produccion"
+      -- (envio real a oficina + cliente + comercial)
+      CREATE TABLE IF NOT EXISTS email_config (
+        clave           VARCHAR(80) PRIMARY KEY,
+        valor           TEXT NOT NULL DEFAULT '',
+        descripcion     VARCHAR(255),
+        updated_at      TIMESTAMP DEFAULT NOW()
+      );
+
+      -- C: log de emails enviados por cada visita (para auditoria/reenvio)
+      CREATE TABLE IF NOT EXISTS visit_emails (
+        id              SERIAL PRIMARY KEY,
+        visit_id        INTEGER NOT NULL REFERENCES visits(id) ON DELETE CASCADE,
+        destinatario    VARCHAR(255) NOT NULL,
+        destinatario_real VARCHAR(255),
+        rol             VARCHAR(20) NOT NULL CHECK (rol IN ('oficina','cliente','comercial')),
+        modo            VARCHAR(20) NOT NULL CHECK (modo IN ('pruebas','produccion')),
+        asunto          VARCHAR(255),
+        ok              BOOLEAN NOT NULL DEFAULT FALSE,
+        error           TEXT,
+        message_id      VARCHAR(255),
+        sent_at         TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_visit_emails_visit ON visit_emails(visit_id);
     `;
     await pool.query(schemaSQL);
+
+    // Sembrar configuracion email por defecto si no existe
+    const emailDefaults = [
+      ['modo', 'pruebas', 'Modo actual: pruebas (redirige a emails de test) o produccion (envio real)'],
+      ['oficina_emails', '', 'Emails de oficina separados por coma. Reciben resumen+PDF en modo produccion'],
+      ['pruebas_email_oficina', '', 'Email donde llegan los emails "de oficina" en modo pruebas'],
+      ['pruebas_email_cliente', '', 'Email donde llegan los emails "al cliente" en modo pruebas'],
+      ['pruebas_email_comercial', '', 'Email donde llegan los emails "al comercial" en modo pruebas'],
+      ['remitente_from', '"CatalogPRO LOMHIFAR" <f.ayllon66@gmail.com>', 'Remitente FROM de todos los emails enviados'],
+      ['firma_html', '<p style="color:#888;font-size:12px">LOMHIFAR S.L. · Distribución parafarmacéutica</p>', 'Firma HTML al pie de los emails']
+    ];
+    for (const [k, v, d] of emailDefaults) {
+      await pool.query(
+        `INSERT INTO email_config (clave, valor, descripcion) VALUES ($1, $2, $3)
+         ON CONFLICT (clave) DO NOTHING`,
+        [k, v, d]
+      );
+    }
 
     // Sembrar plantillas iniciales solo si la tabla esta vacia (LOMHIFAR habitual)
     const tplCnt = await pool.query('SELECT COUNT(*)::int AS n FROM annotation_templates');
@@ -1693,6 +1737,11 @@ app.post('/api/visits/:id/confirm', verifyToken, async (req: AuthRequest, res: R
     );
     // Actualizar ultima_visita_at del cliente
     await pool.query(`UPDATE clients SET ultima_visita_at = NOW() WHERE id = $1`, [r.rows[0].client_id]);
+
+    // C: lanzar los 3 emails (oficina + cliente + comercial) de forma asíncrona.
+    // No bloqueamos la respuesta al frontend - los emails se procesan en background.
+    enviarEmailsVisita(id).catch((e: any) => console.error('Error enviando emails visita ' + id + ':', e));
+
     res.json({ success: true, visit: r.rows[0] });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
@@ -1826,156 +1875,577 @@ app.put('/api/annotation-templates/reorder', verifyToken, requireRealAdmin, asyn
 });
 
 // ============================================================================
-// D - PDF DE VISITA (resumen texto)
+// D - PDF DE VISITA (resumen texto) - función reutilizable
 // ============================================================================
 const PDFDocumentLib = require('pdfkit');
+
+// Carga los datos completos de una visita (con joins). Usado por PDF y emails.
+async function cargarDatosVisitaCompleta(visitId: number) {
+  const v = await pool.query(`
+    SELECT v.*, c.razon_social AS cliente_nombre, c.cif AS cliente_cif,
+           c.direccion AS cliente_direccion, c.cp AS cliente_cp,
+           c.municipio AS cliente_municipio, c.provincia AS cliente_provincia,
+           c.telefono AS cliente_telefono, c.email AS cliente_email,
+           c.email_alternativo AS cliente_email_alternativo,
+           c.sage_code AS cliente_sage,
+           cat.name AS catalog_nombre,
+           u.name AS comercial_nombre, u.email AS comercial_email
+    FROM visits v
+    LEFT JOIN clients c ON c.id = v.client_id
+    LEFT JOIN catalogs cat ON cat.id = v.catalog_id
+    LEFT JOIN users u ON u.id = v.user_id
+    WHERE v.id = $1`, [visitId]);
+  if (v.rows.length === 0) return null;
+  const visit = v.rows[0];
+  const anots = await pool.query(`
+    SELECT a.*, s.titulo AS sheet_titulo, s.orden AS sheet_orden, s.tags AS sheet_tags
+    FROM annotations a
+    LEFT JOIN sheets s ON s.id = a.sheet_id
+    WHERE a.visit_id = $1
+    ORDER BY a.orden_en_visita, a.id`, [visitId]);
+  return { visit, annotations: anots.rows };
+}
+
+// Genera el PDF de una visita como Buffer (para descarga o adjunto email)
+function generarPdfVisitaBuffer(visit: any, annotations: any[]): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocumentLib({ size: 'A4', margin: 40 });
+      const chunks: Buffer[] = [];
+      doc.on('data', (c: Buffer) => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      const fecha = visit.confirmed_at
+        ? new Date(visit.confirmed_at).toLocaleDateString('es-ES')
+        : new Date(visit.created_at).toLocaleDateString('es-ES');
+
+      // ---------- CABECERA ----------
+      doc.fontSize(18).fillColor('#cc007a').text('LOMHIFAR S.L.', { align: 'left' });
+      doc.fontSize(9).fillColor('#666').text('Distribución de productos parafarmacéuticos');
+      doc.moveDown(0.5);
+      doc.fontSize(14).fillColor('#000').text('Resumen de visita comercial');
+      doc.moveDown(0.3);
+      doc.fontSize(10).fillColor('#666').text(`Generado: ${new Date().toLocaleString('es-ES')}`);
+      doc.moveDown(0.8);
+      doc.strokeColor('#cc007a').lineWidth(1.5).moveTo(40, doc.y).lineTo(555, doc.y).stroke();
+      doc.moveDown(0.8);
+
+      // ---------- DATOS CLIENTE ----------
+      doc.fontSize(11).fillColor('#000').font('Helvetica-Bold').text('Cliente');
+      doc.font('Helvetica').fontSize(10).fillColor('#000');
+      const addLine = (label: string, val: any) => {
+        if (val == null || val === '') return;
+        doc.font('Helvetica-Bold').text(label + ': ', { continued: true })
+           .font('Helvetica').text(String(val));
+      };
+      addLine('Razón social', visit.cliente_nombre);
+      addLine('Código Sage', visit.cliente_sage);
+      addLine('CIF', visit.cliente_cif);
+      const direccion = [visit.cliente_direccion, visit.cliente_cp, visit.cliente_municipio, visit.cliente_provincia].filter((x: any) => !!x).join(', ');
+      if (direccion) addLine('Dirección', direccion);
+      addLine('Teléfono', visit.cliente_telefono);
+      addLine('Email', visit.cliente_email);
+      doc.moveDown(0.6);
+
+      // ---------- DATOS VISITA ----------
+      doc.font('Helvetica-Bold').fontSize(11).text('Visita');
+      doc.font('Helvetica').fontSize(10);
+      addLine('Fecha', fecha);
+      addLine('Comercial', visit.comercial_nombre);
+      addLine('Catálogo mostrado', visit.catalog_nombre);
+      addLine('Estado', visit.status === 'confirmed' ? 'Cerrada' : visit.status === 'sent' ? 'Enviada' : 'Borrador');
+      doc.moveDown(0.6);
+
+      // ---------- ANOTACIONES ----------
+      const grupos: any = { pedido: [], devolucion: [], nota: [] };
+      annotations.forEach((a: any) => {
+        if (grupos[a.tipo]) grupos[a.tipo].push(a);
+        else grupos.nota.push(a);
+      });
+
+      const pintarGrupo = (titulo: string, items: any[], color: string) => {
+        if (items.length === 0) return;
+        if (doc.y > 720) doc.addPage();
+        doc.font('Helvetica-Bold').fontSize(11).fillColor(color).text(titulo);
+        doc.font('Helvetica').fontSize(10).fillColor('#000');
+        doc.moveDown(0.2);
+        items.forEach((a: any) => {
+          if (doc.y > 770) doc.addPage();
+          const num = a.sheet_orden ? `Lám.${a.sheet_orden}` : '—';
+          const tit = a.sheet_titulo ? ` · ${a.sheet_titulo}` : '';
+          doc.font('Helvetica-Bold').text(`• ${num}${tit}`);
+          doc.font('Helvetica').fillColor('#222').text(`    ${a.texto_libre}`);
+          doc.fillColor('#000');
+          doc.moveDown(0.2);
+        });
+        doc.moveDown(0.4);
+      };
+
+      pintarGrupo('PEDIDOS (' + grupos.pedido.length + ')', grupos.pedido, '#166534');
+      pintarGrupo('DEVOLUCIONES (' + grupos.devolucion.length + ')', grupos.devolucion, '#92400e');
+      pintarGrupo('NOTAS (' + grupos.nota.length + ')', grupos.nota, '#374151');
+
+      if (annotations.length === 0) {
+        doc.font('Helvetica-Oblique').fontSize(10).fillColor('#666')
+           .text('Esta visita no tiene anotaciones registradas.');
+        doc.moveDown(0.6);
+      }
+
+      // ---------- NOTAS GENERALES ----------
+      if (visit.notas_generales && String(visit.notas_generales).trim()) {
+        if (doc.y > 700) doc.addPage();
+        doc.font('Helvetica-Bold').fontSize(11).fillColor('#000').text('Notas generales');
+        doc.font('Helvetica').fontSize(10).fillColor('#222').text(visit.notas_generales);
+        doc.moveDown(0.5);
+      }
+
+      // ---------- PIE ----------
+      doc.fontSize(8).fillColor('#999').text(
+        'LOMHIFAR S.L. · Documento generado automáticamente por CatalogPRO v2',
+        40, 800, { width: 515, align: 'center' }
+      );
+      doc.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function nombrePdfVisita(visit: any): string {
+  const fecha = visit.confirmed_at
+    ? new Date(visit.confirmed_at).toLocaleDateString('es-ES')
+    : new Date(visit.created_at).toLocaleDateString('es-ES');
+  return `visita_${visit.cliente_sage || visit.client_id}_${fecha.replace(/\//g, '-')}.pdf`;
+}
 
 app.get('/api/visits/:id/pdf', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
     const userId = effectiveUserId(req);
-    // Cargar visita con joins
-    const v = await pool.query(`
-      SELECT v.*, c.razon_social AS cliente_nombre, c.cif AS cliente_cif,
-             c.direccion AS cliente_direccion, c.cp AS cliente_cp,
-             c.municipio AS cliente_municipio, c.provincia AS cliente_provincia,
-             c.telefono AS cliente_telefono, c.email AS cliente_email,
-             c.sage_code AS cliente_sage,
-             cat.name AS catalog_nombre,
-             u.name AS comercial_nombre, u.email AS comercial_email
-      FROM visits v
-      LEFT JOIN clients c ON c.id = v.client_id
-      LEFT JOIN catalogs cat ON cat.id = v.catalog_id
-      LEFT JOIN users u ON u.id = v.user_id
-      WHERE v.id = $1`, [id]);
-    if (v.rows.length === 0) {
+    const datos = await cargarDatosVisitaCompleta(id);
+    if (!datos) {
       res.status(404).json({ success: false, error: 'Visita no encontrada' });
       return;
     }
-    const visit = v.rows[0];
+    const { visit, annotations } = datos;
     if (isEffectiveSales(req) && visit.user_id !== userId) {
       res.status(403).json({ success: false, error: 'No tienes acceso a esta visita' });
       return;
     }
-    // Anotaciones con datos lamina
-    const anots = await pool.query(`
-      SELECT a.*, s.titulo AS sheet_titulo, s.orden AS sheet_orden, s.tags AS sheet_tags
-      FROM annotations a
-      LEFT JOIN sheets s ON s.id = a.sheet_id
-      WHERE a.visit_id = $1
-      ORDER BY a.orden_en_visita, a.id`, [id]);
-    const annotations = anots.rows;
-
-    // Generar PDF al vuelo
-    const doc = new PDFDocumentLib({ size: 'A4', margin: 40 });
-    const fecha = visit.confirmed_at
-      ? new Date(visit.confirmed_at).toLocaleDateString('es-ES')
-      : new Date(visit.created_at).toLocaleDateString('es-ES');
-    const filename = `visita_${visit.cliente_sage || visit.client_id}_${fecha.replace(/\//g, '-')}.pdf`;
+    const buffer = await generarPdfVisitaBuffer(visit, annotations);
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-    doc.pipe(res);
-
-    // ---------- CABECERA ----------
-    doc.fontSize(18).fillColor('#cc007a').text('LOMHIFAR S.L.', { align: 'left' });
-    doc.fontSize(9).fillColor('#666')
-       .text('Distribución de productos parafarmacéuticos', { continued: false });
-    doc.moveDown(0.5);
-    doc.fontSize(14).fillColor('#000').text('Resumen de visita comercial', { underline: false });
-    doc.moveDown(0.3);
-    doc.fontSize(10).fillColor('#666')
-       .text(`Generado: ${new Date().toLocaleString('es-ES')}`);
-    doc.moveDown(0.8);
-
-    // Linea separadora
-    doc.strokeColor('#cc007a').lineWidth(1.5)
-       .moveTo(40, doc.y).lineTo(555, doc.y).stroke();
-    doc.moveDown(0.8);
-
-    // ---------- DATOS CLIENTE ----------
-    doc.fontSize(11).fillColor('#000').font('Helvetica-Bold').text('Cliente');
-    doc.font('Helvetica').fontSize(10).fillColor('#000');
-    const addLine = (label: string, val: any) => {
-      if (val == null || val === '') return;
-      doc.font('Helvetica-Bold').text(label + ': ', { continued: true })
-         .font('Helvetica').text(String(val));
-    };
-    addLine('Razón social', visit.cliente_nombre);
-    addLine('Código Sage', visit.cliente_sage);
-    addLine('CIF', visit.cliente_cif);
-    const direccion = [visit.cliente_direccion, visit.cliente_cp, visit.cliente_municipio, visit.cliente_provincia].filter(x => !!x).join(', ');
-    if (direccion) addLine('Dirección', direccion);
-    addLine('Teléfono', visit.cliente_telefono);
-    addLine('Email', visit.cliente_email);
-    doc.moveDown(0.6);
-
-    // ---------- DATOS VISITA ----------
-    doc.font('Helvetica-Bold').fontSize(11).text('Visita');
-    doc.font('Helvetica').fontSize(10);
-    addLine('Fecha', fecha);
-    addLine('Comercial', visit.comercial_nombre);
-    addLine('Catálogo mostrado', visit.catalog_nombre);
-    addLine('Estado', visit.status === 'confirmed' ? 'Cerrada' : visit.status === 'sent' ? 'Enviada' : 'Borrador');
-    doc.moveDown(0.6);
-
-    // ---------- ANOTACIONES ----------
-    const grupos: any = { pedido: [], devolucion: [], nota: [] };
-    annotations.forEach((a: any) => {
-      if (grupos[a.tipo]) grupos[a.tipo].push(a);
-      else grupos.nota.push(a);
-    });
-
-    const pintarGrupo = (titulo: string, items: any[], color: string) => {
-      if (items.length === 0) return;
-      // Comprobar espacio
-      if (doc.y > 720) doc.addPage();
-      doc.font('Helvetica-Bold').fontSize(11).fillColor(color).text(titulo);
-      doc.font('Helvetica').fontSize(10).fillColor('#000');
-      doc.moveDown(0.2);
-      items.forEach((a: any) => {
-        if (doc.y > 770) doc.addPage();
-        const num = a.sheet_orden ? `Lám.${a.sheet_orden}` : '—';
-        const tit = a.sheet_titulo ? ` · ${a.sheet_titulo}` : '';
-        // bullet
-        doc.font('Helvetica-Bold').text(`• ${num}${tit}`, { continued: false });
-        doc.font('Helvetica').fillColor('#222')
-           .text(`    ${a.texto_libre}`, { indent: 0 });
-        doc.fillColor('#000');
-        doc.moveDown(0.2);
-      });
-      doc.moveDown(0.4);
-    };
-
-    pintarGrupo('PEDIDOS (' + grupos.pedido.length + ')', grupos.pedido, '#166534');
-    pintarGrupo('DEVOLUCIONES (' + grupos.devolucion.length + ')', grupos.devolucion, '#92400e');
-    pintarGrupo('NOTAS (' + grupos.nota.length + ')', grupos.nota, '#374151');
-
-    if (annotations.length === 0) {
-      doc.font('Helvetica-Oblique').fontSize(10).fillColor('#666')
-         .text('Esta visita no tiene anotaciones registradas.');
-      doc.moveDown(0.6);
-    }
-
-    // ---------- NOTAS GENERALES ----------
-    if (visit.notas_generales && String(visit.notas_generales).trim()) {
-      if (doc.y > 700) doc.addPage();
-      doc.font('Helvetica-Bold').fontSize(11).fillColor('#000').text('Notas generales');
-      doc.font('Helvetica').fontSize(10).fillColor('#222')
-         .text(visit.notas_generales);
-      doc.moveDown(0.5);
-    }
-
-    // ---------- PIE ----------
-    const bottom = 800;
-    doc.fontSize(8).fillColor('#999')
-       .text('LOMHIFAR S.L. · Documento generado automáticamente por CatalogPRO v2',
-             40, bottom, { width: 515, align: 'center' });
-
-    doc.end();
+    res.setHeader('Content-Disposition', `inline; filename="${nombrePdfVisita(visit)}"`);
+    res.end(buffer);
   } catch (e) {
     if (!res.headersSent) {
       res.status(500).json({ success: false, error: (e as Error).message });
     }
+  }
+});
+
+// ============================================================================
+// C - EMAILS AL CERRAR VISITA (nodemailer + Gmail SMTP)
+// ============================================================================
+const nodemailer = require('nodemailer');
+
+// Lee toda la config de emails de la BD como objeto
+async function leerEmailConfig(): Promise<Record<string,string>> {
+  const r = await pool.query(`SELECT clave, valor FROM email_config`);
+  const cfg: Record<string,string> = {};
+  r.rows.forEach((row: any) => { cfg[row.clave] = row.valor || ''; });
+  return cfg;
+}
+
+// Construye el transporter de nodemailer con las vars de entorno (Gmail SMTP)
+let _transporterCache: any = null;
+function getTransporter() {
+  if (_transporterCache) return _transporterCache;
+  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const port = Number(process.env.SMTP_PORT || '587');
+  const secure = String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true';
+  const user = process.env.SMTP_USER || '';
+  const pass = process.env.SMTP_PASS || '';
+  _transporterCache = nodemailer.createTransport({
+    host, port, secure,
+    auth: { user, pass },
+    // Margen de tiempo amplio: Gmail puede tardar
+    connectionTimeout: 15000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000
+  });
+  return _transporterCache;
+}
+
+// Helper central: envia 1 email con redireccion automatica si estamos en modo pruebas.
+// Argumentos:
+//   rol: 'oficina' | 'cliente' | 'comercial' - para saber si redirigir y a donde
+//   destinatarioReal: email "real" al que iria en produccion
+//   asunto, html, attachments?
+// Devuelve: { ok, destinatario_final, message_id?, error?, modo }
+async function enviarEmailConRedireccion(opts: {
+  rol: 'oficina' | 'cliente' | 'comercial';
+  destinatarioReal: string;
+  asunto: string;
+  html: string;
+  attachments?: any[];
+  visitId?: number;
+}): Promise<{ok: boolean; destinatarioFinal: string; messageId?: string; error?: string; modo: string;}> {
+  const cfg = await leerEmailConfig();
+  const modo = cfg.modo === 'produccion' ? 'produccion' : 'pruebas';
+  const from = process.env.SMTP_FROM || cfg.remitente_from || '"CatalogPRO" <noreply@example.com>';
+
+  // Decidir destinatario final segun modo
+  let destinatarioFinal = '';
+  let asuntoFinal = opts.asunto;
+  let htmlFinal = opts.html;
+  if (modo === 'pruebas') {
+    // Redirigir al email de prueba correspondiente al rol
+    if (opts.rol === 'oficina')   destinatarioFinal = cfg.pruebas_email_oficina   || '';
+    if (opts.rol === 'cliente')   destinatarioFinal = cfg.pruebas_email_cliente   || '';
+    if (opts.rol === 'comercial') destinatarioFinal = cfg.pruebas_email_comercial || '';
+    if (!destinatarioFinal) {
+      return { ok: false, destinatarioFinal: '', error: `Modo pruebas pero no hay email de pruebas configurado para rol "${opts.rol}". Ve a Configuración.`, modo };
+    }
+    // Marcar claramente el email
+    asuntoFinal = `[PRUEBA → ${opts.destinatarioReal || '(sin destinatario real)'}] ${opts.asunto}`;
+    htmlFinal = `
+      <div style="background:#fef3c7;border:2px solid #f59e0b;border-radius:8px;padding:12px;margin-bottom:16px">
+        <div style="font-weight:bold;color:#92400e;font-size:14px">⚠️ Este email es una PRUEBA</div>
+        <div style="color:#78350f;font-size:13px;margin-top:4px">
+          En modo producción habría ido a: <b>${opts.destinatarioReal || '(sin destinatario real)'}</b><br>
+          Rol: <b>${opts.rol}</b>
+        </div>
+      </div>
+      ${opts.html}
+    `;
+  } else {
+    // Modo produccion: usar destinatario real
+    destinatarioFinal = opts.destinatarioReal;
+    if (!destinatarioFinal) {
+      return { ok: false, destinatarioFinal: '', error: `Modo producción pero no hay destinatario real para rol "${opts.rol}".`, modo };
+    }
+  }
+
+  // Enviar
+  try {
+    const transporter = getTransporter();
+    const info = await transporter.sendMail({
+      from,
+      to: destinatarioFinal,
+      subject: asuntoFinal,
+      html: htmlFinal,
+      attachments: opts.attachments || []
+    });
+    return { ok: true, destinatarioFinal, messageId: info.messageId, modo };
+  } catch (e) {
+    return { ok: false, destinatarioFinal, error: (e as Error).message, modo };
+  }
+}
+
+// Plantillas HTML
+function plantillaEmailOficina(visit: any, annotations: any[], cfg: Record<string,string>): string {
+  const fecha = visit.confirmed_at ? new Date(visit.confirmed_at).toLocaleString('es-ES') : new Date(visit.created_at).toLocaleString('es-ES');
+  const peds = annotations.filter((a: any) => a.tipo === 'pedido');
+  const devs = annotations.filter((a: any) => a.tipo === 'devolucion');
+  const nots = annotations.filter((a: any) => a.tipo === 'nota');
+  const grupo = (titulo: string, items: any[], color: string) => {
+    if (items.length === 0) return '';
+    return `
+      <h3 style="color:${color};margin-top:18px;margin-bottom:6px;font-size:15px">${titulo} (${items.length})</h3>
+      <ul style="margin:0;padding-left:20px;font-size:14px;line-height:1.6">
+        ${items.map((a: any) => `
+          <li>
+            <b>${a.sheet_orden ? 'Lám.' + a.sheet_orden : '—'}${a.sheet_titulo ? ' · ' + escapeHtml(a.sheet_titulo) : ''}</b><br>
+            <span style="color:#444">${escapeHtml(a.texto_libre)}</span>
+          </li>
+        `).join('')}
+      </ul>
+    `;
+  };
+  return `
+    <div style="font-family:Arial,sans-serif;color:#222;max-width:680px">
+      <h2 style="color:#cc007a;margin:0 0 4px">📋 Nueva visita cerrada</h2>
+      <div style="color:#666;font-size:13px">${escapeHtml(fecha)}</div>
+      <table style="margin-top:14px;font-size:14px;border-collapse:collapse">
+        <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Cliente:</b></td><td>${escapeHtml(visit.cliente_nombre || '—')}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Código Sage:</b></td><td>${escapeHtml(visit.cliente_sage || '—')}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666"><b>CIF:</b></td><td>${escapeHtml(visit.cliente_cif || '—')}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Comercial:</b></td><td>${escapeHtml(visit.comercial_nombre || '—')}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Catálogo:</b></td><td>${escapeHtml(visit.catalog_nombre || '—')}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Resultado:</b></td><td>${visit.hubo_pedido ? '<b style="color:#166534">🛒 Con pedido</b>' : '<span style="color:#6b7280">Sin pedido</span>'}</td></tr>
+      </table>
+      ${grupo('PEDIDOS', peds, '#166534')}
+      ${grupo('DEVOLUCIONES', devs, '#92400e')}
+      ${grupo('NOTAS', nots, '#374151')}
+      ${visit.notas_generales ? `
+        <h3 style="margin-top:18px;margin-bottom:6px;font-size:15px">Notas generales</h3>
+        <p style="white-space:pre-wrap;font-size:14px;background:#f9f9f9;padding:10px;border-radius:6px">${escapeHtml(visit.notas_generales)}</p>
+      ` : ''}
+      <p style="margin-top:24px;color:#666;font-size:13px">Adjunto el PDF resumen para procesar el pedido.</p>
+      ${cfg.firma_html || ''}
+    </div>
+  `;
+}
+
+function plantillaEmailCliente(visit: any, annotations: any[], cfg: Record<string,string>): string {
+  const fecha = visit.confirmed_at ? new Date(visit.confirmed_at).toLocaleDateString('es-ES') : new Date(visit.created_at).toLocaleDateString('es-ES');
+  const peds = annotations.filter((a: any) => a.tipo === 'pedido');
+  const devs = annotations.filter((a: any) => a.tipo === 'devolucion');
+  return `
+    <div style="font-family:Arial,sans-serif;color:#222;max-width:680px">
+      <h2 style="color:#cc007a;margin:0 0 8px">Visita comercial — Resumen</h2>
+      <p style="font-size:14px">Hola,</p>
+      <p style="font-size:14px">Le confirmamos que <b>${escapeHtml(visit.comercial_nombre || 'un comercial de LOMHIFAR')}</b> ha visitado <b>${escapeHtml(visit.cliente_nombre || '')}</b> el ${escapeHtml(fecha)}.</p>
+      ${peds.length > 0 ? `
+        <h3 style="color:#166534;margin-top:18px;margin-bottom:6px;font-size:15px">Pedido (${peds.length})</h3>
+        <ul style="font-size:14px;line-height:1.7">
+          ${peds.map((a: any) => `<li><b>${a.sheet_titulo ? escapeHtml(a.sheet_titulo) : 'Lám.' + (a.sheet_orden || '—')}</b>: ${escapeHtml(a.texto_libre)}</li>`).join('')}
+        </ul>
+      ` : ''}
+      ${devs.length > 0 ? `
+        <h3 style="color:#92400e;margin-top:18px;margin-bottom:6px;font-size:15px">Devoluciones (${devs.length})</h3>
+        <ul style="font-size:14px;line-height:1.7">
+          ${devs.map((a: any) => `<li><b>${a.sheet_titulo ? escapeHtml(a.sheet_titulo) : 'Lám.' + (a.sheet_orden || '—')}</b>: ${escapeHtml(a.texto_libre)}</li>`).join('')}
+        </ul>
+      ` : ''}
+      ${peds.length === 0 && devs.length === 0 ? `
+        <p style="font-size:14px;background:#f3f4f6;padding:10px;border-radius:6px;color:#374151">En esta visita no se registró pedido. Si detecta alguna discrepancia, contacte con nosotros.</p>
+      ` : ''}
+      <p style="margin-top:24px;font-size:14px">Nuestro equipo procesará el pedido a la mayor brevedad. Si necesita modificar algo, no dude en contactar con su comercial.</p>
+      <p style="font-size:14px">Gracias por confiar en LOMHIFAR.</p>
+      ${cfg.firma_html || ''}
+    </div>
+  `;
+}
+
+function plantillaEmailComercial(visit: any, annotations: any[], cfg: Record<string,string>): string {
+  const fecha = visit.confirmed_at ? new Date(visit.confirmed_at).toLocaleString('es-ES') : new Date(visit.created_at).toLocaleString('es-ES');
+  return `
+    <div style="font-family:Arial,sans-serif;color:#222;max-width:680px">
+      <h2 style="color:#cc007a;margin:0 0 4px">✅ Visita registrada</h2>
+      <p style="font-size:14px">Hola ${escapeHtml(visit.comercial_nombre || '')},</p>
+      <p style="font-size:14px">Tu visita con <b>${escapeHtml(visit.cliente_nombre || '')}</b> del ${escapeHtml(fecha)} ha sido registrada correctamente.</p>
+      <table style="margin-top:14px;font-size:14px">
+        <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Anotaciones totales:</b></td><td>${annotations.length}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Pedidos:</b></td><td>${annotations.filter((a: any) => a.tipo === 'pedido').length}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Devoluciones:</b></td><td>${annotations.filter((a: any) => a.tipo === 'devolucion').length}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Notas:</b></td><td>${annotations.filter((a: any) => a.tipo === 'nota').length}</td></tr>
+      </table>
+      <p style="margin-top:20px;font-size:14px;color:#666">Adjunto el PDF como copia para tu archivo personal.</p>
+      ${cfg.firma_html || ''}
+    </div>
+  `;
+}
+
+// Helper escapado HTML basico
+function escapeHtml(s: any): string {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Funcion principal: envia los 3 emails al cerrar visita
+// Se llama de forma asincrona (fire-and-forget) desde POST /api/visits/:id/confirm
+async function enviarEmailsVisita(visitId: number) {
+  try {
+    const datos = await cargarDatosVisitaCompleta(visitId);
+    if (!datos) return;
+    const { visit, annotations } = datos;
+    const cfg = await leerEmailConfig();
+    const fecha = visit.confirmed_at ? new Date(visit.confirmed_at).toLocaleDateString('es-ES') : new Date(visit.created_at).toLocaleDateString('es-ES');
+    const asuntoBase = `Visita ${fecha} · ${visit.cliente_nombre || 'Cliente'}`;
+
+    // Generar PDF una sola vez
+    let pdfBuffer: Buffer | null = null;
+    try {
+      pdfBuffer = await generarPdfVisitaBuffer(visit, annotations);
+    } catch (e) {
+      console.error('Error generando PDF para visita ' + visitId + ':', (e as Error).message);
+    }
+    const pdfFilename = nombrePdfVisita(visit);
+    const adjuntoPdf = pdfBuffer ? [{ filename: pdfFilename, content: pdfBuffer, contentType: 'application/pdf' }] : [];
+
+    // 1) Email a oficina (con PDF adjunto)
+    const oficinaEmails = (cfg.oficina_emails || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (oficinaEmails.length > 0 || cfg.modo === 'pruebas') {
+      const oficinaReal = oficinaEmails.join(', ');
+      const r = await enviarEmailConRedireccion({
+        rol: 'oficina',
+        destinatarioReal: oficinaReal,
+        asunto: `[OFICINA] ${asuntoBase}`,
+        html: plantillaEmailOficina(visit, annotations, cfg),
+        attachments: adjuntoPdf,
+        visitId
+      });
+      await pool.query(
+        `INSERT INTO visit_emails (visit_id, destinatario, destinatario_real, rol, modo, asunto, ok, error, message_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [visitId, r.destinatarioFinal, oficinaReal, 'oficina', r.modo, `[OFICINA] ${asuntoBase}`, r.ok, r.error || null, r.messageId || null]
+      );
+    }
+
+    // 2) Email al cliente (sin PDF para que sea ligero - confirmacion simple)
+    const clienteReal = visit.cliente_email || '';
+    if (clienteReal || cfg.modo === 'pruebas') {
+      const r = await enviarEmailConRedireccion({
+        rol: 'cliente',
+        destinatarioReal: clienteReal,
+        asunto: asuntoBase,
+        html: plantillaEmailCliente(visit, annotations, cfg),
+        visitId
+      });
+      await pool.query(
+        `INSERT INTO visit_emails (visit_id, destinatario, destinatario_real, rol, modo, asunto, ok, error, message_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [visitId, r.destinatarioFinal, clienteReal, 'cliente', r.modo, asuntoBase, r.ok, r.error || null, r.messageId || null]
+      );
+    }
+
+    // 3) Email al comercial (con PDF adjunto, copia personal)
+    const comercialReal = visit.comercial_email || '';
+    if (comercialReal || cfg.modo === 'pruebas') {
+      const r = await enviarEmailConRedireccion({
+        rol: 'comercial',
+        destinatarioReal: comercialReal,
+        asunto: `[COPIA] ${asuntoBase}`,
+        html: plantillaEmailComercial(visit, annotations, cfg),
+        attachments: adjuntoPdf,
+        visitId
+      });
+      await pool.query(
+        `INSERT INTO visit_emails (visit_id, destinatario, destinatario_real, rol, modo, asunto, ok, error, message_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [visitId, r.destinatarioFinal, comercialReal, 'comercial', r.modo, `[COPIA] ${asuntoBase}`, r.ok, r.error || null, r.messageId || null]
+      );
+    }
+  } catch (e) {
+    console.error('Error en enviarEmailsVisita(' + visitId + '):', (e as Error).message);
+  }
+}
+
+// ============================================================================
+// C - ENDPOINTS DE CONFIG DE EMAIL Y LOG DE ENVIOS
+// ============================================================================
+
+// GET config actual de emails (admin real)
+app.get('/api/email-config', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`SELECT clave, valor, descripcion FROM email_config ORDER BY clave`);
+    res.json({ success: true, config: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// PUT actualizar varios valores de config a la vez (admin real)
+// Body: { values: { clave: valor, clave2: valor2, ... } }
+app.put('/api/email-config', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const { values } = req.body;
+    if (!values || typeof values !== 'object') {
+      res.status(400).json({ success: false, error: 'Falta body.values con las claves a actualizar' });
+      return;
+    }
+    await client.query('BEGIN');
+    for (const k of Object.keys(values)) {
+      const v = values[k] == null ? '' : String(values[k]);
+      // Solo actualiza si la clave existe (no permitimos crear claves nuevas via PUT)
+      await client.query(
+        `UPDATE email_config SET valor = $1, updated_at = NOW() WHERE clave = $2`,
+        [v, k]
+      );
+    }
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(400).json({ success: false, error: (e as Error).message });
+  } finally {
+    client.release();
+  }
+});
+
+// POST email de prueba SMTP (verificar configuracion)
+// Body: { to: 'email@ejemplo.com' }
+app.post('/api/email-config/test', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { to } = req.body;
+    if (!to) {
+      res.status(400).json({ success: false, error: 'Falta destinatario "to"' });
+      return;
+    }
+    const cfg = await leerEmailConfig();
+    const transporter = getTransporter();
+    const from = process.env.SMTP_FROM || cfg.remitente_from || '"CatalogPRO" <noreply@example.com>';
+    const info = await transporter.sendMail({
+      from,
+      to,
+      subject: 'CatalogPRO v2 - Prueba de envío SMTP',
+      html: `
+        <div style="font-family:Arial,sans-serif">
+          <h2 style="color:#cc007a">✅ Prueba de envío correcta</h2>
+          <p>Si recibes este email, la configuración SMTP de CatalogPRO v2 está funcionando.</p>
+          <p style="color:#666;font-size:12px">Enviado: ${new Date().toLocaleString('es-ES')}</p>
+        </div>
+      `
+    });
+    res.json({ success: true, message_id: info.messageId });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET log de emails enviados de una visita
+app.get('/api/visits/:id/emails', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    // Comprobar acceso
+    const v = await pool.query(`SELECT user_id FROM visits WHERE id = $1`, [id]);
+    if (v.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Visita no encontrada' });
+      return;
+    }
+    if (isEffectiveSales(req) && v.rows[0].user_id !== userId) {
+      res.status(403).json({ success: false, error: 'No tienes acceso a esta visita' });
+      return;
+    }
+    const r = await pool.query(
+      `SELECT * FROM visit_emails WHERE visit_id = $1 ORDER BY sent_at`,
+      [id]
+    );
+    res.json({ success: true, emails: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST reenviar TODOS los emails de una visita (admin o dueño de visita)
+app.post('/api/visits/:id/resend-emails', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    const v = await pool.query(`SELECT user_id, status FROM visits WHERE id = $1`, [id]);
+    if (v.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Visita no encontrada' });
+      return;
+    }
+    if (isEffectiveSales(req) && v.rows[0].user_id !== userId) {
+      res.status(403).json({ success: false, error: 'No tienes acceso a esta visita' });
+      return;
+    }
+    if (v.rows[0].status !== 'confirmed' && v.rows[0].status !== 'sent') {
+      res.status(400).json({ success: false, error: 'Solo se pueden reenviar emails de visitas cerradas' });
+      return;
+    }
+    // Lanzar reenvio (async, no esperamos)
+    enviarEmailsVisita(id).catch(e => console.error('Error reenvio emails visita ' + id + ':', e));
+    res.json({ success: true, message: 'Reenvío en curso. Revisa el log en unos segundos.' });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
   }
 });
 
