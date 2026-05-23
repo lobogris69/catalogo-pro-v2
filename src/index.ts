@@ -445,7 +445,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'G-fix-busqueda-v3-23may-09h',
+    build: 'G-fix-busqueda-v4-23may-09h30',
     service: 'CatalogPRO v2'
   });
 });
@@ -1834,13 +1834,25 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
         cParams.push(municipio);
       }
 
-      // Añadir ciclo + ventanas + (estado si filtra)
-      const cicloPos = cIdx; cParams.push(cicloDefault); cIdx++;
-      const proxPos = cIdx;  cParams.push(ventanaProxima); cIdx++;
-      const urgPos  = cIdx;  cParams.push(ventanaUrgente); cIdx++;
+      // CRITICO: SOLO añadimos a cParams los parametros que el SQL REALMENTE usa.
+      // El SQL de conteo solo usa $cicloPos (en SELECT) y opcionalmente $urgPos, $proxPos,
+      // $estPos (en estadoClause si filtra por estado). Si estado='todos', el estadoClause
+      // esta vacio y NO se usan urg ni prox. Por eso reconstruimos los params en ESTE momento
+      // según lo que realmente se referencia en el SQL.
+
+      // Empezamos con un sub-array para poder reordenar
+      const cParamsBase: any[] = [...cParams]; // los de filtros (comercial, q, provincia, municipio)
+      cParams.length = 0; // reset
+      cParams.push(...cParamsBase);
+
+      const cicloPos = cParams.push(cicloDefault); // = nueva longitud = posicion 1-indexed
+      let proxPos = 0, urgPos = 0, estPos = 0;
       let estadoClause = '';
       if (estado !== 'todos') {
-        const estPos = cIdx; cParams.push(estado); cIdx++;
+        // Solo en este caso usamos prox/urg/estado en el SQL
+        proxPos = cParams.push(ventanaProxima);
+        urgPos  = cParams.push(ventanaUrgente);
+        estPos  = cParams.push(estado);
         estadoClause = `WHERE CASE
             WHEN b.dias_desde_ultima IS NULL THEN 'sin_historial'
             WHEN b.dias_desde_ultima > (b.ciclo_efectivo + $${urgPos}) THEN 'urgente'
@@ -1848,6 +1860,8 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
             ELSE 'al_dia'
           END = $${estPos}`;
       }
+
+      console.log('[PLANNING-COUNT] params:', cParams.length, 'estado:', estado, 'cicloPos:', cicloPos, 'estPos:', estPos);
 
       const countSql = `
         WITH ultima_visita AS (
