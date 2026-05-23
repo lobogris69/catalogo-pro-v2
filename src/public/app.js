@@ -196,6 +196,7 @@ async function renderApp() {
         <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
         <button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>
         <button class="navtab ${appState.vista === 'planning' ? 'navtab-activa' : ''}" onclick="irA('planning')">🗓️ Planning</button>
+        <button class="navtab ${appState.vista === 'mapa' ? 'navtab-activa' : ''}" onclick="irA('mapa')">🗺️ Mapa</button>
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'configuracion' ? 'navtab-activa' : ''}" onclick="irA('configuracion')">⚙️ Configuración</button>` : ''}
@@ -220,6 +221,8 @@ function routerVista() {
     renderListaComerciales();
   } else if (appState.vista === 'planning') {
     renderPlanning();
+  } else if (appState.vista === 'mapa') {
+    renderMapa();
   } else if (appState.vista === 'plantillas') {
     renderListaPlantillas();
   } else if (appState.vista === 'configuracion') {
@@ -2922,6 +2925,26 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE 6: Geocoding -->
+        <div class="editor-panel" style="margin-bottom:14px">
+          <h3 style="margin-top:0">🌍 Geocoding de clientes</h3>
+          <p style="font-size:13px;color:var(--gris-texto)">
+            Calcula las coordenadas GPS de cada cliente a partir de su dirección, CP, municipio y provincia.
+            Es necesario para mostrar clientes en el mapa.
+            <br><br>
+            <b>⚠️ Importante:</b> el proceso tarda aproximadamente <b>1 segundo por cliente</b> (límite del servicio gratuito de OpenStreetMap).
+            Para 2949 clientes son ~50 minutos. Puedes dejarlo corriendo en segundo plano mientras haces otras cosas.
+          </p>
+          <div id="geocoding-stats" style="background:#f9fafb;padding:12px;border-radius:8px;margin:12px 0;font-size:13px">
+            Cargando estado…
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn btn-primary" onclick="iniciarGeocoding(true)" id="btn-geo-faltantes">🌍 Geocodificar pendientes</button>
+            <button class="btn btn-secondary" onclick="iniciarGeocoding(false)" id="btn-geo-todos">🔄 Re-geocodificar TODOS</button>
+            <button class="btn btn-secondary" onclick="cancelarGeocoding()" id="btn-geo-cancelar" style="display:none">⏹️ Cancelar</button>
+          </div>
+        </div>
+
         <!-- ACCIONES -->
         <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:14px">
           <button class="btn btn-secondary" onclick="enviarEmailPrueba()">📨 Enviar email de prueba</button>
@@ -2932,8 +2955,91 @@ async function renderConfiguracion() {
       </div>
     `;
     $v.innerHTML = html;
+    // Cargar stats geocoding tras pintar
+    actualizarStatsGeocoding();
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+// H: Funciones de geocoding
+let _geocodingPoll = null;
+
+async function actualizarStatsGeocoding() {
+  const $stats = document.getElementById('geocoding-stats');
+  if (!$stats) return;
+  try {
+    const r = await api('/api/geocode-status');
+    const s = r.stats;
+    const p = r.proceso;
+    const $btnFalt = document.getElementById('btn-geo-faltantes');
+    const $btnTodos = document.getElementById('btn-geo-todos');
+    const $btnCancel = document.getElementById('btn-geo-cancelar');
+
+    if (p.running) {
+      // Proceso en curso: mostrar progreso
+      const pct = p.total > 0 ? ((p.procesados / p.total) * 100).toFixed(1) : 0;
+      $stats.innerHTML = `
+        <div style="font-weight:600;margin-bottom:8px">🌍 Proceso en curso…</div>
+        <div style="background:#e5e7eb;height:20px;border-radius:10px;overflow:hidden;margin-bottom:8px">
+          <div style="background:linear-gradient(90deg,#cc007a,#dc2675);height:100%;width:${pct}%;transition:width 0.5s"></div>
+        </div>
+        <div style="font-size:12px">
+          <b>${p.procesados}/${p.total}</b> procesados (${pct}%) ·
+          ✓ ${p.ok} ok · ⚠️ ${p.no_encontrados} no encontrados · ❌ ${p.errores} errores
+        </div>
+        ${p.ultimoError ? `<div style="font-size:11px;color:#dc2626;margin-top:4px">Último error: ${escape(p.ultimoError)}</div>` : ''}
+      `;
+      if ($btnFalt) $btnFalt.disabled = true;
+      if ($btnTodos) $btnTodos.disabled = true;
+      if ($btnCancel) $btnCancel.style.display = 'inline-block';
+      // Volver a actualizar en 2 segundos
+      if (_geocodingPoll) clearTimeout(_geocodingPoll);
+      _geocodingPoll = setTimeout(actualizarStatsGeocoding, 2000);
+    } else {
+      // Sin proceso: mostrar estado actual
+      const conPct = s.total > 0 ? ((s.con_coords / s.total) * 100).toFixed(1) : 0;
+      $stats.innerHTML = `
+        <div style="font-weight:600;margin-bottom:6px">📊 Estado actual</div>
+        <div style="background:#e5e7eb;height:14px;border-radius:7px;overflow:hidden;margin-bottom:8px">
+          <div style="background:#16a34a;height:100%;width:${conPct}%"></div>
+        </div>
+        <div style="font-size:12px">
+          ✓ <b>${s.con_coords}/${s.total}</b> clientes geolocalizados (${conPct}%)<br>
+          ⏳ <b>${s.sin_coords}</b> pendientes ·
+          ⚠️ <b>${s.no_encontrados}</b> no encontrados ·
+          ❌ <b>${s.con_error}</b> con error
+        </div>
+      `;
+      if ($btnFalt) $btnFalt.disabled = false;
+      if ($btnTodos) $btnTodos.disabled = false;
+      if ($btnCancel) $btnCancel.style.display = 'none';
+      if (_geocodingPoll) { clearTimeout(_geocodingPoll); _geocodingPoll = null; }
+    }
+  } catch (err) {
+    $stats.innerHTML = `<div class="error-msg">Error: ${escape(err.message)}</div>`;
+  }
+}
+
+async function iniciarGeocoding(soloFaltantes) {
+  const msg = soloFaltantes
+    ? '¿Iniciar geocoding de los clientes pendientes?\n\nTarda ~1 segundo por cliente.'
+    : '⚠️ ¿Re-geocodificar TODOS los clientes?\n\nEsto sobrescribirá las coordenadas existentes. Tarda ~1 segundo por cliente.';
+  if (!confirm(msg)) return;
+  try {
+    await api('/api/geocode-start', { method: 'POST', body: { soloFaltantes } });
+    actualizarStatsGeocoding();
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+async function cancelarGeocoding() {
+  if (!confirm('¿Cancelar el proceso de geocoding?\n\nSe detendrá tras el cliente actual. Lo ya geocodificado se conserva.')) return;
+  try {
+    await api('/api/geocode-cancel', { method: 'POST' });
+  } catch (err) {
+    alert('Error: ' + err.message);
   }
 }
 
@@ -2990,6 +3096,386 @@ async function enviarEmailPrueba() {
     alert('✅ Email de prueba enviado a ' + to + '\n\nRevisa la bandeja en unos segundos. Si no llega en 1-2 minutos, revisa configuración SMTP en Railway o la carpeta de spam.');
   } catch (err) {
     alert('❌ Error enviando prueba:\n\n' + err.message + '\n\nVerifica que SMTP_HOST, SMTP_USER y SMTP_PASS estén configurados en Railway.');
+  }
+}
+
+// ============================================================================
+// ===== H - MAPA CON RUTA OPTIMIZADA =====
+// ============================================================================
+
+let _mapaState = {
+  modo: 'todos',           // 'todos' | 'pendientes' | 'cerca'
+  clientes: [],            // clientes cargados
+  seleccionados: new Set(),// IDs seleccionados para construir ruta
+  mapa: null,              // instancia Leaflet
+  marcadores: {},          // id -> marker
+  rutaLinea: null,         // polyline de ruta
+  miUbicacion: null        // {lat, lng} si el usuario activo "Cerca de aquí"
+};
+
+const COLORES_PIN = {
+  urgente:       '#dc2626',
+  proxima:       '#d97706',
+  al_dia:        '#16a34a',
+  sin_historial: '#6b7280'
+};
+
+async function renderMapa() {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `
+    <div class="contenedor contenedor-mapa">
+      <div class="titulo-pagina">
+        <div>
+          <h2>🗺️ Mapa de clientes</h2>
+          <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+            Selecciona clientes para construir una ruta optimizada
+          </div>
+        </div>
+      </div>
+
+      <div class="mapa-toolbar">
+        <div class="mapa-chips-modo">
+          <button class="planning-chip ${_mapaState.modo === 'todos' ? 'planning-chip-activo' : ''}" onclick="cambiarModoMapa('todos')">🌍 Todos</button>
+          <button class="planning-chip ${_mapaState.modo === 'pendientes' ? 'planning-chip-activo' : ''}" onclick="cambiarModoMapa('pendientes')">⏰ Pendientes</button>
+          <button class="planning-chip ${_mapaState.modo === 'cerca' ? 'planning-chip-activo' : ''}" onclick="cambiarModoMapa('cerca')">📍 Cerca de aquí</button>
+        </div>
+        <div class="mapa-info" id="mapa-info">Cargando…</div>
+      </div>
+
+      <div class="mapa-layout">
+        <div id="mapa-leaflet" class="mapa-leaflet"></div>
+        <div class="mapa-lateral">
+          <h4>Seleccionados (<span id="mapa-seleccion-count">0</span>)</h4>
+          <div id="mapa-seleccionados-lista" class="mapa-seleccionados-lista">
+            <p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">
+              Pulsa los pines en el mapa para añadir clientes a tu ruta.
+            </p>
+          </div>
+          <div class="mapa-acciones">
+            <button class="btn btn-secondary btn-pequeno" onclick="limpiarSeleccionMapa()" id="btn-limpiar-seleccion" disabled>🧹 Limpiar</button>
+            <button class="btn btn-primary btn-pequeno" onclick="construirRutaMapa()" id="btn-ruta" disabled>🛣️ Ruta óptima</button>
+          </div>
+          <div id="mapa-ruta-info" class="mapa-ruta-info"></div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Esperar a que Leaflet esté cargado (el script tiene defer)
+  let intentos = 0;
+  while (typeof L === 'undefined' && intentos < 40) {
+    await new Promise(r => setTimeout(r, 100));
+    intentos++;
+  }
+  if (typeof L === 'undefined') {
+    document.getElementById('mapa-leaflet').innerHTML = '<div class="error-msg">No se pudo cargar Leaflet. Revisa tu conexión a internet.</div>';
+    return;
+  }
+
+  // Crear mapa centrado en España (zoom amplio)
+  _mapaState.mapa = L.map('mapa-leaflet', { zoomControl: true }).setView([42.5, -2.5], 7);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap',
+    maxZoom: 19
+  }).addTo(_mapaState.mapa);
+
+  // Cargar clientes
+  await recargarClientesMapa();
+}
+
+async function cambiarModoMapa(modo) {
+  _mapaState.modo = modo;
+  // Resaltar el chip activo
+  document.querySelectorAll('.mapa-chips-modo .planning-chip').forEach(el => {
+    el.classList.remove('planning-chip-activo');
+  });
+  event && event.target && event.target.classList.add('planning-chip-activo');
+
+  if (modo === 'cerca') {
+    // Pedir geolocalización
+    if (!navigator.geolocation) {
+      alert('Tu navegador no soporta geolocalización.');
+      return;
+    }
+    const $info = document.getElementById('mapa-info');
+    if ($info) $info.textContent = 'Obteniendo tu ubicación…';
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        _mapaState.miUbicacion = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        _mapaState.mapa.setView([pos.coords.latitude, pos.coords.longitude], 12);
+        // Marcador de "yo" (azul)
+        L.circleMarker([pos.coords.latitude, pos.coords.longitude], {
+          radius: 8, fillColor: '#3b82f6', color: 'white', weight: 3, fillOpacity: 1
+        }).addTo(_mapaState.mapa).bindPopup('📍 Tu ubicación actual').openPopup();
+        recargarClientesMapa();
+      },
+      (err) => {
+        alert('No se pudo obtener tu ubicación: ' + err.message);
+        _mapaState.modo = 'todos';
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  } else {
+    recargarClientesMapa();
+  }
+}
+
+async function recargarClientesMapa() {
+  const $info = document.getElementById('mapa-info');
+  if ($info) $info.textContent = 'Cargando clientes…';
+  try {
+    // Limpiar marcadores anteriores
+    Object.values(_mapaState.marcadores).forEach(m => _mapaState.mapa.removeLayer(m));
+    _mapaState.marcadores = {};
+    if (_mapaState.rutaLinea) {
+      _mapaState.mapa.removeLayer(_mapaState.rutaLinea);
+      _mapaState.rutaLinea = null;
+    }
+
+    // Construir URL con params
+    const params = new URLSearchParams();
+    if (_mapaState.modo === 'pendientes') {
+      params.set('modo', 'pendientes');
+    } else if (_mapaState.modo === 'cerca' && _mapaState.miUbicacion) {
+      // Bbox aprox: ±0.3° (~33km) alrededor de mi ubicación
+      const lat = _mapaState.miUbicacion.lat;
+      const lng = _mapaState.miUbicacion.lng;
+      params.set('bbox', `${lat-0.3},${lng-0.3},${lat+0.3},${lng+0.3}`);
+    }
+    const r = await api('/api/map/clients?' + params.toString());
+    _mapaState.clientes = r.clientes || [];
+
+    if (_mapaState.clientes.length === 0) {
+      if ($info) $info.textContent = '0 clientes geolocalizados. ¿Has lanzado el proceso de geocoding en ⚙️ Configuración?';
+      return;
+    }
+
+    // Pintar marcadores
+    const grupo = L.featureGroup();
+    _mapaState.clientes.forEach(c => {
+      const color = COLORES_PIN[c.estado] || COLORES_PIN.sin_historial;
+      const isSel = _mapaState.seleccionados.has(c.id);
+      const marker = L.circleMarker([c.latitude, c.longitude], {
+        radius: isSel ? 11 : 8,
+        fillColor: color,
+        color: isSel ? '#000' : 'white',
+        weight: isSel ? 3 : 2,
+        fillOpacity: 0.9
+      });
+      marker.bindPopup(`
+        <div style="min-width:200px">
+          <div style="font-weight:600;font-size:14px;margin-bottom:4px">${escapeHtml(c.razon_social)}</div>
+          <div style="font-size:12px;color:#666">${escapeHtml(c.sage_code || '?')} · ${escapeHtml(c.municipio || '')}</div>
+          <div style="font-size:11px;margin-top:4px;color:${color};font-weight:500">
+            ${c.estado === 'urgente' ? '🔴 Urgente' : c.estado === 'proxima' ? '🟡 Próxima' : c.estado === 'al_dia' ? '🟢 Al día' : '⚪ Sin historial'}
+          </div>
+          <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+            <button class="leaflet-popup-btn" onclick="toggleSeleccionMapa(${c.id})">${isSel ? '✓ Quitar' : '+ Añadir a ruta'}</button>
+            <button class="leaflet-popup-btn leaflet-popup-btn-primary" onclick="iniciarVisitaParaCliente(${c.id})">🛒 Visita</button>
+            <button class="leaflet-popup-btn" onclick="abrirDetalleCliente(${c.id})">Ficha →</button>
+          </div>
+        </div>
+      `);
+      marker.addTo(_mapaState.mapa);
+      grupo.addLayer(marker);
+      _mapaState.marcadores[c.id] = marker;
+    });
+
+    // Ajustar vista al conjunto si no estamos en "cerca de aquí"
+    if (_mapaState.modo !== 'cerca' && _mapaState.clientes.length > 0) {
+      try {
+        _mapaState.mapa.fitBounds(grupo.getBounds(), { padding: [30, 30], maxZoom: 12 });
+      } catch (_) {}
+    }
+
+    if ($info) $info.textContent = `${_mapaState.clientes.length} clientes en mapa`;
+    actualizarPanelSeleccionados();
+  } catch (err) {
+    if ($info) $info.textContent = 'Error: ' + err.message;
+  }
+}
+
+// Función global para escapar HTML en popups de Leaflet
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function toggleSeleccionMapa(clientId) {
+  if (_mapaState.seleccionados.has(clientId)) {
+    _mapaState.seleccionados.delete(clientId);
+  } else {
+    _mapaState.seleccionados.add(clientId);
+  }
+  // Recargar para actualizar visualmente el pin
+  recargarClientesMapa();
+}
+
+function limpiarSeleccionMapa() {
+  _mapaState.seleccionados.clear();
+  if (_mapaState.rutaLinea) {
+    _mapaState.mapa.removeLayer(_mapaState.rutaLinea);
+    _mapaState.rutaLinea = null;
+  }
+  recargarClientesMapa();
+}
+
+function actualizarPanelSeleccionados() {
+  const $count = document.getElementById('mapa-seleccion-count');
+  const $lista = document.getElementById('mapa-seleccionados-lista');
+  const $btnRuta = document.getElementById('btn-ruta');
+  const $btnLimpiar = document.getElementById('btn-limpiar-seleccion');
+  if (!$count || !$lista) return;
+
+  $count.textContent = _mapaState.seleccionados.size;
+  $btnLimpiar.disabled = _mapaState.seleccionados.size === 0;
+  $btnRuta.disabled = _mapaState.seleccionados.size < 2;
+
+  if (_mapaState.seleccionados.size === 0) {
+    $lista.innerHTML = `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">Pulsa los pines en el mapa para añadir clientes a tu ruta.</p>`;
+    return;
+  }
+
+  const seleccionados = _mapaState.clientes.filter(c => _mapaState.seleccionados.has(c.id));
+  $lista.innerHTML = seleccionados.map((c, idx) => {
+    const color = COLORES_PIN[c.estado] || COLORES_PIN.sin_historial;
+    return `
+      <div class="mapa-sel-fila">
+        <div class="mapa-sel-num" style="background:${color}">${idx + 1}</div>
+        <div class="mapa-sel-info">
+          <div class="mapa-sel-nombre">${escape(c.razon_social)}</div>
+          <div class="mapa-sel-meta">${escape(c.sage_code || '?')} · ${escape(c.municipio || '')}</div>
+        </div>
+        <button class="mapa-sel-quitar" onclick="toggleSeleccionMapa(${c.id})" title="Quitar">×</button>
+      </div>
+    `;
+  }).join('');
+}
+
+// Algoritmo "vecino más cercano" para ordenar la ruta
+// Si tenemos punto de origen (miUbicacion), empezamos desde ahí.
+// Si no, empezamos por el primer cliente seleccionado.
+function calcularRutaOptima(puntos, origen) {
+  if (puntos.length === 0) return [];
+  if (puntos.length === 1) return [puntos[0]];
+
+  const restantes = [...puntos];
+  const ruta = [];
+  let actual = origen;
+
+  if (!actual) {
+    // Si no hay origen, empezar por el primero
+    actual = restantes.shift();
+    ruta.push(actual);
+  }
+
+  while (restantes.length > 0) {
+    // Encontrar el más cercano a `actual`
+    let mejorIdx = 0;
+    let mejorDist = distanciaHaversine(actual.lat || actual.latitude, actual.lng || actual.longitude, restantes[0].latitude, restantes[0].longitude);
+    for (let i = 1; i < restantes.length; i++) {
+      const d = distanciaHaversine(actual.lat || actual.latitude, actual.lng || actual.longitude, restantes[i].latitude, restantes[i].longitude);
+      if (d < mejorDist) {
+        mejorDist = d;
+        mejorIdx = i;
+      }
+    }
+    const siguiente = restantes.splice(mejorIdx, 1)[0];
+    ruta.push(siguiente);
+    actual = siguiente;
+  }
+  return ruta;
+}
+
+// Distancia haversine entre dos puntos lat/lng en km
+function distanciaHaversine(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const toRad = (d) => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
+function construirRutaMapa() {
+  const seleccionados = _mapaState.clientes.filter(c => _mapaState.seleccionados.has(c.id));
+  if (seleccionados.length < 2) {
+    alert('Selecciona al menos 2 clientes para construir una ruta.');
+    return;
+  }
+  // Origen: mi ubicación si está disponible, sino el primero
+  const origen = _mapaState.miUbicacion ? { lat: _mapaState.miUbicacion.lat, lng: _mapaState.miUbicacion.lng } : null;
+  const ruta = calcularRutaOptima(seleccionados, origen);
+
+  // Actualizar orden en seleccionados según ruta (para mostrar numerado)
+  _mapaState.clientes = _mapaState.clientes.map(c => {
+    const idx = ruta.findIndex(r => r.id === c.id);
+    if (idx >= 0) return { ...c, _ordenRuta: idx + 1 };
+    return c;
+  });
+
+  // Calcular distancia total
+  let distTotal = 0;
+  let puntos = [];
+  if (origen) {
+    puntos.push([origen.lat, origen.lng]);
+    distTotal += distanciaHaversine(origen.lat, origen.lng, ruta[0].latitude, ruta[0].longitude);
+  }
+  ruta.forEach((c, i) => {
+    puntos.push([c.latitude, c.longitude]);
+    if (i > 0) {
+      distTotal += distanciaHaversine(ruta[i-1].latitude, ruta[i-1].longitude, c.latitude, c.longitude);
+    }
+  });
+
+  // Limpiar ruta anterior
+  if (_mapaState.rutaLinea) {
+    _mapaState.mapa.removeLayer(_mapaState.rutaLinea);
+  }
+
+  // Dibujar polyline
+  _mapaState.rutaLinea = L.polyline(puntos, {
+    color: '#cc007a',
+    weight: 4,
+    opacity: 0.7,
+    dashArray: '10, 8'
+  }).addTo(_mapaState.mapa);
+
+  // Ajustar vista a la ruta
+  _mapaState.mapa.fitBounds(_mapaState.rutaLinea.getBounds(), { padding: [40, 40] });
+
+  // Actualizar panel lateral con orden
+  const $lista = document.getElementById('mapa-seleccionados-lista');
+  if ($lista) {
+    $lista.innerHTML = ruta.map((c, idx) => {
+      const color = COLORES_PIN[c.estado] || COLORES_PIN.sin_historial;
+      return `
+        <div class="mapa-sel-fila">
+          <div class="mapa-sel-num" style="background:${color}">${idx + 1}</div>
+          <div class="mapa-sel-info">
+            <div class="mapa-sel-nombre">${escape(c.razon_social)}</div>
+            <div class="mapa-sel-meta">${escape(c.sage_code || '?')} · ${escape(c.municipio || '')}</div>
+          </div>
+          <button class="mapa-sel-quitar" onclick="toggleSeleccionMapa(${c.id})" title="Quitar">×</button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // Info ruta
+  const $info = document.getElementById('mapa-ruta-info');
+  if ($info) {
+    $info.innerHTML = `
+      <div class="mapa-ruta-resumen">
+        🛣️ <b>Ruta óptima en línea recta</b><br>
+        ${ruta.length} paradas · ${distTotal.toFixed(1)} km totales (a vuelo de pájaro)
+        ${origen ? '<br><span style="color:#3b82f6">📍 Desde tu ubicación actual</span>' : ''}
+        <div style="font-size:11px;color:var(--gris-texto);margin-top:6px;font-style:italic">
+          La distancia real por carretera será mayor (curvas, peajes, etc.)
+        </div>
+      </div>
+    `;
   }
 }
 

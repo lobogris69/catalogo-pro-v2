@@ -222,12 +222,41 @@ async function initDB(): Promise<void> {
         is_new_from_visit BOOLEAN DEFAULT FALSE,
         is_active BOOLEAN DEFAULT TRUE,
         ultima_visita_at TIMESTAMP,
+        latitude REAL,
+        longitude REAL,
+        geo_at TIMESTAMP,
+        geo_status VARCHAR(20),
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_clients_sage_code ON clients(sage_code);
       CREATE INDEX IF NOT EXISTS idx_clients_commercial ON clients(commercial_code);
       CREATE INDEX IF NOT EXISTS idx_clients_razon ON clients(razon_social);
+      CREATE INDEX IF NOT EXISTS idx_clients_geo ON clients(latitude, longitude);
+
+      -- H: añadir columnas de geolocalizacion si la tabla ya existia sin ellas
+      -- latitude/longitude: coordenadas obtenidas via geocoding o GPS real de visita
+      -- geo_at: timestamp del ultimo geocoding
+      -- geo_status: 'ok' | 'no_encontrado' | 'error' | NULL (pendiente)
+      DO $migrate_geo$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='clients' AND column_name='latitude') THEN
+          ALTER TABLE clients ADD COLUMN latitude REAL;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='clients' AND column_name='longitude') THEN
+          ALTER TABLE clients ADD COLUMN longitude REAL;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='clients' AND column_name='geo_at') THEN
+          ALTER TABLE clients ADD COLUMN geo_at TIMESTAMP;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='clients' AND column_name='geo_status') THEN
+          ALTER TABLE clients ADD COLUMN geo_status VARCHAR(20);
+        END IF;
+      END$migrate_geo$;
 
       CREATE TABLE IF NOT EXISTS catalogs (
         id SERIAL PRIMARY KEY, name VARCHAR(150) NOT NULL,
@@ -462,7 +491,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'B7-sin-avisos-rojos-24may',
+    build: 'H-mapa-y-geocoding-24may',
     service: 'CatalogPRO v2'
   });
 });
@@ -2033,6 +2062,314 @@ app.post('/api/clients/states-batch', verifyToken, async (req: AuthRequest, res:
     res.status(500).json({ success: false, error: (e as Error).message });
   }
 });
+
+// ============================================================================
+// H - GEOCODING DE CLIENTES + ENDPOINTS DE MAPA
+// ============================================================================
+
+// Estado del proceso de geocoding en memoria (no persiste entre redeploys, OK
+// porque el proceso es manual y se inicia desde la pantalla de configuracion)
+const _geoState = {
+  running: false,
+  total: 0,
+  procesados: 0,
+  ok: 0,
+  errores: 0,
+  no_encontrados: 0,
+  ultimoError: '',
+  iniciadoPor: '',
+  iniciadoAt: null as Date | null,
+  cancelado: false
+};
+
+// GET estado del geocoding (para barra de progreso)
+app.get('/api/geocode-status', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    // Stats de BD: cuantos clientes activos con/sin coords
+    const r = await pool.query(`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE latitude IS NOT NULL AND longitude IS NOT NULL)::int AS con_coords,
+        COUNT(*) FILTER (WHERE latitude IS NULL OR longitude IS NULL)::int AS sin_coords,
+        COUNT(*) FILTER (WHERE geo_status = 'no_encontrado')::int AS no_encontrados,
+        COUNT(*) FILTER (WHERE geo_status = 'error')::int AS con_error
+      FROM clients WHERE is_active = TRUE
+    `);
+    const stats = r.rows[0];
+    res.json({
+      success: true,
+      stats,
+      proceso: {
+        running: _geoState.running,
+        total: _geoState.total,
+        procesados: _geoState.procesados,
+        ok: _geoState.ok,
+        errores: _geoState.errores,
+        no_encontrados: _geoState.no_encontrados,
+        ultimoError: _geoState.ultimoError,
+        iniciadoAt: _geoState.iniciadoAt
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST iniciar proceso de geocoding (fire-and-forget). Solo admin real.
+// Body: { soloFaltantes: true } - si true, solo geocodifica los que aun no tienen coords
+//                                  si false, fuerza re-geocodificar TODOS los activos
+app.post('/api/geocode-start', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    if (_geoState.running) {
+      res.status(400).json({ success: false, error: 'Ya hay un proceso de geocoding en curso' });
+      return;
+    }
+    const soloFaltantes = req.body.soloFaltantes !== false; // default true
+    // Lanzar en background
+    iniciarGeocodingBackground(req.user?.email || '?', soloFaltantes).catch(e => {
+      console.error('[GEOCODE] Error fatal:', e);
+      _geoState.running = false;
+      _geoState.ultimoError = (e as Error).message;
+    });
+    res.json({ success: true, message: 'Proceso iniciado en background. Refresca el estado periódicamente.' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST cancelar geocoding (deja lo que llevaba hecho)
+app.post('/api/geocode-cancel', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  if (!_geoState.running) {
+    res.status(400).json({ success: false, error: 'No hay proceso en curso' });
+    return;
+  }
+  _geoState.cancelado = true;
+  res.json({ success: true, message: 'Solicitada cancelación. Se detendrá tras el cliente actual.' });
+});
+
+// Funcion principal del geocoding en background
+async function iniciarGeocodingBackground(iniciadoPor: string, soloFaltantes: boolean) {
+  _geoState.running = true;
+  _geoState.cancelado = false;
+  _geoState.procesados = 0;
+  _geoState.ok = 0;
+  _geoState.errores = 0;
+  _geoState.no_encontrados = 0;
+  _geoState.ultimoError = '';
+  _geoState.iniciadoPor = iniciadoPor;
+  _geoState.iniciadoAt = new Date();
+
+  try {
+    // Cargar lista de clientes a geocodificar
+    const whereClause = soloFaltantes
+      ? `WHERE is_active = TRUE AND (latitude IS NULL OR longitude IS NULL)`
+      : `WHERE is_active = TRUE`;
+    const r = await pool.query(`
+      SELECT id, razon_social, direccion, cp, municipio, provincia
+      FROM clients
+      ${whereClause}
+      ORDER BY id
+    `);
+    _geoState.total = r.rows.length;
+    console.log(`[GEOCODE] Iniciado: ${_geoState.total} clientes a procesar (soloFaltantes=${soloFaltantes})`);
+
+    for (const c of r.rows) {
+      if (_geoState.cancelado) {
+        console.log('[GEOCODE] Cancelado por usuario');
+        break;
+      }
+      // Construir query de búsqueda
+      const partes = [];
+      if (c.direccion) partes.push(c.direccion);
+      if (c.cp) partes.push(c.cp);
+      if (c.municipio) partes.push(c.municipio);
+      if (c.provincia) partes.push(c.provincia);
+      partes.push('Spain'); // siempre limitar a España
+      const query = partes.join(', ');
+
+      try {
+        const coords = await geocodificarNominatim(query);
+        if (coords) {
+          await pool.query(
+            `UPDATE clients SET latitude = $1, longitude = $2, geo_at = NOW(), geo_status = 'ok' WHERE id = $3`,
+            [coords.lat, coords.lon, c.id]
+          );
+          _geoState.ok++;
+        } else {
+          // Si no encuentra con dirección completa, intentar solo con municipio + provincia
+          if (c.municipio && c.provincia) {
+            const queryFallback = `${c.municipio}, ${c.provincia}, Spain`;
+            const coordsFallback = await geocodificarNominatim(queryFallback);
+            if (coordsFallback) {
+              await pool.query(
+                `UPDATE clients SET latitude = $1, longitude = $2, geo_at = NOW(), geo_status = 'ok_aprox' WHERE id = $3`,
+                [coordsFallback.lat, coordsFallback.lon, c.id]
+              );
+              _geoState.ok++;
+            } else {
+              await pool.query(
+                `UPDATE clients SET geo_at = NOW(), geo_status = 'no_encontrado' WHERE id = $1`,
+                [c.id]
+              );
+              _geoState.no_encontrados++;
+            }
+          } else {
+            await pool.query(
+              `UPDATE clients SET geo_at = NOW(), geo_status = 'no_encontrado' WHERE id = $1`,
+              [c.id]
+            );
+            _geoState.no_encontrados++;
+          }
+        }
+      } catch (err) {
+        _geoState.errores++;
+        _geoState.ultimoError = (err as Error).message;
+        await pool.query(
+          `UPDATE clients SET geo_at = NOW(), geo_status = 'error' WHERE id = $1`,
+          [c.id]
+        ).catch(() => {});
+      }
+
+      _geoState.procesados++;
+      // Respetar limite de Nominatim: 1 peticion/segundo
+      await new Promise(resolve => setTimeout(resolve, 1100));
+    }
+
+    console.log(`[GEOCODE] Finalizado: ${_geoState.ok} ok, ${_geoState.no_encontrados} no encontrados, ${_geoState.errores} errores`);
+  } catch (err) {
+    console.error('[GEOCODE] Error en proceso:', err);
+    _geoState.ultimoError = (err as Error).message;
+  } finally {
+    _geoState.running = false;
+    _geoState.cancelado = false;
+  }
+}
+
+// Llamada individual a Nominatim de OpenStreetMap.
+// Devuelve {lat, lon} o null si no encuentra.
+async function geocodificarNominatim(query: string): Promise<{lat: number, lon: number} | null> {
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1&countrycodes=es`;
+  // Nominatim REQUIERE un User-Agent identificable
+  const resp = await fetch(url, {
+    headers: {
+      'User-Agent': 'CatalogPRO-LOMHIFAR/2.0 (f.ayllon66@gmail.com)',
+      'Accept-Language': 'es'
+    }
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data: any = await resp.json();
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const r = data[0];
+  const lat = parseFloat(r.lat);
+  const lon = parseFloat(r.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon };
+}
+
+// GET clientes para el mapa (con coords + estado)
+// Query params:
+//   modo: 'todos' | 'pendientes' (default 'todos')
+//   bbox: 'lat1,lon1,lat2,lon2' (opcional, filtra por bounding box)
+app.get('/api/map/clients', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    const userId = effectiveUserId(req);
+    const modo = String(req.query.modo || 'todos');
+    const bboxStr = String(req.query.bbox || '');
+
+    // Leer config
+    const cfgR = await pool.query(
+      `SELECT clave, valor FROM email_config WHERE clave IN
+       ('planning_ciclo_default','planning_ventana_proxima_dias','planning_ventana_urgente_dias')`
+    );
+    const cfg: any = {};
+    cfgR.rows.forEach((r: any) => { cfg[r.clave] = r.valor; });
+    const cicloDefault = Number(cfg.planning_ciclo_default || 90);
+    const ventanaProxima = Number(cfg.planning_ventana_proxima_dias || 15);
+    const ventanaUrgente = Number(cfg.planning_ventana_urgente_dias || 15);
+
+    // Filtros
+    const params: any[] = [];
+    let comercialFilter = '';
+    if (isEffectiveSales(req)) {
+      const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
+      const ccode = uR.rows[0]?.sage_commercial_code;
+      if (!ccode) { res.json({ success: true, clientes: [] }); return; }
+      params.push(String(ccode));
+      comercialFilter = ` AND c.commercial_code = $${params.length}`;
+    }
+
+    // Bbox filter (cuando "cerca de aquí" envía un area de mapa)
+    let bboxFilter = '';
+    if (bboxStr) {
+      const parts = bboxStr.split(',').map(Number);
+      if (parts.length === 4 && parts.every(Number.isFinite)) {
+        const [lat1, lon1, lat2, lon2] = parts;
+        const latMin = Math.min(lat1, lat2);
+        const latMax = Math.max(lat1, lat2);
+        const lonMin = Math.min(lon1, lon2);
+        const lonMax = Math.max(lon1, lon2);
+        params.push(latMin); const pLatMin = params.length;
+        params.push(latMax); const pLatMax = params.length;
+        params.push(lonMin); const pLonMin = params.length;
+        params.push(lonMax); const pLonMax = params.length;
+        bboxFilter = ` AND c.latitude BETWEEN $${pLatMin} AND $${pLatMax} AND c.longitude BETWEEN $${pLonMin} AND $${pLonMax}`;
+      }
+    }
+
+    params.push(cicloDefault); const posCiclo = params.length;
+    params.push(ventanaProxima); const posProxima = params.length;
+    params.push(ventanaUrgente); const posUrgente = params.length;
+
+    // Solo clientes con coords (NULL coords no se ven en mapa)
+    const sql = `
+      WITH ultima_visita AS (
+        SELECT DISTINCT ON (v.client_id) v.client_id,
+          COALESCE(v.confirmed_at, v.created_at) AS fecha_ultima
+        FROM visits v WHERE v.status IN ('confirmed','sent')
+        ORDER BY v.client_id, COALESCE(v.confirmed_at, v.created_at) DESC
+      ),
+      base AS (
+        SELECT
+          c.id, c.sage_code, c.razon_social, c.cif, c.commercial_code,
+          c.municipio, c.provincia, c.categoria, c.latitude, c.longitude,
+          uv.fecha_ultima,
+          COALESCE(c.ciclo_visita_dias, $${posCiclo}) AS ciclo_efectivo,
+          CASE WHEN uv.fecha_ultima IS NULL THEN NULL
+               ELSE EXTRACT(DAY FROM (NOW() - uv.fecha_ultima))::int
+          END AS dias_desde_ultima
+        FROM clients c
+        LEFT JOIN ultima_visita uv ON uv.client_id = c.id
+        WHERE c.is_active = TRUE
+          AND c.latitude IS NOT NULL AND c.longitude IS NOT NULL
+          ${comercialFilter}
+          ${bboxFilter}
+      ),
+      conEstado AS (
+        SELECT *,
+          CASE
+            WHEN dias_desde_ultima IS NULL THEN 'sin_historial'
+            WHEN dias_desde_ultima > (ciclo_efectivo + $${posUrgente}) THEN 'urgente'
+            WHEN dias_desde_ultima >= (ciclo_efectivo - $${posProxima}) THEN 'proxima'
+            ELSE 'al_dia'
+          END AS estado
+        FROM base
+      )
+      SELECT * FROM conEstado
+      ${modo === 'pendientes' ? `WHERE estado IN ('urgente','proxima','sin_historial')` : ''}
+      ORDER BY razon_social
+      LIMIT 2000
+    `;
+
+    const r = await pool.query(sql, params);
+    res.json({ success: true, clientes: r.rows });
+  } catch (e) {
+    console.error('[MAP/CLIENTS] ERROR:', (e as Error).message);
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Actualizar bumper de health
 
 // GET una visita concreta + sus anotaciones
 app.get('/api/visits/:id', verifyToken, async (req: AuthRequest, res: Response) => {
