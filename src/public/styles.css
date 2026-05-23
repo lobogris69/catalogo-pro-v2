@@ -2478,3 +2478,75 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
     flex: 1;
   }
 }
+
+/* ============================================================================
+   I - MODO OFFLINE (PWA + IndexedDB)
+   ============================================================================ */
+
+/* Indicador de estado online/offline en topbar */
+.indicador-online {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.indicador-online-on {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #86efac;
+}
+.indicador-online-off {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+  animation: pulso-offline 2s ease-in-out infinite;
+}
+@keyframes pulso-offline {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Notificación in-app de cambio de estado online/offline */
+.notif-online {
+  position: fixed;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-30px);
+  color: white;
+  padding: 10px 22px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+  opacity: 0;
+  transition: all 0.35s ease;
+  z-index: 99999;
+  pointer-events: none;
+}
+.notif-online-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* Badge en tarjeta de catálogo cuando está descargado offline */
+.catalogo-card-offline {
+  margin-left: auto;
+  font-size: 16px;
+  filter: drop-shadow(0 0 4px rgba(22, 163, 74, 0.4));
+}
+
+/* Botón "✅ Offline" cuando ya está descargado (estilo verde) */
+.btn-card-offline-on {
+  background: #dcfce7 !important;
+  border-color: #86efac !important;
+  color: #166534 !important;
+  font-weight: 600;
+}
+.btn-card-offline-on:hover {
+  background: #bbf7d0 !important;
+  color: #14532d !important;
+}

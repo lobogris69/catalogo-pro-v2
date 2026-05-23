@@ -189,6 +189,7 @@ async function renderApp() {
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
+          <div id="indicador-online" class="indicador-online" title="Estado de conexión"></div>
           ${adminReal && !impersonando ? `<button class="topbar-action" onclick="abrirSelectorImpersonacion()" title="Ver como un comercial">👁 Ver como…</button>` : ''}
           <button class="topbar-logout" onclick="logout()">Salir</button>
         </div>
@@ -207,6 +208,8 @@ async function renderApp() {
     </div>
   `;
   routerVista();
+  // I: re-aplicar estado del indicador online tras cada render
+  if (typeof actualizarIndicadorOnline === 'function') actualizarIndicadorOnline();
 }
 
 function routerVista() {
@@ -259,6 +262,8 @@ function irA(vista) {
 async function renderListaCatalogos() {
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogos…</div></div>`;
+  // I: refrescar cache de catálogos descargados offline para mostrar badges correctos
+  try { if (typeof refrescarCacheCatalogosDescargados === 'function') await refrescarCacheCatalogosDescargados(); } catch (_) {}
   try {
     const r = await api('/api/catalogs');
     const catalogos = r.catalogs || [];
@@ -292,19 +297,29 @@ async function renderListaCatalogos() {
         const parentLine = (c.tipo === 'express' && c.parent_name)
           ? `<div class="catalogo-card-parent">de: ${escape(c.parent_name)}</div>`
           : '';
+        const esOfflineDescargado = estaDescargadoOffline(c.id);
         html += `
           <div class="catalogo-card" onclick="abrirCatalogo(${c.id})">
             <div class="catalogo-card-header">
               <span class="catalogo-card-tipo ${tipoClase}">${badgeTxt}</span>
               <span class="catalogo-card-estado ${estadoClase}">${c.estado}</span>
+              ${esOfflineDescargado ? `<span class="catalogo-card-offline" title="Disponible offline">📲</span>` : ''}
             </div>
             <div class="catalogo-card-nombre">${escape(c.name)}</div>
             ${parentLine}
             <div class="catalogo-card-info">${c.sheet_count || 0} láminas · V${c.version}</div>
             <div class="catalogo-card-acciones">
               <button class="btn-card-mini" onclick="event.stopPropagation();abrirModalDescargarCatalogo(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">
-                📥 Descargar
+                📥 PDF/ZIP
               </button>
+              ${esOfflineDescargado
+                ? `<button class="btn-card-mini btn-card-offline-on" onclick="event.stopPropagation();borrarCatalogoOffline(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Borrar copia offline">
+                    ✅ Offline
+                  </button>`
+                : `<button class="btn-card-mini" onclick="event.stopPropagation();descargarCatalogoOffline(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar al móvil para uso sin internet">
+                    📲 Offline
+                  </button>`
+              }
             </div>
           </div>
         `;
@@ -3131,6 +3146,209 @@ async function enviarEmailPrueba() {
 }
 
 // ============================================================================
+// ===== I - MODO OFFLINE (PWA + IndexedDB) =====
+// ============================================================================
+// Esta sesión I.1: indicador online/offline + descargar catálogo a IndexedDB
+// Próximas sesiones: visitas offline, sync queue, conflictos.
+
+// Estado offline global
+let _estaOnline = navigator.onLine;
+
+// Actualizar el indicador visual cuando cambia el estado de conexión
+function actualizarIndicadorOnline() {
+  _estaOnline = navigator.onLine;
+  const $ind = document.getElementById('indicador-online');
+  if (!$ind) return;
+  if (_estaOnline) {
+    $ind.className = 'indicador-online indicador-online-on';
+    $ind.innerHTML = '🟢 Online';
+    $ind.title = 'Conectado a internet';
+  } else {
+    $ind.className = 'indicador-online indicador-online-off';
+    $ind.innerHTML = '🔴 Sin conexión';
+    $ind.title = 'Sin conexión a internet. Trabajando offline.';
+  }
+}
+
+// Escuchar cambios de conexión a nivel ventana
+window.addEventListener('online', () => {
+  console.log('[I] Conexión recuperada');
+  actualizarIndicadorOnline();
+  mostrarNotificacionOnline('🟢 Conexión recuperada', '#16a34a');
+});
+window.addEventListener('offline', () => {
+  console.log('[I] Conexión perdida');
+  actualizarIndicadorOnline();
+  mostrarNotificacionOnline('🔴 Sin conexión — trabajando offline', '#dc2626');
+});
+
+// Mostrar notificación in-app (banner que aparece y desaparece)
+function mostrarNotificacionOnline(texto, color) {
+  // Quitar la anterior si existe
+  const ant = document.getElementById('notif-online');
+  if (ant) ant.remove();
+  const div = document.createElement('div');
+  div.id = 'notif-online';
+  div.className = 'notif-online';
+  div.style.background = color;
+  div.textContent = texto;
+  document.body.appendChild(div);
+  // Animación entrada
+  setTimeout(() => div.classList.add('notif-online-visible'), 10);
+  // Auto-quitar en 3.5 seg
+  setTimeout(() => {
+    div.classList.remove('notif-online-visible');
+    setTimeout(() => div.remove(), 400);
+  }, 3500);
+}
+
+// Descargar un catálogo completo (con imágenes) a IndexedDB para uso offline
+async function descargarCatalogoOffline(catalogId, nombreCatalogo) {
+  if (!window.CpDB) {
+    alert('IndexedDB no disponible en este navegador.');
+    return;
+  }
+  if (!navigator.onLine) {
+    alert('Necesitas conexión a internet para descargar el catálogo para uso offline.');
+    return;
+  }
+
+  // Modal con progreso
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>📲 Descargando para offline</h3>
+      </div>
+      <p style="font-size:13px;color:var(--gris-texto);margin-bottom:14px">
+        <b>${escape(nombreCatalogo)}</b><br>
+        Descargando catálogo + láminas al móvil…
+      </p>
+      <div id="offline-dl-progreso" style="background:#e5e7eb;height:20px;border-radius:10px;overflow:hidden;margin-bottom:10px">
+        <div id="offline-dl-barra" style="background:linear-gradient(90deg,#cc007a,#dc2675);height:100%;width:0%;transition:width 0.3s"></div>
+      </div>
+      <div id="offline-dl-estado" style="font-size:13px;text-align:center">Cargando metadatos…</div>
+      <div id="offline-dl-error"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const $barra = document.getElementById('offline-dl-barra');
+  const $estado = document.getElementById('offline-dl-estado');
+  const $error = document.getElementById('offline-dl-error');
+
+  try {
+    // 1. Bajar metadatos del catálogo (catálogo + láminas)
+    const r = await api('/api/catalogs/' + catalogId);
+    const catalog = r.catalog;
+    const sheets = r.sheets || [];
+
+    if (sheets.length === 0) {
+      $error.innerHTML = '<div class="error-msg">Este catálogo no tiene láminas.</div>';
+      setTimeout(() => modal.remove(), 2500);
+      return;
+    }
+
+    // 2. Guardar catálogo en IndexedDB
+    await CpDB.guardarCatalogo(catalog);
+
+    // 3. Descargar cada lámina (imagen como Blob)
+    const total = sheets.length;
+    let okCount = 0;
+    let errCount = 0;
+    const token = localStorage.getItem('cpv2_token');
+
+    for (let i = 0; i < total; i++) {
+      const sheet = sheets[i];
+      const pct = ((i + 1) / total * 100).toFixed(1);
+      $barra.style.width = pct + '%';
+      $estado.textContent = `Descargando lámina ${i + 1}/${total}...`;
+      try {
+        const imgUrl = sheet.imagen_path;
+        const respImg = await fetch(imgUrl, {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (!respImg.ok) throw new Error('HTTP ' + respImg.status);
+        const blob = await respImg.blob();
+        await CpDB.guardarLamina({
+          id: sheet.id,
+          catalog_id: catalog.id,
+          orden: sheet.orden,
+          titulo: sheet.titulo,
+          notas: sheet.notas,
+          tags: sheet.tags,
+          imagen_path_original: sheet.imagen_path,
+          imagen_blob: blob,
+          imagen_size: blob.size
+        });
+        okCount++;
+      } catch (err) {
+        console.warn('[I] Error descargando lámina ' + sheet.id + ':', err.message);
+        errCount++;
+      }
+    }
+
+    // 4. Resumen final
+    const tamanoMB = ((await CpDB.tamanoAproximado()) / 1024 / 1024).toFixed(1);
+    $barra.style.width = '100%';
+    $estado.innerHTML = `
+      ✅ <b>${okCount}/${total}</b> láminas guardadas offline
+      ${errCount > 0 ? `<br><span style="color:#dc2626">⚠️ ${errCount} con error</span>` : ''}
+      <br><span style="color:var(--gris-texto);font-size:11px">~${tamanoMB} MB en el dispositivo</span>
+    `;
+    setTimeout(() => {
+      modal.remove();
+      mostrarNotificacionOnline(`📲 "${nombreCatalogo}" disponible offline`, '#16a34a');
+      // Refrescar lista si estamos en catálogos para mostrar el nuevo badge
+      if (appState.vista === 'catalogos' && !appState.catalogoActual) {
+        renderListaCatalogos();
+      }
+    }, 2500);
+  } catch (err) {
+    $error.innerHTML = `<div class="error-msg">Error: ${escape(err.message)}</div>`;
+    setTimeout(() => modal.remove(), 4000);
+  }
+}
+
+// Borrar un catálogo descargado offline (libera espacio)
+async function borrarCatalogoOffline(catalogId, nombreCatalogo) {
+  if (!confirm(`¿Borrar la copia offline de "${nombreCatalogo}"?\n\nEl catálogo seguirá disponible online, pero no podrás verlo sin conexión hasta que lo vuelvas a descargar.`)) return;
+  try {
+    await CpDB.borrarCatalogoOffline(catalogId);
+    mostrarNotificacionOnline(`🗑️ Copia offline de "${nombreCatalogo}" borrada`, '#6b7280');
+    if (appState.vista === 'catalogos' && !appState.catalogoActual) {
+      renderListaCatalogos();
+    }
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+// Cache global con IDs de catálogos descargados (para badges en lista)
+let _catalogosDescargadosCache = new Set();
+async function refrescarCacheCatalogosDescargados() {
+  try {
+    const lista = await CpDB.listarCatalogosDescargados();
+    _catalogosDescargadosCache = new Set(lista.map(c => c.id));
+  } catch (_) {
+    _catalogosDescargadosCache = new Set();
+  }
+}
+function estaDescargadoOffline(catalogId) {
+  return _catalogosDescargadosCache.has(catalogId);
+}
+
+// Inicialización al cargar la app
+async function inicializarOffline() {
+  if (!window.CpDB) return;
+  try {
+    await refrescarCacheCatalogosDescargados();
+  } catch (_) {}
+  actualizarIndicadorOnline();
+}
+
+// ============================================================================
 // ===== E - VERSIONES V1/V2/V3 CON HISTORIAL =====
 // ============================================================================
 
@@ -4837,3 +5055,7 @@ async function descargarPdfVisita(visitId) {
 
 // ===== ARRANQUE =====
 render();
+// I: inicializar modo offline (IndexedDB, indicador online, etc.)
+if (typeof inicializarOffline === 'function') {
+  inicializarOffline();
+}
