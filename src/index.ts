@@ -442,7 +442,12 @@ async function initDB(): Promise<void> {
 // HEALTH
 // ============================================================================
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, version: '2.0.0', service: 'CatalogPRO v2' });
+  res.json({
+    ok: true,
+    version: '2.0.0',
+    build: 'G-fix-busqueda-v3-23may-09h',
+    service: 'CatalogPRO v2'
+  });
 });
 
 // ============================================================================
@@ -1787,6 +1792,7 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
     `;
 
     const r = await pool.query(sql, params);
+    console.log('[PLANNING] OK -', r.rows.length, 'filas (params:', params.length, ')');
 
     // Total para paginación (solo si limit < clientes)
     // FIX bug: la query de conteo se construye DESDE CERO con sus propios parametros
@@ -1875,6 +1881,8 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
       config: { cicloDefault, ventanaProxima, ventanaUrgente }
     });
   } catch (e) {
+    console.error('[PLANNING] ERROR:', (e as Error).message);
+    console.error('[PLANNING] Stack:', (e as Error).stack);
     res.status(500).json({ success: false, error: (e as Error).message });
   }
 });
