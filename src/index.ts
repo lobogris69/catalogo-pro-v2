@@ -518,7 +518,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'I.3-clientes-y-sync-offline-24may',
+    build: 'I.3-fix-r-undefined-24may',
     service: 'CatalogPRO v2'
   });
 });

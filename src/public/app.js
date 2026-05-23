@@ -1559,13 +1559,17 @@ async function cargarClientesYRefrescarLista() {
       html += '</div>';
 
       // Cargar estados planning para esta página (async, no bloquea)
-      cargarEstadosClientesEnFondo(clientes.filter(c => c.is_active).map(c => c.id));
+      // I.3: solo si estamos online — offline no tiene endpoint de estados
+      if (!modoOffline) {
+        cargarEstadosClientesEnFondo(clientes.filter(c => c.is_active).map(c => c.id));
+      }
 
-      if (r.pages > 1) {
+      // Paginación (solo online, offline muestra todo de IndexedDB sin paginar)
+      if (!modoOffline && totalPaginas > 1) {
         html += `<div class="paginacion">
-          <button class="btn btn-pequeno btn-secondary" ${r.page <= 1 ? 'disabled' : ''} onclick="paginaClientes(${r.page - 1})">← Anterior</button>
-          <span style="font-size:12px;color:var(--gris-texto);align-self:center">Página ${r.page} de ${r.pages}</span>
-          <button class="btn btn-pequeno btn-secondary" ${r.page >= r.pages ? 'disabled' : ''} onclick="paginaClientes(${r.page + 1})">Siguiente →</button>
+          <button class="btn btn-pequeno btn-secondary" ${pagina <= 1 ? 'disabled' : ''} onclick="paginaClientes(${pagina - 1})">← Anterior</button>
+          <span style="font-size:12px;color:var(--gris-texto);align-self:center">Página ${pagina} de ${totalPaginas}</span>
+          <button class="btn btn-pequeno btn-secondary" ${pagina >= totalPaginas ? 'disabled' : ''} onclick="paginaClientes(${pagina + 1})">Siguiente →</button>
         </div>`;
       }
     }
