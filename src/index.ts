@@ -232,31 +232,6 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_clients_sage_code ON clients(sage_code);
       CREATE INDEX IF NOT EXISTS idx_clients_commercial ON clients(commercial_code);
       CREATE INDEX IF NOT EXISTS idx_clients_razon ON clients(razon_social);
-      CREATE INDEX IF NOT EXISTS idx_clients_geo ON clients(latitude, longitude);
-
-      -- H: añadir columnas de geolocalizacion si la tabla ya existia sin ellas
-      -- latitude/longitude: coordenadas obtenidas via geocoding o GPS real de visita
-      -- geo_at: timestamp del ultimo geocoding
-      -- geo_status: 'ok' | 'no_encontrado' | 'error' | NULL (pendiente)
-      DO $migrate_geo$
-      BEGIN
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='clients' AND column_name='latitude') THEN
-          ALTER TABLE clients ADD COLUMN latitude REAL;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='clients' AND column_name='longitude') THEN
-          ALTER TABLE clients ADD COLUMN longitude REAL;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='clients' AND column_name='geo_at') THEN
-          ALTER TABLE clients ADD COLUMN geo_at TIMESTAMP;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='clients' AND column_name='geo_status') THEN
-          ALTER TABLE clients ADD COLUMN geo_status VARCHAR(20);
-        END IF;
-      END$migrate_geo$;
 
       CREATE TABLE IF NOT EXISTS catalogs (
         id SERIAL PRIMARY KEY, name VARCHAR(150) NOT NULL,
@@ -414,6 +389,35 @@ async function initDB(): Promise<void> {
     `;
     await pool.query(schemaSQL);
 
+    // H: migración idempotente — añadir columnas geo a clients si no existen.
+    // Hacemos cada ALTER por separado y silenciamos el error de "ya existe"
+    // (PostgreSQL emite error 42701 "duplicate column" si la columna existe).
+    const geoAlters = [
+      `ALTER TABLE clients ADD COLUMN latitude REAL`,
+      `ALTER TABLE clients ADD COLUMN longitude REAL`,
+      `ALTER TABLE clients ADD COLUMN geo_at TIMESTAMP`,
+      `ALTER TABLE clients ADD COLUMN geo_status VARCHAR(20)`
+    ];
+    for (const sql of geoAlters) {
+      try {
+        await pool.query(sql);
+        console.log('✅ Aplicado: ' + sql);
+      } catch (e: any) {
+        if (e.code === '42701') {
+          // Columna ya existe, OK
+        } else {
+          console.error('⚠️ Error en migración:', sql, e.message);
+        }
+      }
+    }
+    // Crear índice geo AHORA que las columnas existen (no antes, porque la tabla
+    // ya existía sin las columnas y CREATE TABLE IF NOT EXISTS no añade columnas)
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_clients_geo ON clients(latitude, longitude)`);
+    } catch (e: any) {
+      console.error('⚠️ Error creando índice geo:', e.message);
+    }
+
     // Sembrar configuracion email por defecto si no existe
     const emailDefaults = [
       ['modo', 'pruebas', 'Modo actual: pruebas (redirige a emails de test) o produccion (envio real)'],
@@ -491,7 +495,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'H-mapa-y-geocoding-24may',
+    build: 'H-fix-indice-geo-24may',
     service: 'CatalogPRO v2'
   });
 });
