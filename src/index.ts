@@ -518,7 +518,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'PWA-update-banner-25may',
+    build: 'planning-offline-26may',
     service: 'CatalogPRO v2'
   });
 });
@@ -2264,7 +2264,27 @@ app.get('/api/sync/my-clients', verifyToken, async (req: AuthRequest, res: Respo
        LIMIT 5000`,
       params
     );
-    res.json({ success: true, clientes: r.rows, total: r.rows.length });
+
+    // Planning offline: incluir la configuración del planning para que el frontend
+    // pueda calcular los estados localmente cuando no haya red.
+    let planningConfig = {
+      ciclo_default: 90,
+      ventana_proxima_dias: 15,
+      ventana_urgente_dias: 15
+    };
+    try {
+      const cfgR = await pool.query(
+        `SELECT clave, valor FROM email_config WHERE clave IN
+         ('planning_ciclo_default','planning_ventana_proxima_dias','planning_ventana_urgente_dias')`
+      );
+      cfgR.rows.forEach((row: any) => {
+        if (row.clave === 'planning_ciclo_default') planningConfig.ciclo_default = Number(row.valor) || 90;
+        if (row.clave === 'planning_ventana_proxima_dias') planningConfig.ventana_proxima_dias = Number(row.valor) || 15;
+        if (row.clave === 'planning_ventana_urgente_dias') planningConfig.ventana_urgente_dias = Number(row.valor) || 15;
+      });
+    } catch (_) {}
+
+    res.json({ success: true, clientes: r.rows, total: r.rows.length, planning_config: planningConfig });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }

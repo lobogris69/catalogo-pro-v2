@@ -214,8 +214,8 @@ async function renderApp() {
 
 function routerVista() {
   // I.2: vistas que NO funcionan offline (requieren API y no tienen cache offline)
-  // Clientes SÍ funciona offline (I.3) leyendo desde IndexedDB
-  const vistasOnlineOnly = ['comerciales', 'planning', 'mapa', 'plantillas', 'configuracion'];
+  // Clientes y Planning SÍ funcionan offline (I.3 + I-Planning) leyendo desde IndexedDB
+  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion'];
   if (!navigator.onLine && vistasOnlineOnly.includes(appState.vista)) {
     renderVistaNoDisponibleOffline(appState.vista);
     return;
@@ -3622,6 +3622,12 @@ async function descargarMisClientes() {
       return;
     }
     await CpDB.guardarClientesBatch(clientes);
+    // Planning offline: guardar config del planning en localStorage para usar al calcular estados sin conexión
+    if (r.planning_config) {
+      try {
+        localStorage.setItem('cpv2_planning_config', JSON.stringify(r.planning_config));
+      } catch (_) {}
+    }
     document.getElementById('dl-clientes-msg').innerHTML = `✅ <b>${clientes.length}</b> clientes guardados offline`;
     setTimeout(() => {
       modal.remove();
@@ -3631,6 +3637,68 @@ async function descargarMisClientes() {
     document.getElementById('dl-clientes-msg').innerHTML = `<div class="error-msg">Error: ${escape(err.message)}</div>`;
     setTimeout(() => modal.remove(), 4000);
   }
+}
+
+// I-Planning: calcular estado del cliente OFFLINE, reproduce la lógica del backend.
+// Tiene en cuenta también las visitas locales pendientes de sync (sync_queue).
+// Devuelve { estado: 'urgente'|'proxima'|'al_dia'|'sin_historial', dias_desde_ultima, dias_retraso }
+async function calcularEstadoClienteOffline(cliente, visitasOfflinePorCliente) {
+  // Cargar config del planning del último download
+  let cfg = { ciclo_default: 90, ventana_proxima_dias: 15, ventana_urgente_dias: 15 };
+  try {
+    const stored = localStorage.getItem('cpv2_planning_config');
+    if (stored) cfg = { ...cfg, ...JSON.parse(stored) };
+  } catch (_) {}
+
+  const ciclo = Number(cliente.ciclo_visita_dias || cfg.ciclo_default);
+
+  // Determinar la fecha de la última visita: la más reciente entre ultima_visita_at del backend
+  // y las visitas locales offline pendientes que aún no se han sincronizado.
+  let ultimaFecha = null;
+  if (cliente.ultima_visita_at) {
+    ultimaFecha = new Date(cliente.ultima_visita_at);
+  }
+  const visitasLocales = visitasOfflinePorCliente && visitasOfflinePorCliente[cliente.id];
+  if (visitasLocales && visitasLocales.length > 0) {
+    visitasLocales.forEach(v => {
+      // El campo confirmed_at o created_at de la visita offline
+      const fechaVisitaOffline = v.confirmed_at || v.created_at;
+      if (fechaVisitaOffline) {
+        const f = new Date(fechaVisitaOffline);
+        if (!ultimaFecha || f > ultimaFecha) ultimaFecha = f;
+      }
+    });
+  }
+
+  if (!ultimaFecha) {
+    return { estado: 'sin_historial', dias_desde_ultima: null, dias_retraso: 0, ciclo_efectivo: ciclo };
+  }
+
+  const ahora = new Date();
+  const ms = ahora - ultimaFecha;
+  const dias = Math.floor(ms / (1000 * 60 * 60 * 24));
+
+  let estado;
+  if (dias > (ciclo + cfg.ventana_urgente_dias)) estado = 'urgente';
+  else if (dias >= (ciclo - cfg.ventana_proxima_dias)) estado = 'proxima';
+  else estado = 'al_dia';
+
+  return { estado, dias_desde_ultima: dias, dias_retraso: dias - ciclo, ciclo_efectivo: ciclo };
+}
+
+// Cargar mapa de visitas offline pendientes agrupadas por client_id
+// Útil para que el cálculo de estados considere visitas que aún no se han subido
+async function obtenerVisitasOfflinePorCliente() {
+  const mapa = {};
+  try {
+    const visitas = await CpDB.listarVisitasOffline();
+    visitas.forEach(v => {
+      if (!v.client_id) return;
+      if (!mapa[v.client_id]) mapa[v.client_id] = [];
+      mapa[v.client_id].push(v);
+    });
+  } catch (_) {}
+  return mapa;
 }
 
 // Contador de visitas pendientes de sincronizar (lo refresca el indicador)
@@ -4532,7 +4600,20 @@ async function cargarEstadosClientesEnFondo(ids) {
 async function renderPlanning() {
   const $v = document.getElementById('vista-contenido');
   // Pintar shell con filtros (si no se cargaron filtros, cargarlos)
-  if (!_planningState.filtrosCache) {
+  // I-Planning: si offline, generar filtros desde clientes en IndexedDB
+  if (!navigator.onLine) {
+    if (!_planningState.filtrosCache || !_planningState.filtrosCache._fromOffline) {
+      try {
+        const todos = await CpDB.listarClientes('');
+        const provincias = [...new Set(todos.map(c => c.provincia).filter(Boolean))].sort();
+        const municipios = [...new Set(todos.map(c => c.municipio).filter(Boolean))].sort();
+        _planningState.filtrosCache = { provincias, municipios, comerciales: [], _fromOffline: true };
+      } catch (_) {
+        _planningState.filtrosCache = { provincias: [], municipios: [], comerciales: [], _fromOffline: true };
+      }
+    }
+  } else if (!_planningState.filtrosCache || _planningState.filtrosCache._fromOffline) {
+    // Si veníamos del offline o no hay cache, recargar online
     try {
       const r = await api('/api/planning/filtros');
       _planningState.filtrosCache = r;
@@ -4628,6 +4709,13 @@ async function recargarPlanning() {
   const s = _planningState;
   const $res = document.getElementById('planning-resultado');
   if ($res) $res.innerHTML = '<div class="loading">Cargando…</div>';
+
+  // I-Planning: si offline, calcular en local desde IndexedDB
+  if (!navigator.onLine) {
+    await recargarPlanningOffline();
+    return;
+  }
+
   try {
     const params = new URLSearchParams();
     if (s.estado && s.estado !== 'todos') params.set('estado', s.estado);
@@ -4640,9 +4728,95 @@ async function recargarPlanning() {
     _planningState.clientes = r.clientes || [];
     _planningState.total = r.total || 0;
     _planningState.config = r.config || null;
+    _planningState.modoOffline = false;
     pintarPlanningResultado();
   } catch (err) {
-    if ($res) $res.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    // Si la API falla pero navegador dice online, fallback IndexedDB
+    console.warn('[Planning] API falló, usando IndexedDB:', err.message);
+    await recargarPlanningOffline();
+  }
+}
+
+// I-Planning: cargar planning desde IndexedDB calculando estados localmente
+async function recargarPlanningOffline() {
+  const s = _planningState;
+  const $res = document.getElementById('planning-resultado');
+  try {
+    // Cargar todos los clientes descargados
+    const todos = await CpDB.listarClientes('');
+    if (todos.length === 0) {
+      if ($res) $res.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icono">📲</div>
+          <h3>Sin clientes descargados</h3>
+          <p>Vuelve a conectarte y usa el botón "👥 Descargar clientes" en la pestaña Catálogos.</p>
+        </div>
+      `;
+      return;
+    }
+
+    // Cargar visitas offline pendientes para considerarlas en el cálculo
+    const visitasOfflineMapa = await obtenerVisitasOfflinePorCliente();
+
+    // Calcular estado de cada cliente
+    const conEstados = [];
+    for (const c of todos) {
+      const calc = await calcularEstadoClienteOffline(c, visitasOfflineMapa);
+      // Calcular fecha última (la mayor entre backend y offline)
+      let fechaUlt = c.ultima_visita_at ? new Date(c.ultima_visita_at) : null;
+      const visitasLoc = visitasOfflineMapa[c.id];
+      if (visitasLoc) {
+        visitasLoc.forEach(v => {
+          const f = new Date(v.confirmed_at || v.created_at);
+          if (!fechaUlt || f > fechaUlt) fechaUlt = f;
+        });
+      }
+      conEstados.push({
+        ...c,
+        estado: calc.estado,
+        dias_desde_ultima: calc.dias_desde_ultima,
+        dias_retraso: calc.dias_retraso,
+        ciclo_efectivo: calc.ciclo_efectivo,
+        fecha_ultima: fechaUlt ? fechaUlt.toISOString() : null
+      });
+    }
+
+    // Aplicar filtros locales
+    let filtrados = conEstados;
+    if (s.estado && s.estado !== 'todos') {
+      filtrados = filtrados.filter(c => c.estado === s.estado);
+    }
+    if (s.q) {
+      const q = s.q.toLowerCase();
+      filtrados = filtrados.filter(c =>
+        (c.razon_social || '').toLowerCase().includes(q) ||
+        (c.sage_code || '').toLowerCase().includes(q)
+      );
+    }
+    if (s.provincia) {
+      filtrados = filtrados.filter(c => c.provincia === s.provincia);
+    }
+    if (s.municipio) {
+      filtrados = filtrados.filter(c => c.municipio === s.municipio);
+    }
+    // El filtro "comercial" lo ignoramos en offline (el comercial ya solo descargó sus clientes)
+
+    // Ordenar por urgencia: primero urgentes (mayor retraso), luego próximas, al día, sin historial
+    const ordenEstado = { urgente: 0, proxima: 1, al_dia: 2, sin_historial: 3 };
+    filtrados.sort((a, b) => {
+      const oA = ordenEstado[a.estado] ?? 99;
+      const oB = ordenEstado[b.estado] ?? 99;
+      if (oA !== oB) return oA - oB;
+      // Mismo estado: ordenar por días de retraso descendente (más urgente primero)
+      return (b.dias_retraso || 0) - (a.dias_retraso || 0);
+    });
+
+    _planningState.clientes = filtrados.slice(0, 200); // límite igual al backend
+    _planningState.total = filtrados.length;
+    _planningState.modoOffline = true;
+    pintarPlanningResultado();
+  } catch (err) {
+    if ($res) $res.innerHTML = `<div class="error-msg">Error offline: ${escape(err.message)}</div>`;
   }
 }
 
@@ -4660,6 +4834,11 @@ function pintarPlanningResultado() {
 
   // Resumen arriba
   const resumen = `
+    ${_planningState.modoOffline ? `
+      <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#78350f">
+        📲 <b>Planning offline:</b> calculado con los clientes y visitas descargados en este dispositivo. Algunas visitas online recientes pueden no estar reflejadas.
+      </div>
+    ` : ''}
     <div class="planning-resumen">
       <span>${clientes.length}${total > clientes.length ? '/' + total : ''} clientes</span>
       ${conteo.urgente > 0 ? `<span class="planning-resumen-chip" style="background:${ESTADOS_PLANNING.urgente.bg};color:${ESTADOS_PLANNING.urgente.color}">${ESTADOS_PLANNING.urgente.emoji} ${conteo.urgente} urgentes</span>` : ''}
