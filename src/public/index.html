@@ -30,15 +30,71 @@
   <script src="/db.js"></script>
   <script src="/app.js"></script>
 
-  <!-- I: registrar Service Worker para modo offline -->
+  <!-- I: registrar Service Worker para modo offline + detección de actualización -->
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js')
-          .then((reg) => console.log('[PWA] Service Worker registrado', reg.scope))
+          .then((reg) => {
+            console.log('[PWA] Service Worker registrado', reg.scope);
+
+            // Guardamos referencia global para que app.js pueda llamar a updates
+            window._swRegistration = reg;
+
+            // Si ya hay un SW "esperando" al cargar la página, hay update disponible
+            if (reg.waiting) {
+              console.log('[PWA] Update disponible: SW ya esperando al cargar');
+              if (typeof mostrarBannerActualizacion === 'function') {
+                mostrarBannerActualizacion();
+              }
+            }
+
+            // Detectar cuando se descarga un SW nuevo
+            reg.addEventListener('updatefound', () => {
+              console.log('[PWA] Nuevo SW detectado, descargando...');
+              const nuevoSW = reg.installing;
+              if (!nuevoSW) return;
+              nuevoSW.addEventListener('statechange', () => {
+                if (nuevoSW.state === 'installed' && navigator.serviceWorker.controller) {
+                  // El nuevo SW está listo pero esperando. Avisamos al usuario.
+                  console.log('[PWA] Nuevo SW instalado, esperando activación');
+                  if (typeof mostrarBannerActualizacion === 'function') {
+                    mostrarBannerActualizacion();
+                  }
+                }
+              });
+            });
+
+            // Cuando se activa un nuevo SW, recargar la página
+            // (solo si el usuario pulsó "actualizar" en el banner)
+            let recargando = false;
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+              if (recargando) return;
+              recargando = true;
+              console.log('[PWA] Nuevo SW activo, recargando...');
+              window.location.reload();
+            });
+
+            // Comprobar actualizaciones cada 10 minutos (para apps que llevan abiertas mucho tiempo)
+            setInterval(() => {
+              reg.update().catch(() => {});
+            }, 10 * 60 * 1000);
+          })
           .catch((err) => console.warn('[PWA] Error registrando SW:', err));
       });
     }
+
+    // Función global llamada por el banner al pulsar "Actualizar ahora"
+    window.aplicarActualizacionPWA = function () {
+      if (window._swRegistration && window._swRegistration.waiting) {
+        // Decir al SW que espera que se active YA
+        window._swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        // El evento 'controllerchange' de arriba se encarga de recargar la página
+      } else {
+        // Fallback: recargar directamente
+        window.location.reload();
+      }
+    };
   </script>
 </body>
 </html>

@@ -8,9 +8,15 @@
  *    Las imágenes raramente cambian — si están descargadas, se sirven de caché.
  * 3. APIs (/api/...): network-only. Si falla, el frontend usa IndexedDB.
  *    Las APIs NO se cachean en el SW — eso lo gestiona IndexedDB.
+ *
+ * SISTEMA "HAY ACTUALIZACIÓN DISPONIBLE":
+ * Cada vez que despleguemos algo, cambiamos CACHE_VERSION. El navegador detecta
+ * que el sw.js ha cambiado, descarga el nuevo SW, lo deja en estado "waiting".
+ * Avisamos a la app via postMessage para mostrar el banner rosa.
+ * El usuario decide cuándo activar el nuevo SW pulsando el banner.
  * ============================================================================ */
 
-const CACHE_VERSION = 'cpv2-shell-v1-24may';
+const CACHE_VERSION = 'cpv2-shell-v2-25may';
 const SHELL_CACHE = 'cpv2-shell';
 const IMG_CACHE = 'cpv2-imgs';
 
@@ -28,6 +34,9 @@ const SHELL_FILES = [
 
 // ============================================================================
 // INSTALL: precachear el app shell
+// IMPORTANTE: NO usamos self.skipWaiting() aquí, porque queremos que el SW
+// nuevo se quede en estado "waiting" hasta que el usuario decida actualizar
+// (pulsando el banner "🔔 Hay actualización disponible").
 // ============================================================================
 self.addEventListener('install', (event) => {
   console.log('[SW] Install: precacheando shell v' + CACHE_VERSION);
@@ -41,7 +50,8 @@ self.addEventListener('install', (event) => {
           })
         )
       );
-    }).then(() => self.skipWaiting())
+    })
+    // Sin skipWaiting() — espera que la app llame SKIP_WAITING vía postMessage
   );
 });
 

@@ -3311,6 +3311,69 @@ async function enviarEmailPrueba() {
 }
 
 // ============================================================================
+// ===== PWA UPDATE BANNER - aviso "hay actualización disponible" =====
+// ============================================================================
+// Se llama desde index.html cuando el Service Worker detecta una versión nueva.
+// Muestra un banner rosa fijo arriba de la app pidiendo al usuario que actualice.
+
+let _bannerActualizacionVisible = false;
+
+function mostrarBannerActualizacion() {
+  if (_bannerActualizacionVisible) return; // ya visible, no duplicar
+  _bannerActualizacionVisible = true;
+
+  // Crear elemento si no existe
+  let $banner = document.getElementById('pwa-update-banner');
+  if (!$banner) {
+    $banner = document.createElement('div');
+    $banner.id = 'pwa-update-banner';
+    $banner.className = 'pwa-update-banner';
+    $banner.innerHTML = `
+      <div class="pwa-update-banner-texto">
+        🔔 Hay una nueva versión de CatalogPRO disponible
+      </div>
+      <button class="pwa-update-banner-btn" onclick="pulsarActualizarPWA()">
+        Actualizar ahora
+      </button>
+      <button class="pwa-update-banner-cerrar" onclick="cerrarBannerActualizacion()" title="Recordar después">×</button>
+    `;
+    document.body.appendChild($banner);
+  }
+  $banner.classList.add('pwa-update-banner-visible');
+  // También añadimos padding al body para que el banner no tape contenido
+  document.body.classList.add('con-banner-update');
+}
+
+function cerrarBannerActualizacion() {
+  const $banner = document.getElementById('pwa-update-banner');
+  if ($banner) $banner.classList.remove('pwa-update-banner-visible');
+  document.body.classList.remove('con-banner-update');
+  _bannerActualizacionVisible = false;
+  // No tocamos el SW — sigue esperando. Si el usuario refresca o vuelve mañana,
+  // volverá a salir el banner. La detección de updatefound se re-disparará al
+  // próximo control de updates (cada 10 min) y volverá a llamar mostrarBannerActualizacion.
+}
+
+function pulsarActualizarPWA() {
+  // Cambiar UI a "actualizando..."
+  const $banner = document.getElementById('pwa-update-banner');
+  if ($banner) {
+    $banner.innerHTML = `
+      <div class="pwa-update-banner-texto">
+        ⏳ Actualizando…
+      </div>
+    `;
+  }
+  // Llamar a la función global del index.html que envía SKIP_WAITING al SW
+  if (typeof window.aplicarActualizacionPWA === 'function') {
+    window.aplicarActualizacionPWA();
+  } else {
+    // Fallback: recargar
+    window.location.reload();
+  }
+}
+
+// ============================================================================
 // ===== I - MODO OFFLINE (PWA + IndexedDB) =====
 // ============================================================================
 // Esta sesión I.1: indicador online/offline + descargar catálogo a IndexedDB
