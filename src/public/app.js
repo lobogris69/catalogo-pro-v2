@@ -6229,6 +6229,201 @@ async function confirmarImportProductos() {
   }
 }
 
+// ============================================================================
+// FASE 2.a — Búsqueda de productos (autocomplete reusable)
+// ============================================================================
+// Función para buscar productos en vivo. Devuelve array de productos.
+// Cache simple en memoria para que escribir "BET" → "BETE" → "BETER" no
+// dispare 3 fetches al servidor en menos de 1 segundo.
+const _cacheBusquedaProductos = new Map(); // key: query, value: { ts, results }
+const _CACHE_TTL_MS = 30000; // 30 segundos
+
+async function buscarProductos(query) {
+  const q = (query || '').trim();
+  if (q.length < 2) return [];
+
+  // Mirar cache
+  const cached = _cacheBusquedaProductos.get(q.toLowerCase());
+  if (cached && (Date.now() - cached.ts) < _CACHE_TTL_MS) {
+    return cached.results;
+  }
+
+  try {
+    const r = await api('/api/products/search?q=' + encodeURIComponent(q));
+    const products = r.products || [];
+    _cacheBusquedaProductos.set(q.toLowerCase(), { ts: Date.now(), results: products });
+    return products;
+  } catch (e) {
+    console.error('Error buscando productos:', e);
+    return [];
+  }
+}
+
+// Componente reusable: monta un autocomplete dentro de un contenedor.
+// Uso:
+//   const ac = montarAutocompleteProducto(elemento_contenedor, {
+//     placeholder: 'Buscar producto…',
+//     onSelect: (producto) => { ... },
+//     productoInicial: null  // opcional: producto ya seleccionado
+//   });
+//   ac.destroy()           // limpiar al cerrar modal
+//   ac.getSeleccionado()   // devuelve el producto seleccionado o null
+//   ac.setSeleccionado(p)  // asignar uno desde fuera
+function montarAutocompleteProducto(contenedor, opts) {
+  opts = opts || {};
+  const placeholder = opts.placeholder || 'Buscar producto (nombre, código o EAN)…';
+  const onSelect = opts.onSelect || (() => {});
+  let seleccionado = opts.productoInicial || null;
+  let timer = null;
+  let ultimaQuery = '';
+
+  contenedor.innerHTML = `
+    <div class="ac-producto-wrap">
+      <input type="text" class="ac-producto-input" placeholder="${escape(placeholder)}"
+             value="${seleccionado ? escape((seleccionado.codigo || '') + ' · ' + (seleccionado.nombre || '')) : ''}"
+             autocomplete="off" />
+      <button type="button" class="ac-producto-clear" title="Limpiar selección"
+              style="${seleccionado ? '' : 'display:none'}">×</button>
+      <div class="ac-producto-resultados" style="display:none"></div>
+      <div class="ac-producto-seleccionado" style="${seleccionado ? '' : 'display:none'}"></div>
+    </div>
+  `;
+
+  const $input = contenedor.querySelector('.ac-producto-input');
+  const $resultados = contenedor.querySelector('.ac-producto-resultados');
+  const $seleccionado = contenedor.querySelector('.ac-producto-seleccionado');
+  const $clear = contenedor.querySelector('.ac-producto-clear');
+
+  function renderSeleccionado() {
+    if (!seleccionado) {
+      $seleccionado.style.display = 'none';
+      $clear.style.display = 'none';
+      return;
+    }
+    $clear.style.display = '';
+    $seleccionado.style.display = '';
+    const pvf = seleccionado.precio_pvf ? Number(seleccionado.precio_pvf).toFixed(2) + '€' : '—';
+    const ean = seleccionado.ean ? ' · EAN ' + escape(seleccionado.ean) : '';
+    const badgeTipo = seleccionado.tipo === 'comercial'
+      ? '<span class="ac-badge-promo">🎁 Promo</span>'
+      : '<span class="ac-badge-sage">🏷️ Sage</span>';
+    $seleccionado.innerHTML = `
+      <div class="ac-producto-card">
+        <div class="ac-producto-card-row1">
+          ${badgeTipo}
+          <b>${escape(seleccionado.codigo)}</b>
+          <span class="ac-pvf">PVF ${pvf}</span>
+        </div>
+        <div class="ac-producto-card-row2">${escape(seleccionado.nombre)}${ean}</div>
+      </div>
+    `;
+  }
+  renderSeleccionado();
+
+  function mostrarResultados(productos) {
+    if (productos.length === 0) {
+      $resultados.innerHTML = '<div class="ac-empty">No se encontraron productos activos</div>';
+      $resultados.style.display = '';
+      return;
+    }
+    $resultados.innerHTML = productos.map((p, idx) => {
+      const pvf = p.precio_pvf ? Number(p.precio_pvf).toFixed(2) + '€' : '—';
+      const ean = p.ean ? ' · EAN ' + escape(p.ean) : '';
+      const tipoBadge = p.tipo === 'comercial' ? '🎁' : '🏷️';
+      return `
+        <div class="ac-item" data-idx="${idx}">
+          <div class="ac-item-row1">
+            <span class="ac-item-tipo">${tipoBadge}</span>
+            <b>${escape(p.codigo)}</b>
+            <span class="ac-item-pvf">${pvf}</span>
+          </div>
+          <div class="ac-item-row2">${escape(p.nombre)}${ean}</div>
+        </div>
+      `;
+    }).join('');
+    $resultados.style.display = '';
+
+    // Hacer cada item clickable
+    $resultados.querySelectorAll('.ac-item').forEach($item => {
+      $item.addEventListener('click', () => {
+        const idx = Number($item.getAttribute('data-idx'));
+        seleccionado = productos[idx];
+        $input.value = (seleccionado.codigo || '') + ' · ' + (seleccionado.nombre || '');
+        $resultados.style.display = 'none';
+        $resultados.innerHTML = '';
+        renderSeleccionado();
+        onSelect(seleccionado);
+      });
+    });
+  }
+
+  // Debounce de teclas
+  $input.addEventListener('input', () => {
+    const q = $input.value.trim();
+    // Si el usuario empieza a escribir y había selección, limpiarla
+    if (seleccionado && q !== ((seleccionado.codigo || '') + ' · ' + (seleccionado.nombre || ''))) {
+      seleccionado = null;
+      renderSeleccionado();
+      onSelect(null);
+    }
+    if (q === ultimaQuery) return;
+    ultimaQuery = q;
+    clearTimeout(timer);
+    if (q.length < 2) {
+      $resultados.style.display = 'none';
+      $resultados.innerHTML = '';
+      return;
+    }
+    $resultados.innerHTML = '<div class="ac-loading">Buscando…</div>';
+    $resultados.style.display = '';
+    timer = setTimeout(async () => {
+      const productos = await buscarProductos(q);
+      // Solo aplicar si la query sigue siendo la misma (evita race conditions)
+      if (q === $input.value.trim()) {
+        mostrarResultados(productos);
+      }
+    }, 250);
+  });
+
+  // Cerrar resultados al hacer click fuera
+  function onDocClick(e) {
+    if (!contenedor.contains(e.target)) {
+      $resultados.style.display = 'none';
+    }
+  }
+  document.addEventListener('click', onDocClick);
+
+  // Botón limpiar selección
+  $clear.addEventListener('click', () => {
+    seleccionado = null;
+    $input.value = '';
+    $input.focus();
+    renderSeleccionado();
+    onSelect(null);
+  });
+
+  return {
+    getSeleccionado: () => seleccionado,
+    setSeleccionado: (p) => {
+      seleccionado = p;
+      $input.value = p ? ((p.codigo || '') + ' · ' + (p.nombre || '')) : '';
+      renderSeleccionado();
+    },
+    destroy: () => {
+      document.removeEventListener('click', onDocClick);
+      contenedor.innerHTML = '';
+    }
+  };
+}
+
+// Helper para probar manualmente la búsqueda desde la consola del navegador.
+// Uso desde consola: testBuscarProductos('beter')
+window.testBuscarProductos = async function(q) {
+  const r = await buscarProductos(q);
+  console.table(r.map(p => ({ codigo: p.codigo, nombre: p.nombre, ean: p.ean, pvf: p.precio_pvf, tipo: p.tipo })));
+  return r;
+};
+
 // ===== ARRANQUE =====
 render();
 // I: inicializar modo offline (IndexedDB, indicador online, etc.)

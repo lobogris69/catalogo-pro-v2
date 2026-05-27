@@ -580,7 +580,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'productos-fix-catch-all-27may',
+    build: 'fase2a-busqueda-productos-27may',
     service: 'CatalogPRO v2'
   });
 });
@@ -4113,6 +4113,58 @@ app.post('/api/visits/:id/resend-to-custom', verifyToken, async (req: AuthReques
 // ============================================================================
 // FASE 1 — PRODUCTOS (catálogo maestro + importador Sage + expositores)
 // ============================================================================
+
+// FASE 2.a: Búsqueda rápida de productos (autocomplete en modal anotar visita).
+// IMPORTANTE: este endpoint DEBE ir antes del genérico /api/products/:id porque
+// Express podría confundir "search" con un ":id" (no lo hace porque "search" no
+// es numérico, pero por seguridad de orden lo colocamos antes igualmente).
+// - Solo devuelve productos ACTIVOS (los descatalogados nunca aparecen).
+// - Busca en: nombre + código + EAN.
+// - Limit fijo a 20 (suficiente para autocomplete, no satura).
+// - Devuelve solo campos mínimos (más rápido que el endpoint general).
+// - Se aceptan también productos tipo 'comercial' (expositores/promos manuales).
+app.get('/api/products/search', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) {
+      // No buscamos con menos de 2 caracteres → evita devolver miles de filas
+      res.json({ success: true, products: [], total: 0 });
+      return;
+    }
+    const qLower = q.toLowerCase();
+    const pattern = '%' + qLower + '%';
+
+    // ORDER BY relevancia (coincidencias exactas primero, luego "empieza por", luego "contiene")
+    // Esto hace que si el comercial escribe "BETER" salgan primero los productos
+    // cuyo nombre/código empieza por "BETER" antes que los que solo lo contienen.
+    const sql = `
+      SELECT id, codigo, nombre, ean, precio_pvp, precio_pvf, categoria, familia, marca, tipo
+      FROM products
+      WHERE activo = TRUE
+        AND (
+          LOWER(nombre) LIKE $1
+          OR LOWER(codigo) LIKE $1
+          OR LOWER(COALESCE(ean,'')) LIKE $1
+        )
+      ORDER BY
+        CASE
+          WHEN LOWER(codigo) = $2 THEN 0                  -- código exacto = máxima prioridad
+          WHEN LOWER(ean) = $2 THEN 1                     -- EAN exacto
+          WHEN LOWER(nombre) LIKE $3 THEN 2               -- nombre empieza por…
+          WHEN LOWER(codigo) LIKE $3 THEN 3               -- código empieza por…
+          ELSE 4
+        END,
+        LENGTH(nombre),
+        nombre
+      LIMIT 20
+    `;
+    const startsWith = qLower + '%';
+    const r = await pool.query(sql, [pattern, qLower, startsWith]);
+    res.json({ success: true, products: r.rows, total: r.rows.length });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
 
 // GET listar productos (con filtros)
 // Query: tipo (sage|comercial|todos), activo (true|false|todos), q (búsqueda)
