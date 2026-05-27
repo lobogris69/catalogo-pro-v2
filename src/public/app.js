@@ -6125,6 +6125,8 @@ function mostrarPreviewImportProductos(preview) {
   };
 
   const cps = preview.cambios_precio_significativos || [];
+  const headers = preview.headers_detectados || {};
+  const muestraDescartados = preview.muestra_descartados || [];
 
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
@@ -6135,14 +6137,40 @@ function mostrarPreviewImportProductos(preview) {
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
       </div>
 
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;padding:10px 12px;border-radius:8px;margin-bottom:14px;font-size:12px">
+        <div style="font-weight:600;margin-bottom:6px;color:#1e40af">🔎 Columnas detectadas en tu Excel</div>
+        <div style="color:#1e40af">
+          <b>Código:</b> ${escape(headers.colCodigo || '?')} · 
+          <b>Nombre:</b> ${escape(headers.colNombre || '?')} · 
+          <b>EAN:</b> ${escape(headers.colEAN || '?')} · 
+          <b>PVF:</b> ${escape(headers.colPVF || '?')} · 
+          <b>Categoría:</b> ${escape(headers.colCategoria || '?')} · 
+          <b>Familia:</b> ${escape(headers.colFamilia || '?')} · 
+          <b>Proveedor:</b> ${escape(headers.colProveedor || '?')} · 
+          <b>Tipo art.:</b> ${escape(headers.colTipoArt || '?')}
+        </div>
+      </div>
+
       <div style="background:#f9fafb;padding:14px;border-radius:8px;margin-bottom:14px;font-size:13px">
         <div style="font-weight:600;margin-bottom:8px">📋 Resumen</div>
-        <div>📄 Total productos en el Excel: <b>${preview.total_excel}</b></div>
-        <div>🆕 Nuevos a crear: <b style="color:#16a34a">${preview.nuevos}</b></div>
-        <div>🔄 A actualizar: <b style="color:#d97706">${preview.actualizaciones}</b></div>
+        <div>📄 Total productos válidos en el Excel: <b>${preview.total_excel}</b></div>
+        ${preview.descartados_basura > 0 ? `
+          <div>🗑️ Descartados (notas/comentarios del Sage): <b style="color:#6b7280">${preview.descartados_basura}</b></div>
+        ` : ''}
+        <div>🆕 Nuevos a crear: <b style="color:#16a34a">${preview.nuevos}</b>${preview.nuevos_descatalogados > 0 ? ` <span style="color:#dc2626">(de los cuales ${preview.nuevos_descatalogados} entran ya como BAJA/ANULADO)</span>` : ''}</div>
+        <div>🔄 A actualizar: <b style="color:#d97706">${preview.actualizaciones}</b>${preview.actuales_descatalogados > 0 ? ` <span style="color:#dc2626">(${preview.actuales_descatalogados} se marcan ahora como BAJA/ANULADO)</span>` : ''}</div>
         <div>= Sin cambios: <b style="color:#6b7280">${preview.sin_cambio}</b></div>
         <div>👻 Desaparecidos (estaban antes, ya no): <b style="color:#dc2626">${preview.desaparecidos}</b></div>
       </div>
+
+      ${muestraDescartados.length > 0 ? `
+        <details style="margin-bottom:14px">
+          <summary style="cursor:pointer;font-size:12px;color:#6b7280">Ver muestra de filas descartadas (notas operativas del Sage)</summary>
+          <div style="background:#f3f4f6;padding:10px;border-radius:6px;margin-top:6px;font-size:11px;max-height:140px;overflow-y:auto">
+            ${muestraDescartados.map(d => `<div><b>${escape(d.codigo)}</b> · ${escape(d.nombre)}</div>`).join('')}
+          </div>
+        </details>
+      ` : ''}
 
       ${cps.length > 0 ? `
         <div style="background:#fef3c7;border:1px solid #fcd34d;padding:12px;border-radius:8px;margin-bottom:14px;font-size:13px">
@@ -6193,7 +6221,8 @@ async function confirmarImportProductos() {
     const r = await api('/api/products/import-confirm', { method: 'POST', body });
     document.querySelector('.modal-bg').remove();
     window._importProductosPayload = null;
-    mostrarNotificacionOnline(`✅ ${r.creados} creados · ${r.actualizados} actualizados · ${r.descatalogados} descatalogados`, '#16a34a');
+    const msgBaja = r.marcados_baja > 0 ? ` · 🔴 ${r.marcados_baja} marcados como BAJA/ANULADO` : '';
+    mostrarNotificacionOnline(`✅ ${r.creados} creados · ${r.actualizados} actualizados · ${r.descatalogados} descatalogados${msgBaja}`, '#16a34a');
     recargarProductos();
   } catch (err) {
     $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;

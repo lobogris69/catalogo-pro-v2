@@ -482,6 +482,27 @@ async function initDB(): Promise<void> {
       }
     }
 
+    // FASE 1 FIX (27 may): migración idempotente — añadir campos extra del Sage real:
+    // proveedor, iva_group, subfamilia. La columna 'familia' ya existe (la usaremos
+    // para mapear el campo "Subfamilia" del Sage; y 'categoria' se mapeará desde "Familia").
+    const productosAlters = [
+      `ALTER TABLE products ADD COLUMN proveedor VARCHAR(150)`,
+      `ALTER TABLE products ADD COLUMN iva_group VARCHAR(10)`,
+      `ALTER TABLE products ADD COLUMN subfamilia VARCHAR(100)`
+    ];
+    for (const sql of productosAlters) {
+      try {
+        await pool.query(sql);
+        console.log('✅ Aplicado: ' + sql);
+      } catch (e: any) {
+        if (e.code === '42701') {
+          // Columna ya existe
+        } else {
+          console.error('⚠️ Error en migración products:', sql, e.message);
+        }
+      }
+    }
+
     // Sembrar configuracion email por defecto si no existe
     const emailDefaults = [
       ['modo', 'pruebas', 'Modo actual: pruebas (redirige a emails de test) o produccion (envio real)'],
@@ -559,7 +580,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'productos-fase1-26may',
+    build: 'productos-fix-sage-real-27may',
     service: 'CatalogPRO v2'
   });
 });
@@ -4279,23 +4300,48 @@ app.post('/api/products/import-preview', verifyToken, requireRealAdmin, uploadEx
       return;
     }
 
-    // Detectar columnas por nombre en la cabecera (más robusto que posiciones fijas)
-    const headers = rows[0].map(h => String(h || '').toLowerCase().trim());
+    // Detectar columnas por nombre en la cabecera, normalizando (sin acentos, minúsculas, sin puntos)
+    const normalizar = (s: string) => s.toLowerCase().trim()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // quitar acentos
+      .replace(/[.]/g, '');                                // quitar puntos
+    const headers = rows[0].map(h => normalizar(String(h || '')));
+
     function findCol(...nombresPosibles: string[]): number {
       for (const n of nombresPosibles) {
-        const idx = headers.findIndex(h => h === n.toLowerCase() || h.includes(n.toLowerCase()));
+        const nNorm = normalizar(n);
+        const idx = headers.findIndex(h => h === nNorm);
+        if (idx >= 0) return idx;
+      }
+      // Si no encuentra exacto, prueba "contiene"
+      for (const n of nombresPosibles) {
+        const nNorm = normalizar(n);
+        const idx = headers.findIndex(h => h.includes(nNorm));
         if (idx >= 0) return idx;
       }
       return -1;
     }
-    const colCodigo = findCol('codigo', 'código', 'cod_sage', 'cod', 'ref');
-    const colNombre = findCol('nombre', 'descripcion', 'descripción', 'producto');
-    const colEAN = findCol('ean', 'codigo_nacional', 'cn', 'codigobarras');
-    const colPVP = findCol('pvp', 'precio_pvp', 'precio_publico');
-    const colPVF = findCol('pvf', 'pvl', 'precio_pvf', 'precio_farmacia', 'precio_lab');
-    const colCategoria = findCol('categoria', 'categoría');
-    const colFamilia = findCol('familia');
-    const colMarca = findCol('marca');
+
+    // Mapeo adaptado al Sage real de LOMHIFAR:
+    //   "Artículo"         → código
+    //   "Descripción"      → nombre
+    //   "Cód. alternativo" → EAN
+    //   "Precio venta"     → PVF (PVL, sin bonificaciones ni descuentos)
+    //   "Familia"          → categoría
+    //   "Subfamilia"       → familia (sub-clasificación)
+    //   "Proveedor habitual" → proveedor
+    //   "Grupo IVA"        → iva_group
+    //   "Tipo artículo"    → tipo de fila (M material, C comentario, I inmaterial)
+    const colCodigo    = findCol('articulo', 'artículo', 'codigo', 'código', 'cod_sage', 'cod', 'ref');
+    const colNombre    = findCol('descripcion', 'descripción', 'nombre', 'producto');
+    const colEAN       = findCol('cod alternativo', 'codigo alternativo', 'ean', 'codigo_nacional', 'cn', 'codigobarras');
+    const colPVF       = findCol('precio venta', 'pvf', 'pvl', 'precio_pvf', 'precio_farmacia', 'precio_lab');
+    const colPVP       = findCol('pvp', 'precio_pvp', 'precio_publico');
+    const colCategoria = findCol('familia', 'categoria', 'categoría');
+    const colFamilia   = findCol('subfamilia');
+    const colMarca     = findCol('marca');
+    const colProveedor = findCol('proveedor habitual', 'proveedor');
+    const colIVA       = findCol('grupo iva', 'iva');
+    const colTipoArt   = findCol('tipo articulo', 'tipo artículo', 'tipo');
 
     if (colCodigo < 0 || colNombre < 0) {
       res.status(400).json({
@@ -4305,24 +4351,80 @@ app.post('/api/products/import-preview', verifyToken, requireRealAdmin, uploadEx
       return;
     }
 
+    // --- LÓGICA DE FILTRADO Y CLASIFICACIÓN ---
+    // Palabras que indican que una fila tipo "C - Comentario" es basura
+    // (mensajes operativos del Sage, NO productos reales)
+    const PALABRAS_BASURA_C = [
+      'iva ', 'obsequio', 'gracias', 'nota:', 'facturara', 'facturará',
+      'girara', 'girará', 'cta lomhifar', 'n cta', 'nº cta',
+      'pvf.:', 'pvp.:', 'pvf:', 'pvp:', 'euros',
+      'facturas rectificativas', 'articulo comentario', 'artículo comentario',
+      'suministrar', 'suministraremos', 'barcelona',
+      'falta de stock', 'mercancia se la'
+    ];
+
+    function esBasuraTipoC(tipoLetra: string, desc: string, precio: number): boolean {
+      if (tipoLetra !== 'C') return false;
+      if (precio > 0) return false;  // tiene precio → producto real mal clasificado
+      if (desc.length < 10) return true;
+      // solo asteriscos, guiones o espacios
+      if (/^[\s\*\-]+$/.test(desc)) return true;
+      // patrón IBAN español: "ES86 3035 0127..."
+      if (/^ES\d{2}(\s+\d+)+/.test(desc)) return true;
+      const descLower = normalizar(desc);
+      for (const p of PALABRAS_BASURA_C) {
+        if (descLower.includes(normalizar(p))) return true;
+      }
+      return false;
+    }
+
+    function estaDescatalogado(desc: string): boolean {
+      const u = desc.toUpperCase();
+      if (u.includes('ANULADO')) return true;
+      if (/\bBAJA\b/.test(u)) return true;
+      if (u.includes('BAJA-')) return true;
+      return false;
+    }
+
     // Procesar filas
     const filasExcel: any[] = [];
     const codigosExcel = new Set<string>();
+    const descartadasBasura: any[] = [];
+
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const cod = String(row[colCodigo] || '').trim();
       if (!cod) continue;
       const nom = String(row[colNombre] || '').trim();
       if (!nom) continue;
+
+      const tipoArtRaw = colTipoArt >= 0 ? String(row[colTipoArt] || '').trim() : '';
+      const tipoLetra = tipoArtRaw.charAt(0).toUpperCase();  // 'M', 'C', 'I' o ''
+      const precioRaw = colPVF >= 0 ? parseFloat(String(row[colPVF] || '').replace(',', '.')) : 0;
+      const precio = isNaN(precioRaw) ? 0 : precioRaw;
+
+      // Filtrar basura tipo C
+      if (esBasuraTipoC(tipoLetra, nom, precio)) {
+        descartadasBasura.push({ codigo: cod, nombre: nom, motivo: 'Comentario interno Sage (no es producto)' });
+        continue;
+      }
+
+      // Detectar si está descatalogado (ANULADO o BAJA en el nombre)
+      const descatalogado = estaDescatalogado(nom);
+
       const item: any = {
         codigo: cod,
         nombre: nom,
-        ean: colEAN >= 0 ? String(row[colEAN] || '').trim() || null : null,
-        precio_pvp: colPVP >= 0 ? parseFloat(String(row[colPVP] || '').replace(',','.')) || null : null,
-        precio_pvf: colPVF >= 0 ? parseFloat(String(row[colPVF] || '').replace(',','.')) || null : null,
-        categoria: colCategoria >= 0 ? String(row[colCategoria] || '').trim() || null : null,
-        familia: colFamilia >= 0 ? String(row[colFamilia] || '').trim() || null : null,
-        marca: colMarca >= 0 ? String(row[colMarca] || '').trim() || null : null
+        ean: colEAN >= 0 ? (String(row[colEAN] || '').trim() || null) : null,
+        precio_pvp: colPVP >= 0 ? (parseFloat(String(row[colPVP] || '').replace(',', '.')) || null) : null,
+        precio_pvf: precio || null,
+        categoria: colCategoria >= 0 ? (String(row[colCategoria] || '').trim() || null) : null,
+        familia: colFamilia >= 0 ? (String(row[colFamilia] || '').trim() || null) : null,
+        marca: colMarca >= 0 ? (String(row[colMarca] || '').trim() || null) : null,
+        proveedor: colProveedor >= 0 ? (String(row[colProveedor] || '').trim() || null) : null,
+        iva_group: colIVA >= 0 ? (String(row[colIVA] || '').trim() || null) : null,
+        activo: !descatalogado,
+        motivo_baja: descatalogado ? (nom.toUpperCase().includes('ANULADO') ? 'ANULADO' : 'BAJA') : null
       };
       filasExcel.push(item);
       codigosExcel.add(cod);
@@ -4338,35 +4440,43 @@ app.post('/api/products/import-preview', verifyToken, requireRealAdmin, uploadEx
     const actualizaciones: any[] = [];
     const sinCambio: any[] = [];
     const cambiosPrecioSignificativos: any[] = []; // > 20%
+    let nuevosDescatalogados = 0;       // entran ya como BAJA/ANULADO
+    let actualesDescatalogados = 0;     // existentes que ahora se marcan BAJA/ANULADO
 
     for (const item of filasExcel) {
       const actual = actualesMap.get(item.codigo);
       if (!actual) {
         nuevos.push(item);
+        if (!item.activo) nuevosDescatalogados++;
       } else {
         // Comprobar si hay cambios
         const cambios: any = {};
         let hayCambio = false;
-        ['nombre','ean','precio_pvp','precio_pvf','categoria','familia','marca'].forEach(campo => {
+        const campos = ['nombre', 'ean', 'precio_pvp', 'precio_pvf', 'categoria', 'familia', 'marca', 'proveedor', 'iva_group', 'activo'];
+        for (const campo of campos) {
           const v1 = actual[campo];
           const v2 = item[campo];
-          if (String(v1 || '') !== String(v2 || '')) {
+          // Comparación tolerante (null/undefined/'' equivalentes)
+          const norm = (v: any) => v === null || v === undefined ? '' : String(v);
+          if (norm(v1) !== norm(v2)) {
             cambios[campo] = { old: v1, new: v2 };
             hayCambio = true;
           }
-        });
+        }
         if (hayCambio) {
           actualizaciones.push({ codigo: item.codigo, nombre: actual.nombre, cambios, item });
+          // Si el activo pasó de true a false en esta importación
+          if (actual.activo && !item.activo) actualesDescatalogados++;
           // Detectar cambio significativo de precio
-          if (actual.precio_pvp && item.precio_pvp) {
-            const pctPvp = ((Number(item.precio_pvp) - Number(actual.precio_pvp)) / Number(actual.precio_pvp)) * 100;
-            if (Math.abs(pctPvp) >= 20) {
+          if (actual.precio_pvf && item.precio_pvf) {
+            const pctPvf = ((Number(item.precio_pvf) - Number(actual.precio_pvf)) / Number(actual.precio_pvf)) * 100;
+            if (Math.abs(pctPvf) >= 20) {
               cambiosPrecioSignificativos.push({
                 codigo: item.codigo,
                 nombre: item.nombre,
-                pvp_old: Number(actual.precio_pvp),
-                pvp_new: Number(item.precio_pvp),
-                pct: pctPvp.toFixed(1)
+                pvp_old: Number(actual.precio_pvf),
+                pvp_new: Number(item.precio_pvf),
+                pct: pctPvf.toFixed(1)
               });
             }
           }
@@ -4384,21 +4494,35 @@ app.post('/api/products/import-preview', verifyToken, requireRealAdmin, uploadEx
       }
     }
 
-    // Guardar las filas en una tabla temporal en memoria (atajo: devolverlas al frontend y que las reenvíe al confirmar).
-    // Esto evita el hassle de sessions/temp-tables. Las filas son ligeras.
     res.json({
       success: true,
       preview: {
         total_excel: filasExcel.length,
+        descartados_basura: descartadasBasura.length,
         nuevos: nuevos.length,
+        nuevos_descatalogados: nuevosDescatalogados,
         actualizaciones: actualizaciones.length,
+        actuales_descatalogados: actualesDescatalogados,
         sin_cambio: sinCambio.length,
         desaparecidos: desaparecidos.length,
         cambios_precio_significativos: cambiosPrecioSignificativos,
         muestra_nuevos: nuevos.slice(0, 10),
         muestra_actualizaciones: actualizaciones.slice(0, 10),
         muestra_desaparecidos: desaparecidos.slice(0, 10),
-        headers_detectados: { colCodigo, colNombre, colEAN, colPVP, colPVF, colCategoria, colFamilia, colMarca },
+        muestra_descartados: descartadasBasura.slice(0, 10),
+        headers_detectados: {
+          colCodigo: headers[colCodigo],
+          colNombre: headers[colNombre],
+          colEAN: colEAN >= 0 ? headers[colEAN] : '(no detectada)',
+          colPVF: colPVF >= 0 ? headers[colPVF] : '(no detectada)',
+          colPVP: colPVP >= 0 ? headers[colPVP] : '(no detectada)',
+          colCategoria: colCategoria >= 0 ? headers[colCategoria] : '(no detectada)',
+          colFamilia: colFamilia >= 0 ? headers[colFamilia] : '(no detectada)',
+          colMarca: colMarca >= 0 ? headers[colMarca] : '(no detectada)',
+          colProveedor: colProveedor >= 0 ? headers[colProveedor] : '(no detectada)',
+          colIVA: colIVA >= 0 ? headers[colIVA] : '(no detectada)',
+          colTipoArt: colTipoArt >= 0 ? headers[colTipoArt] : '(no detectada)'
+        },
         // Las filas para enviar al confirmar (frontend las reenviará tal cual)
         filas_payload: filasExcel,
         codigos_desaparecidos: desaparecidos.map(d => d.codigo)
@@ -4428,24 +4552,42 @@ app.post('/api/products/import-confirm', verifyToken, requireRealAdmin, async (r
     const actualesMap = new Map<string, any>();
     actualesR.rows.forEach((p: any) => actualesMap.set(p.codigo, p));
 
-    let creados = 0, actualizados = 0, descatalogados = 0;
+    let creados = 0, actualizados = 0, descatalogados = 0, marcadosBaja = 0;
 
     for (const item of filas) {
       const actual = actualesMap.get(item.codigo);
+      // El 'activo' viene calculado del preview (false si nombre contiene BAJA/ANULADO).
+      // Si no viene la propiedad, asumimos activo=true por defecto.
+      const activo = (item.activo === undefined || item.activo === null) ? true : !!item.activo;
+      const descatalogadoAt = activo ? null : new Date();
+
       if (!actual) {
         // Crear nuevo
         await pool.query(
-          `INSERT INTO products (codigo, nombre, ean, precio_pvp, precio_pvf, categoria, familia, marca, tipo, activo)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'sage',TRUE)`,
-          [item.codigo, item.nombre, item.ean, item.precio_pvp, item.precio_pvf, item.categoria, item.familia, item.marca]
+          `INSERT INTO products (codigo, nombre, ean, precio_pvp, precio_pvf, categoria, familia, marca, proveedor, iva_group, tipo, activo, descatalogado_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'sage',$11,$12)`,
+          [item.codigo, item.nombre, item.ean, item.precio_pvp, item.precio_pvf, item.categoria, item.familia, item.marca, item.proveedor, item.iva_group, activo, descatalogadoAt]
         );
         creados++;
+        if (!activo) marcadosBaja++;
       } else {
         // Actualizar
-        const cambioPrecio = (Number(actual.precio_pvp) !== Number(item.precio_pvp)) || (Number(actual.precio_pvf) !== Number(item.precio_pvf));
+        const cambioPrecio = (Number(actual.precio_pvp || 0) !== Number(item.precio_pvp || 0)) || (Number(actual.precio_pvf || 0) !== Number(item.precio_pvf || 0));
+        const pasaABaja = actual.activo && !activo;
+        const vuelveDeBaja = !actual.activo && activo;
+        // Si el item venía descatalogado, calculamos el descatalogado_at correcto
+        const nuevoDescatalogadoAt = activo
+          ? null                                        // pasa a activo → limpiamos
+          : (actual.descatalogado_at || new Date());    // queda baja → mantenemos o fijamos ahora
+
         await pool.query(
-          `UPDATE products SET nombre=$1, ean=$2, precio_pvp=$3, precio_pvf=$4, categoria=$5, familia=$6, marca=$7, activo=TRUE, descatalogado_at=NULL, updated_at=NOW() WHERE id=$8`,
-          [item.nombre, item.ean, item.precio_pvp, item.precio_pvf, item.categoria, item.familia, item.marca, actual.id]
+          `UPDATE products SET nombre=$1, ean=$2, precio_pvp=$3, precio_pvf=$4,
+            categoria=$5, familia=$6, marca=$7, proveedor=$8, iva_group=$9,
+            activo=$10, descatalogado_at=$11, updated_at=NOW()
+           WHERE id=$12`,
+          [item.nombre, item.ean, item.precio_pvp, item.precio_pvf,
+           item.categoria, item.familia, item.marca, item.proveedor, item.iva_group,
+           activo, nuevoDescatalogadoAt, actual.id]
         );
         if (cambioPrecio) {
           await pool.query(
@@ -4455,6 +4597,8 @@ app.post('/api/products/import-confirm', verifyToken, requireRealAdmin, async (r
           );
         }
         actualizados++;
+        if (pasaABaja) marcadosBaja++;
+        // (Si vuelveDeBaja es true, simplemente se reactivó — lo dejamos a actualizados)
       }
     }
 
@@ -4467,7 +4611,7 @@ app.post('/api/products/import-confirm', verifyToken, requireRealAdmin, async (r
       descatalogados = r.rowCount || 0;
     }
 
-    res.json({ success: true, creados, actualizados, descatalogados });
+    res.json({ success: true, creados, actualizados, descatalogados, marcados_baja: marcadosBaja });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
