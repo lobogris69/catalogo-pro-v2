@@ -580,7 +580,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'productos-fix-sage-real-27may',
+    build: 'productos-fix-catch-all-27may',
     service: 'CatalogPRO v2'
   });
 });
@@ -4111,13 +4111,6 @@ app.post('/api/visits/:id/resend-to-custom', verifyToken, async (req: AuthReques
 });
 
 // ============================================================================
-// FRONTEND FALLBACK
-// ============================================================================
-app.get('*', (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
-});
-
-// ============================================================================
 // FASE 1 — PRODUCTOS (catálogo maestro + importador Sage + expositores)
 // ============================================================================
 
@@ -4615,6 +4608,13 @@ app.post('/api/products/import-confirm', verifyToken, requireRealAdmin, async (r
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
+});
+
+// ============================================================================
+// FRONTEND FALLBACK (DEBE ser el último GET, después de todos los /api/*)
+// ============================================================================
+app.get('*', (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
 });
 
 // ============================================================================
