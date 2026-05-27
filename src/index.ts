@@ -386,6 +386,47 @@ async function initDB(): Promise<void> {
         sent_at         TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_visit_emails_visit ON visit_emails(visit_id);
+
+      -- Fase 1 (Productos): tabla maestra de productos
+      -- tipo='sage': producto sincronizado con Sage (codigo Sage como id externo)
+      -- tipo='comercial': expositores/promos creados a mano (no estan en Sage)
+      CREATE TABLE IF NOT EXISTS products (
+        id              SERIAL PRIMARY KEY,
+        codigo          VARCHAR(50) NOT NULL UNIQUE,  -- codigo Sage o codigo interno (EXPO-XXX)
+        nombre          VARCHAR(255) NOT NULL,
+        descripcion     TEXT,
+        ean             VARCHAR(20),                  -- codigo nacional / EAN13 (solo sage)
+        precio_pvp      DECIMAL(10,2),                -- precio venta publico
+        precio_pvf      DECIMAL(10,2),                -- precio venta farmacia (PVL)
+        categoria       VARCHAR(100),
+        familia         VARCHAR(100),
+        marca           VARCHAR(100),
+        tipo            VARCHAR(20) NOT NULL DEFAULT 'sage' CHECK (tipo IN ('sage','comercial')),
+        notas_admin     TEXT,                         -- notas para administracion (ej: "equivale a 24 x cod 12345")
+        activo          BOOLEAN NOT NULL DEFAULT TRUE,
+        descatalogado_at TIMESTAMP,                   -- fecha en que se marca como descatalogado
+        created_at      TIMESTAMP DEFAULT NOW(),
+        updated_at      TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_products_codigo ON products(codigo);
+      CREATE INDEX IF NOT EXISTS idx_products_tipo ON products(tipo);
+      CREATE INDEX IF NOT EXISTS idx_products_activo ON products(activo);
+      CREATE INDEX IF NOT EXISTS idx_products_nombre ON products(nombre);
+
+      -- Fase 1: histórico de cambios de precio (auditoría)
+      CREATE TABLE IF NOT EXISTS product_price_history (
+        id              SERIAL PRIMARY KEY,
+        product_id      INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        precio_pvp_old  DECIMAL(10,2),
+        precio_pvp_new  DECIMAL(10,2),
+        precio_pvf_old  DECIMAL(10,2),
+        precio_pvf_new  DECIMAL(10,2),
+        origen          VARCHAR(20),                  -- 'import_sage' | 'manual'
+        changed_by_id   INTEGER REFERENCES users(id),
+        changed_at      TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_pph_product ON product_price_history(product_id);
+      CREATE INDEX IF NOT EXISTS idx_pph_date ON product_price_history(changed_at DESC);
     `;
     await pool.query(schemaSQL);
 
@@ -518,7 +559,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'planning-offline-26may',
+    build: 'productos-fase1-26may',
     service: 'CatalogPRO v2'
   });
 });
@@ -4053,6 +4094,383 @@ app.post('/api/visits/:id/resend-to-custom', verifyToken, async (req: AuthReques
 // ============================================================================
 app.get('*', (req, res) => {
   res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
+});
+
+// ============================================================================
+// FASE 1 — PRODUCTOS (catálogo maestro + importador Sage + expositores)
+// ============================================================================
+
+// GET listar productos (con filtros)
+// Query: tipo (sage|comercial|todos), activo (true|false|todos), q (búsqueda)
+app.get('/api/products', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const tipo = String(req.query.tipo || 'todos');
+    const activo = String(req.query.activo || 'true');
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const limit = Math.min(Number(req.query.limit) || 200, 1000);
+
+    const where: string[] = [];
+    const params: any[] = [];
+
+    if (tipo === 'sage' || tipo === 'comercial') {
+      params.push(tipo);
+      where.push(`tipo = $${params.length}`);
+    }
+    if (activo === 'true') where.push(`activo = TRUE`);
+    else if (activo === 'false') where.push(`activo = FALSE`);
+
+    if (q) {
+      params.push('%' + q + '%');
+      const pPattern = params.length;
+      where.push(`(LOWER(nombre) LIKE $${pPattern} OR LOWER(codigo) LIKE $${pPattern} OR LOWER(COALESCE(ean,'')) LIKE $${pPattern} OR LOWER(COALESCE(marca,'')) LIKE $${pPattern})`);
+    }
+
+    const whereSQL = where.length > 0 ? 'WHERE ' + where.join(' AND ') : '';
+    const countR = await pool.query(`SELECT COUNT(*)::int AS n FROM products ${whereSQL}`, params);
+    const total = countR.rows[0].n;
+
+    params.push(limit);
+    const r = await pool.query(
+      `SELECT * FROM products ${whereSQL} ORDER BY nombre LIMIT $${params.length}`,
+      params
+    );
+    res.json({ success: true, products: r.rows, total });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET un producto por id
+app.get('/api/products/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Producto no encontrado' });
+      return;
+    }
+    // Histórico de precios
+    const h = await pool.query(
+      'SELECT * FROM product_price_history WHERE product_id = $1 ORDER BY changed_at DESC LIMIT 50',
+      [id]
+    );
+    res.json({ success: true, product: r.rows[0], price_history: h.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST crear producto (manual, típicamente expositores tipo 'comercial')
+app.post('/api/products', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { codigo, nombre, descripcion, ean, precio_pvp, precio_pvf, categoria, familia, marca, tipo, notas_admin } = req.body;
+    if (!codigo || !nombre) {
+      res.status(400).json({ success: false, error: 'Código y nombre obligatorios' });
+      return;
+    }
+    const tipoFinal = ['sage','comercial'].includes(tipo) ? tipo : 'comercial';
+    const r = await pool.query(
+      `INSERT INTO products (codigo, nombre, descripcion, ean, precio_pvp, precio_pvf, categoria, familia, marca, tipo, notas_admin)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [
+        String(codigo).trim(),
+        String(nombre).trim(),
+        descripcion || null,
+        ean || null,
+        precio_pvp != null && precio_pvp !== '' ? Number(precio_pvp) : null,
+        precio_pvf != null && precio_pvf !== '' ? Number(precio_pvf) : null,
+        categoria || null,
+        familia || null,
+        marca || null,
+        tipoFinal,
+        notas_admin || null
+      ]
+    );
+    res.json({ success: true, product: r.rows[0] });
+  } catch (e: any) {
+    if (e.code === '23505') {
+      res.status(409).json({ success: false, error: 'Ya existe un producto con ese código' });
+      return;
+    }
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PUT editar producto (admin)
+app.put('/api/products/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { codigo, nombre, descripcion, ean, precio_pvp, precio_pvf, categoria, familia, marca, notas_admin, activo } = req.body;
+
+    // Cargar producto actual para detectar cambios de precio
+    const actualR = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
+    if (actualR.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Producto no encontrado' });
+      return;
+    }
+    const actual = actualR.rows[0];
+
+    const nuevoPvp = precio_pvp != null && precio_pvp !== '' ? Number(precio_pvp) : null;
+    const nuevoPvf = precio_pvf != null && precio_pvf !== '' ? Number(precio_pvf) : null;
+    const cambioPrecio = (Number(actual.precio_pvp) !== nuevoPvp) || (Number(actual.precio_pvf) !== nuevoPvf);
+
+    const r = await pool.query(
+      `UPDATE products SET
+         codigo = COALESCE($1, codigo),
+         nombre = COALESCE($2, nombre),
+         descripcion = $3,
+         ean = $4,
+         precio_pvp = $5,
+         precio_pvf = $6,
+         categoria = $7,
+         familia = $8,
+         marca = $9,
+         notas_admin = $10,
+         activo = COALESCE($11, activo),
+         updated_at = NOW()
+       WHERE id = $12 RETURNING *`,
+      [
+        codigo ? String(codigo).trim() : null,
+        nombre ? String(nombre).trim() : null,
+        descripcion || null,
+        ean || null,
+        nuevoPvp,
+        nuevoPvf,
+        categoria || null,
+        familia || null,
+        marca || null,
+        notas_admin || null,
+        typeof activo === 'boolean' ? activo : null,
+        id
+      ]
+    );
+
+    // Registrar histórico si hubo cambio de precio
+    if (cambioPrecio) {
+      await pool.query(
+        `INSERT INTO product_price_history (product_id, precio_pvp_old, precio_pvp_new, precio_pvf_old, precio_pvf_new, origen, changed_by_id)
+         VALUES ($1,$2,$3,$4,$5,'manual',$6)`,
+        [id, actual.precio_pvp, nuevoPvp, actual.precio_pvf, nuevoPvf, req.user?.id || null]
+      );
+    }
+
+    res.json({ success: true, product: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST importar Excel de Sage - PRE-REVISIÓN (no aplica nada todavía)
+// Devuelve resumen de cambios para que el admin decida si confirmar.
+app.post('/api/products/import-preview', verifyToken, requireRealAdmin, uploadExcel.single('excel'), async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ success: false, error: 'No se ha subido archivo' });
+      return;
+    }
+    const filePath = req.file.path;
+    const workbook = XLSX.readFile(filePath);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+    if (rows.length < 2) {
+      res.status(400).json({ success: false, error: 'El Excel está vacío o solo tiene cabecera' });
+      return;
+    }
+
+    // Detectar columnas por nombre en la cabecera (más robusto que posiciones fijas)
+    const headers = rows[0].map(h => String(h || '').toLowerCase().trim());
+    function findCol(...nombresPosibles: string[]): number {
+      for (const n of nombresPosibles) {
+        const idx = headers.findIndex(h => h === n.toLowerCase() || h.includes(n.toLowerCase()));
+        if (idx >= 0) return idx;
+      }
+      return -1;
+    }
+    const colCodigo = findCol('codigo', 'código', 'cod_sage', 'cod', 'ref');
+    const colNombre = findCol('nombre', 'descripcion', 'descripción', 'producto');
+    const colEAN = findCol('ean', 'codigo_nacional', 'cn', 'codigobarras');
+    const colPVP = findCol('pvp', 'precio_pvp', 'precio_publico');
+    const colPVF = findCol('pvf', 'pvl', 'precio_pvf', 'precio_farmacia', 'precio_lab');
+    const colCategoria = findCol('categoria', 'categoría');
+    const colFamilia = findCol('familia');
+    const colMarca = findCol('marca');
+
+    if (colCodigo < 0 || colNombre < 0) {
+      res.status(400).json({
+        success: false,
+        error: 'No se encontró columna de código o nombre. Cabeceras detectadas: ' + headers.join(', ')
+      });
+      return;
+    }
+
+    // Procesar filas
+    const filasExcel: any[] = [];
+    const codigosExcel = new Set<string>();
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const cod = String(row[colCodigo] || '').trim();
+      if (!cod) continue;
+      const nom = String(row[colNombre] || '').trim();
+      if (!nom) continue;
+      const item: any = {
+        codigo: cod,
+        nombre: nom,
+        ean: colEAN >= 0 ? String(row[colEAN] || '').trim() || null : null,
+        precio_pvp: colPVP >= 0 ? parseFloat(String(row[colPVP] || '').replace(',','.')) || null : null,
+        precio_pvf: colPVF >= 0 ? parseFloat(String(row[colPVF] || '').replace(',','.')) || null : null,
+        categoria: colCategoria >= 0 ? String(row[colCategoria] || '').trim() || null : null,
+        familia: colFamilia >= 0 ? String(row[colFamilia] || '').trim() || null : null,
+        marca: colMarca >= 0 ? String(row[colMarca] || '').trim() || null : null
+      };
+      filasExcel.push(item);
+      codigosExcel.add(cod);
+    }
+
+    // Cargar productos actuales tipo 'sage' (no tocamos los 'comercial')
+    const actualesR = await pool.query(`SELECT * FROM products WHERE tipo = 'sage'`);
+    const actualesMap = new Map<string, any>();
+    actualesR.rows.forEach((p: any) => actualesMap.set(p.codigo, p));
+
+    // Clasificar cambios
+    const nuevos: any[] = [];
+    const actualizaciones: any[] = [];
+    const sinCambio: any[] = [];
+    const cambiosPrecioSignificativos: any[] = []; // > 20%
+
+    for (const item of filasExcel) {
+      const actual = actualesMap.get(item.codigo);
+      if (!actual) {
+        nuevos.push(item);
+      } else {
+        // Comprobar si hay cambios
+        const cambios: any = {};
+        let hayCambio = false;
+        ['nombre','ean','precio_pvp','precio_pvf','categoria','familia','marca'].forEach(campo => {
+          const v1 = actual[campo];
+          const v2 = item[campo];
+          if (String(v1 || '') !== String(v2 || '')) {
+            cambios[campo] = { old: v1, new: v2 };
+            hayCambio = true;
+          }
+        });
+        if (hayCambio) {
+          actualizaciones.push({ codigo: item.codigo, nombre: actual.nombre, cambios, item });
+          // Detectar cambio significativo de precio
+          if (actual.precio_pvp && item.precio_pvp) {
+            const pctPvp = ((Number(item.precio_pvp) - Number(actual.precio_pvp)) / Number(actual.precio_pvp)) * 100;
+            if (Math.abs(pctPvp) >= 20) {
+              cambiosPrecioSignificativos.push({
+                codigo: item.codigo,
+                nombre: item.nombre,
+                pvp_old: Number(actual.precio_pvp),
+                pvp_new: Number(item.precio_pvp),
+                pct: pctPvp.toFixed(1)
+              });
+            }
+          }
+        } else {
+          sinCambio.push(item);
+        }
+      }
+    }
+
+    // Productos que estaban y ya no están en el Excel (candidatos a descatalogar)
+    const desaparecidos: any[] = [];
+    for (const [codigo, prod] of actualesMap.entries()) {
+      if (!codigosExcel.has(codigo) && prod.activo) {
+        desaparecidos.push({ codigo, nombre: prod.nombre, ean: prod.ean });
+      }
+    }
+
+    // Guardar las filas en una tabla temporal en memoria (atajo: devolverlas al frontend y que las reenvíe al confirmar).
+    // Esto evita el hassle de sessions/temp-tables. Las filas son ligeras.
+    res.json({
+      success: true,
+      preview: {
+        total_excel: filasExcel.length,
+        nuevos: nuevos.length,
+        actualizaciones: actualizaciones.length,
+        sin_cambio: sinCambio.length,
+        desaparecidos: desaparecidos.length,
+        cambios_precio_significativos: cambiosPrecioSignificativos,
+        muestra_nuevos: nuevos.slice(0, 10),
+        muestra_actualizaciones: actualizaciones.slice(0, 10),
+        muestra_desaparecidos: desaparecidos.slice(0, 10),
+        headers_detectados: { colCodigo, colNombre, colEAN, colPVP, colPVF, colCategoria, colFamilia, colMarca },
+        // Las filas para enviar al confirmar (frontend las reenviará tal cual)
+        filas_payload: filasExcel,
+        codigos_desaparecidos: desaparecidos.map(d => d.codigo)
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST aplicar la importación tras pre-revisión confirmada
+// Body: { filas: [...], descatalogar_desaparecidos: bool, codigos_desaparecidos: [...] }
+app.post('/api/products/import-confirm', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const filas: any[] = req.body.filas || [];
+    const descatalogar = !!req.body.descatalogar_desaparecidos;
+    const codigosDesap: string[] = req.body.codigos_desaparecidos || [];
+    const userId = req.user?.id || null;
+
+    if (filas.length === 0) {
+      res.status(400).json({ success: false, error: 'No hay filas que importar' });
+      return;
+    }
+
+    // Cargar mapa actual de tipo 'sage'
+    const actualesR = await pool.query(`SELECT * FROM products WHERE tipo = 'sage'`);
+    const actualesMap = new Map<string, any>();
+    actualesR.rows.forEach((p: any) => actualesMap.set(p.codigo, p));
+
+    let creados = 0, actualizados = 0, descatalogados = 0;
+
+    for (const item of filas) {
+      const actual = actualesMap.get(item.codigo);
+      if (!actual) {
+        // Crear nuevo
+        await pool.query(
+          `INSERT INTO products (codigo, nombre, ean, precio_pvp, precio_pvf, categoria, familia, marca, tipo, activo)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'sage',TRUE)`,
+          [item.codigo, item.nombre, item.ean, item.precio_pvp, item.precio_pvf, item.categoria, item.familia, item.marca]
+        );
+        creados++;
+      } else {
+        // Actualizar
+        const cambioPrecio = (Number(actual.precio_pvp) !== Number(item.precio_pvp)) || (Number(actual.precio_pvf) !== Number(item.precio_pvf));
+        await pool.query(
+          `UPDATE products SET nombre=$1, ean=$2, precio_pvp=$3, precio_pvf=$4, categoria=$5, familia=$6, marca=$7, activo=TRUE, descatalogado_at=NULL, updated_at=NOW() WHERE id=$8`,
+          [item.nombre, item.ean, item.precio_pvp, item.precio_pvf, item.categoria, item.familia, item.marca, actual.id]
+        );
+        if (cambioPrecio) {
+          await pool.query(
+            `INSERT INTO product_price_history (product_id, precio_pvp_old, precio_pvp_new, precio_pvf_old, precio_pvf_new, origen, changed_by_id)
+             VALUES ($1,$2,$3,$4,$5,'import_sage',$6)`,
+            [actual.id, actual.precio_pvp, item.precio_pvp, actual.precio_pvf, item.precio_pvf, userId]
+          );
+        }
+        actualizados++;
+      }
+    }
+
+    if (descatalogar && codigosDesap.length > 0) {
+      const r = await pool.query(
+        `UPDATE products SET activo=FALSE, descatalogado_at=NOW(), updated_at=NOW()
+         WHERE codigo = ANY($1::text[]) AND tipo='sage' AND activo=TRUE`,
+        [codigosDesap]
+      );
+      descatalogados = r.rowCount || 0;
+    }
+
+    res.json({ success: true, creados, actualizados, descatalogados });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
 });
 
 // ============================================================================

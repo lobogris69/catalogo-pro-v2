@@ -2693,3 +2693,101 @@ body.con-banner-update {
     padding-top: 45px;
   }
 }
+
+/* ============================================================================
+   FASE 1 - PRODUCTOS
+   ============================================================================ */
+
+.productos-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.producto-fila {
+  display: grid;
+  grid-template-columns: 85px 110px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  background: white;
+  border: 1px solid var(--gris-borde);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.producto-fila:hover {
+  border-color: var(--rosa);
+  background: #fdf2f8;
+}
+.producto-fila-inactivo {
+  opacity: 0.55;
+}
+
+.prod-badge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+}
+.prod-badge-sage {
+  background: #dbeafe;
+  color: #1e40af;
+}
+.prod-badge-comercial {
+  background: #fef3c7;
+  color: #78350f;
+}
+
+.producto-codigo {
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+}
+
+.producto-info {
+  min-width: 0;
+}
+.producto-nombre {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.producto-meta {
+  font-size: 11px;
+  color: var(--gris-texto);
+  margin-top: 2px;
+}
+
+.producto-precios {
+  text-align: right;
+  font-size: 12px;
+}
+.producto-precio-pvp {
+  color: #16a34a;
+  font-weight: 600;
+}
+.producto-precio-pvf {
+  color: var(--rosa);
+  font-weight: 500;
+  font-size: 11px;
+}
+
+@media (max-width: 600px) {
+  .producto-fila {
+    grid-template-columns: 70px 1fr;
+    grid-template-areas:
+      "badge codigo"
+      "info info"
+      "precios precios";
+  }
+  .producto-fila .prod-badge { grid-area: badge; }
+  .producto-fila .producto-codigo { grid-area: codigo; }
+  .producto-fila .producto-info { grid-area: info; }
+  .producto-fila .producto-precios { grid-area: precios; text-align: left; }
+}

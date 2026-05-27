@@ -199,6 +199,7 @@ async function renderApp() {
         <button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>
         <button class="navtab ${appState.vista === 'planning' ? 'navtab-activa' : ''}" onclick="irA('planning')">🗓️ Planning</button>
         <button class="navtab ${appState.vista === 'mapa' ? 'navtab-activa' : ''}" onclick="irA('mapa')">🗺️ Mapa</button>
+        ${esAdmin ? `<button class="navtab ${appState.vista === 'productos' ? 'navtab-activa' : ''}" onclick="irA('productos')">📦 Productos</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'configuracion' ? 'navtab-activa' : ''}" onclick="irA('configuracion')">⚙️ Configuración</button>` : ''}
@@ -215,7 +216,7 @@ async function renderApp() {
 function routerVista() {
   // I.2: vistas que NO funcionan offline (requieren API y no tienen cache offline)
   // Clientes y Planning SÍ funcionan offline (I.3 + I-Planning) leyendo desde IndexedDB
-  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion'];
+  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion', 'productos'];
   if (!navigator.onLine && vistasOnlineOnly.includes(appState.vista)) {
     renderVistaNoDisponibleOffline(appState.vista);
     return;
@@ -235,6 +236,8 @@ function routerVista() {
     renderPlanning();
   } else if (appState.vista === 'mapa') {
     renderMapa();
+  } else if (appState.vista === 'productos') {
+    renderListaProductos();
   } else if (appState.vista === 'plantillas') {
     renderListaPlantillas();
   } else if (appState.vista === 'configuracion') {
@@ -262,7 +265,8 @@ function renderVistaNoDisponibleOffline(vista) {
     'planning': '🗓️ Planning',
     'mapa': '🗺️ Mapa',
     'plantillas': '🏷️ Plantillas',
-    'configuracion': '⚙️ Configuración'
+    'configuracion': '⚙️ Configuración',
+    'productos': '📦 Productos'
   };
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `
@@ -5715,6 +5719,484 @@ async function descargarPdfVisita(visitId) {
     }, 100);
   } catch (err) {
     alert('Error al descargar PDF: ' + err.message);
+  }
+}
+
+// ============================================================================
+// ===== FASE 1 - PRODUCTOS (catálogo maestro + importador Sage + expositores) =====
+// ============================================================================
+
+let _productosState = {
+  tipo: 'todos',       // 'todos' | 'sage' | 'comercial'
+  activo: 'true',      // 'true' | 'false' | 'todos'
+  q: '',
+  productos: [],
+  total: 0,
+  loading: false
+};
+
+async function renderListaProductos() {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `
+    <div class="contenedor">
+      <div class="titulo-pagina">
+        <div>
+          <h2>📦 Productos</h2>
+          <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+            Catálogo maestro de productos. Sirve para vincular láminas y emitir pedidos con códigos exactos.
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-pequeno" onclick="abrirModalImportarProductos()">📊 Importar Excel Sage</button>
+          <button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoProducto()">+ Nuevo (expositor/promo)</button>
+        </div>
+      </div>
+
+      <!-- Filtros -->
+      <div class="planning-filtros">
+        <div class="planning-chips-row">
+          <button class="planning-chip ${_productosState.tipo === 'todos' ? 'planning-chip-activo' : ''}" onclick="cambiarFiltroProductos('tipo','todos')">Todos los tipos</button>
+          <button class="planning-chip ${_productosState.tipo === 'sage' ? 'planning-chip-activo' : ''}" onclick="cambiarFiltroProductos('tipo','sage')">🏷️ Sage</button>
+          <button class="planning-chip ${_productosState.tipo === 'comercial' ? 'planning-chip-activo' : ''}" onclick="cambiarFiltroProductos('tipo','comercial')">🎁 Expositores/Promos</button>
+        </div>
+        <div class="planning-chips-row">
+          <button class="planning-chip ${_productosState.activo === 'true' ? 'planning-chip-activo' : ''}" onclick="cambiarFiltroProductos('activo','true')">✅ Activos</button>
+          <button class="planning-chip ${_productosState.activo === 'false' ? 'planning-chip-activo' : ''}" onclick="cambiarFiltroProductos('activo','false')">⚠️ Descatalogados</button>
+          <button class="planning-chip ${_productosState.activo === 'todos' ? 'planning-chip-activo' : ''}" onclick="cambiarFiltroProductos('activo','todos')">📋 Todos</button>
+        </div>
+        <div class="planning-inputs-row">
+          <input type="text" id="productos-q" class="planning-input" placeholder="🔍 Buscar por código, nombre, EAN, marca…" value="${escape(_productosState.q)}">
+        </div>
+      </div>
+
+      <div id="productos-resultado"><div class="loading">Cargando…</div></div>
+    </div>
+  `;
+
+  // Listener búsqueda con debounce
+  const $q = document.getElementById('productos-q');
+  if ($q) {
+    let t;
+    $q.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        _productosState.q = $q.value.trim();
+        recargarProductos();
+      }, 350);
+    });
+  }
+
+  await recargarProductos();
+}
+
+function cambiarFiltroProductos(campo, valor) {
+  _productosState[campo] = valor;
+  renderListaProductos(); // re-pinta el shell con chips actualizados
+}
+
+async function recargarProductos() {
+  const $res = document.getElementById('productos-resultado');
+  if ($res) $res.innerHTML = '<div class="loading">Cargando…</div>';
+  try {
+    const params = new URLSearchParams();
+    params.set('tipo', _productosState.tipo);
+    params.set('activo', _productosState.activo);
+    if (_productosState.q) params.set('q', _productosState.q);
+    params.set('limit', '500');
+    const r = await api('/api/products?' + params.toString());
+    _productosState.productos = r.products || [];
+    _productosState.total = r.total || 0;
+    pintarListaProductos();
+  } catch (err) {
+    if ($res) $res.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+  }
+}
+
+function pintarListaProductos() {
+  const $res = document.getElementById('productos-resultado');
+  if (!$res) return;
+  const productos = _productosState.productos;
+  const total = _productosState.total;
+
+  if (productos.length === 0) {
+    $res.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icono">📦</div>
+        <h3>${_productosState.q ? 'Sin resultados' : 'No hay productos todavía'}</h3>
+        <p>${_productosState.q
+          ? 'Prueba con otra búsqueda o cambia los filtros.'
+          : 'Importa el Excel de Sage para empezar, o crea expositores manualmente.'}</p>
+      </div>
+    `;
+    return;
+  }
+
+  const filas = productos.map(p => {
+    const badge = p.tipo === 'sage'
+      ? `<span class="prod-badge prod-badge-sage" title="Producto de Sage">🏷️ Sage</span>`
+      : `<span class="prod-badge prod-badge-comercial" title="Expositor o promo creado manualmente">🎁 Promo</span>`;
+    const inactiveCls = !p.activo ? ' producto-fila-inactivo' : '';
+    return `
+      <div class="producto-fila${inactiveCls}" onclick="abrirDetalleProducto(${p.id})">
+        ${badge}
+        <div class="producto-codigo">${escape(p.codigo)}</div>
+        <div class="producto-info">
+          <div class="producto-nombre">${escape(p.nombre)}${!p.activo ? ' <span style="color:#dc2626;font-size:11px">(descatalogado)</span>' : ''}</div>
+          <div class="producto-meta">
+            ${p.ean ? `<span>EAN: ${escape(p.ean)}</span>` : ''}
+            ${p.marca ? `<span>· ${escape(p.marca)}</span>` : ''}
+            ${p.categoria ? `<span>· ${escape(p.categoria)}</span>` : ''}
+          </div>
+        </div>
+        <div class="producto-precios">
+          ${p.precio_pvp != null ? `<div class="producto-precio-pvp">PVP ${Number(p.precio_pvp).toFixed(2)}€</div>` : ''}
+          ${p.precio_pvf != null ? `<div class="producto-precio-pvf">PVF ${Number(p.precio_pvf).toFixed(2)}€</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  $res.innerHTML = `
+    <div style="font-size:13px;color:var(--gris-texto);margin-bottom:8px">
+      ${productos.length}${total > productos.length ? '/' + total : ''} productos
+    </div>
+    <div class="productos-lista">${filas}</div>
+  `;
+}
+
+// Modal de detalle/edición de producto
+async function abrirDetalleProducto(id) {
+  try {
+    const r = await api('/api/products/' + id);
+    const p = r.product;
+    const history = r.price_history || [];
+    const esExpositor = p.tipo === 'comercial';
+    const modal = document.createElement('div');
+    modal.className = 'modal-bg';
+    modal.innerHTML = `
+      <div class="modal-card modal-card-ancho">
+        <div class="modal-header">
+          <h3>${esExpositor ? '🎁' : '🏷️'} ${escape(p.nombre)}</h3>
+          <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+        </div>
+        <div class="form-group">
+          <label>Código ${esExpositor ? '(interno)' : 'Sage'}</label>
+          <input type="text" id="prod-codigo" value="${escape(p.codigo)}" ${!esExpositor ? 'readonly' : ''}>
+        </div>
+        <div class="form-group">
+          <label>Nombre completo</label>
+          <input type="text" id="prod-nombre" value="${escape(p.nombre)}">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="form-group">
+            <label>EAN / Cód. nacional</label>
+            <input type="text" id="prod-ean" value="${escape(p.ean || '')}">
+          </div>
+          <div class="form-group">
+            <label>Marca</label>
+            <input type="text" id="prod-marca" value="${escape(p.marca || '')}">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="form-group">
+            <label>PVP (€)</label>
+            <input type="number" step="0.01" id="prod-pvp" value="${p.precio_pvp || ''}">
+          </div>
+          <div class="form-group">
+            <label>PVF / PVL (€)</label>
+            <input type="number" step="0.01" id="prod-pvf" value="${p.precio_pvf || ''}">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="form-group">
+            <label>Categoría</label>
+            <input type="text" id="prod-categoria" value="${escape(p.categoria || '')}">
+          </div>
+          <div class="form-group">
+            <label>Familia</label>
+            <input type="text" id="prod-familia" value="${escape(p.familia || '')}">
+          </div>
+        </div>
+        ${esExpositor ? `
+          <div class="form-group">
+            <label>Notas para administración <span style="color:var(--gris-texto);font-weight:normal">(opcional)</span></label>
+            <textarea id="prod-notas-admin" rows="2" placeholder="Ej: Equivale a 24 unidades del código Sage 12345">${escape(p.notas_admin || '')}</textarea>
+          </div>
+        ` : ''}
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="prod-activo" ${p.activo ? 'checked' : ''}>
+            Activo
+          </label>
+        </div>
+
+        ${history.length > 0 ? `
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--gris-borde)">
+            <h4 style="margin:0 0 8px">📈 Historial de cambios de precio</h4>
+            <div style="max-height:160px;overflow-y:auto;font-size:12px">
+              ${history.map(h => `
+                <div style="padding:6px 0;border-bottom:1px solid #f3f4f6">
+                  📅 ${escape(new Date(h.changed_at).toLocaleString('es-ES'))} · ${escape(h.origen)}
+                  ${h.precio_pvp_old != null || h.precio_pvp_new != null ? `<br>PVP: ${h.precio_pvp_old != null ? Number(h.precio_pvp_old).toFixed(2) + '€' : '—'} → ${h.precio_pvp_new != null ? Number(h.precio_pvp_new).toFixed(2) + '€' : '—'}` : ''}
+                  ${h.precio_pvf_old != null || h.precio_pvf_new != null ? `<br>PVF: ${h.precio_pvf_old != null ? Number(h.precio_pvf_old).toFixed(2) + '€' : '—'} → ${h.precio_pvf_new != null ? Number(h.precio_pvf_new).toFixed(2) + '€' : '—'}` : ''}
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+
+        <div id="prod-error"></div>
+        <div class="modal-acciones">
+          <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+          <button class="btn btn-primary" onclick="guardarProducto(${p.id})">💾 Guardar</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+async function guardarProducto(id) {
+  const $err = document.getElementById('prod-error');
+  $err.innerHTML = '';
+  try {
+    const body = {
+      codigo: document.getElementById('prod-codigo').value.trim(),
+      nombre: document.getElementById('prod-nombre').value.trim(),
+      ean: document.getElementById('prod-ean').value.trim() || null,
+      precio_pvp: document.getElementById('prod-pvp').value || null,
+      precio_pvf: document.getElementById('prod-pvf').value || null,
+      categoria: document.getElementById('prod-categoria').value.trim() || null,
+      familia: document.getElementById('prod-familia').value.trim() || null,
+      marca: document.getElementById('prod-marca').value.trim() || null,
+      activo: document.getElementById('prod-activo').checked
+    };
+    const $notas = document.getElementById('prod-notas-admin');
+    if ($notas) body.notas_admin = $notas.value.trim() || null;
+    await api('/api/products/' + id, { method: 'PUT', body });
+    // Cerrar modal y recargar
+    document.querySelector('.modal-bg').remove();
+    recargarProductos();
+    mostrarNotificacionOnline('✅ Producto actualizado', '#16a34a');
+  } catch (err) {
+    $err.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+  }
+}
+
+function abrirModalNuevoProducto() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card modal-card-ancho">
+      <div class="modal-header">
+        <h3>🎁 Nuevo expositor / promo</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p style="font-size:13px;color:var(--gris-texto);margin-bottom:12px">
+        Crea un producto que <b>no está en Sage</b> (típicamente expositores, packs promocionales, etc.). Define un código interno único.
+      </p>
+      <div class="form-group">
+        <label>Código interno *</label>
+        <input type="text" id="new-prod-codigo" placeholder="Ej: EXPO-GEL-24" required>
+        <small style="color:var(--gris-texto)">Algo único que identifique este producto en la app. Sugerencia: EXPO-XXX o PROMO-XXX.</small>
+      </div>
+      <div class="form-group">
+        <label>Nombre completo *</label>
+        <input type="text" id="new-prod-nombre" placeholder="Ej: EXPOSITOR PROMO GEL hidratante 24 uds (24+6)" required>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="form-group">
+          <label>PVP orientativo (€)</label>
+          <input type="number" step="0.01" id="new-prod-pvp">
+        </div>
+        <div class="form-group">
+          <label>PVF / PVL (€)</label>
+          <input type="number" step="0.01" id="new-prod-pvf">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Notas para administración <span style="color:var(--gris-texto);font-weight:normal">(opcional)</span></label>
+        <textarea id="new-prod-notas-admin" rows="2" placeholder="Ej: Equivale a 24 unidades del código Sage 12345"></textarea>
+      </div>
+      <div id="new-prod-error"></div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="crearNuevoProducto()">+ Crear</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  setTimeout(() => document.getElementById('new-prod-codigo').focus(), 50);
+}
+
+async function crearNuevoProducto() {
+  const $err = document.getElementById('new-prod-error');
+  $err.innerHTML = '';
+  const codigo = document.getElementById('new-prod-codigo').value.trim();
+  const nombre = document.getElementById('new-prod-nombre').value.trim();
+  if (!codigo || !nombre) {
+    $err.innerHTML = `<div class="error-msg">Código y nombre son obligatorios.</div>`;
+    return;
+  }
+  try {
+    await api('/api/products', {
+      method: 'POST',
+      body: {
+        codigo,
+        nombre,
+        precio_pvp: document.getElementById('new-prod-pvp').value || null,
+        precio_pvf: document.getElementById('new-prod-pvf').value || null,
+        notas_admin: document.getElementById('new-prod-notas-admin').value.trim() || null,
+        tipo: 'comercial'
+      }
+    });
+    document.querySelector('.modal-bg').remove();
+    recargarProductos();
+    mostrarNotificacionOnline('✅ Producto creado', '#16a34a');
+  } catch (err) {
+    $err.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+  }
+}
+
+// Modal de importación Excel Sage con PRE-REVISIÓN
+function abrirModalImportarProductos() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card modal-card-ancho">
+      <div class="modal-header">
+        <h3>📊 Importar Excel de Sage</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p style="font-size:13px;color:var(--gris-texto);margin-bottom:12px">
+        Sube el Excel exportado de Sage con tus productos. Antes de aplicar nada, te enseñaré un <b>resumen</b> de qué va a cambiar.
+      </p>
+      <p style="font-size:12px;color:var(--gris-texto);margin-bottom:12px">
+        El sistema detecta automáticamente columnas con nombres tipo: <code>codigo, nombre, ean, pvp, pvf, categoria, familia, marca</code>.
+      </p>
+      <div class="form-group">
+        <label>Archivo Excel (.xlsx)</label>
+        <input type="file" id="excel-prod-file" accept=".xlsx,.xls">
+      </div>
+      <div id="imp-prod-msg"></div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="subirExcelProductosPreview()">📋 Analizar Excel</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function subirExcelProductosPreview() {
+  const $msg = document.getElementById('imp-prod-msg');
+  const file = document.getElementById('excel-prod-file').files[0];
+  if (!file) {
+    $msg.innerHTML = `<div class="error-msg">Selecciona un archivo Excel.</div>`;
+    return;
+  }
+  $msg.innerHTML = `<div class="loading">Analizando Excel…</div>`;
+  try {
+    const fd = new FormData();
+    fd.append('excel', file);
+    const token = localStorage.getItem('cpv2_token');
+    const resp = await fetch('/api/products/import-preview', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token },
+      body: fd
+    });
+    const r = await resp.json();
+    if (!r.success) throw new Error(r.error || 'Error en el análisis');
+    mostrarPreviewImportProductos(r.preview);
+  } catch (err) {
+    $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+  }
+}
+
+function mostrarPreviewImportProductos(preview) {
+  // Cerrar modal anterior y mostrar pre-revisión
+  document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+  // Guardar payload para usarlo al confirmar
+  window._importProductosPayload = {
+    filas: preview.filas_payload,
+    codigos_desaparecidos: preview.codigos_desaparecidos
+  };
+
+  const cps = preview.cambios_precio_significativos || [];
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card modal-card-ancho">
+      <div class="modal-header">
+        <h3>📊 Pre-revisión de importación</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+
+      <div style="background:#f9fafb;padding:14px;border-radius:8px;margin-bottom:14px;font-size:13px">
+        <div style="font-weight:600;margin-bottom:8px">📋 Resumen</div>
+        <div>📄 Total productos en el Excel: <b>${preview.total_excel}</b></div>
+        <div>🆕 Nuevos a crear: <b style="color:#16a34a">${preview.nuevos}</b></div>
+        <div>🔄 A actualizar: <b style="color:#d97706">${preview.actualizaciones}</b></div>
+        <div>= Sin cambios: <b style="color:#6b7280">${preview.sin_cambio}</b></div>
+        <div>👻 Desaparecidos (estaban antes, ya no): <b style="color:#dc2626">${preview.desaparecidos}</b></div>
+      </div>
+
+      ${cps.length > 0 ? `
+        <div style="background:#fef3c7;border:1px solid #fcd34d;padding:12px;border-radius:8px;margin-bottom:14px;font-size:13px">
+          <div style="font-weight:600;margin-bottom:6px;color:#78350f">⚠️ Cambios de precio significativos (>20%)</div>
+          <div style="max-height:160px;overflow-y:auto">
+            ${cps.map(c => `
+              <div style="padding:4px 0;border-bottom:1px solid #fcd34d">
+                <b>${escape(c.codigo)}</b> ${escape(c.nombre)}<br>
+                <span style="color:#78350f">${Number(c.pvp_old).toFixed(2)}€ → ${Number(c.pvp_new).toFixed(2)}€ (${c.pct}%)</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      ${preview.desaparecidos > 0 ? `
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="imp-descatalogar" checked>
+            <b>Descatalogar</b> los ${preview.desaparecidos} productos que ya no están en el Excel
+            <br><small style="color:var(--gris-texto);margin-left:24px">(No se borran. Quedan marcados como inactivos. Anotaciones antiguas siguen funcionando.)</small>
+          </label>
+        </div>
+      ` : ''}
+
+      <div id="imp-prod-confirm-msg"></div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="confirmarImportProductos()">✅ Aplicar cambios</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function confirmarImportProductos() {
+  const $msg = document.getElementById('imp-prod-confirm-msg');
+  $msg.innerHTML = '<div class="loading">Aplicando cambios…</div>';
+  try {
+    const payload = window._importProductosPayload;
+    if (!payload) throw new Error('Datos perdidos. Vuelve a subir el Excel.');
+    const descatalogar = document.getElementById('imp-descatalogar');
+    const body = {
+      filas: payload.filas,
+      codigos_desaparecidos: payload.codigos_desaparecidos,
+      descatalogar_desaparecidos: descatalogar ? descatalogar.checked : false
+    };
+    const r = await api('/api/products/import-confirm', { method: 'POST', body });
+    document.querySelector('.modal-bg').remove();
+    window._importProductosPayload = null;
+    mostrarNotificacionOnline(`✅ ${r.creados} creados · ${r.actualizados} actualizados · ${r.descatalogados} descatalogados`, '#16a34a');
+    recargarProductos();
+  } catch (err) {
+    $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
   }
 }
 
