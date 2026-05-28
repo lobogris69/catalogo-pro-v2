@@ -613,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fase2d-emails-pdf-tabla-28may',
+    build: 'mosaico-reordenar-28may',
     service: 'CatalogPRO v2'
   });
 });

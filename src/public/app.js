@@ -538,6 +538,7 @@ async function renderEditorCatalogo(id) {
           ${esAdmin ? `
             <div style="display:flex;gap:6px;align-self:flex-start;flex-wrap:wrap">
               <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
+              ${sheets.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="borrarTodasLaminas(${id}, ${sheets.length})">🗑️ Borrar todas</button>` : ''}
             </div>
@@ -7166,6 +7167,132 @@ async function abrirModalCrearProductoVuelo(nombreSugerido, alCrear) {
       $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
     }
   });
+}
+
+// ============================================================================
+// MOSAICO — reordenar láminas visualmente (cuadrícula drag&drop, elimina PowerPoint)
+// ============================================================================
+let _mosaicoCatalogId = null;
+let _mosaicoSheets = [];
+let _mosaicoCambios = false;
+
+async function abrirMosaicoLaminas(catalogId) {
+  _mosaicoCatalogId = catalogId;
+  _mosaicoCambios = false;
+  let sheets = [];
+  try {
+    const r = await api('/api/catalogs/' + catalogId);
+    sheets = r.sheets || [];
+  } catch (e) {
+    alert('Error cargando láminas: ' + e.message);
+    return;
+  }
+  _mosaicoSheets = sheets;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'mosaico-overlay';
+  overlay.id = 'mosaico-overlay';
+  overlay.innerHTML = `
+    <div class="mosaico-header">
+      <div>
+        <b>🔲 Reordenar catálogo</b>
+        <span style="color:#9ca3af;font-size:13px">${sheets.length} láminas · arrastra para reordenar</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="mosaico-estado" style="font-size:12px;color:#9ca3af"></span>
+        <button class="btn btn-secondary" onclick="cerrarMosaico()">Cerrar</button>
+      </div>
+    </div>
+    <div class="mosaico-ayuda">
+      ✋ Arrastra las láminas para cambiar el orden. Los cambios se guardan automáticamente.
+    </div>
+    <div class="mosaico-grid" id="mosaico-grid"></div>
+  `;
+  document.body.appendChild(overlay);
+  pintarMosaico();
+}
+
+function pintarMosaico() {
+  const grid = document.getElementById('mosaico-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  _mosaicoSheets.forEach((s, idx) => {
+    const card = document.createElement('div');
+    card.className = 'mosaico-card';
+    card.draggable = true;
+    card.dataset.id = s.id;
+    card.innerHTML = `
+      <div class="mosaico-num">${idx + 1}</div>
+      <img src="${escape(s.imagen_path)}" class="mosaico-img" alt="" loading="lazy"
+           onerror="this.style.background='#374151'">
+      <div class="mosaico-titulo">${escape(s.titulo || 'Sin título')}</div>
+    `;
+    grid.appendChild(card);
+  });
+  activarDragDropMosaico();
+}
+
+function activarDragDropMosaico() {
+  const grid = document.getElementById('mosaico-grid');
+  if (!grid) return;
+  let arrastrando = null;
+
+  grid.querySelectorAll('.mosaico-card').forEach(card => {
+    card.addEventListener('dragstart', (e) => {
+      arrastrando = card;
+      card.classList.add('mosaico-arrastrando');
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', String(card.dataset.id || '')); } catch(_) {}
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('mosaico-arrastrando');
+      if (_mosaicoCambios) guardarOrdenMosaico();
+    });
+    card.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (!arrastrando || arrastrando === card) return;
+      const rect = card.getBoundingClientRect();
+      const despues = (e.clientY - rect.top) > rect.height / 2 || (e.clientX - rect.left) > rect.width / 2;
+      if (despues) {
+        card.parentNode.insertBefore(arrastrando, card.nextSibling);
+      } else {
+        card.parentNode.insertBefore(arrastrando, card);
+      }
+      _mosaicoCambios = true;
+      Array.from(grid.querySelectorAll('.mosaico-card')).forEach((c, i) => {
+        const n = c.querySelector('.mosaico-num');
+        if (n) n.textContent = String(i + 1);
+      });
+    });
+  });
+}
+
+async function guardarOrdenMosaico() {
+  _mosaicoCambios = false;
+  const grid = document.getElementById('mosaico-grid');
+  const ids = Array.from(grid.querySelectorAll('.mosaico-card')).map(c => Number(c.dataset.id));
+  const $estado = document.getElementById('mosaico-estado');
+  if ($estado) $estado.textContent = 'Guardando…';
+  try {
+    await api(`/api/catalogs/${_mosaicoCatalogId}/sheets/reorder`, {
+      method: 'PUT',
+      body: { sheet_ids: ids }
+    });
+    if ($estado) {
+      $estado.textContent = '✓ Orden guardado';
+      setTimeout(() => { if ($estado) $estado.textContent = ''; }, 1500);
+    }
+    _mosaicoSheets.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+  } catch (err) {
+    if ($estado) $estado.textContent = '';
+    alert('Error guardando orden: ' + err.message);
+  }
+}
+
+function cerrarMosaico() {
+  const ov = document.getElementById('mosaico-overlay');
+  if (ov) ov.remove();
+  if (_mosaicoCatalogId) renderEditorCatalogo(_mosaicoCatalogId);
 }
 
 // ===== ARRANQUE =====
