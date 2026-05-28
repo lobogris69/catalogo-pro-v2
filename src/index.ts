@@ -613,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fase2c2-modal-zona-28may',
+    build: 'fase2d-emails-pdf-tabla-28may',
     service: 'CatalogPRO v2'
   });
 });
@@ -3621,9 +3621,12 @@ async function cargarDatosVisitaCompleta(visitId: number) {
   if (v.rows.length === 0) return null;
   const visit = v.rows[0];
   const anots = await pool.query(`
-    SELECT a.*, s.titulo AS sheet_titulo, s.orden AS sheet_orden, s.tags AS sheet_tags
+    SELECT a.*, s.titulo AS sheet_titulo, s.orden AS sheet_orden, s.tags AS sheet_tags,
+           p.codigo AS producto_codigo, p.nombre AS producto_nombre,
+           p.ean AS producto_ean, p.precio_pvf AS producto_pvf
     FROM annotations a
     LEFT JOIN sheets s ON s.id = a.sheet_id
+    LEFT JOIN products p ON p.id = a.product_id
     WHERE a.visit_id = $1
     ORDER BY a.orden_en_visita, a.id`, [visitId]);
   return { visit, annotations: anots.rows };
@@ -3691,17 +3694,67 @@ function generarPdfVisitaBuffer(visit: any, annotations: any[]): Promise<Buffer>
         if (items.length === 0) return;
         if (doc.y > 720) doc.addPage();
         doc.font('Helvetica-Bold').fontSize(11).fillColor(color).text(titulo);
-        doc.font('Helvetica').fontSize(10).fillColor('#000');
-        doc.moveDown(0.2);
-        items.forEach((a: any) => {
-          if (doc.y > 770) doc.addPage();
-          const num = a.sheet_orden ? `Lám.${a.sheet_orden}` : '—';
-          const tit = a.sheet_titulo ? ` · ${a.sheet_titulo}` : '';
-          doc.font('Helvetica-Bold').text(`• ${num}${tit}`);
-          doc.font('Helvetica').fillColor('#222').text(`    ${a.texto_libre}`);
-          doc.fillColor('#000');
+        doc.moveDown(0.3);
+
+        // Separar items CON producto (tabla) de los de solo texto libre
+        const conProducto = items.filter((a: any) => a.product_id);
+        const sinProducto = items.filter((a: any) => !a.product_id);
+
+        // ---- TABLA de productos ----
+        if (conProducto.length > 0) {
+          const x0 = 40;
+          const colCod = x0;
+          const colNom = x0 + 75;
+          const colCant = x0 + 320;
+          const colPvf = x0 + 375;
+          const colSub = x0 + 455;
+          doc.font('Helvetica-Bold').fontSize(8).fillColor('#666');
+          let yH = doc.y;
+          doc.text('CÓDIGO', colCod, yH);
+          doc.text('PRODUCTO', colNom, yH);
+          doc.text('CANT', colCant, yH);
+          doc.text('PVF', colPvf, yH);
+          doc.text('SUBTOTAL', colSub, yH);
           doc.moveDown(0.2);
-        });
+          doc.strokeColor('#ddd').lineWidth(0.5).moveTo(x0, doc.y).lineTo(555, doc.y).stroke();
+          doc.moveDown(0.2);
+
+          let totalGrupo = 0;
+          conProducto.forEach((a: any) => {
+            if (doc.y > 770) doc.addPage();
+            const cant = a.cantidad || 0;
+            const pvf = a.producto_pvf != null ? Number(a.producto_pvf) : null;
+            const sub = (pvf != null && cant) ? pvf * cant : null;
+            if (sub != null) totalGrupo += sub;
+            const yR = doc.y;
+            doc.font('Helvetica-Bold').fontSize(9).fillColor('#000').text(String(a.producto_codigo || '—'), colCod, yR, { width: 72 });
+            doc.font('Helvetica').fontSize(8).text(String(a.producto_nombre || '').substring(0, 60), colNom, yR, { width: 240 });
+            doc.fontSize(9).text(cant ? String(cant) : '—', colCant, yR, { width: 50 });
+            doc.text(pvf != null ? pvf.toFixed(2) + '€' : '—', colPvf, yR, { width: 75 });
+            doc.text(sub != null ? sub.toFixed(2) + '€' : '—', colSub, yR, { width: 95 });
+            doc.moveDown(0.5);
+          });
+          doc.strokeColor('#ddd').lineWidth(0.5).moveTo(x0, doc.y).lineTo(555, doc.y).stroke();
+          doc.moveDown(0.2);
+          doc.font('Helvetica-Bold').fontSize(9).fillColor(color)
+             .text('TOTAL PVF: ' + totalGrupo.toFixed(2) + '€', x0, doc.y, { width: 510, align: 'right' });
+          doc.fillColor('#000');
+          doc.moveDown(0.5);
+        }
+
+        // ---- Items de texto libre (sin producto) ----
+        if (sinProducto.length > 0) {
+          doc.font('Helvetica').fontSize(10).fillColor('#000');
+          sinProducto.forEach((a: any) => {
+            if (doc.y > 770) doc.addPage();
+            const num = a.sheet_orden ? `Lám.${a.sheet_orden}` : '—';
+            const tit = a.sheet_titulo ? ` · ${a.sheet_titulo}` : '';
+            doc.font('Helvetica-Bold').text(`• ${num}${tit}`);
+            doc.font('Helvetica').fillColor('#222').text(`    ${a.texto_libre}`);
+            doc.fillColor('#000');
+            doc.moveDown(0.2);
+          });
+        }
         doc.moveDown(0.4);
       };
 
@@ -3874,17 +3927,65 @@ function plantillaEmailOficina(visit: any, annotations: any[], cfg: Record<strin
   const nots = annotations.filter((a: any) => a.tipo === 'nota');
   const grupo = (titulo: string, items: any[], color: string) => {
     if (items.length === 0) return '';
-    return `
-      <h3 style="color:${color};margin-top:18px;margin-bottom:6px;font-size:15px">${titulo} (${items.length})</h3>
-      <ul style="margin:0;padding-left:20px;font-size:14px;line-height:1.6">
-        ${items.map((a: any) => `
-          <li>
-            <b>${a.sheet_orden ? 'Lám.' + a.sheet_orden : '—'}${a.sheet_titulo ? ' · ' + escapeHtml(a.sheet_titulo) : ''}</b><br>
-            <span style="color:#444">${escapeHtml(a.texto_libre)}</span>
-          </li>
-        `).join('')}
-      </ul>
-    `;
+    const conProducto = items.filter((a: any) => a.product_id);
+    const sinProducto = items.filter((a: any) => !a.product_id);
+    let html = `<h3 style="color:${color};margin-top:18px;margin-bottom:6px;font-size:15px">${titulo} (${items.length})</h3>`;
+
+    // Tabla de productos
+    if (conProducto.length > 0) {
+      let total = 0;
+      html += `
+        <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:10px">
+          <thead>
+            <tr style="background:#f3f4f6;text-align:left">
+              <th style="padding:6px 8px;border-bottom:2px solid ${color}">Código</th>
+              <th style="padding:6px 8px;border-bottom:2px solid ${color}">Producto</th>
+              <th style="padding:6px 8px;border-bottom:2px solid ${color};text-align:center">Cant</th>
+              <th style="padding:6px 8px;border-bottom:2px solid ${color};text-align:right">PVF</th>
+              <th style="padding:6px 8px;border-bottom:2px solid ${color};text-align:right">Subtotal</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${conProducto.map((a: any) => {
+              const cant = a.cantidad || 0;
+              const pvf = a.producto_pvf != null ? Number(a.producto_pvf) : null;
+              const sub = (pvf != null && cant) ? pvf * cant : null;
+              if (sub != null) total += sub;
+              return `
+                <tr>
+                  <td style="padding:6px 8px;border-bottom:1px solid #eee"><b>${escapeHtml(a.producto_codigo || '—')}</b></td>
+                  <td style="padding:6px 8px;border-bottom:1px solid #eee">${escapeHtml(a.producto_nombre || '')}</td>
+                  <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center">${cant || '—'}</td>
+                  <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right">${pvf != null ? pvf.toFixed(2) + '€' : '—'}</td>
+                  <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right">${sub != null ? sub.toFixed(2) + '€' : '—'}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="4" style="padding:8px;text-align:right;font-weight:bold;color:${color}">TOTAL PVF:</td>
+              <td style="padding:8px;text-align:right;font-weight:bold;color:${color}">${total.toFixed(2)}€</td>
+            </tr>
+          </tfoot>
+        </table>
+      `;
+    }
+
+    // Items de texto libre
+    if (sinProducto.length > 0) {
+      html += `
+        <ul style="margin:0;padding-left:20px;font-size:14px;line-height:1.6">
+          ${sinProducto.map((a: any) => `
+            <li>
+              <b>${a.sheet_orden ? 'Lám.' + a.sheet_orden : '—'}${a.sheet_titulo ? ' · ' + escapeHtml(a.sheet_titulo) : ''}</b><br>
+              <span style="color:#444">${escapeHtml(a.texto_libre)}</span>
+            </li>
+          `).join('')}
+        </ul>
+      `;
+    }
+    return html;
   };
   return `
     <div style="font-family:Arial,sans-serif;color:#222;max-width:680px">
