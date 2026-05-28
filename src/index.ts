@@ -600,7 +600,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fase2b-crear-producto-vuelo-28may',
+    build: 'fase2c1-zonas-comercial-28may',
     service: 'CatalogPRO v2'
   });
 });

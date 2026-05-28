@@ -3091,3 +3091,32 @@ body.con-banner-update {
   border-top: 1px solid #dbeafe;
 }
 .ac-crear:hover { background: #dbeafe; }
+
+/* ============================================================================
+   FASE 2.c' — Zonas clicables del comercial (E3: invisibles, iluminan al tocar)
+   ============================================================================ */
+.visor-zonas-capa {
+  position: absolute;
+  inset: 0;
+  pointer-events: none; /* la capa no bloquea; solo las zonas individuales */
+}
+.visor-zona {
+  position: absolute;
+  pointer-events: auto;   /* la zona SÍ es clicable */
+  cursor: pointer;
+  border: 2px solid transparent;
+  background: transparent;
+  border-radius: 4px;
+  transition: background 0.3s ease, border-color 0.3s ease;
+  box-sizing: border-box;
+}
+/* E3: cuando se ilumina la capa (al tocar la lámina), las zonas se hacen visibles */
+.visor-zonas-iluminadas .visor-zona {
+  border-color: rgba(14, 165, 233, 0.9);
+  background: rgba(14, 165, 233, 0.22);
+  animation: zonaPulso 0.6s ease;
+}
+@keyframes zonaPulso {
+  0% { background: rgba(14, 165, 233, 0.45); }
+  100% { background: rgba(14, 165, 233, 0.22); }
+}

@@ -2208,6 +2208,7 @@ function pintarPresentacion(visibles) {
           <div class="visor-imagen-wrapper" id="visor-imagen-wrapper" data-sheet-id="${sheet.id}">
             <img src="${escape(sheet.imagen_path)}" class="visor-imagen" id="visor-imagen" alt="${escape(sheet.titulo || '')}" draggable="false">
             ${pins}
+            <div class="visor-zonas-capa" id="visor-zonas-capa"></div>
           </div>
         </div>
         ${appState.visorZoom > 1 ? `
@@ -2454,6 +2455,69 @@ function engancharGestosPresentacion() {
 
   // B7: Long-press sobre la imagen para crear pin de anotación (solo si hay visita activa)
   engancharLongPressParaPin();
+  // Fase 2.c': cargar y pintar las zonas clicables de productos (solo en visita)
+  if (appState.visitaActiva) {
+    cargarZonasComercial();
+  }
+}
+
+// ============================================================================
+// FASE 2.c' — COMERCIAL pulsa zonas de productos
+// ============================================================================
+let _zonasComercial = []; // zonas de la lámina actual en el visor
+
+async function cargarZonasComercial() {
+  const $wrapper = document.getElementById('visor-imagen-wrapper');
+  if (!$wrapper) return;
+  const sheetId = Number($wrapper.dataset.sheetId);
+  if (!sheetId) return;
+  // origen_sheet_id: si es lámina espejo de express, las zonas están en la lámina maestra.
+  // Pero el endpoint usa el sheet_id directo; las zonas se definen en el maestro y el
+  // visor del comercial muestra la lámina del maestro vía JOIN, así que el id ya es correcto.
+  try {
+    const r = await api('/api/sheets/' + sheetId + '/zones');
+    _zonasComercial = (r.zones || []).filter(z => z.product_id); // solo zonas con producto
+    pintarZonasComercial();
+  } catch (e) {
+    _zonasComercial = [];
+  }
+}
+
+function pintarZonasComercial() {
+  const capa = document.getElementById('visor-zonas-capa');
+  if (!capa) return;
+  capa.innerHTML = '';
+  _zonasComercial.forEach((z) => {
+    const div = document.createElement('div');
+    div.className = 'visor-zona';
+    div.style.left = z.x + '%';
+    div.style.top = z.y + '%';
+    div.style.width = z.ancho + '%';
+    div.style.height = z.alto + '%';
+    div.dataset.zoneId = z.id;
+    div.addEventListener('click', (e) => {
+      e.stopPropagation();
+      pulsarZonaComercial(z);
+    });
+    capa.appendChild(div);
+  });
+}
+
+// E3: iluminar brevemente las zonas al tocar la lámina, luego desvanecer
+function iluminarZonas() {
+  const capa = document.getElementById('visor-zonas-capa');
+  if (!capa) return;
+  if (_zonasComercial.length === 0) return;
+  capa.classList.add('visor-zonas-iluminadas');
+  clearTimeout(window._zonasIluminarTimer);
+  window._zonasIluminarTimer = setTimeout(() => {
+    capa.classList.remove('visor-zonas-iluminadas');
+  }, 1500);
+}
+
+function pulsarZonaComercial(zona) {
+  // (2.c'-2) Por ahora solo avisamos; el modal con producto+cantidad viene en el siguiente bloque
+  mostrarNotificacionOnline('🎯 Zona: ' + (zona.producto_codigo || '') + ' · ' + (zona.producto_nombre || ''), '#0ea5e9');
 }
 
 // B7: ----- LONG-PRESS para crear PIN sobre la lámina -----
@@ -2481,6 +2545,8 @@ function engancharLongPressParaPin() {
     pressStartX = clientX;
     pressStartY = clientY;
     pressed = true;
+    // Fase 2.c' E3: iluminar brevemente las zonas al tocar la lámina
+    iluminarZonas();
     pressTimer = setTimeout(() => {
       if (!pressed) return;
       // Vibración como feedback haptico (si soportado)
@@ -2510,8 +2576,9 @@ function engancharLongPressParaPin() {
   $wrapper.addEventListener('touchstart', (e) => {
     // Solo si 1 dedo (multitouch = pinch, no nos interesa)
     if (e.touches.length !== 1) { cancelar(); return; }
-    // Si toca un pin existente, no crear nuevo
+    // Si toca un pin o una zona existente, no crear nuevo pin
     if (e.target.closest('.visor-pin')) return;
+    if (e.target.closest('.visor-zona')) return;
     iniciar(e.touches[0].clientX, e.touches[0].clientY);
   }, { passive: true });
 
@@ -2530,6 +2597,7 @@ function engancharLongPressParaPin() {
   $wrapper.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return; // solo botón izquierdo
     if (e.target.closest('.visor-pin')) return;
+    if (e.target.closest('.visor-zona')) return;
     iniciar(e.clientX, e.clientY);
   });
   $wrapper.addEventListener('mousemove', (e) => mover(e.clientX, e.clientY));
