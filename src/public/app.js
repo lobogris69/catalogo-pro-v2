@@ -5607,26 +5607,326 @@ function abrirVisitaActiva() {
   render();
 }
 
-// ----- CERRAR VISITA ACTIVA (confirmar) -----
+// ----- CERRAR VISITA ACTIVA — abre primero el RESUMEN PRE-ENVÍO (M2/N2/O3) -----
 async function cerrarVisitaActiva() {
   if (!appState.visitaActiva) return;
-  const notas = prompt('Notas generales de la visita (opcional):', '');
-  if (notas === null) return; // canceló
-  try {
-    await api('/api/visits/' + appState.visitaActiva.id + '/confirm', {
-      method: 'POST',
-      body: { notas_generales: notas || '' }
+  await abrirResumenPreEnvio();
+}
+
+// Resumen pre-envío: tabla editable de productos + nota general + email cliente + opciones
+async function abrirResumenPreEnvio() {
+  const visitId = appState.visitaActiva.id;
+
+  // Recopilar TODAS las anotaciones de la visita desde memoria local
+  let anotaciones = [];
+  Object.keys(_anotacionesVisita).forEach(sid => {
+    (_anotacionesVisita[sid] || []).forEach(a => {
+      anotaciones.push({ ...a, sheet_orden: a.sheet_orden });
     });
-    const visitaId = appState.visitaActiva.id;
+  });
+  // Ordenar por orden_en_visita
+  anotaciones.sort((x, y) => (x.orden_en_visita || 0) - (y.orden_en_visita || 0));
+
+  // Cargar info del cliente
+  let cliente = null;
+  try {
+    const rc = await api('/api/clients/' + appState.visitaActiva.client_id);
+    cliente = rc.client || null;
+  } catch (e) {
+    alert('Error cargando cliente: ' + e.message);
+    return;
+  }
+
+  // Cargar info de producto para cada anotación que tiene product_id
+  const idsProductos = [...new Set(anotaciones.filter(a => a.product_id).map(a => a.product_id))];
+  const mapaProductos = {};
+  if (idsProductos.length > 0) {
+    for (const pid of idsProductos) {
+      try {
+        const rp = await api('/api/products/' + pid);
+        if (rp.product) mapaProductos[pid] = rp.product;
+      } catch (_) {}
+    }
+  }
+  anotaciones.forEach(a => {
+    if (a.product_id && mapaProductos[a.product_id]) {
+      a.producto_codigo = mapaProductos[a.product_id].codigo;
+      a.producto_nombre = mapaProductos[a.product_id].nombre;
+      a.producto_pvf = mapaProductos[a.product_id].precio_pvf;
+    }
+  });
+
+  // Guardar estado del resumen
+  _resumenPreEnvio = {
+    visitId,
+    anotaciones,
+    cliente,
+    noEnviarCliente: false
+  };
+  renderResumenPreEnvio();
+}
+
+let _resumenPreEnvio = null;
+
+function renderResumenPreEnvio() {
+  document.querySelectorAll('.resumen-preenvio-overlay').forEach(o => o.remove());
+  const { anotaciones, cliente } = _resumenPreEnvio;
+
+  const conProducto = anotaciones.filter(a => a.product_id);
+  const sinProducto = anotaciones.filter(a => !a.product_id);
+  let totalPVF = 0;
+  conProducto.forEach(a => {
+    const cant = Number(a.cantidad) || 0;
+    const pvf = a.producto_pvf != null ? Number(a.producto_pvf) : 0;
+    totalPVF += cant * pvf;
+  });
+
+  const emailClienteActual = _resumenPreEnvio.cliente?.email || '';
+  const emailClienteOverride = _resumenPreEnvio.emailClienteOverride;
+  const valorEmailCliente = emailClienteOverride !== undefined ? emailClienteOverride : emailClienteActual;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'resumen-preenvio-overlay';
+  overlay.innerHTML = `
+    <div class="resumen-preenvio-header">
+      <div>
+        <b>📋 Revisar antes de enviar</b>
+        <span style="color:#9ca3af;font-size:13px"> · ${escape(cliente?.razon_social || 'Cliente')}</span>
+      </div>
+      <button class="btn btn-secondary" onclick="cerrarResumenPreEnvio()">← Volver al visor</button>
+    </div>
+
+    <div class="resumen-preenvio-body">
+      <div class="resumen-preenvio-info">
+        ℹ️ Revisa el pedido antes de enviar los emails. Puedes editar cantidades o eliminar líneas.
+      </div>
+
+      ${conProducto.length > 0 ? `
+        <h4 style="margin-top:18px;margin-bottom:8px">🛒 Productos pedidos</h4>
+        <div class="resumen-tabla-wrap">
+          <table class="resumen-tabla">
+            <thead>
+              <tr>
+                <th style="text-align:left">Código</th>
+                <th style="text-align:left">Producto</th>
+                <th style="width:80px;text-align:center">Cant</th>
+                <th style="width:90px;text-align:right">PVF</th>
+                <th style="width:100px;text-align:right">Subtotal</th>
+                <th style="width:40px"></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${conProducto.map(a => {
+                const cant = Number(a.cantidad) || 0;
+                const pvf = a.producto_pvf != null ? Number(a.producto_pvf) : null;
+                const sub = (pvf != null && cant) ? pvf * cant : null;
+                return `
+                  <tr data-anot-id="${a.id}">
+                    <td><b>${escape(a.producto_codigo || '—')}</b></td>
+                    <td style="font-size:12px;color:#374151">${escape(a.producto_nombre || '')}</td>
+                    <td style="text-align:center">
+                      <input type="number" class="resumen-cant-input" min="1" value="${cant}" data-anot-id="${a.id}"
+                             style="width:60px;padding:6px;border:1px solid #d1d5db;border-radius:6px;text-align:center;font-size:14px">
+                    </td>
+                    <td style="text-align:right">${pvf != null ? pvf.toFixed(2) + '€' : '—'}</td>
+                    <td style="text-align:right;font-weight:600" class="resumen-subtotal-celda">${sub != null ? sub.toFixed(2) + '€' : '—'}</td>
+                    <td style="text-align:center">
+                      <button class="resumen-borrar-btn" data-anot-id="${a.id}" title="Quitar línea">🗑️</button>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="4" style="text-align:right;font-weight:700;padding-top:10px">TOTAL PVF:</td>
+                <td style="text-align:right;font-weight:700;color:#16a34a;font-size:15px;padding-top:10px" id="resumen-total">${totalPVF.toFixed(2)}€</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      ` : ''}
+
+      ${sinProducto.length > 0 ? `
+        <h4 style="margin-top:18px;margin-bottom:8px">📝 Otras anotaciones</h4>
+        <ul class="resumen-otras-lista">
+          ${sinProducto.map(a => `
+            <li>
+              <span style="color:#6b7280;font-size:12px">${a.sheet_orden ? 'Lám.' + a.sheet_orden : '—'}</span>
+              ${escape(a.texto_libre || '')}
+              <button class="resumen-borrar-mini" data-anot-id="${a.id}">×</button>
+            </li>
+          `).join('')}
+        </ul>
+      ` : ''}
+
+      ${anotaciones.length === 0 ? `
+        <div style="background:#fef3c7;border:1px solid #fcd34d;padding:14px;border-radius:8px;margin-top:10px;color:#78350f">
+          ⚠️ Esta visita no tiene ninguna anotación. Si la cierras así, no se generará pedido.
+        </div>
+      ` : ''}
+
+      <h4 style="margin-top:20px;margin-bottom:8px">📝 Notas generales de la visita</h4>
+      <textarea id="resumen-notas" rows="2" placeholder="Observaciones para oficina y tu archivo personal…"
+        style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box;font-family:inherit">${escape(_resumenPreEnvio.notas || '')}</textarea>
+
+      <h4 style="margin-top:20px;margin-bottom:8px">📧 Envío al cliente</h4>
+      <div class="form-group" style="margin-bottom:8px">
+        <label style="font-size:13px;color:#374151">Email del cliente para esta visita</label>
+        <input type="email" id="resumen-email-cliente" value="${escape(valorEmailCliente)}"
+          ${_resumenPreEnvio.noEnviarCliente ? 'disabled' : ''}
+          style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box"
+          placeholder="cliente@email.com">
+        <small style="color:#6b7280">${emailClienteActual ? 'Email registrado: ' + escape(emailClienteActual) : 'El cliente no tiene email registrado'}</small>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-top:8px">
+        <input type="checkbox" id="resumen-no-enviar" ${_resumenPreEnvio.noEnviarCliente ? 'checked' : ''}>
+        <span>No enviar email al cliente esta vez</span>
+      </label>
+
+      <div id="resumen-msg" style="margin-top:14px"></div>
+
+      <div class="resumen-acciones">
+        <button class="btn btn-secondary" onclick="cerrarResumenPreEnvio()">← Volver al visor</button>
+        <button class="btn btn-primary" id="resumen-confirmar-btn" onclick="confirmarEnvioVisita()" style="font-size:15px;padding:12px 22px">
+          ✅ Confirmar y enviar
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Enlazar eventos: editar cantidad
+  overlay.querySelectorAll('.resumen-cant-input').forEach(inp => {
+    inp.addEventListener('change', async (e) => {
+      const anotId = Number(e.target.dataset.anotId);
+      const nuevaCant = Math.max(1, Number(e.target.value) || 1);
+      e.target.value = nuevaCant;
+      const anot = _resumenPreEnvio.anotaciones.find(a => a.id === anotId);
+      if (!anot) return;
+      // Reconstruir el texto_libre con la nueva cantidad
+      const codigo = anot.producto_codigo || '';
+      const nombre = anot.producto_nombre || '';
+      let texto = nuevaCant + ' uds · ' + codigo + ' ' + nombre;
+      // mantener notas extra del texto_libre antiguo (lo que iba tras " · " adicional)
+      try {
+        await api('/api/annotations/' + anotId, {
+          method: 'PUT',
+          body: { texto_libre: texto, tipo: anot.tipo || 'pedido', cantidad: nuevaCant }
+        });
+        anot.cantidad = nuevaCant;
+        anot.texto_libre = texto;
+        // Recalcular subtotal y total
+        actualizarSubtotalesResumen();
+      } catch (err) {
+        alert('Error guardando cambio: ' + err.message);
+      }
+    });
+  });
+
+  // Borrar línea (con producto)
+  overlay.querySelectorAll('.resumen-borrar-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const anotId = Number(btn.dataset.anotId);
+      if (!confirm('¿Quitar esta línea del pedido?')) return;
+      try {
+        await api('/api/annotations/' + anotId, { method: 'DELETE' });
+        _resumenPreEnvio.anotaciones = _resumenPreEnvio.anotaciones.filter(a => a.id !== anotId);
+        renderResumenPreEnvio();
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    });
+  });
+
+  // Borrar nota libre (mini)
+  overlay.querySelectorAll('.resumen-borrar-mini').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const anotId = Number(btn.dataset.anotId);
+      if (!confirm('¿Quitar esta anotación?')) return;
+      try {
+        await api('/api/annotations/' + anotId, { method: 'DELETE' });
+        _resumenPreEnvio.anotaciones = _resumenPreEnvio.anotaciones.filter(a => a.id !== anotId);
+        renderResumenPreEnvio();
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    });
+  });
+
+  // Checkbox no-enviar deshabilita el email input
+  const $chkNoEnv = overlay.querySelector('#resumen-no-enviar');
+  const $emailInput = overlay.querySelector('#resumen-email-cliente');
+  $chkNoEnv.addEventListener('change', () => {
+    _resumenPreEnvio.noEnviarCliente = $chkNoEnv.checked;
+    $emailInput.disabled = $chkNoEnv.checked;
+  });
+
+  // Guardar notas y email en estado al editarlos
+  overlay.querySelector('#resumen-notas').addEventListener('input', (e) => {
+    _resumenPreEnvio.notas = e.target.value;
+  });
+  $emailInput.addEventListener('input', (e) => {
+    _resumenPreEnvio.emailClienteOverride = e.target.value;
+  });
+}
+
+function actualizarSubtotalesResumen() {
+  const overlay = document.querySelector('.resumen-preenvio-overlay');
+  if (!overlay) return;
+  let total = 0;
+  _resumenPreEnvio.anotaciones.filter(a => a.product_id).forEach(a => {
+    const cant = Number(a.cantidad) || 0;
+    const pvf = a.producto_pvf != null ? Number(a.producto_pvf) : 0;
+    const sub = cant * pvf;
+    total += sub;
+    const fila = overlay.querySelector('tr[data-anot-id="' + a.id + '"]');
+    if (fila) {
+      const celda = fila.querySelector('.resumen-subtotal-celda');
+      if (celda) celda.textContent = (pvf > 0 && cant > 0) ? sub.toFixed(2) + '€' : '—';
+    }
+  });
+  const $tot = overlay.querySelector('#resumen-total');
+  if ($tot) $tot.textContent = total.toFixed(2) + '€';
+}
+
+function cerrarResumenPreEnvio() {
+  document.querySelectorAll('.resumen-preenvio-overlay').forEach(o => o.remove());
+  _resumenPreEnvio = null;
+}
+
+async function confirmarEnvioVisita() {
+  if (!_resumenPreEnvio) return;
+  const $btn = document.getElementById('resumen-confirmar-btn');
+  const $msg = document.getElementById('resumen-msg');
+  if ($btn) { $btn.disabled = true; $btn.textContent = 'Enviando…'; }
+
+  const notas = (document.getElementById('resumen-notas')?.value || '').trim();
+  const emailOverride = (document.getElementById('resumen-email-cliente')?.value || '').trim();
+  const noEnviar = !!document.getElementById('resumen-no-enviar')?.checked;
+  const emailOriginal = _resumenPreEnvio.cliente?.email || '';
+
+  try {
+    await api('/api/visits/' + _resumenPreEnvio.visitId + '/confirm', {
+      method: 'POST',
+      body: {
+        notas_generales: notas,
+        email_cliente_override: (emailOverride && emailOverride !== emailOriginal) ? emailOverride : null,
+        no_enviar_cliente: noEnviar
+      }
+    });
+    const visitaId = _resumenPreEnvio.visitId;
+    cerrarResumenPreEnvio();
     appState.visitaActiva = null;
-    // Llevar al detalle de la visita recién cerrada
     appState.vista = 'clientes';
     appState.catalogoActual = null;
     appState.clienteActual = null;
     appState.visitaVerId = visitaId;
     render();
   } catch (err) {
-    alert('Error al cerrar visita: ' + err.message);
+    if ($msg) $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    if ($btn) { $btn.disabled = false; $btn.textContent = '✅ Confirmar y enviar'; }
   }
 }
 

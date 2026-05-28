@@ -613,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'mosaico-mover-numero-28may',
+    build: 'resumen-preenvio-29may',
     service: 'CatalogPRO v2'
   });
 });
@@ -3430,12 +3430,12 @@ app.delete('/api/annotations/:id', verifyToken, async (req: AuthRequest, res: Re
 });
 
 // POST cerrar / confirmar visita
-// Body: { notas_generales? }
+// Body: { notas_generales?, email_cliente_override?, no_enviar_cliente? }
 app.post('/api/visits/:id/confirm', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
     const userId = effectiveUserId(req);
-    const { notas_generales } = req.body;
+    const { notas_generales, email_cliente_override, no_enviar_cliente } = req.body;
     const v = await pool.query(`SELECT * FROM visits WHERE id = $1`, [id]);
     if (v.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Visita no encontrada' });
@@ -3461,9 +3461,15 @@ app.post('/api/visits/:id/confirm', verifyToken, async (req: AuthRequest, res: R
     // Actualizar ultima_visita_at del cliente
     await pool.query(`UPDATE clients SET ultima_visita_at = NOW() WHERE id = $1`, [r.rows[0].client_id]);
 
+    // Resumen pre-envío: opciones del comercial al confirmar
+    const opciones = {
+      emailClienteOverride: email_cliente_override ? String(email_cliente_override).trim() : null,
+      noEnviarCliente: !!no_enviar_cliente
+    };
+
     // C: lanzar los 3 emails (oficina + cliente + comercial) de forma asíncrona.
     // No bloqueamos la respuesta al frontend - los emails se procesan en background.
-    enviarEmailsVisita(id).catch((e: any) => console.error('Error enviando emails visita ' + id + ':', e));
+    enviarEmailsVisita(id, opciones).catch((e: any) => console.error('Error enviando emails visita ' + id + ':', e));
 
     res.json({ success: true, visit: r.rows[0] });
   } catch (e) {
@@ -4072,7 +4078,7 @@ function escapeHtml(s: any): string {
 
 // Funcion principal: envia los 3 emails al cerrar visita
 // Se llama de forma asincrona (fire-and-forget) desde POST /api/visits/:id/confirm
-async function enviarEmailsVisita(visitId: number) {
+async function enviarEmailsVisita(visitId: number, opciones?: { emailClienteOverride?: string | null; noEnviarCliente?: boolean }) {
   try {
     const datos = await cargarDatosVisitaCompleta(visitId);
     if (!datos) return;
@@ -4111,8 +4117,13 @@ async function enviarEmailsVisita(visitId: number) {
     }
 
     // 2) Email al cliente (sin PDF para que sea ligero - confirmacion simple)
-    const clienteReal = visit.cliente_email || '';
-    if (clienteReal || cfg.modo === 'pruebas') {
+    // Resumen pre-envío: el comercial puede haber pedido NO enviar al cliente,
+    // o haber especificado un email distinto al del cliente (override).
+    const noEnviarCliente = opciones?.noEnviarCliente === true;
+    const clienteReal = noEnviarCliente
+      ? ''
+      : (opciones?.emailClienteOverride || visit.cliente_email || '');
+    if (!noEnviarCliente && (clienteReal || cfg.modo === 'pruebas')) {
       const r = await enviarEmailConRedireccion({
         rol: 'cliente',
         destinatarioReal: clienteReal,
