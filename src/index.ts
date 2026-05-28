@@ -613,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'mosaico-reordenar-28may',
+    build: 'mosaico-fix-layout-28may',
     service: 'CatalogPRO v2'
   });
 });
