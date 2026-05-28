@@ -5513,9 +5513,9 @@ async function renderDetalleCliente(id) {
 
 // ----- INICIAR VISITA DESDE FICHA DE CLIENTE -----
 async function iniciarVisitaParaCliente(clientId) {
-  // Si ya hay visita activa con OTRO cliente, avisar
+  // Si ya hay visita activa con OTRO cliente, mostrar modal informativo
   if (appState.visitaActiva && appState.visitaActiva.client_id !== clientId) {
-    if (!confirm('Ya tienes una visita en curso con otro cliente. Si quieres iniciar una nueva, primero cierra o descarta la actual.')) return;
+    mostrarModalVisitaEnCurso();
     return;
   }
   if (appState.visitaActiva && appState.visitaActiva.client_id === clientId) {
@@ -5605,6 +5605,61 @@ function abrirVisitaActiva() {
   appState.visitaVerId = null;
   appState.catalogoActual = appState.visitaActiva.catalog_id;
   render();
+}
+
+// Modal informativo cuando el comercial intenta iniciar visita y ya hay otra abierta.
+// Muestra qué cliente, cuándo se inició, y ofrece "Ir a la visita" o "Cancelar".
+function mostrarModalVisitaEnCurso() {
+  const va = appState.visitaActiva;
+  if (!va) return;
+  const clienteNombre = va.cliente_nombre || ('Cliente #' + va.client_id);
+  // Calcular cuándo se inició
+  let cuando = '';
+  if (va.created_at) {
+    const inicio = new Date(va.created_at);
+    const ahora = new Date();
+    const ms = ahora - inicio;
+    const minutos = Math.round(ms / 60000);
+    if (minutos < 1) cuando = 'hace menos de un minuto';
+    else if (minutos < 60) cuando = 'hace ' + minutos + ' min';
+    else if (minutos < 24 * 60) {
+      const h = Math.floor(minutos / 60);
+      cuando = 'hace ' + h + ' h ' + (minutos % 60) + ' min';
+    } else {
+      cuando = 'el ' + inicio.toLocaleDateString('es-ES') + ' a las ' + inicio.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+    }
+  }
+
+  // Contar anotaciones ya hechas en esa visita (desde memoria local)
+  let totalAnots = 0;
+  Object.keys(_anotacionesVisita || {}).forEach(sid => {
+    totalAnots += (_anotacionesVisita[sid] || []).length;
+  });
+
+  document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🛒 Ya tienes una visita en curso</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;padding:12px 14px;border-radius:8px;font-size:14px;color:#1e40af;margin-bottom:14px">
+        <div style="margin-bottom:4px"><b>Cliente:</b> ${escape(clienteNombre)}</div>
+        ${cuando ? `<div style="margin-bottom:4px"><b>Iniciada:</b> ${escape(cuando)}</div>` : ''}
+        <div><b>Anotaciones:</b> ${totalAnots}</div>
+      </div>
+      <p style="font-size:13px;color:#374151;margin:0 0 14px 0">
+        Para iniciar una visita nueva con otro cliente, primero ciérrala o descártala desde su visor.
+      </p>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="this.closest('.modal-bg').remove(); abrirVisitaActiva()">→ Ir a la visita</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
 }
 
 // ----- CERRAR VISITA ACTIVA — abre primero el RESUMEN PRE-ENVÍO (M2/N2/O3) -----

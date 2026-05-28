@@ -613,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'resumen-preenvio-29may',
+    build: 'modal-visita-curso-29may',
     service: 'CatalogPRO v2'
   });
 });
