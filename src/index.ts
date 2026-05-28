@@ -354,6 +354,19 @@ async function initDB(): Promise<void> {
                        WHERE table_name='annotations' AND column_name='pos_y') THEN
           ALTER TABLE annotations ADD COLUMN pos_y REAL;
         END IF;
+        -- Fase 2.c': anotaciones vinculadas a producto/zona
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='annotations' AND column_name='product_id') THEN
+          ALTER TABLE annotations ADD COLUMN product_id INTEGER REFERENCES products(id) ON DELETE SET NULL;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='annotations' AND column_name='cantidad') THEN
+          ALTER TABLE annotations ADD COLUMN cantidad INTEGER;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='annotations' AND column_name='zone_id') THEN
+          ALTER TABLE annotations ADD COLUMN zone_id INTEGER REFERENCES sheet_zones(id) ON DELETE SET NULL;
+        END IF;
       END$migrate$;
 
       -- B5: tabla de union para catalogos Express
@@ -600,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fase2c1-zonas-comercial-28may',
+    build: 'fase2c2-modal-zona-28may',
     service: 'CatalogPRO v2'
   });
 });
@@ -3333,10 +3346,15 @@ app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, re
       [visitId]
     );
     const orden = Number(maxR.rows[0].m) + 1;
+    // Fase 2.c': campos opcionales de producto/zona
+    const productId = req.body.product_id ? Number(req.body.product_id) : null;
+    const cantidad = (req.body.cantidad !== undefined && req.body.cantidad !== null && req.body.cantidad !== '')
+      ? Number(req.body.cantidad) : null;
+    const zoneId = req.body.zone_id ? Number(req.body.zone_id) : null;
     const r = await pool.query(
-      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY]
+      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {
@@ -3371,9 +3389,12 @@ app.put('/api/annotations/:id', verifyToken, async (req: AuthRequest, res: Respo
       return;
     }
     const tipoFinal = ['pedido','devolucion','nota'].includes(tipo) ? tipo : a.rows[0].tipo;
+    // Fase 2.c': permitir actualizar cantidad (D2: re-pulsar zona edita cantidad)
+    const cantidad = (req.body.cantidad !== undefined && req.body.cantidad !== null && req.body.cantidad !== '')
+      ? Number(req.body.cantidad) : a.rows[0].cantidad;
     const r = await pool.query(
-      `UPDATE annotations SET texto_libre = $1, tipo = $2 WHERE id = $3 RETURNING *`,
-      [String(texto_libre).trim(), tipoFinal, id]
+      `UPDATE annotations SET texto_libre = $1, tipo = $2, cantidad = $3 WHERE id = $4 RETURNING *`,
+      [String(texto_libre).trim(), tipoFinal, cantidad, id]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {

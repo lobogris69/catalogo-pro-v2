@@ -2515,9 +2515,160 @@ function iluminarZonas() {
   }, 1500);
 }
 
-function pulsarZonaComercial(zona) {
-  // (2.c'-2) Por ahora solo avisamos; el modal con producto+cantidad viene en el siguiente bloque
-  mostrarNotificacionOnline('🎯 Zona: ' + (zona.producto_codigo || '') + ' · ' + (zona.producto_nombre || ''), '#0ea5e9');
+async function pulsarZonaComercial(zona) {
+  if (!appState.visitaActiva) return;
+  const $wrapper = document.getElementById('visor-imagen-wrapper');
+  const sheetId = $wrapper ? Number($wrapper.dataset.sheetId) : null;
+
+  // D2: ¿ya existe una anotación de esta zona en esta visita? → editamos esa
+  let anotExistente = null;
+  const anotsSheet = _anotacionesVisita[sheetId] || [];
+  anotExistente = anotsSheet.find(a => a.zone_id === zona.id) || null;
+
+  // Asegurar plantillas cargadas
+  if (_plantillasCache === null) { await cargarPlantillas(); }
+  const plantillas = _plantillasCache || [];
+
+  const cantidadInicial = anotExistente && anotExistente.cantidad ? anotExistente.cantidad : 1;
+  const pvf = zona.producto_pvf ? Number(zona.producto_pvf) : null;
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>${anotExistente ? '✏️ Editar' : '🛒 Anotar'} producto</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div class="zona-modal-producto">
+        <span class="ac-badge-${zona.producto_tipo === 'comercial' ? 'promo' : 'sage'}">
+          ${zona.producto_tipo === 'comercial' ? '🎁 Promo' : '🏷️ Sage'}
+        </span>
+        <b>${escape(zona.producto_codigo || '')}</b>
+        <div style="font-size:13px;color:#374151;margin-top:2px">${escape(zona.producto_nombre || '')}</div>
+        ${pvf !== null ? `<div style="font-size:12px;color:#6b7280;margin-top:2px">PVF ${pvf.toFixed(2)}€</div>` : ''}
+      </div>
+
+      <div class="form-group" style="margin-top:14px">
+        <label>Cantidad</label>
+        <div class="zona-cantidad-rapida">
+          <button type="button" class="zona-cant-btn" data-cant="1">1</button>
+          <button type="button" class="zona-cant-btn" data-cant="6">6</button>
+          <button type="button" class="zona-cant-btn" data-cant="12">12</button>
+          <button type="button" class="zona-cant-btn" data-cant="24">24</button>
+        </div>
+        <input type="number" id="zona-cantidad" min="1" value="${cantidadInicial}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:16px;box-sizing:border-box;margin-top:8px">
+        <div id="zona-subtotal" style="font-size:13px;color:#16a34a;font-weight:600;margin-top:6px;text-align:right"></div>
+      </div>
+
+      ${plantillas.length > 0 ? `
+        <div class="form-group">
+          <label>Plantillas rápidas</label>
+          <div class="zona-plantillas">
+            ${plantillas.map(p => `
+              <button type="button" class="zona-tpl-chip" data-texto="${escape(p.texto).replace(/"/g,'&quot;')}">
+                ${escape(p.texto)}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <div class="form-group">
+        <label>Nota adicional <small style="color:#9ca3af">opcional</small></label>
+        <textarea id="zona-nota" rows="2" placeholder="ej: oferta especial, revisar caducidad…" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box">${anotExistente && anotExistente.nota_extra ? escape(anotExistente.nota_extra) : ''}</textarea>
+      </div>
+
+      <div id="zona-modal-msg"></div>
+      <div class="modal-acciones">
+        ${anotExistente ? `<button type="button" class="btn" style="background:#dc2626;color:#fff" onclick="borrarAnotacionZona(${anotExistente.id}, ${sheetId})">🗑️ Quitar</button>` : ''}
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="zona-guardar">${anotExistente ? 'Actualizar' : 'Anotar'}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const $cant = modal.querySelector('#zona-cantidad');
+  const $subtotal = modal.querySelector('#zona-subtotal');
+  const $nota = modal.querySelector('#zona-nota');
+
+  function actualizarSubtotal() {
+    const c = Number($cant.value) || 0;
+    if (pvf !== null && c > 0) {
+      $subtotal.textContent = 'Subtotal PVF: ' + (pvf * c).toFixed(2) + '€';
+    } else {
+      $subtotal.textContent = '';
+    }
+  }
+  actualizarSubtotal();
+  $cant.addEventListener('input', actualizarSubtotal);
+
+  // Botones de cantidad rápida (J1)
+  modal.querySelectorAll('.zona-cant-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $cant.value = btn.dataset.cant;
+      actualizarSubtotal();
+    });
+  });
+
+  // Plantillas → añaden su texto a la nota
+  modal.querySelectorAll('.zona-tpl-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const txt = chip.dataset.texto;
+      $nota.value = $nota.value ? ($nota.value + ' · ' + txt) : txt;
+    });
+  });
+
+  // Guardar
+  modal.querySelector('#zona-guardar').addEventListener('click', async () => {
+    const cantidad = Number($cant.value) || 1;
+    const notaExtra = $nota.value.trim();
+    // Montar el texto_libre automático: "6 uds · 1243441 NOMBRE [· nota]"
+    let texto = cantidad + ' uds · ' + (zona.producto_codigo || '') + ' ' + (zona.producto_nombre || '');
+    if (notaExtra) texto += ' · ' + notaExtra;
+    const $msg = modal.querySelector('#zona-modal-msg');
+    try {
+      if (anotExistente) {
+        // D2: editar la existente
+        await api('/api/annotations/' + anotExistente.id, {
+          method: 'PUT',
+          body: { texto_libre: texto, tipo: 'pedido', cantidad }
+        });
+      } else {
+        // crear nueva, vinculada a zona + producto
+        await api('/api/visits/' + appState.visitaActiva.id + '/annotations', {
+          method: 'POST',
+          body: {
+            sheet_id: sheetId,
+            texto_libre: texto,
+            tipo: 'pedido',
+            product_id: zona.product_id,
+            cantidad,
+            zone_id: zona.id,
+            pos_x: (zona.x + zona.ancho / 2) / 100,  // centro de la zona como pin
+            pos_y: (zona.y + zona.alto / 2) / 100
+          }
+        });
+      }
+      modal.remove();
+      refrescarAnotacionesVisor(sheetId);
+      mostrarNotificacionOnline('✅ ' + texto, '#16a34a');
+    } catch (err) {
+      $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
+}
+
+async function borrarAnotacionZona(anotId, sheetId) {
+  try {
+    await api('/api/annotations/' + anotId, { method: 'DELETE' });
+    document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+    refrescarAnotacionesVisor(sheetId);
+    mostrarNotificacionOnline('Anotación quitada', '#6b7280');
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
 }
 
 // B7: ----- LONG-PRESS para crear PIN sobre la lámina -----
