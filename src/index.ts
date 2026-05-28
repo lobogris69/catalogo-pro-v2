@@ -600,7 +600,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fase2b-zonas-editor-28may',
+    build: 'fase2b-crear-producto-vuelo-28may',
     service: 'CatalogPRO v2'
   });
 });
@@ -4295,6 +4295,28 @@ app.get('/api/products/search', verifyToken, async (req: AuthRequest, res: Respo
   }
 });
 
+// FASE 2.b': sugerir el siguiente código EXP-XXXX libre (para crear producto al vuelo).
+// DEBE ir antes de /api/products/:id para que Express no lo confunda con un id.
+app.get('/api/products/sugerir-codigo', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`
+      SELECT codigo FROM products
+      WHERE codigo ~ '^EXP-[0-9]+$'
+      ORDER BY CAST(SUBSTRING(codigo FROM 5) AS INTEGER) DESC
+      LIMIT 1
+    `);
+    let siguiente = 1;
+    if (r.rows.length > 0) {
+      const num = parseInt(r.rows[0].codigo.substring(4), 10);
+      if (!isNaN(num)) siguiente = num + 1;
+    }
+    const codigo = 'EXP-' + String(siguiente).padStart(4, '0');
+    res.json({ success: true, codigo });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
 // GET listar productos (con filtros)
 // Query: tipo (sage|comercial|todos), activo (true|false|todos), q (búsqueda)
 app.get('/api/products', verifyToken, async (req: AuthRequest, res: Response) => {
@@ -4356,6 +4378,7 @@ app.get('/api/products/:id', verifyToken, async (req: AuthRequest, res: Response
 });
 
 // POST crear producto (manual, típicamente expositores tipo 'comercial')
+// FASE 2.b': sugerir el siguiente código EXP-XXXX libre (para crear producto al vuelo)
 app.post('/api/products', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const { codigo, nombre, descripcion, ean, precio_pvp, precio_pvf, categoria, familia, marca, tipo, notas_admin } = req.body;

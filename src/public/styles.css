@@ -3078,3 +3078,16 @@ body.con-banner-update {
   }
   .zonas-lienzo-img { max-height: 50vh; }
 }
+
+/* FASE 2.b': botón crear producto al vuelo en el autocomplete */
+.ac-crear {
+  padding: 12px;
+  text-align: center;
+  cursor: pointer;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 600;
+  border-top: 1px solid #dbeafe;
+}
+.ac-crear:hover { background: #dbeafe; }

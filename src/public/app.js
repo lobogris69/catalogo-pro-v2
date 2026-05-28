@@ -6431,9 +6431,18 @@ function montarAutocompleteProducto(contenedor, opts) {
   renderSeleccionado();
 
   function mostrarResultados(productos) {
+    const queryActual = $input.value.trim();
+    // Bloque "+ Crear producto" que se muestra si hay callback onCrear
+    const bloqueCrear = opts.onCrear ? `
+      <div class="ac-crear" data-crear="1">
+        ➕ Crear producto nuevo${queryActual ? ': "' + escape(queryActual) + '"' : ''}
+      </div>
+    ` : '';
+
     if (productos.length === 0) {
-      $resultados.innerHTML = '<div class="ac-empty">No se encontraron productos activos</div>';
+      $resultados.innerHTML = '<div class="ac-empty">No se encontraron productos activos</div>' + bloqueCrear;
       $resultados.style.display = '';
+      enlazarBotonCrear(queryActual);
       return;
     }
     $resultados.innerHTML = productos.map((p, idx) => {
@@ -6450,7 +6459,7 @@ function montarAutocompleteProducto(contenedor, opts) {
           <div class="ac-item-row2">${escape(p.nombre)}${ean}</div>
         </div>
       `;
-    }).join('');
+    }).join('') + bloqueCrear;
     $resultados.style.display = '';
 
     // Hacer cada item clickable
@@ -6465,6 +6474,25 @@ function montarAutocompleteProducto(contenedor, opts) {
         onSelect(seleccionado);
       });
     });
+    enlazarBotonCrear(queryActual);
+  }
+
+  function enlazarBotonCrear(queryActual) {
+    const $crear = $resultados.querySelector('.ac-crear');
+    if ($crear && opts.onCrear) {
+      $crear.addEventListener('click', (e) => {
+        e.stopPropagation();
+        $resultados.style.display = 'none';
+        // Llamar al callback de creación pasándole el texto buscado como nombre sugerido
+        opts.onCrear(queryActual, (productoCreado) => {
+          // callback cuando se crea: seleccionarlo automáticamente
+          seleccionado = productoCreado;
+          $input.value = (productoCreado.codigo || '') + ' · ' + (productoCreado.nombre || '');
+          renderSeleccionado();
+          onSelect(productoCreado);
+        });
+      });
+    }
   }
 
   // Debounce de teclas
@@ -6811,6 +6839,9 @@ function renderListaZonas() {
       } catch (err) {
         alert('Error asignando producto: ' + err.message);
       }
+    },
+    onCrear: (nombreSugerido, alCrear) => {
+      abrirModalCrearProductoVuelo(nombreSugerido, alCrear);
     }
   });
 }
@@ -6839,6 +6870,83 @@ async function borrarZona(zoneId) {
   } catch (err) {
     alert('Error borrando zona: ' + err.message);
   }
+}
+
+// FASE 2.b': crear producto al vuelo (tipo comercial) desde el editor de zonas.
+// nombreSugerido = lo que el admin tecleó en el buscador. alCrear = callback(producto).
+async function abrirModalCrearProductoVuelo(nombreSugerido, alCrear) {
+  // Pedir código sugerido EXP-XXXX al servidor
+  let codigoSugerido = '';
+  try {
+    const r = await api('/api/products/sugerir-codigo');
+    codigoSugerido = r.codigo || '';
+  } catch (e) { /* si falla, dejamos el campo vacío */ }
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.style.zIndex = '21000'; // por encima del editor de zonas
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>➕ Crear producto nuevo</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;padding:8px 12px;border-radius:8px;margin-bottom:14px;font-size:12px;color:#1e40af">
+        Para expositores o promos que no están en Sage. Se marcará como tipo 🎁 comercial.
+      </div>
+      <div class="form-group">
+        <label>Código <small style="color:var(--gris-texto)">(puedes cambiarlo)</small></label>
+        <input type="text" id="cpv-codigo" value="${escape(codigoSugerido)}" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Nombre *</label>
+        <input type="text" id="cpv-nombre" value="${escape(nombreSugerido || '')}" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>PVF (precio) <small style="color:var(--gris-texto)">opcional</small></label>
+        <input type="number" step="0.01" id="cpv-pvf" placeholder="0.00" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>EAN <small style="color:var(--gris-texto)">opcional</small></label>
+        <input type="text" id="cpv-ean" autocomplete="off">
+      </div>
+      <div id="cpv-msg"></div>
+      <div class="modal-acciones">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="cpv-guardar">Crear y asignar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  setTimeout(() => { const n = document.getElementById('cpv-nombre'); if (n) n.focus(); }, 100);
+
+  document.getElementById('cpv-guardar').addEventListener('click', async () => {
+    const codigo = document.getElementById('cpv-codigo').value.trim();
+    const nombre = document.getElementById('cpv-nombre').value.trim();
+    const pvf = document.getElementById('cpv-pvf').value.trim();
+    const ean = document.getElementById('cpv-ean').value.trim();
+    const $msg = document.getElementById('cpv-msg');
+    if (!codigo || !nombre) {
+      $msg.innerHTML = '<div class="error-msg">Código y nombre son obligatorios.</div>';
+      return;
+    }
+    try {
+      const r = await api('/api/products', {
+        method: 'POST',
+        body: {
+          codigo, nombre,
+          precio_pvf: pvf || null,
+          ean: ean || null,
+          tipo: 'comercial'
+        }
+      });
+      modal.remove();
+      mostrarNotificacionOnline('✅ Producto creado: ' + r.product.codigo, '#16a34a');
+      if (typeof alCrear === 'function') alCrear(r.product);
+    } catch (err) {
+      $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
 }
 
 // ===== ARRANQUE =====
