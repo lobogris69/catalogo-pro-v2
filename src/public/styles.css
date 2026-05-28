@@ -3238,15 +3238,26 @@ body.con-banner-update {
   left: 6px;
   background: #111827;
   color: #fff;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2;
+  width: 32px;
+  height: 28px;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  text-align: center;
+  z-index: 3;
+  padding: 0;
+  cursor: text;
+  font-family: inherit;
+}
+.mosaico-num:hover {
+  border-color: #0ea5e9;
+}
+.mosaico-num:focus {
+  outline: none;
+  border-color: #0ea5e9;
+  background: #0ea5e9;
+  width: 48px;
 }
 .mosaico-img {
   width: 100%;

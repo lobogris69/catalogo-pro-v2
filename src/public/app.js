@@ -7222,7 +7222,8 @@ function pintarMosaico() {
     card.draggable = true;
     card.dataset.id = s.id;
     card.innerHTML = `
-      <div class="mosaico-num">${idx + 1}</div>
+      <input type="text" class="mosaico-num" value="${idx + 1}" title="Escribe la posición y pulsa Enter"
+             inputmode="numeric" draggable="false" data-pos="${idx + 1}">
       <img src="${escape(s.imagen_path)}" class="mosaico-img" alt="" loading="lazy"
            onerror="this.style.background='#374151'">
       <div class="mosaico-titulo">${escape(s.titulo || 'Sin título')}</div>
@@ -7230,6 +7231,63 @@ function pintarMosaico() {
     grid.appendChild(card);
   });
   activarDragDropMosaico();
+  activarMoverPorNumero();
+}
+
+// K1: mover lámina escribiendo la posición destino en el número
+function activarMoverPorNumero() {
+  const grid = document.getElementById('mosaico-grid');
+  if (!grid) return;
+  grid.querySelectorAll('.mosaico-num').forEach(input => {
+    // Evitar que al pulsar el input se inicie el arrastre de la tarjeta
+    input.addEventListener('mousedown', (e) => e.stopPropagation());
+    input.addEventListener('click', (e) => { e.stopPropagation(); input.select(); });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        aplicarMoverPorNumero(input);
+        input.blur();
+      } else if (e.key === 'Escape') {
+        input.value = input.dataset.pos;
+        input.blur();
+      }
+    });
+    input.addEventListener('blur', () => {
+      // Si al perder foco el valor cambió, aplicarlo; si no, restaurar
+      if (input.value.trim() !== input.dataset.pos) {
+        aplicarMoverPorNumero(input);
+      }
+    });
+  });
+}
+
+async function aplicarMoverPorNumero(input) {
+  const card = input.closest('.mosaico-card');
+  if (!card) return;
+  const sheetId = Number(card.dataset.id);
+  const total = _mosaicoSheets.length;
+  let destino = parseInt(input.value, 10);
+  // Validar
+  if (isNaN(destino)) { input.value = input.dataset.pos; return; }
+  if (destino < 1) destino = 1;
+  if (destino > total) destino = total;
+
+  // Posición actual (0-based) por id
+  const origenIdx = _mosaicoSheets.findIndex(s => s.id === sheetId);
+  const destinoIdx = destino - 1;
+  if (origenIdx === -1 || origenIdx === destinoIdx) {
+    input.value = input.dataset.pos;
+    return;
+  }
+
+  // L1: extraer y reinsertar (insertar y desplazar el resto)
+  const [movido] = _mosaicoSheets.splice(origenIdx, 1);
+  _mosaicoSheets.splice(destinoIdx, 0, movido);
+
+  // Repintar y guardar
+  pintarMosaico();
+  await guardarOrdenMosaico();
 }
 
 function activarDragDropMosaico() {
@@ -7261,7 +7319,7 @@ function activarDragDropMosaico() {
       _mosaicoCambios = true;
       Array.from(grid.querySelectorAll('.mosaico-card')).forEach((c, i) => {
         const n = c.querySelector('.mosaico-num');
-        if (n) n.textContent = String(i + 1);
+        if (n) { n.value = String(i + 1); n.dataset.pos = String(i + 1); }
       });
     });
   });
