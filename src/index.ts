@@ -580,7 +580,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fase2a-busqueda-productos-27may',
+    build: 'limpiar-pruebas-27may',
     service: 'CatalogPRO v2'
   });
 });
@@ -2891,6 +2891,115 @@ app.post('/api/geocode-cancel', verifyToken, requireRealAdmin, async (req: AuthR
   }
   _geoState.cancelado = true;
   res.json({ success: true, message: 'Solicitada cancelación. Se detendrá tras el cliente actual.' });
+});
+
+// ============================================================================
+// LIMPIAR DATOS DE PRUEBA (admin real, doble confirmación escribiendo BORRAR)
+// ============================================================================
+// Borra catálogos, láminas, visitas, anotaciones, versiones y logs de email.
+// NO toca: productos, clientes, usuarios, configuración de email, plantillas.
+// Pensado para que Fernando arranque de cero el catálogo cuando termine las
+// pruebas, sin perder los 10.607 productos ni los clientes importados.
+app.get('/api/admin/limpiar-pruebas/preview', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const counts: any = {};
+    const tablas = [
+      ['catalogs', 'catálogos'],
+      ['sheets', 'láminas'],
+      ['visits', 'visitas'],
+      ['annotations', 'anotaciones'],
+      ['catalog_versions', 'versiones'],
+      ['visit_emails', 'emails registrados']
+    ];
+    for (const [tabla, label] of tablas) {
+      const r = await pool.query(`SELECT COUNT(*)::int AS n FROM ${tabla}`);
+      counts[tabla] = { label, n: r.rows[0].n };
+    }
+    res.json({ success: true, counts });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+app.post('/api/admin/limpiar-pruebas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const confirmacion = String(req.body.confirmacion || '');
+    if (confirmacion !== 'BORRAR') {
+      res.status(400).json({ success: false, error: 'Confirmación incorrecta. Debes escribir BORRAR.' });
+      return;
+    }
+
+    const borrados: any = {};
+
+    // 1) Recoger rutas físicas de láminas ANTES de borrar (para limpiar disco)
+    const sheetsR = await pool.query(`SELECT imagen_path, miniatura_path FROM sheets`);
+    const rutasFisicas: string[] = [];
+    for (const s of sheetsR.rows) {
+      for (const p of [s.imagen_path, s.miniatura_path]) {
+        if (!p) continue;
+        let rel = String(p);
+        if (rel.startsWith('/uploads/')) rel = rel.substring('/uploads/'.length);
+        else if (rel.startsWith('uploads/')) rel = rel.substring('uploads/'.length);
+        rutasFisicas.push(path.join(UPLOADS_DIR, rel));
+      }
+    }
+
+    // 2) Borrar en orden seguro (hijos antes que padres).
+    //    Muchas tienen ON DELETE CASCADE, pero lo hacemos explícito para contar bien.
+    const ordenBorrado = [
+      'visit_emails',
+      'annotations',
+      'visits',
+      'express_sheets',
+      'catalog_versions',
+      'catalog_changes',
+      'catalog_assignments',
+      'sheets',
+      'catalogs'
+    ];
+    for (const tabla of ordenBorrado) {
+      try {
+        const r = await pool.query(`DELETE FROM ${tabla}`);
+        borrados[tabla] = r.rowCount || 0;
+      } catch (e: any) {
+        // Si una tabla no existe (ej. catalog_changes en algún entorno), seguimos
+        borrados[tabla] = 'tabla no encontrada o error: ' + e.message;
+      }
+    }
+
+    // 3) Borrar archivos físicos de láminas del disco
+    let archivosFisicosBorrados = 0;
+    const fsMod = require('fs');
+    for (const ruta of rutasFisicas) {
+      try {
+        if (fsMod.existsSync(ruta)) {
+          fsMod.unlinkSync(ruta);
+          archivosFisicosBorrados++;
+        }
+      } catch (e) {
+        // Ignorar errores de borrado de archivo individual
+      }
+    }
+
+    // 4) Borrar carpeta de versiones (PDFs/ZIPs generados) si existe
+    try {
+      const versionsDir = path.join(UPLOADS_DIR, 'versions');
+      if (fsMod.existsSync(versionsDir)) {
+        for (const f of fsMod.readdirSync(versionsDir)) {
+          try { fsMod.unlinkSync(path.join(versionsDir, f)); archivosFisicosBorrados++; } catch {}
+        }
+      }
+    } catch (e) { /* ignorar */ }
+
+    res.json({
+      success: true,
+      borrados,
+      archivos_fisicos_borrados: archivosFisicosBorrados,
+      mensaje: 'Datos de prueba eliminados. Productos, clientes, usuarios, plantillas y configuración intactos.'
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
 });
 
 // Funcion principal del geocoding en background

@@ -3160,6 +3160,26 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE 7: Zona de peligro -->
+        <div class="editor-panel" style="margin-bottom:14px;border:2px solid #fecaca;background:#fef2f2">
+          <h3 style="margin-top:0;color:#b91c1c">🗑️ Zona de peligro — Limpiar datos de prueba</h3>
+          <p style="font-size:13px;color:#7f1d1d">
+            Borra <b>todos los catálogos, láminas, visitas, anotaciones y versiones</b> para empezar de cero
+            con el catálogo definitivo.
+            <br><br>
+            <b>✅ NO se tocan:</b> los 10.607 productos, los clientes, los usuarios, las plantillas de anotación
+            ni la configuración de emails.
+            <br>
+            <b>⚠️ Esta acción es irreversible.</b> Asegúrate de tener descargada cualquier versión que quieras conservar.
+          </p>
+          <div id="limpiar-pruebas-stats" style="background:#fff;padding:12px;border-radius:8px;margin:12px 0;font-size:13px;border:1px solid #fecaca">
+            Cargando recuento…
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn" style="background:#dc2626;color:#fff" onclick="abrirModalLimpiarPruebas()">🗑️ Limpiar datos de prueba</button>
+          </div>
+        </div>
+
         <!-- ACCIONES -->
         <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:14px">
           <button class="btn btn-secondary" onclick="enviarEmailPrueba()">📨 Enviar email de prueba</button>
@@ -3172,8 +3192,89 @@ async function renderConfiguracion() {
     $v.innerHTML = html;
     // Cargar stats geocoding tras pintar
     actualizarStatsGeocoding();
+    // Cargar recuento de datos de prueba
+    cargarStatsLimpiarPruebas();
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+// ===== Limpiar datos de prueba =====
+async function cargarStatsLimpiarPruebas() {
+  const $stats = document.getElementById('limpiar-pruebas-stats');
+  if (!$stats) return;
+  try {
+    const r = await api('/api/admin/limpiar-pruebas/preview');
+    const c = r.counts;
+    $stats.innerHTML = `
+      Actualmente hay:
+      <b>${c.catalogs.n}</b> catálogos ·
+      <b>${c.sheets.n}</b> láminas ·
+      <b>${c.visits.n}</b> visitas ·
+      <b>${c.annotations.n}</b> anotaciones ·
+      <b>${c.catalog_versions.n}</b> versiones
+    `;
+  } catch (e) {
+    $stats.innerHTML = `<span style="color:#b91c1c">No se pudo cargar el recuento: ${escape(e.message)}</span>`;
+  }
+}
+
+function abrirModalLimpiarPruebas() {
+  document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 style="color:#b91c1c">🗑️ Limpiar datos de prueba</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div style="background:#fef2f2;border:1px solid #fecaca;padding:12px;border-radius:8px;margin-bottom:14px;font-size:13px;color:#7f1d1d">
+        Vas a borrar <b>todos los catálogos, láminas, visitas, anotaciones y versiones</b>.
+        <br><br>
+        Esto <b>NO</b> afecta a productos, clientes, usuarios, plantillas ni configuración.
+        <br><br>
+        <b>Esta acción no se puede deshacer.</b>
+      </div>
+      <div class="form-group">
+        <label>Para confirmar, escribe <b>BORRAR</b> en mayúsculas:</label>
+        <input type="text" id="limpiar-confirm-input" placeholder="BORRAR" autocomplete="off"
+               style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box" />
+      </div>
+      <div id="limpiar-modal-msg"></div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn" style="background:#dc2626;color:#fff" onclick="confirmarLimpiarPruebas()">🗑️ Borrar definitivamente</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  setTimeout(() => { const i = document.getElementById('limpiar-confirm-input'); if (i) i.focus(); }, 100);
+}
+
+async function confirmarLimpiarPruebas() {
+  const $input = document.getElementById('limpiar-confirm-input');
+  const $msg = document.getElementById('limpiar-modal-msg');
+  const confirmacion = ($input.value || '').trim();
+  if (confirmacion !== 'BORRAR') {
+    $msg.innerHTML = `<div class="error-msg">Debes escribir exactamente BORRAR (en mayúsculas).</div>`;
+    return;
+  }
+  $msg.innerHTML = `<div style="color:#6b7280;font-size:13px">Borrando datos de prueba…</div>`;
+  try {
+    const r = await api('/api/admin/limpiar-pruebas', {
+      method: 'POST',
+      body: { confirmacion: 'BORRAR' }
+    });
+    document.querySelector('.modal-bg').remove();
+    const b = r.borrados;
+    mostrarNotificacionOnline(
+      `✅ Limpiado: ${b.catalogs} catálogos · ${b.sheets} láminas · ${b.visits} visitas · ${r.archivos_fisicos_borrados} archivos`,
+      '#16a34a'
+    );
+    cargarStatsLimpiarPruebas();
+  } catch (err) {
+    $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
   }
 }
 
