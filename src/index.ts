@@ -265,6 +265,26 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_sheets_catalog ON sheets(catalog_id);
       CREATE INDEX IF NOT EXISTS idx_sheets_orden ON sheets(catalog_id, orden);
 
+      -- FASE 2.b': ZONAS CLICABLES sobre láminas (admin las dibuja, comercial las pulsa)
+      -- Coordenadas en PORCENTAJE (0-100) respecto al ancho/alto de la imagen,
+      -- NO en píxeles, para que la zona caiga bien en cualquier tamaño de pantalla
+      -- (tablet, PC, móvil). product_id puede ser NULL al crear la zona y asignarse después.
+      CREATE TABLE IF NOT EXISTS sheet_zones (
+        id SERIAL PRIMARY KEY,
+        sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        x REAL NOT NULL,           -- % desde la izquierda (0-100)
+        y REAL NOT NULL,           -- % desde arriba (0-100)
+        ancho REAL NOT NULL,       -- % de ancho (0-100)
+        alto REAL NOT NULL,        -- % de alto (0-100)
+        etiqueta VARCHAR(150),     -- texto opcional que el admin puede poner a la zona
+        orden INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_zones_sheet ON sheet_zones(sheet_id);
+      CREATE INDEX IF NOT EXISTS idx_zones_product ON sheet_zones(product_id);
+
       CREATE TABLE IF NOT EXISTS catalog_versions (
         id SERIAL PRIMARY KEY,
         catalog_id INTEGER REFERENCES catalogs(id) ON DELETE CASCADE,
@@ -580,7 +600,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'limpiar-pruebas-27may',
+    build: 'fase2b-zonas-editor-28may',
     service: 'CatalogPRO v2'
   });
 });
@@ -4766,6 +4786,99 @@ app.post('/api/products/import-confirm', verifyToken, requireRealAdmin, async (r
     }
 
     res.json({ success: true, creados, actualizados, descatalogados, marcados_baja: marcadosBaja });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// FASE 2.b' — ZONAS CLICABLES sobre láminas
+// ============================================================================
+// GET zonas de una lámina (con datos del producto asignado vía JOIN)
+app.get('/api/sheets/:sheetId/zones', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.sheetId);
+    const r = await pool.query(`
+      SELECT z.*,
+             p.codigo AS producto_codigo,
+             p.nombre AS producto_nombre,
+             p.ean AS producto_ean,
+             p.precio_pvf AS producto_pvf,
+             p.tipo AS producto_tipo,
+             p.activo AS producto_activo
+      FROM sheet_zones z
+      LEFT JOIN products p ON p.id = z.product_id
+      WHERE z.sheet_id = $1
+      ORDER BY z.orden, z.id
+    `, [sheetId]);
+    res.json({ success: true, zones: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST crear zona en una lámina (solo admin real)
+app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.sheetId);
+    const { x, y, ancho, alto, product_id, etiqueta } = req.body;
+    // Validar coordenadas en rango 0-100
+    if ([x, y, ancho, alto].some(v => typeof v !== 'number' || v < 0 || v > 100)) {
+      res.status(400).json({ success: false, error: 'Coordenadas inválidas (deben ser % entre 0 y 100)' });
+      return;
+    }
+    // Calcular orden (siguiente)
+    const ordenR = await pool.query(`SELECT COALESCE(MAX(orden), -1) + 1 AS next FROM sheet_zones WHERE sheet_id = $1`, [sheetId]);
+    const orden = ordenR.rows[0].next;
+    const r = await pool.query(`
+      INSERT INTO sheet_zones (sheet_id, product_id, x, y, ancho, alto, etiqueta, orden)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING *
+    `, [sheetId, product_id || null, x, y, ancho, alto, etiqueta || null, orden]);
+    res.json({ success: true, zone: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// PUT actualizar zona (mover, redimensionar, asignar producto, etiqueta) — solo admin real
+app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const zoneId = Number(req.params.zoneId);
+    const { x, y, ancho, alto, product_id, etiqueta } = req.body;
+    // Construir SET dinámico solo con los campos enviados
+    const sets: string[] = [];
+    const vals: any[] = [];
+    let i = 1;
+    if (x !== undefined)        { sets.push(`x = $${i++}`); vals.push(x); }
+    if (y !== undefined)        { sets.push(`y = $${i++}`); vals.push(y); }
+    if (ancho !== undefined)    { sets.push(`ancho = $${i++}`); vals.push(ancho); }
+    if (alto !== undefined)     { sets.push(`alto = $${i++}`); vals.push(alto); }
+    if (product_id !== undefined) { sets.push(`product_id = $${i++}`); vals.push(product_id || null); }
+    if (etiqueta !== undefined) { sets.push(`etiqueta = $${i++}`); vals.push(etiqueta || null); }
+    if (sets.length === 0) {
+      res.status(400).json({ success: false, error: 'Nada que actualizar' });
+      return;
+    }
+    sets.push(`updated_at = NOW()`);
+    vals.push(zoneId);
+    const r = await pool.query(`UPDATE sheet_zones SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`, vals);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Zona no encontrada' });
+      return;
+    }
+    res.json({ success: true, zone: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// DELETE borrar zona — solo admin real
+app.delete('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const zoneId = Number(req.params.zoneId);
+    const r = await pool.query(`DELETE FROM sheet_zones WHERE id = $1`, [zoneId]);
+    res.json({ success: true, borrada: (r.rowCount || 0) > 0 });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }

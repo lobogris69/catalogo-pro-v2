@@ -1361,6 +1361,15 @@ function abrirModalEditarLamina(sheet, catalogId) {
           </label>
           <input type="file" id="ed-imagen" accept="image/*,application/pdf">
         </div>
+        <div class="form-group">
+          <button type="button" class="btn" style="width:100%;background:#0ea5e9;color:#fff"
+                  onclick="abrirEditorZonas(${sheet.id}, ${catalogId})">
+            🎯 Definir zonas de productos
+          </button>
+          <small style="color:var(--gris-texto);display:block;margin-top:4px">
+            Dibuja rectángulos sobre la lámina y asigna un producto a cada uno. Los comerciales podrán pulsarlos en la visita.
+          </small>
+        </div>
         <div class="modal-acciones">
           <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
           <button type="submit" class="btn btn-primary">Guardar</button>
@@ -6524,6 +6533,313 @@ window.testBuscarProductos = async function(q) {
   console.table(r.map(p => ({ codigo: p.codigo, nombre: p.nombre, ean: p.ean, pvf: p.precio_pvf, tipo: p.tipo })));
   return r;
 };
+
+// ============================================================================
+// FASE 2.b' — EDITOR DE ZONAS sobre láminas (admin dibuja + asigna producto)
+// ============================================================================
+// Estado del editor de zonas (mientras está abierto)
+let _zonasEditor = {
+  sheetId: null,
+  catalogId: null,
+  zonas: [],          // zonas cargadas del servidor
+  dibujando: false,   // está arrastrando para crear una zona nueva
+  inicioX: 0, inicioY: 0,
+  zonaSeleccionadaId: null,
+  acProducto: null    // instancia del autocomplete activo
+};
+
+async function abrirEditorZonas(sheetId, catalogId) {
+  // Cerrar el modal de editar lámina
+  document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+
+  _zonasEditor.sheetId = sheetId;
+  _zonasEditor.catalogId = catalogId;
+  _zonasEditor.zonaSeleccionadaId = null;
+
+  // Cargar la lámina y sus zonas
+  let sheet, zonas;
+  try {
+    const rCat = await api('/api/catalogs/' + catalogId);
+    sheet = rCat.sheets.find(s => s.id === sheetId);
+    if (!sheet) { alert('Lámina no encontrada'); return; }
+    const rZonas = await api('/api/sheets/' + sheetId + '/zones');
+    zonas = rZonas.zones || [];
+  } catch (e) {
+    alert('Error cargando datos: ' + e.message);
+    return;
+  }
+  _zonasEditor.zonas = zonas;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'zonas-editor-overlay';
+  overlay.id = 'zonas-editor-overlay';
+  overlay.innerHTML = `
+    <div class="zonas-editor-header">
+      <div>
+        <b>🎯 Zonas de productos</b>
+        <span style="color:#9ca3af;font-size:13px">${escape(sheet.titulo || 'Lámina')}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="zonas-contador" id="zonas-contador">${zonas.length} zonas</span>
+        <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
+      </div>
+    </div>
+    <div class="zonas-editor-body">
+      <div class="zonas-editor-lienzo-col">
+        <div class="zonas-ayuda" id="zonas-ayuda">
+          ✏️ <b>Arrastra</b> sobre la lámina para dibujar un rectángulo. Luego asígnale un producto en el panel derecho.
+        </div>
+        <div class="zonas-lienzo-wrap" id="zonas-lienzo-wrap">
+          <img src="${escape(sheet.imagen_path)}" class="zonas-lienzo-img" id="zonas-lienzo-img" draggable="false" alt="">
+          <div class="zonas-capa" id="zonas-capa"></div>
+        </div>
+      </div>
+      <div class="zonas-editor-panel" id="zonas-panel">
+        <!-- aquí va el detalle de la zona seleccionada o la lista -->
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Esperar a que la imagen cargue para montar los eventos de dibujo
+  const img = document.getElementById('zonas-lienzo-img');
+  if (img.complete) {
+    montarLienzoZonas();
+  } else {
+    img.onload = () => montarLienzoZonas();
+  }
+  renderListaZonas();
+}
+
+function cerrarEditorZonas() {
+  if (_zonasEditor.acProducto) { try { _zonasEditor.acProducto.destroy(); } catch {} _zonasEditor.acProducto = null; }
+  const ov = document.getElementById('zonas-editor-overlay');
+  if (ov) ov.remove();
+  // Reabrir el modal de editar lámina para volver al flujo
+  // (opcional: no lo reabrimos para no molestar)
+}
+
+function montarLienzoZonas() {
+  const capa = document.getElementById('zonas-capa');
+  const wrap = document.getElementById('zonas-lienzo-wrap');
+  if (!capa || !wrap) return;
+
+  renderZonasEnCapa();
+
+  // Eventos de dibujo (ratón y táctil unificados)
+  let rectTemp = null;
+
+  function getRel(e) {
+    const rect = wrap.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+    const cy = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+    return {
+      x: Math.max(0, Math.min(100, (cx / rect.width) * 100)),
+      y: Math.max(0, Math.min(100, (cy / rect.height) * 100))
+    };
+  }
+
+  function onDown(e) {
+    // Si se pulsa sobre una zona existente, no dibujar (se gestiona con su propio click)
+    if (e.target.classList.contains('zona-rect')) return;
+    e.preventDefault();
+    const p = getRel(e);
+    _zonasEditor.dibujando = true;
+    _zonasEditor.inicioX = p.x;
+    _zonasEditor.inicioY = p.y;
+    rectTemp = document.createElement('div');
+    rectTemp.className = 'zona-rect zona-rect-temp';
+    rectTemp.style.left = p.x + '%';
+    rectTemp.style.top = p.y + '%';
+    rectTemp.style.width = '0%';
+    rectTemp.style.height = '0%';
+    capa.appendChild(rectTemp);
+  }
+
+  function onMove(e) {
+    if (!_zonasEditor.dibujando || !rectTemp) return;
+    e.preventDefault();
+    const p = getRel(e);
+    const x = Math.min(p.x, _zonasEditor.inicioX);
+    const y = Math.min(p.y, _zonasEditor.inicioY);
+    const w = Math.abs(p.x - _zonasEditor.inicioX);
+    const h = Math.abs(p.y - _zonasEditor.inicioY);
+    rectTemp.style.left = x + '%';
+    rectTemp.style.top = y + '%';
+    rectTemp.style.width = w + '%';
+    rectTemp.style.height = h + '%';
+  }
+
+  async function onUp(e) {
+    if (!_zonasEditor.dibujando || !rectTemp) return;
+    _zonasEditor.dibujando = false;
+    const x = parseFloat(rectTemp.style.left);
+    const y = parseFloat(rectTemp.style.top);
+    const w = parseFloat(rectTemp.style.width);
+    const h = parseFloat(rectTemp.style.height);
+    rectTemp.remove();
+    rectTemp = null;
+    // Ignorar rectángulos minúsculos (clicks accidentales)
+    if (w < 2 || h < 2) return;
+    // Crear la zona en el servidor
+    try {
+      const r = await api('/api/sheets/' + _zonasEditor.sheetId + '/zones', {
+        method: 'POST',
+        body: { x, y, ancho: w, alto: h }
+      });
+      _zonasEditor.zonas.push(r.zone);
+      _zonasEditor.zonaSeleccionadaId = r.zone.id;
+      renderZonasEnCapa();
+      renderListaZonas();
+      actualizarContadorZonas();
+    } catch (err) {
+      alert('Error creando zona: ' + err.message);
+    }
+  }
+
+  wrap.addEventListener('mousedown', onDown);
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+  wrap.addEventListener('touchstart', onDown, { passive: false });
+  document.addEventListener('touchmove', onMove, { passive: false });
+  document.addEventListener('touchend', onUp);
+}
+
+function renderZonasEnCapa() {
+  const capa = document.getElementById('zonas-capa');
+  if (!capa) return;
+  capa.innerHTML = '';
+  _zonasEditor.zonas.forEach((z, idx) => {
+    const div = document.createElement('div');
+    const asignada = !!z.product_id;
+    div.className = 'zona-rect' + (asignada ? ' zona-rect-asignada' : ' zona-rect-vacia') +
+                    (z.id === _zonasEditor.zonaSeleccionadaId ? ' zona-rect-sel' : '');
+    div.style.left = z.x + '%';
+    div.style.top = z.y + '%';
+    div.style.width = z.ancho + '%';
+    div.style.height = z.alto + '%';
+    div.dataset.zoneId = z.id;
+    div.innerHTML = `<span class="zona-num">${idx + 1}</span>`;
+    div.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _zonasEditor.zonaSeleccionadaId = z.id;
+      renderZonasEnCapa();
+      renderListaZonas();
+    });
+    capa.appendChild(div);
+  });
+}
+
+function actualizarContadorZonas() {
+  const c = document.getElementById('zonas-contador');
+  if (c) c.textContent = _zonasEditor.zonas.length + ' zonas';
+}
+
+function renderListaZonas() {
+  const panel = document.getElementById('zonas-panel');
+  if (!panel) return;
+
+  const sel = _zonasEditor.zonas.find(z => z.id === _zonasEditor.zonaSeleccionadaId);
+
+  if (!sel) {
+    // Vista de lista general
+    panel.innerHTML = `
+      <h4 style="margin-top:0">Zonas dibujadas</h4>
+      ${_zonasEditor.zonas.length === 0
+        ? '<p style="color:#9ca3af;font-size:13px">Aún no hay zonas. Arrastra sobre la lámina para crear la primera.</p>'
+        : _zonasEditor.zonas.map((z, idx) => `
+          <div class="zona-lista-item" onclick="seleccionarZona(${z.id})">
+            <span class="zona-lista-num">${idx + 1}</span>
+            <span class="zona-lista-info">
+              ${z.product_id
+                ? `<b>${escape(z.producto_codigo || '')}</b> ${escape(z.producto_nombre || '')}`
+                : '<span style="color:#f59e0b">⚠️ Sin producto asignado</span>'}
+            </span>
+          </div>
+        `).join('')}
+    `;
+    return;
+  }
+
+  // Vista de detalle de zona seleccionada
+  const idx = _zonasEditor.zonas.indexOf(sel) + 1;
+  panel.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h4 style="margin:0">Zona ${idx}</h4>
+      <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="deseleccionarZona()">← Volver</button>
+    </div>
+    ${sel.product_id ? `
+      <div class="zona-producto-actual">
+        <div style="font-size:11px;color:#16a34a;font-weight:600;margin-bottom:4px">✅ Producto asignado</div>
+        <b>${escape(sel.producto_codigo || '')}</b> · ${escape(sel.producto_nombre || '')}<br>
+        <span style="font-size:12px;color:#6b7280">PVF ${sel.producto_pvf ? Number(sel.producto_pvf).toFixed(2) + '€' : '—'}</span>
+      </div>
+    ` : `
+      <div style="background:#fef3c7;border:1px solid #fcd34d;padding:8px;border-radius:6px;font-size:12px;color:#78350f;margin-bottom:10px">
+        ⚠️ Esta zona no tiene producto. Búscalo abajo y asígnalo.
+      </div>
+    `}
+    <div class="form-group">
+      <label style="font-size:13px">${sel.product_id ? 'Cambiar producto' : 'Asignar producto'}</label>
+      <div id="zona-ac-contenedor"></div>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn" style="background:#dc2626;color:#fff;flex:1" onclick="borrarZona(${sel.id})">🗑️ Borrar zona</button>
+    </div>
+  `;
+
+  // Montar el autocomplete dentro del panel
+  if (_zonasEditor.acProducto) { try { _zonasEditor.acProducto.destroy(); } catch {} }
+  const cont = document.getElementById('zona-ac-contenedor');
+  _zonasEditor.acProducto = montarAutocompleteProducto(cont, {
+    placeholder: 'Buscar producto…',
+    onSelect: async (producto) => {
+      if (!producto) return;
+      try {
+        await api('/api/zones/' + sel.id, {
+          method: 'PUT',
+          body: { product_id: producto.id }
+        });
+        // Actualizar en memoria
+        sel.product_id = producto.id;
+        sel.producto_codigo = producto.codigo;
+        sel.producto_nombre = producto.nombre;
+        sel.producto_pvf = producto.precio_pvf;
+        renderZonasEnCapa();
+        renderListaZonas();
+        mostrarNotificacionOnline('✅ Producto asignado a la zona', '#16a34a');
+      } catch (err) {
+        alert('Error asignando producto: ' + err.message);
+      }
+    }
+  });
+}
+
+function seleccionarZona(zoneId) {
+  _zonasEditor.zonaSeleccionadaId = zoneId;
+  renderZonasEnCapa();
+  renderListaZonas();
+}
+
+function deseleccionarZona() {
+  _zonasEditor.zonaSeleccionadaId = null;
+  renderZonasEnCapa();
+  renderListaZonas();
+}
+
+async function borrarZona(zoneId) {
+  if (!confirm('¿Borrar esta zona? El producto NO se borra, solo la zona sobre la lámina.')) return;
+  try {
+    await api('/api/zones/' + zoneId, { method: 'DELETE' });
+    _zonasEditor.zonas = _zonasEditor.zonas.filter(z => z.id !== zoneId);
+    _zonasEditor.zonaSeleccionadaId = null;
+    renderZonasEnCapa();
+    renderListaZonas();
+    actualizarContadorZonas();
+  } catch (err) {
+    alert('Error borrando zona: ' + err.message);
+  }
+}
 
 // ===== ARRANQUE =====
 render();
