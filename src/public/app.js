@@ -5856,8 +5856,11 @@ function renderDashboardWidgets(d) {
     widgetResumenMes(d.resumen_mes),
     widgetVisitasHoy(d.visitas_hoy),
     widgetSinVisitar(d.sin_visitar),
+    widgetProximasPrevistas(d.proximas_previstas),
+    widgetGraficoSemanas(d.visitas_por_semana),
     widgetTopProductos(d.top_productos),
-    widgetTopClientes(d.top_clientes)
+    widgetTopClientes(d.top_clientes),
+    widgetRankingComerciales(d.ranking_comerciales)
   ];
   return `<div class="dashboard-grid">${widgets.join('')}</div>`;
 }
@@ -6005,6 +6008,131 @@ function widgetTopClientes(clientes) {
               </li>
             `).join('')}
           </ul>`
+      }
+    </div>
+  `;
+}
+
+// --- Widget: Próximas visitas previstas (ciclo vence en próx. 7 días) ---
+function widgetProximasPrevistas(clientes) {
+  if (!clientes) clientes = [];
+  return `
+    <div class="dash-widget">
+      <h3>🗓️ Próximas visitas previstas <span class="dash-badge">${clientes.length}</span></h3>
+      ${clientes.length === 0
+        ? `<p class="dash-vacio">Ninguna visita prevista en los próximos 7 días.</p>`
+        : `<ul class="dash-lista">
+            ${clientes.map(c => {
+              const fecha = new Date(c.fecha_prevista).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', weekday: 'short' });
+              const color = c.dias_restantes <= 2 ? '#f59e0b' : '#16a34a';
+              return `
+                <li class="dash-item" onclick="abrirResultadoBusqueda('cliente', ${c.id})">
+                  <div class="dash-item-titulo">
+                    <b>${escape(c.razon_social || '—')}</b>
+                    <span style="color:${color};font-weight:600;font-size:12px;margin-left:auto">${escape(fecha)}</span>
+                  </div>
+                  <div class="dash-item-sub">
+                    ${c.municipio ? escape(c.municipio) + ' · ' : ''}
+                    en ${c.dias_restantes} día${c.dias_restantes !== 1 ? 's' : ''}
+                  </div>
+                </li>
+              `;
+            }).join('')}
+          </ul>`
+      }
+    </div>
+  `;
+}
+
+// --- Widget: Gráfico de visitas por semana (SVG nativo, CC1) ---
+function widgetGraficoSemanas(semanas) {
+  if (!semanas || semanas.length === 0) {
+    return `
+      <div class="dash-widget">
+        <h3>📈 Visitas por semana</h3>
+        <p class="dash-vacio">Aún no hay datos suficientes.</p>
+      </div>
+    `;
+  }
+  const maxVisitas = Math.max(...semanas.map(s => s.visitas), 1);
+  // Dimensiones del SVG
+  const w = 100;     // % del ancho
+  const h = 140;     // px de alto del gráfico
+  const padTop = 10;
+  const padBottom = 30;
+  const padLeft = 6;
+  const padRight = 6;
+  const innerH = h - padTop - padBottom;
+  const numBarras = semanas.length;
+  const espacio = 6;
+  const totalEspacios = espacio * (numBarras - 1);
+  // Usamos viewBox para que escale: ancho lógico arbitrario 100
+  const innerW = 100 - padLeft - padRight;
+  const anchoBarra = (innerW - totalEspacios) / numBarras;
+
+  const barras = semanas.map((s, i) => {
+    const xBar = padLeft + i * (anchoBarra + espacio);
+    const altoBar = (s.visitas / maxVisitas) * innerH;
+    const yBar = padTop + innerH - altoBar;
+    const fecha = new Date(s.semana_inicio);
+    const etiqueta = (fecha.getDate() + '/' + (fecha.getMonth() + 1));
+    const color = i === semanas.length - 1 ? '#ec4899' : '#a78bfa'; // última semana destacada
+    return `
+      <g>
+        <rect x="${xBar}" y="${yBar}" width="${anchoBarra}" height="${Math.max(altoBar, 0.5)}"
+              fill="${color}" rx="0.6" ry="0.6">
+          <title>Semana del ${fecha.toLocaleDateString('es-ES')}: ${s.visitas} visitas${s.con_pedido ? ', ' + s.con_pedido + ' con pedido' : ''}</title>
+        </rect>
+        ${s.visitas > 0 ? `<text x="${xBar + anchoBarra / 2}" y="${yBar - 1}" text-anchor="middle"
+                                font-size="3.2" fill="#374151" font-weight="600">${s.visitas}</text>` : ''}
+        <text x="${xBar + anchoBarra / 2}" y="${h - 14}" text-anchor="middle" font-size="3" fill="#6b7280">${etiqueta}</text>
+      </g>
+    `;
+  }).join('');
+
+  const totalVisitas = semanas.reduce((s, x) => s + x.visitas, 0);
+  return `
+    <div class="dash-widget">
+      <h3>📈 Visitas por semana <span class="dash-badge">${totalVisitas} en 8 sem</span></h3>
+      <svg viewBox="0 0 100 ${h}" preserveAspectRatio="none" style="width:100%;height:${h * 1.5}px;display:block">
+        ${barras}
+        <text x="50" y="${h - 4}" text-anchor="middle" font-size="2.8" fill="#9ca3af">Últimas 8 semanas (lunes inicio)</text>
+      </svg>
+    </div>
+  `;
+}
+
+// --- Widget: Ranking comerciales del mes ---
+function widgetRankingComerciales(comerciales) {
+  if (!comerciales) comerciales = [];
+  return `
+    <div class="dash-widget">
+      <h3>👥 Comerciales del mes</h3>
+      ${comerciales.length === 0
+        ? `<p class="dash-vacio">Sin actividad este mes.</p>`
+        : `<table class="dash-tabla">
+            <thead>
+              <tr>
+                <th style="text-align:left">Comercial</th>
+                <th style="text-align:right">Visitas</th>
+                <th style="text-align:right">C/P</th>
+                <th style="text-align:right">PVF</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${comerciales.map((c, idx) => `
+                <tr>
+                  <td>
+                    <span class="dash-rank" style="margin-right:6px">#${idx + 1}</span>
+                    <b>${escape(c.name || '—')}</b>
+                  </td>
+                  <td style="text-align:right;font-weight:600">${c.visitas}</td>
+                  <td style="text-align:right;color:#6b7280">${c.con_pedido}</td>
+                  <td style="text-align:right;color:#16a34a;font-weight:600">${(c.total_pvf || 0).toFixed(0)}€</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>`
       }
     </div>
   `;

@@ -613,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'dashboard-fase1-29may',
+    build: 'dashboard-fase2-29may',
     service: 'CatalogPRO v2'
   });
 });
@@ -2308,6 +2308,70 @@ app.get('/api/dashboard', verifyToken, requireRealAdmin, async (req: AuthRequest
       `);
       data.top_clientes = r.rows.map((x: any) => ({ ...x, total_pvf: Number(x.total_pvf) || 0 }));
     } catch (e) { data.top_clientes = []; }
+
+    // --- Widget 6: Comerciales del mes (ranking visitas + PVF) ---
+    try {
+      const r = await pool.query(`
+        SELECT u.id, u.name,
+               COUNT(DISTINCT v.id)::int AS visitas,
+               COUNT(*) FILTER (WHERE v.hubo_pedido)::int AS con_pedido,
+               COALESCE(SUM(a.cantidad * p.precio_pvf), 0)::numeric AS total_pvf
+        FROM users u
+        JOIN visits v ON v.user_id = u.id
+        LEFT JOIN annotations a ON a.visit_id = v.id
+        LEFT JOIN products p ON p.id = a.product_id AND p.precio_pvf IS NOT NULL
+        WHERE v.created_at >= DATE_TRUNC('month', CURRENT_DATE)
+          AND v.status = 'confirmed'
+        GROUP BY u.id, u.name
+        ORDER BY visitas DESC, total_pvf DESC
+        LIMIT 10
+      `);
+      data.ranking_comerciales = r.rows.map((x: any) => ({ ...x, total_pvf: Number(x.total_pvf) || 0 }));
+    } catch (e) { data.ranking_comerciales = []; }
+
+    // --- Widget 7: Visitas por semana (últimas 8 semanas) ---
+    // Devuelve un array con {semana_inicio, visitas} para últimas 8 semanas (incluyendo la actual)
+    try {
+      const r = await pool.query(`
+        WITH semanas AS (
+          SELECT generate_series(
+            DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '7 weeks',
+            DATE_TRUNC('week', CURRENT_DATE),
+            INTERVAL '1 week'
+          ) AS semana_inicio
+        )
+        SELECT s.semana_inicio,
+               COALESCE(COUNT(v.id), 0)::int AS visitas,
+               COALESCE(COUNT(v.id) FILTER (WHERE v.hubo_pedido), 0)::int AS con_pedido
+        FROM semanas s
+        LEFT JOIN visits v ON DATE_TRUNC('week', v.created_at) = s.semana_inicio
+                           AND v.status = 'confirmed'
+        GROUP BY s.semana_inicio
+        ORDER BY s.semana_inicio ASC
+      `);
+      data.visitas_por_semana = r.rows;
+    } catch (e) { data.visitas_por_semana = []; }
+
+    // --- Widget 8: Próximas visitas previstas (ciclo vence en próximos 7 días) ---
+    // Solo clientes cuya última visita + ciclo cae entre hoy y dentro de 7 días.
+    // Los que YA están vencidos NO entran aquí (esos están en "Sin visitar").
+    try {
+      const r = await pool.query(`
+        SELECT c.id, c.razon_social, c.municipio,
+               c.ultima_visita_at,
+               COALESCE(c.ciclo_visita_dias, 90) AS ciclo,
+               (c.ultima_visita_at + (COALESCE(c.ciclo_visita_dias, 90) || ' days')::interval)::date AS fecha_prevista,
+               EXTRACT(DAY FROM ((c.ultima_visita_at + (COALESCE(c.ciclo_visita_dias, 90) || ' days')::interval) - NOW()))::int AS dias_restantes
+        FROM clients c
+        WHERE c.is_active = TRUE
+          AND c.ultima_visita_at IS NOT NULL
+          AND (c.ultima_visita_at + (COALESCE(c.ciclo_visita_dias, 90) || ' days')::interval) > NOW()
+          AND (c.ultima_visita_at + (COALESCE(c.ciclo_visita_dias, 90) || ' days')::interval) <= NOW() + INTERVAL '7 days'
+        ORDER BY fecha_prevista ASC
+        LIMIT 10
+      `);
+      data.proximas_previstas = r.rows;
+    } catch (e) { data.proximas_previstas = []; }
 
     res.json({ success: true, dashboard: data });
   } catch (e) {
