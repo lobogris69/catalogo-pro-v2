@@ -9,6 +9,8 @@
     "dev": "ts-node src/index.ts"
   },
   "dependencies": {
+    "@types/archiver": "^5.3.4",
+    "archiver": "^6.0.2",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

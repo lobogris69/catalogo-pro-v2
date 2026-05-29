@@ -5,12 +5,96 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
   <title>CatalogPRO v2 - LOMHIFAR</title>
   <link rel="stylesheet" href="/styles.css">
+
+  <!-- I: PWA - manifest + meta para móvil -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#cc007a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="CatalogPRO">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+
+  <!-- H: Leaflet para mapas (CDN oficial, sin API key) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""
+        defer></script>
 </head>
 <body>
   <div id="app">
     <div id="loading" class="loading">Cargando…</div>
   </div>
 
+  <!-- I: IndexedDB wrapper (cargar antes de app.js) -->
+  <script src="/db.js"></script>
   <script src="/app.js"></script>
+
+  <!-- I: registrar Service Worker para modo offline + detección de actualización -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then((reg) => {
+            console.log('[PWA] Service Worker registrado', reg.scope);
+
+            // Guardamos referencia global para que app.js pueda llamar a updates
+            window._swRegistration = reg;
+
+            // Si ya hay un SW "esperando" al cargar la página, hay update disponible
+            if (reg.waiting) {
+              console.log('[PWA] Update disponible: SW ya esperando al cargar');
+              if (typeof mostrarBannerActualizacion === 'function') {
+                mostrarBannerActualizacion();
+              }
+            }
+
+            // Detectar cuando se descarga un SW nuevo
+            reg.addEventListener('updatefound', () => {
+              console.log('[PWA] Nuevo SW detectado, descargando...');
+              const nuevoSW = reg.installing;
+              if (!nuevoSW) return;
+              nuevoSW.addEventListener('statechange', () => {
+                if (nuevoSW.state === 'installed' && navigator.serviceWorker.controller) {
+                  // El nuevo SW está listo pero esperando. Avisamos al usuario.
+                  console.log('[PWA] Nuevo SW instalado, esperando activación');
+                  if (typeof mostrarBannerActualizacion === 'function') {
+                    mostrarBannerActualizacion();
+                  }
+                }
+              });
+            });
+
+            // Cuando se activa un nuevo SW, recargar la página
+            // (solo si el usuario pulsó "actualizar" en el banner)
+            let recargando = false;
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+              if (recargando) return;
+              recargando = true;
+              console.log('[PWA] Nuevo SW activo, recargando...');
+              window.location.reload();
+            });
+
+            // Comprobar actualizaciones cada 10 minutos (para apps que llevan abiertas mucho tiempo)
+            setInterval(() => {
+              reg.update().catch(() => {});
+            }, 10 * 60 * 1000);
+          })
+          .catch((err) => console.warn('[PWA] Error registrando SW:', err));
+      });
+    }
+
+    // Función global llamada por el banner al pulsar "Actualizar ahora"
+    window.aplicarActualizacionPWA = function () {
+      if (window._swRegistration && window._swRegistration.waiting) {
+        // Decir al SW que espera que se active YA
+        window._swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        // El evento 'controllerchange' de arriba se encarga de recargar la página
+      } else {
+        // Fallback: recargar directamente
+        window.location.reload();
+      }
+    };
+  </script>
 </body>
 </html>

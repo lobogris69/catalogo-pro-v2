@@ -1,0 +1,27 @@
+{
+  "name": "CatalogPRO LOMHIFAR",
+  "short_name": "CatalogPRO",
+  "description": "Catálogo digital de productos parafarmacéuticos para comerciales de LOMHIFAR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#cc007a",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "lang": "es-ES",
+  "categories": ["business", "productivity"]
+}
