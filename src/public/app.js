@@ -195,6 +195,7 @@ async function renderApp() {
         </div>
       </div>
       <div class="navtabs">
+        ${esAdmin ? `<button class="navtab ${appState.vista === 'dashboard' ? 'navtab-activa' : ''}" onclick="irA('dashboard')">🏠 Dashboard</button>` : ''}
         <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
         <button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>
         <button class="navtab ${appState.vista === 'planning' ? 'navtab-activa' : ''}" onclick="irA('planning')">🗓️ Planning</button>
@@ -217,12 +218,16 @@ async function renderApp() {
 function routerVista() {
   // I.2: vistas que NO funcionan offline (requieren API y no tienen cache offline)
   // Clientes y Planning SÍ funcionan offline (I.3 + I-Planning) leyendo desde IndexedDB
-  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion', 'productos'];
+  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion', 'productos', 'dashboard'];
   if (!navigator.onLine && vistasOnlineOnly.includes(appState.vista)) {
     renderVistaNoDisponibleOffline(appState.vista);
     return;
   }
 
+  if (appState.vista === 'dashboard') {
+    renderDashboard();
+    return;
+  }
   if (appState.vista === 'clientes') {
     if (appState.clienteActual) {
       renderDetalleCliente(appState.clienteActual);
@@ -5815,6 +5820,203 @@ function mostrarModalVisitaEnCurso() {
     </div>
   `;
   document.body.appendChild(modal);
+}
+
+// ============================================================================
+// DASHBOARD ADMIN — Fase 1 (5 widgets modulares)
+// Estructura preparada para añadir los 3 widgets de Fase 2 después
+// (ranking comerciales, gráfico semanal, próximas previstas)
+// ============================================================================
+async function renderDashboard() {
+  const $v = document.getElementById('vista-contenido');
+  if (!$v) return;
+  $v.innerHTML = `
+    <div class="contenedor">
+      <h2 style="margin-bottom:6px">🏠 Dashboard</h2>
+      <p style="color:var(--gris-texto);font-size:13px;margin-top:0;margin-bottom:16px">
+        Vista general · ${new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}
+      </p>
+      <div id="dashboard-contenido">
+        <p style="color:var(--gris-texto);text-align:center;padding:24px">Cargando…</p>
+      </div>
+    </div>
+  `;
+  try {
+    const r = await api('/api/dashboard');
+    const d = r.dashboard || {};
+    document.getElementById('dashboard-contenido').innerHTML = renderDashboardWidgets(d);
+  } catch (e) {
+    document.getElementById('dashboard-contenido').innerHTML =
+      `<div class="error-msg">${escape(e.message)}</div>`;
+  }
+}
+
+function renderDashboardWidgets(d) {
+  const widgets = [
+    widgetResumenMes(d.resumen_mes),
+    widgetVisitasHoy(d.visitas_hoy),
+    widgetSinVisitar(d.sin_visitar),
+    widgetTopProductos(d.top_productos),
+    widgetTopClientes(d.top_clientes)
+  ];
+  return `<div class="dashboard-grid">${widgets.join('')}</div>`;
+}
+
+// --- Widget: Resumen del mes (KPIs grandes arriba) ---
+function widgetResumenMes(r) {
+  if (!r) return '';
+  return `
+    <div class="dash-widget dash-widget-full">
+      <h3>📊 Resumen del mes</h3>
+      <div class="dash-kpis">
+        <div class="dash-kpi">
+          <div class="dash-kpi-valor">${r.total_visitas}</div>
+          <div class="dash-kpi-label">Visitas</div>
+          <div class="dash-kpi-sub">${r.confirmadas} confirmadas</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="dash-kpi-valor" style="color:#16a34a">${(r.total_pvf || 0).toFixed(2)}€</div>
+          <div class="dash-kpi-label">Total PVF facturado</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="dash-kpi-valor">${r.comerciales_activos}</div>
+          <div class="dash-kpi-label">Comerciales activos</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// --- Widget: Visitas de hoy ---
+function widgetVisitasHoy(visitas) {
+  if (!visitas) visitas = [];
+  return `
+    <div class="dash-widget">
+      <h3>📅 Visitas de hoy <span class="dash-badge">${visitas.length}</span></h3>
+      ${visitas.length === 0
+        ? `<p class="dash-vacio">Sin visitas registradas hoy.</p>`
+        : `<ul class="dash-lista">
+            ${visitas.slice(0, 8).map(v => {
+              const badge = v.status === 'draft'
+                ? '<span class="visita-badge visita-badge-draft">borrador</span>'
+                : '<span class="visita-badge visita-badge-confirmed">cerrada</span>';
+              const pedido = v.hubo_pedido ? '🛒' : '';
+              return `
+                <li class="dash-item" onclick="abrirVisitaDesdeDashboard(${v.id})">
+                  <div class="dash-item-titulo">
+                    <b>${escape(v.cliente_nombre || '—')}</b> ${badge} ${pedido}
+                  </div>
+                  <div class="dash-item-sub">
+                    ${escape(v.comercial_nombre || '?')} ·
+                    ${v.cliente_municipio ? escape(v.cliente_municipio) + ' · ' : ''}
+                    ${v.num_anotaciones} anot.
+                  </div>
+                </li>
+              `;
+            }).join('')}
+          </ul>${visitas.length > 8 ? `<div class="dash-mas">+${visitas.length - 8} más</div>` : ''}`
+      }
+    </div>
+  `;
+}
+
+// --- Widget: Clientes sin visitar ---
+function widgetSinVisitar(clientes) {
+  if (!clientes) clientes = [];
+  return `
+    <div class="dash-widget">
+      <h3>⏰ Sin visitar <span class="dash-badge">${clientes.length}</span></h3>
+      ${clientes.length === 0
+        ? `<p class="dash-vacio">Todos los clientes están al día.</p>`
+        : `<ul class="dash-lista">
+            ${clientes.map(c => {
+              const color = c.dias_sin_visitar > c.ciclo * 1.5 ? '#dc2626' : '#f59e0b';
+              return `
+                <li class="dash-item" onclick="abrirResultadoBusqueda('cliente', ${c.id})">
+                  <div class="dash-item-titulo">
+                    <b>${escape(c.razon_social || '—')}</b>
+                    <span style="color:${color};font-weight:600;font-size:12px">${c.dias_sin_visitar} d</span>
+                  </div>
+                  <div class="dash-item-sub">
+                    ${c.municipio ? escape(c.municipio) + ' · ' : ''}
+                    ciclo ${c.ciclo}d
+                  </div>
+                </li>
+              `;
+            }).join('')}
+          </ul>`
+      }
+    </div>
+  `;
+}
+
+// --- Widget: Top productos del mes ---
+function widgetTopProductos(productos) {
+  if (!productos) productos = [];
+  return `
+    <div class="dash-widget">
+      <h3>📦 Top productos del mes</h3>
+      ${productos.length === 0
+        ? `<p class="dash-vacio">Sin pedidos registrados este mes.</p>`
+        : `<table class="dash-tabla">
+            <thead>
+              <tr>
+                <th style="text-align:left">Código</th>
+                <th style="text-align:left">Producto</th>
+                <th style="text-align:right">Uds</th>
+                <th style="text-align:right">PVF</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${productos.map(p => `
+                <tr>
+                  <td><b>${escape(p.codigo || '—')}</b></td>
+                  <td>${escape((p.nombre || '').substring(0, 32))}</td>
+                  <td style="text-align:right;font-weight:600">${p.uds_total}</td>
+                  <td style="text-align:right;color:#16a34a">${(p.total_pvf || 0).toFixed(0)}€</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>`
+      }
+    </div>
+  `;
+}
+
+// --- Widget: Top clientes del mes ---
+function widgetTopClientes(clientes) {
+  if (!clientes) clientes = [];
+  return `
+    <div class="dash-widget">
+      <h3>🏆 Top clientes del mes</h3>
+      ${clientes.length === 0
+        ? `<p class="dash-vacio">Sin pedidos cuantificados este mes.</p>`
+        : `<ul class="dash-lista">
+            ${clientes.map((c, idx) => `
+              <li class="dash-item" onclick="abrirResultadoBusqueda('cliente', ${c.id})">
+                <div class="dash-item-titulo">
+                  <span class="dash-rank">#${idx + 1}</span>
+                  <b>${escape(c.razon_social || '—')}</b>
+                </div>
+                <div class="dash-item-sub" style="display:flex;justify-content:space-between">
+                  <span>${c.municipio ? escape(c.municipio) + ' · ' : ''}${c.visitas} visita${c.visitas !== 1 ? 's' : ''}</span>
+                  <span style="color:#16a34a;font-weight:600">${(c.total_pvf || 0).toFixed(2)}€</span>
+                </div>
+              </li>
+            `).join('')}
+          </ul>`
+      }
+    </div>
+  `;
+}
+
+// Navegación desde widget de visitas hoy → detalle visita
+function abrirVisitaDesdeDashboard(visitId) {
+  appState.vista = 'clientes';
+  appState.clienteActual = null;
+  appState.catalogoActual = null;
+  appState.visitaVerId = visitId;
+  render();
 }
 
 // ============================================================================

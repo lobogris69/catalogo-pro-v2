@@ -613,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'stats-cliente-fix-admin-29may',
+    build: 'dashboard-fase1-29may',
     service: 'CatalogPRO v2'
   });
 });
@@ -2177,6 +2177,139 @@ app.get('/api/clients/:id/stats', verifyToken, async (req: AuthRequest, res: Res
     }
 
     res.json({ success: true, stats });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// DASHBOARD ADMIN — Fase 1 (5 widgets)
+// Cada widget es un bloque try/catch independiente. Fácil añadir/quitar.
+// AA1: periodo = mes actual (día 1 del mes hasta hoy)
+// BB1: solo admin (requireRealAdmin)
+// ============================================================================
+app.get('/api/dashboard', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const data: any = {};
+    // Rangos: mes actual (1º del mes a hoy) y "hoy"
+    const fechaInicioMes = `DATE_TRUNC('month', CURRENT_DATE)`;
+    const fechaHoy = `CURRENT_DATE`;
+
+    // --- Widget 1: Visitas de hoy ---
+    try {
+      const r = await pool.query(`
+        SELECT v.id, v.status, v.hubo_pedido, v.created_at, v.confirmed_at,
+               c.razon_social AS cliente_nombre,
+               c.municipio AS cliente_municipio,
+               u.name AS comercial_nombre,
+               (SELECT COUNT(*)::int FROM annotations a WHERE a.visit_id = v.id) AS num_anotaciones
+        FROM visits v
+        LEFT JOIN clients c ON c.id = v.client_id
+        LEFT JOIN users u ON u.id = v.user_id
+        WHERE v.created_at >= ${fechaHoy}
+          AND v.created_at < ${fechaHoy} + INTERVAL '1 day'
+        ORDER BY v.created_at DESC
+        LIMIT 50
+      `);
+      data.visitas_hoy = r.rows;
+    } catch (e) { data.visitas_hoy = []; }
+
+    // --- Widget 2: Resumen del mes ---
+    try {
+      const visitasMes = await pool.query(`
+        SELECT COUNT(*)::int AS total_visitas,
+               COUNT(*) FILTER (WHERE status = 'confirmed')::int AS confirmadas,
+               COUNT(DISTINCT user_id)::int AS comerciales_activos
+        FROM visits
+        WHERE created_at >= ${fechaInicioMes}
+      `);
+      const totalPVF = await pool.query(`
+        SELECT COALESCE(SUM(a.cantidad * p.precio_pvf), 0)::numeric AS total
+        FROM annotations a
+        JOIN visits v ON v.id = a.visit_id
+        JOIN products p ON p.id = a.product_id
+        WHERE v.created_at >= ${fechaInicioMes}
+          AND v.status = 'confirmed'
+          AND a.cantidad IS NOT NULL
+          AND p.precio_pvf IS NOT NULL
+      `);
+      data.resumen_mes = {
+        total_visitas: visitasMes.rows[0].total_visitas,
+        confirmadas: visitasMes.rows[0].confirmadas,
+        comerciales_activos: visitasMes.rows[0].comerciales_activos,
+        total_pvf: Number(totalPVF.rows[0].total) || 0
+      };
+    } catch (e) {
+      data.resumen_mes = { total_visitas: 0, confirmadas: 0, comerciales_activos: 0, total_pvf: 0 };
+    }
+
+    // --- Widget 3: Clientes sin visitar hace X días (los más vencidos) ---
+    // Se considera "vencido" si su última visita es más antigua que ciclo+30 días
+    // o nunca tuvo visita y su created_at supera 60 días (cliente importado hace tiempo).
+    // Devolvemos los 10 más vencidos.
+    try {
+      const r = await pool.query(`
+        SELECT c.id, c.razon_social, c.municipio, c.ultima_visita_at,
+               COALESCE(c.ciclo_visita_dias, 90) AS ciclo,
+               CASE
+                 WHEN c.ultima_visita_at IS NULL THEN
+                   EXTRACT(DAY FROM (NOW() - c.created_at))::int
+                 ELSE
+                   EXTRACT(DAY FROM (NOW() - c.ultima_visita_at))::int
+               END AS dias_sin_visitar
+        FROM clients c
+        WHERE c.is_active = TRUE
+          AND (
+            (c.ultima_visita_at IS NULL AND c.created_at < NOW() - INTERVAL '60 days')
+            OR (c.ultima_visita_at IS NOT NULL AND c.ultima_visita_at < NOW() - (COALESCE(c.ciclo_visita_dias, 90) || ' days')::interval)
+          )
+        ORDER BY dias_sin_visitar DESC
+        LIMIT 10
+      `);
+      data.sin_visitar = r.rows;
+    } catch (e) { data.sin_visitar = []; }
+
+    // --- Widget 4: Top productos del mes (más pedidos) ---
+    try {
+      const r = await pool.query(`
+        SELECT p.id, p.codigo, p.nombre,
+               SUM(a.cantidad)::int AS uds_total,
+               COUNT(DISTINCT v.id)::int AS visitas,
+               COALESCE(SUM(a.cantidad * p.precio_pvf), 0)::numeric AS total_pvf
+        FROM annotations a
+        JOIN visits v ON v.id = a.visit_id
+        JOIN products p ON p.id = a.product_id
+        WHERE v.created_at >= ${fechaInicioMes}
+          AND v.status = 'confirmed'
+          AND a.cantidad IS NOT NULL
+        GROUP BY p.id, p.codigo, p.nombre
+        ORDER BY uds_total DESC NULLS LAST
+        LIMIT 10
+      `);
+      data.top_productos = r.rows.map((x: any) => ({ ...x, total_pvf: Number(x.total_pvf) || 0 }));
+    } catch (e) { data.top_productos = []; }
+
+    // --- Widget 5: Top clientes del mes (los que más han pedido en PVF) ---
+    try {
+      const r = await pool.query(`
+        SELECT c.id, c.razon_social, c.municipio,
+               COUNT(DISTINCT v.id)::int AS visitas,
+               COALESCE(SUM(a.cantidad * p.precio_pvf), 0)::numeric AS total_pvf
+        FROM visits v
+        JOIN clients c ON c.id = v.client_id
+        LEFT JOIN annotations a ON a.visit_id = v.id
+        LEFT JOIN products p ON p.id = a.product_id AND p.precio_pvf IS NOT NULL
+        WHERE v.created_at >= ${fechaInicioMes}
+          AND v.status = 'confirmed'
+        GROUP BY c.id, c.razon_social, c.municipio
+        HAVING COALESCE(SUM(a.cantidad * p.precio_pvf), 0) > 0
+        ORDER BY total_pvf DESC
+        LIMIT 10
+      `);
+      data.top_clientes = r.rows.map((x: any) => ({ ...x, total_pvf: Number(x.total_pvf) || 0 }));
+    } catch (e) { data.top_clientes = []; }
+
+    res.json({ success: true, dashboard: data });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
