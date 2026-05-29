@@ -5470,6 +5470,9 @@ async function renderDetalleCliente(id) {
             </div>
           </div>
 
+          <!-- Estadísticas (se rellenan al cargar) -->
+          <div id="cliente-stats-wrap"></div>
+
           <!-- Historial de visitas -->
           <div class="editor-panel">
             <h3>Historial de visitas (${visitas.length})</h3>
@@ -5507,9 +5510,160 @@ async function renderDetalleCliente(id) {
       </div>
     `;
     $v.innerHTML = html;
+    // Cargar estadísticas en paralelo (no bloquea el render principal)
+    cargarStatsCliente(id);
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
   }
+}
+
+// ============================================================================
+// Estadísticas por cliente — bloque modular en la ficha del cliente
+// Cada métrica es independiente y opcional. Las "sensibles" sólo para admin.
+// ============================================================================
+async function cargarStatsCliente(clientId) {
+  const $wrap = document.getElementById('cliente-stats-wrap');
+  if (!$wrap) return;
+  $wrap.innerHTML = `
+    <div class="editor-panel">
+      <h3>📊 Estadísticas</h3>
+      <p style="font-size:13px;color:var(--gris-texto);margin:0">Cargando…</p>
+    </div>
+  `;
+  try {
+    const r = await api('/api/clients/' + clientId + '/stats');
+    const s = r.stats || {};
+    const esAdmin = (appState.user?.role === 'admin');
+    $wrap.innerHTML = renderBloqueStatsCliente(s, esAdmin);
+  } catch (e) {
+    $wrap.innerHTML = `<div class="editor-panel"><h3>📊 Estadísticas</h3><div class="error-msg">${escape(e.message)}</div></div>`;
+  }
+}
+
+function renderBloqueStatsCliente(s, esAdmin) {
+  const fmtEur = (n) => n != null ? Number(n).toFixed(2) + '€' : '—';
+  const fmtFecha = (iso) => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
+  };
+  const diasDesde = (iso) => {
+    if (!iso) return null;
+    return Math.floor((new Date() - new Date(iso)) / (1000 * 60 * 60 * 24));
+  };
+  const diasUltima = diasDesde(s.ultima_visita);
+  const diasHastaProxima = s.proxima_visita_estimada
+    ? Math.floor((new Date(s.proxima_visita_estimada) - new Date()) / (1000 * 60 * 60 * 24))
+    : null;
+
+  // Color semáforo según proximidad
+  let colorProxima = '#6b7280';
+  if (diasHastaProxima !== null) {
+    if (diasHastaProxima < 0) colorProxima = '#dc2626';
+    else if (diasHastaProxima <= 7) colorProxima = '#f59e0b';
+    else colorProxima = '#16a34a';
+  }
+
+  let html = `
+    <div class="editor-panel">
+      <h3 style="margin-top:0">📊 Estadísticas</h3>
+      <div class="stats-grid">
+
+        <div class="stat-card">
+          <div class="stat-label">Total visitas</div>
+          <div class="stat-valor">${s.total_visitas || 0}</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-label">Última visita</div>
+          <div class="stat-valor" style="font-size:15px">${fmtFecha(s.ultima_visita)}</div>
+          ${diasUltima !== null ? `<div class="stat-sub">hace ${diasUltima} días</div>` : ''}
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-label">Próxima visita estimada</div>
+          <div class="stat-valor" style="font-size:15px;color:${colorProxima}">${fmtFecha(s.proxima_visita_estimada)}</div>
+          ${diasHastaProxima !== null
+            ? (diasHastaProxima < 0
+                ? `<div class="stat-sub" style="color:#dc2626">vencida hace ${-diasHastaProxima} d</div>`
+                : `<div class="stat-sub">en ${diasHastaProxima} d (ciclo ${s.ciclo_dias}d)</div>`)
+            : ''}
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-label">Total pedido acumulado (PVF)</div>
+          <div class="stat-valor" style="color:#16a34a">${fmtEur(s.total_pedido_acumulado)}</div>
+        </div>
+  `;
+
+  // Métricas SOLO ADMIN
+  if (esAdmin) {
+    if (s.comercial_top) {
+      html += `
+        <div class="stat-card">
+          <div class="stat-label">Comercial que más le visita</div>
+          <div class="stat-valor" style="font-size:14px">${escape(s.comercial_top.comercial)}</div>
+          <div class="stat-sub">${s.comercial_top.visitas} visitas</div>
+        </div>
+      `;
+    }
+    if (s.pct_con_pedido != null) {
+      const colorPct = s.pct_con_pedido >= 70 ? '#16a34a' : s.pct_con_pedido >= 40 ? '#f59e0b' : '#dc2626';
+      html += `
+        <div class="stat-card">
+          <div class="stat-label">% visitas con pedido</div>
+          <div class="stat-valor" style="color:${colorPct}">${s.pct_con_pedido}%</div>
+          <div class="stat-sub">${s.visitas_con_pedido} con · ${s.visitas_sin_pedido} sin</div>
+        </div>
+      `;
+    }
+    if (s.tendencia) {
+      const t = s.tendencia;
+      const colorTend = t.direccion === 'sube' ? '#16a34a' : t.direccion === 'baja' ? '#dc2626' : '#6b7280';
+      const flecha = t.direccion === 'sube' ? '↗' : t.direccion === 'baja' ? '↘' : '→';
+      html += `
+        <div class="stat-card">
+          <div class="stat-label">Tendencia último pedido</div>
+          <div class="stat-valor" style="color:${colorTend}">${flecha} ${t.variacion_pct > 0 ? '+' : ''}${t.variacion_pct}%</div>
+          <div class="stat-sub">${fmtEur(t.ultimo_pedido)} vs media ${fmtEur(t.media_anteriores)}</div>
+        </div>
+      `;
+    }
+  }
+
+  html += `</div>`; // fin stats-grid
+
+  // Top productos
+  if (s.top_productos && s.top_productos.length > 0) {
+    html += `
+      <h4 style="margin-top:18px;margin-bottom:8px;font-size:13px;color:#374151">🏆 Top productos pedidos</h4>
+      <table class="stats-top-tabla">
+        <thead>
+          <tr>
+            <th style="text-align:left">Código</th>
+            <th style="text-align:left">Producto</th>
+            <th style="width:80px;text-align:right">Total uds</th>
+            <th style="width:70px;text-align:right">Veces</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${s.top_productos.map(p => `
+            <tr>
+              <td><b>${escape(p.codigo || '—')}</b></td>
+              <td style="color:#374151">${escape(p.nombre || '')}</td>
+              <td style="text-align:right">${p.cant_total}</td>
+              <td style="text-align:right;color:#6b7280">${p.veces}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } else if ((s.total_visitas || 0) > 0) {
+    html += `<p style="font-size:12px;color:var(--gris-texto);margin-top:12px">Aún no hay productos registrados en visitas confirmadas.</p>`;
+  }
+
+  html += `</div>`;
+  return html;
 }
 
 // ----- INICIAR VISITA DESDE FICHA DE CLIENTE -----

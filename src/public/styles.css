@@ -3491,3 +3491,60 @@ body.con-banner-update {
   color: #6b7280;
   margin-top: 2px;
 }
+
+/* ============================================================================
+   Estadísticas por cliente (bloque en su ficha)
+   ============================================================================ */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.stat-card {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+}
+.stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #6b7280;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.stat-valor {
+  font-size: 22px;
+  font-weight: 700;
+  color: #111827;
+  line-height: 1.1;
+}
+.stat-sub {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+.stats-top-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.stats-top-tabla th {
+  background: #f9fafb;
+  padding: 8px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #6b7280;
+  font-weight: 700;
+  border-bottom: 1px solid #e5e7eb;
+}
+.stats-top-tabla td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #f3f4f6;
+}
+.stats-top-tabla tr:last-child td { border-bottom: none; }

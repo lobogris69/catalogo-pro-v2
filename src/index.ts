@@ -613,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'busqueda-global-29may',
+    build: 'stats-cliente-29may',
     service: 'CatalogPRO v2'
   });
 });
@@ -2011,6 +2011,172 @@ app.get('/api/clients/:id', verifyToken, async (req: AuthRequest, res: Response)
     }
     const visitas = await pool.query(visitasQuery, visitasParams);
     res.json({ success: true, client: r.rows[0], visitas: visitas.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// ESTADÍSTICAS POR CLIENTE
+// Devuelve métricas del cliente. Algunas son "solo admin" (comercial top,
+// % con pedido, tendencia). Se devuelven igualmente, pero el frontend decide
+// si las muestra al comercial (extra defensa: no aporta info sensible suelta).
+// Modular: cada métrica es un bloque try/catch independiente, fácil de añadir
+// o quitar sin tocar el resto.
+// ============================================================================
+app.get('/api/clients/:id/stats', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    const clientId = Number(req.params.id);
+
+    // Verificar que el cliente existe
+    const clienteR = await pool.query(`SELECT id, ciclo_visita_dias FROM clients WHERE id = $1`, [clientId]);
+    if (clienteR.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Cliente no encontrado' });
+      return;
+    }
+    const ciclo = clienteR.rows[0].ciclo_visita_dias || 90;
+
+    // Filtro de visitas según rol (admin = todas; comercial = solo suyas)
+    const esAdmin = req.user.role === 'admin';
+    const filtroUsuario = esAdmin ? '' : ` AND v.user_id = ${Number(req.user.id)}`;
+
+    const stats: any = {};
+
+    // --- 1) Total visitas confirmadas ---
+    try {
+      const r = await pool.query(`
+        SELECT COUNT(*)::int AS n
+        FROM visits v
+        WHERE v.client_id = $1 AND v.status = 'confirmed' ${filtroUsuario}
+      `, [clientId]);
+      stats.total_visitas = r.rows[0].n;
+    } catch (e) { stats.total_visitas = 0; }
+
+    // --- 2) Última visita ---
+    try {
+      const r = await pool.query(`
+        SELECT v.confirmed_at, v.created_at
+        FROM visits v
+        WHERE v.client_id = $1 AND v.status = 'confirmed' ${filtroUsuario}
+        ORDER BY v.confirmed_at DESC NULLS LAST, v.created_at DESC
+        LIMIT 1
+      `, [clientId]);
+      stats.ultima_visita = r.rows[0]?.confirmed_at || r.rows[0]?.created_at || null;
+    } catch (e) { stats.ultima_visita = null; }
+
+    // --- 3) Próxima visita estimada (última + ciclo_visita_dias) ---
+    if (stats.ultima_visita) {
+      const proxima = new Date(stats.ultima_visita);
+      proxima.setDate(proxima.getDate() + ciclo);
+      stats.proxima_visita_estimada = proxima.toISOString();
+      stats.ciclo_dias = ciclo;
+    } else {
+      stats.proxima_visita_estimada = null;
+      stats.ciclo_dias = ciclo;
+    }
+
+    // --- 4) Total pedido acumulado (suma PVF de todas las anotaciones con producto) ---
+    try {
+      const r = await pool.query(`
+        SELECT COALESCE(SUM(a.cantidad * p.precio_pvf), 0)::numeric AS total
+        FROM annotations a
+        JOIN visits v ON v.id = a.visit_id
+        JOIN products p ON p.id = a.product_id
+        WHERE v.client_id = $1 AND v.status = 'confirmed' ${filtroUsuario}
+          AND a.cantidad IS NOT NULL AND p.precio_pvf IS NOT NULL
+      `, [clientId]);
+      stats.total_pedido_acumulado = Number(r.rows[0].total) || 0;
+    } catch (e) { stats.total_pedido_acumulado = 0; }
+
+    // --- 5) Top 5 productos más pedidos ---
+    try {
+      const r = await pool.query(`
+        SELECT p.codigo, p.nombre, SUM(a.cantidad)::int AS cant_total,
+               COUNT(DISTINCT v.id)::int AS veces
+        FROM annotations a
+        JOIN visits v ON v.id = a.visit_id
+        JOIN products p ON p.id = a.product_id
+        WHERE v.client_id = $1 AND v.status = 'confirmed' ${filtroUsuario}
+          AND a.cantidad IS NOT NULL
+        GROUP BY p.id, p.codigo, p.nombre
+        ORDER BY cant_total DESC NULLS LAST
+        LIMIT 5
+      `, [clientId]);
+      stats.top_productos = r.rows;
+    } catch (e) { stats.top_productos = []; }
+
+    // --- 6) Comercial que más le visita (SOLO ADMIN) ---
+    if (esAdmin) {
+      try {
+        const r = await pool.query(`
+          SELECT u.name AS comercial, COUNT(v.id)::int AS visitas
+          FROM visits v
+          JOIN users u ON u.id = v.user_id
+          WHERE v.client_id = $1 AND v.status = 'confirmed'
+          GROUP BY u.id, u.name
+          ORDER BY visitas DESC
+          LIMIT 1
+        `, [clientId]);
+        stats.comercial_top = r.rows[0] || null;
+      } catch (e) { stats.comercial_top = null; }
+    }
+
+    // --- 7) % visitas con pedido vs sin pedido (SOLO ADMIN) ---
+    if (esAdmin) {
+      try {
+        const r = await pool.query(`
+          SELECT
+            COUNT(*) FILTER (WHERE hubo_pedido)::int AS con_pedido,
+            COUNT(*) FILTER (WHERE NOT hubo_pedido)::int AS sin_pedido,
+            COUNT(*)::int AS total
+          FROM visits
+          WHERE client_id = $1 AND status = 'confirmed'
+        `, [clientId]);
+        const t = r.rows[0].total;
+        stats.pct_con_pedido = t > 0 ? Math.round((r.rows[0].con_pedido / t) * 100) : 0;
+        stats.visitas_con_pedido = r.rows[0].con_pedido;
+        stats.visitas_sin_pedido = r.rows[0].sin_pedido;
+      } catch (e) {
+        stats.pct_con_pedido = 0;
+        stats.visitas_con_pedido = 0;
+        stats.visitas_sin_pedido = 0;
+      }
+    }
+
+    // --- 8) Tendencia: último pedido vs media (SOLO ADMIN) ---
+    if (esAdmin) {
+      try {
+        // Calculamos el total PVF de cada visita confirmada y comparamos el último con la media
+        const r = await pool.query(`
+          SELECT v.id, v.confirmed_at,
+                 COALESCE(SUM(a.cantidad * p.precio_pvf), 0)::numeric AS total_visita
+          FROM visits v
+          LEFT JOIN annotations a ON a.visit_id = v.id
+          LEFT JOIN products p ON p.id = a.product_id
+          WHERE v.client_id = $1 AND v.status = 'confirmed'
+          GROUP BY v.id, v.confirmed_at
+          HAVING COALESCE(SUM(a.cantidad * p.precio_pvf), 0) > 0
+          ORDER BY v.confirmed_at DESC
+        `, [clientId]);
+        if (r.rows.length >= 2) {
+          const ultimo = Number(r.rows[0].total_visita);
+          const previas = r.rows.slice(1).map((x: any) => Number(x.total_visita));
+          const media = previas.reduce((s: number, v: number) => s + v, 0) / previas.length;
+          const variacion = media > 0 ? Math.round(((ultimo - media) / media) * 100) : 0;
+          stats.tendencia = {
+            ultimo_pedido: ultimo,
+            media_anteriores: Math.round(media * 100) / 100,
+            variacion_pct: variacion,
+            direccion: variacion > 5 ? 'sube' : variacion < -5 ? 'baja' : 'estable'
+          };
+        } else {
+          stats.tendencia = null;
+        }
+      } catch (e) { stats.tendencia = null; }
+    }
+
+    res.json({ success: true, stats });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
