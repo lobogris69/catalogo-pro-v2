@@ -5533,7 +5533,7 @@ async function cargarStatsCliente(clientId) {
   try {
     const r = await api('/api/clients/' + clientId + '/stats');
     const s = r.stats || {};
-    const esAdmin = (appState.user?.role === 'admin');
+    const esAdmin = (user?.role === 'admin');
     $wrap.innerHTML = renderBloqueStatsCliente(s, esAdmin);
   } catch (e) {
     $wrap.innerHTML = `<div class="editor-panel"><h3>📊 Estadísticas</h3><div class="error-msg">${escape(e.message)}</div></div>`;

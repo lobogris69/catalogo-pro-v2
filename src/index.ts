@@ -613,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'stats-cliente-29may',
+    build: 'stats-cliente-fix-admin-29may',
     service: 'CatalogPRO v2'
   });
 });
