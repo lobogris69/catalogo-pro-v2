@@ -203,7 +203,8 @@ async function renderApp() {
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'configuracion' ? 'navtab-activa' : ''}" onclick="irA('configuracion')">⚙️ Configuración</button>` : ''}
-        <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')" style="margin-left:auto">⚙️ Mi cuenta</button>
+        <button class="navtab navtab-lupa" onclick="abrirBusquedaGlobal()" title="Buscar (Ctrl+K)" style="margin-left:auto">🔍</button>
+        <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')">⚙️ Mi cuenta</button>
       </div>
       <div id="vista-contenido"></div>
     </div>
@@ -5661,6 +5662,153 @@ function mostrarModalVisitaEnCurso() {
   `;
   document.body.appendChild(modal);
 }
+
+// ============================================================================
+// BÚSQUEDA GLOBAL (Q3 lupa + Ctrl+K, R2 agrupado, T1 click va a la ficha)
+// ============================================================================
+let _busquedaGlobalTimer = null;
+
+function abrirBusquedaGlobal() {
+  // Si ya está abierto, cerrar (toggle)
+  const existente = document.getElementById('busqueda-global-overlay');
+  if (existente) { existente.remove(); return; }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'busqueda-global-overlay';
+  overlay.className = 'busqueda-global-overlay';
+  overlay.innerHTML = `
+    <div class="busqueda-global-modal" onclick="event.stopPropagation()">
+      <div class="busqueda-global-header">
+        <span style="font-size:18px">🔍</span>
+        <input type="text" id="busqueda-global-input" placeholder="Buscar clientes, productos o láminas…"
+               autocomplete="off" spellcheck="false">
+        <span class="busqueda-global-cerrar" onclick="cerrarBusquedaGlobal()" title="Cerrar (Esc)">×</span>
+      </div>
+      <div class="busqueda-global-resultados" id="busqueda-global-resultados">
+        <div class="busqueda-global-hint">Escribe al menos 2 caracteres…</div>
+      </div>
+    </div>
+  `;
+  overlay.addEventListener('click', cerrarBusquedaGlobal);
+  document.body.appendChild(overlay);
+
+  const $input = document.getElementById('busqueda-global-input');
+  setTimeout(() => $input.focus(), 50);
+
+  $input.addEventListener('input', () => {
+    clearTimeout(_busquedaGlobalTimer);
+    const q = $input.value.trim();
+    const $res = document.getElementById('busqueda-global-resultados');
+    if (q.length < 2) {
+      $res.innerHTML = '<div class="busqueda-global-hint">Escribe al menos 2 caracteres…</div>';
+      return;
+    }
+    $res.innerHTML = '<div class="busqueda-global-hint">Buscando…</div>';
+    _busquedaGlobalTimer = setTimeout(async () => {
+      try {
+        const r = await api('/api/search-global?q=' + encodeURIComponent(q));
+        if (q !== $input.value.trim()) return; // resultados obsoletos
+        renderResultadosBusquedaGlobal(r);
+      } catch (e) {
+        $res.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`;
+      }
+    }, 200);
+  });
+
+  $input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') cerrarBusquedaGlobal();
+  });
+}
+
+function cerrarBusquedaGlobal() {
+  const ov = document.getElementById('busqueda-global-overlay');
+  if (ov) ov.remove();
+}
+
+function renderResultadosBusquedaGlobal(data) {
+  const $res = document.getElementById('busqueda-global-resultados');
+  if (!$res) return;
+  const total = (data.clients?.length || 0) + (data.products?.length || 0) + (data.sheets?.length || 0);
+  if (total === 0) {
+    $res.innerHTML = '<div class="busqueda-global-hint">Sin resultados.</div>';
+    return;
+  }
+  let html = '';
+  if (data.clients?.length > 0) {
+    html += `<div class="busqueda-global-seccion">🏥 Clientes (${data.clients.length})</div>`;
+    html += data.clients.map(c => `
+      <div class="busqueda-global-item" onclick="abrirResultadoBusqueda('cliente', ${c.id})">
+        <div class="bg-item-titulo"><b>${escape(c.razon_social || '—')}</b></div>
+        <div class="bg-item-subtitulo">
+          ${c.cif ? '<span>' + escape(c.cif) + '</span>' : ''}
+          ${c.municipio ? '<span> · ' + escape(c.municipio) + '</span>' : ''}
+          ${c.sage_code ? '<span> · Sage: ' + escape(c.sage_code) + '</span>' : ''}
+        </div>
+      </div>
+    `).join('');
+  }
+  if (data.products?.length > 0) {
+    html += `<div class="busqueda-global-seccion">📦 Productos (${data.products.length})</div>`;
+    html += data.products.map(p => {
+      const pvf = p.precio_pvf ? Number(p.precio_pvf).toFixed(2) + '€' : '—';
+      const tipoIcon = p.tipo === 'comercial' ? '🎁' : '🏷️';
+      return `
+        <div class="busqueda-global-item" onclick="abrirResultadoBusqueda('producto', ${p.id})">
+          <div class="bg-item-titulo">
+            ${tipoIcon} <b>${escape(p.codigo)}</b> · ${escape(p.nombre || '')}
+          </div>
+          <div class="bg-item-subtitulo">
+            ${p.ean ? 'EAN ' + escape(p.ean) + ' · ' : ''}PVF ${pvf}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+  if (data.sheets?.length > 0) {
+    html += `<div class="busqueda-global-seccion">📄 Láminas (${data.sheets.length})</div>`;
+    html += data.sheets.map(s => `
+      <div class="busqueda-global-item" onclick="abrirResultadoBusqueda('lamina', ${s.id}, ${s.catalog_id})">
+        <div class="bg-item-titulo"><b>${escape(s.titulo || 'Sin título')}</b></div>
+        <div class="bg-item-subtitulo">
+          ${s.catalog_name ? 'En: ' + escape(s.catalog_name) : ''}
+          ${s.tags ? ' · 🏷️ ' + escape(s.tags) : ''}
+        </div>
+      </div>
+    `).join('');
+  }
+  $res.innerHTML = html;
+}
+
+// T1: pulsar resultado lleva a la ficha correspondiente
+function abrirResultadoBusqueda(tipo, id, catalogId) {
+  cerrarBusquedaGlobal();
+  if (tipo === 'cliente') {
+    appState.vista = 'clientes';
+    appState.clienteActual = id;
+    appState.catalogoActual = null;
+    appState.visitaVerId = null;
+    render();
+  } else if (tipo === 'producto') {
+    appState.vista = 'productos';
+    appState.productoActual = id;
+    render();
+  } else if (tipo === 'lamina') {
+    appState.vista = 'catalogos';
+    appState.catalogoActual = catalogId;
+    appState.clienteActual = null;
+    appState.visitaVerId = null;
+    appState.scrollASheetId = id; // si el editor soporta esto
+    render();
+  }
+}
+
+// Atajo de teclado Ctrl+K (o Cmd+K en Mac)
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    abrirBusquedaGlobal();
+  }
+});
 
 // ----- CERRAR VISITA ACTIVA — abre primero el RESUMEN PRE-ENVÍO (M2/N2/O3) -----
 async function cerrarVisitaActiva() {

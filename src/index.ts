@@ -613,7 +613,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'modal-visita-curso-29may',
+    build: 'busqueda-global-29may',
     service: 'CatalogPRO v2'
   });
 });
@@ -4375,6 +4375,92 @@ app.post('/api/visits/:id/resend-to-custom', verifyToken, async (req: AuthReques
 // ============================================================================
 // FASE 1 — PRODUCTOS (catálogo maestro + importador Sage + expositores)
 // ============================================================================
+
+// ============================================================================
+// BÚSQUEDA GLOBAL (Q3) — clientes + productos + láminas en una sola consulta
+// Para admin: ve todo. Para comercial: solo SUS clientes asignados y catálogos
+// asignados (la búsqueda respeta los permisos existentes).
+// ============================================================================
+app.get('/api/search-global', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) {
+      res.json({ success: true, clients: [], products: [], sheets: [] });
+      return;
+    }
+    const pattern = '%' + q.toLowerCase() + '%';
+    const userId = effectiveUserId(req);
+    const esVentas = isEffectiveSales(req);
+
+    // --- CLIENTES ---
+    // Admin ve todos; comercial sólo los asignados a él (por commercial_code)
+    let clientsSql = `
+      SELECT id, razon_social, cif, sage_code, email, municipio, categoria
+      FROM clients
+      WHERE is_active = TRUE
+        AND (
+          LOWER(razon_social) LIKE $1
+          OR LOWER(COALESCE(cif,'')) LIKE $1
+          OR LOWER(COALESCE(sage_code,'')) LIKE $1
+          OR LOWER(COALESCE(email,'')) LIKE $1
+          OR LOWER(COALESCE(municipio,'')) LIKE $1
+        )
+    `;
+    const clientsParams: any[] = [pattern];
+    if (esVentas) {
+      clientsSql += ` AND commercial_code IN (SELECT sage_commercial_code FROM users WHERE id = $2)`;
+      clientsParams.push(userId);
+    }
+    clientsSql += ` ORDER BY razon_social LIMIT 10`;
+    const clientsR = await pool.query(clientsSql, clientsParams);
+
+    // --- PRODUCTOS --- (mismo criterio que /api/products/search)
+    const startsWith = q.toLowerCase() + '%';
+    const productsR = await pool.query(`
+      SELECT id, codigo, nombre, ean, precio_pvf, tipo
+      FROM products
+      WHERE activo = TRUE
+        AND (LOWER(nombre) LIKE $1 OR LOWER(codigo) LIKE $1 OR LOWER(COALESCE(ean,'')) LIKE $1)
+      ORDER BY
+        CASE
+          WHEN LOWER(codigo) = $2 THEN 0
+          WHEN LOWER(ean) = $2 THEN 1
+          WHEN LOWER(nombre) LIKE $3 THEN 2
+          WHEN LOWER(codigo) LIKE $3 THEN 3
+          ELSE 4
+        END,
+        LENGTH(nombre)
+      LIMIT 10
+    `, [pattern, q.toLowerCase(), startsWith]);
+
+    // --- LÁMINAS ---
+    // Admin ve todas; comercial sólo de catálogos asignados a él.
+    let sheetsSql = `
+      SELECT s.id, s.titulo, s.tags, s.imagen_path, s.catalog_id,
+             c.name AS catalog_name, c.tipo AS catalog_tipo
+      FROM sheets s
+      LEFT JOIN catalogs c ON c.id = s.catalog_id
+      WHERE s.oculta = FALSE
+        AND (LOWER(COALESCE(s.titulo,'')) LIKE $1 OR LOWER(COALESCE(s.tags,'')) LIKE $1)
+    `;
+    const sheetsParams: any[] = [pattern];
+    if (esVentas) {
+      sheetsSql += ` AND s.catalog_id IN (SELECT catalog_id FROM catalog_assignments WHERE user_id = $2)`;
+      sheetsParams.push(userId);
+    }
+    sheetsSql += ` ORDER BY s.titulo LIMIT 10`;
+    const sheetsR = await pool.query(sheetsSql, sheetsParams);
+
+    res.json({
+      success: true,
+      clients: clientsR.rows,
+      products: productsR.rows,
+      sheets: sheetsR.rows
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
 
 // FASE 2.a: Búsqueda rápida de productos (autocomplete en modal anotar visita).
 // IMPORTANTE: este endpoint DEBE ir antes del genérico /api/products/:id porque

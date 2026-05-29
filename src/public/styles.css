@@ -3397,3 +3397,97 @@ body.con-banner-update {
   .resumen-tabla th, .resumen-tabla td { padding: 8px 6px; font-size: 12px; }
   .resumen-cant-input { width: 50px !important; }
 }
+
+/* ============================================================================
+   Búsqueda global (Ctrl+K + icono lupa)
+   ============================================================================ */
+.navtab-lupa {
+  font-size: 16px;
+  padding: 6px 12px;
+}
+.busqueda-global-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 21000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 80px;
+}
+.busqueda-global-modal {
+  width: 100%;
+  max-width: 640px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+}
+.busqueda-global-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.busqueda-global-header input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 16px;
+  background: transparent;
+}
+.busqueda-global-cerrar {
+  cursor: pointer;
+  font-size: 22px;
+  color: #9ca3af;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  line-height: 1;
+}
+.busqueda-global-cerrar:hover {
+  background: #f3f4f6;
+  color: #374151;
+}
+.busqueda-global-resultados {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 80px;
+  padding: 6px 0;
+}
+.busqueda-global-hint {
+  padding: 16px;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 13px;
+}
+.busqueda-global-seccion {
+  padding: 8px 18px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #6b7280;
+  text-transform: uppercase;
+  background: #f9fafb;
+  border-top: 1px solid #f3f4f6;
+}
+.busqueda-global-seccion:first-child { border-top: none; }
+.busqueda-global-item {
+  padding: 10px 18px;
+  cursor: pointer;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 13px;
+}
+.busqueda-global-item:hover { background: #fdf2f8; }
+.bg-item-titulo { color: #111827; }
+.bg-item-subtitulo {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+}
