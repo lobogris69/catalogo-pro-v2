@@ -6039,7 +6039,7 @@ function renderTarjetaFormacion(f, esAdmin) {
         ${f.descripcion ? `<div class="aula-card-desc">${escape(f.descripcion.substring(0, 120))}${f.descripcion.length > 120 ? '…' : ''}</div>` : ''}
       </div>
       <div class="aula-card-acciones">
-        <a href="/api/formaciones/${f.id}/descargar" target="_blank" class="btn btn-primary btn-pequeno">📥 Ver / Descargar</a>
+        <button class="btn btn-primary btn-pequeno" onclick="abrirFormacion(${f.id}, '${escape((f.archivo_nombre || '').replace(/'/g, "\\'"))}', '${escape(f.archivo_mime || '')}')">📥 Ver / Descargar</button>
         ${esAdmin ? `
           <button class="btn btn-secondary btn-pequeno" onclick="abrirModalEditarFormacion(${f.id})">✏️ Editar</button>
           <button class="btn btn-danger btn-pequeno" onclick="borrarFormacion(${f.id})">🗑️</button>
@@ -6238,6 +6238,50 @@ async function borrarFormacion(id) {
     renderAula();
   } catch (err) {
     alert('Error: ' + err.message);
+  }
+}
+
+// Abrir/descargar archivo de formación (fetch con token, sin exponer credenciales en URL)
+async function abrirFormacion(id, nombreArchivo, mime) {
+  try {
+    const token = localStorage.getItem('cpv2_token') || '';
+    const resp = await fetch('/api/formaciones/' + id + '/descargar', {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    if (!resp.ok) {
+      // Intentar leer el JSON de error si es < 5 MB
+      try {
+        const json = await resp.json();
+        throw new Error(json.error || 'Error ' + resp.status);
+      } catch (_) {
+        throw new Error('Error ' + resp.status);
+      }
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    // PDFs e imágenes y vídeos: visualizar inline en pestaña nueva.
+    // Otros (Word, PowerPoint): descargar directamente.
+    const visualizable = mime && (
+      mime === 'application/pdf' ||
+      mime.startsWith('image/') ||
+      mime.startsWith('video/')
+    );
+    if (visualizable) {
+      window.open(url, '_blank');
+      // Liberar URL después de un rato (el navegador ya tiene la pestaña abierta)
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } else {
+      // Forzar descarga
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = nombreArchivo || 'formacion';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+  } catch (err) {
+    alert('Error al abrir: ' + err.message);
   }
 }
 
