@@ -6042,6 +6042,7 @@ function renderTarjetaFormacion(f, esAdmin) {
         <button class="btn btn-primary btn-pequeno" onclick="abrirFormacion(${f.id}, '${escape((f.archivo_nombre || '').replace(/'/g, "\\'"))}', '${escape(f.archivo_mime || '')}')">📥 Ver / Descargar</button>
         ${esAdmin ? `
           <button class="btn btn-secondary btn-pequeno" onclick="abrirModalEditarFormacion(${f.id})">✏️ Editar</button>
+          ${(f.num_versiones_archivadas || 0) > 0 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalVersionesFormacion(${f.id})" title="Ver versiones anteriores">📚 ${f.num_versiones_archivadas}</button>` : ''}
           <button class="btn btn-danger btn-pequeno" onclick="borrarFormacion(${f.id})">🗑️</button>
         ` : ''}
       </div>
@@ -6071,7 +6072,7 @@ function abrirModalSubirFormacion() {
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
   modal.innerHTML = `
-    <div class="modal-card" style="max-width:560px">
+    <div class="modal-card" style="max-width:560px;max-height:90vh;overflow-y:auto">
       <div class="modal-header">
         <h3>+ Nueva formación</h3>
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
@@ -6106,6 +6107,23 @@ function abrirModalSubirFormacion() {
                  style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
           <small style="color:#6b7280">PDF, imágenes, Word, PowerPoint o vídeo. Máx 50 MB (200 MB vídeo).</small>
         </div>
+
+        <!-- Bloque 3 HH1: Visibilidad / Permisos -->
+        <div class="form-group" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px">
+          <label style="font-weight:600;margin-bottom:8px;display:block">Visibilidad</label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;margin-bottom:6px">
+            <input type="radio" name="nf-visibilidad" value="publico" checked onchange="cambiarVisibilidadNF()">
+            <span>🔓 <b>Pública</b> — todos los comerciales pueden verla</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal">
+            <input type="radio" name="nf-visibilidad" value="restringido" onchange="cambiarVisibilidadNF()">
+            <span>🔒 <b>Restringida</b> — solo comerciales seleccionados</span>
+          </label>
+          <div id="nf-comerciales" style="display:none;margin-top:10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:10px;max-height:200px;overflow-y:auto">
+            <p style="font-size:12px;color:#6b7280;margin:0 0 6px 0">Cargando comerciales…</p>
+          </div>
+        </div>
+
         <div id="nf-msg"></div>
         <div class="modal-acciones">
           <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
@@ -6116,6 +6134,9 @@ function abrirModalSubirFormacion() {
   `;
   document.body.appendChild(modal);
 
+  // Cargar lista de comerciales en background (solo se mostrará si elige Restringida)
+  cargarComercialesParaPermisos('nf-comerciales', []);
+
   document.getElementById('form-nueva-formacion').addEventListener('submit', async (e) => {
     e.preventDefault();
     const $msg = document.getElementById('nf-msg');
@@ -6125,12 +6146,23 @@ function abrirModalSubirFormacion() {
       $msg.innerHTML = '<div class="error-msg">Selecciona un archivo</div>';
       return;
     }
+    const esRestringido = document.querySelector('input[name="nf-visibilidad"]:checked')?.value === 'restringido';
+    let permisosIds = [];
+    if (esRestringido) {
+      permisosIds = Array.from(document.querySelectorAll('#nf-comerciales input[type="checkbox"]:checked'))
+        .map(cb => Number(cb.value));
+      if (permisosIds.length === 0) {
+        $msg.innerHTML = '<div class="error-msg">Marca al menos un comercial o vuelve a "Pública"</div>';
+        return;
+      }
+    }
     const formData = new FormData();
     formData.append('archivo', archivo);
     formData.append('laboratorio', document.getElementById('nf-laboratorio').value);
     formData.append('nombre', document.getElementById('nf-nombre').value);
     formData.append('tematica', document.getElementById('nf-tematica').value);
     formData.append('descripcion', document.getElementById('nf-descripcion').value);
+    formData.append('publico', esRestringido ? 'false' : 'true');
     const fecha = document.getElementById('nf-fecha').value;
     if (fecha) formData.append('fecha_formacion', fecha);
 
@@ -6147,6 +6179,15 @@ function abrirModalSubirFormacion() {
       });
       const json = await resp.json();
       if (!json.success) throw new Error(json.error || 'Error subiendo');
+
+      // Si es restringida, mandar permisos
+      if (esRestringido && json.formacion && permisosIds.length > 0) {
+        await api('/api/formaciones/' + json.formacion.id + '/permisos', {
+          method: 'PUT',
+          body: { user_ids: permisosIds }
+        });
+      }
+
       modal.remove();
       mostrarNotificacionOnline('✅ Formación subida', '#16a34a');
       renderAula();
@@ -6158,13 +6199,53 @@ function abrirModalSubirFormacion() {
   });
 }
 
+// Helper: cargar lista de comerciales con checkboxes
+async function cargarComercialesParaPermisos(contenedorId, idsMarcados) {
+  const $c = document.getElementById(contenedorId);
+  if (!$c) return;
+  try {
+    const r = await api('/api/users');
+    const comerciales = (r.users || []).filter(u => u.role === 'sales' && u.is_active);
+    if (comerciales.length === 0) {
+      $c.innerHTML = '<p style="font-size:12px;color:#6b7280;margin:0">No hay comerciales activos.</p>';
+      return;
+    }
+    const set = new Set((idsMarcados || []).map(Number));
+    $c.innerHTML = comerciales.map(c => `
+      <label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-weight:normal">
+        <input type="checkbox" value="${c.id}" ${set.has(Number(c.id)) ? 'checked' : ''}>
+        <span style="font-size:13px">${escape(c.name)} <small style="color:#9ca3af">${escape(c.email)}</small></span>
+      </label>
+    `).join('');
+  } catch (e) {
+    $c.innerHTML = `<p style="font-size:12px;color:#dc2626;margin:0">Error: ${escape(e.message)}</p>`;
+  }
+}
+
+// Toggle visibilidad nueva formación
+function cambiarVisibilidadNF() {
+  const restringido = document.querySelector('input[name="nf-visibilidad"]:checked')?.value === 'restringido';
+  const $cont = document.getElementById('nf-comerciales');
+  if ($cont) $cont.style.display = restringido ? 'block' : 'none';
+}
+
 async function abrirModalEditarFormacion(id) {
   const f = (_aulaCache || []).find(x => x.id === id);
   if (!f) return;
+
+  // Cargar permisos actuales si es restringida
+  let permisosActuales = [];
+  if (!f.publico) {
+    try {
+      const r = await api('/api/formaciones/' + id + '/permisos');
+      permisosActuales = r.user_ids || [];
+    } catch (_) {}
+  }
+
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
   modal.innerHTML = `
-    <div class="modal-card" style="max-width:560px">
+    <div class="modal-card" style="max-width:560px;max-height:90vh;overflow-y:auto">
       <div class="modal-header">
         <h3>✏️ Editar formación</h3>
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
@@ -6192,23 +6273,69 @@ async function abrirModalEditarFormacion(id) {
           <label>Descripción</label>
           <textarea id="ef-descripcion" rows="2" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit;font-size:14px;box-sizing:border-box">${escape(f.descripcion || '')}</textarea>
         </div>
-        <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;font-size:12px;color:#6b7280;margin-bottom:12px">
-          📎 Archivo actual: <b>${escape(f.archivo_nombre)}</b> (${formatearTamano(f.archivo_size)})
-          <br><small>Para reemplazar el archivo, vendrá en el Bloque 3 (histórico de versiones).</small>
+
+        <!-- Bloque 3 HH1: Visibilidad / Permisos -->
+        <div class="form-group" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px">
+          <label style="font-weight:600;margin-bottom:8px;display:block">Visibilidad</label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;margin-bottom:6px">
+            <input type="radio" name="ef-visibilidad" value="publico" ${f.publico ? 'checked' : ''} onchange="cambiarVisibilidadEF()">
+            <span>🔓 <b>Pública</b> — todos los comerciales pueden verla</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal">
+            <input type="radio" name="ef-visibilidad" value="restringido" ${!f.publico ? 'checked' : ''} onchange="cambiarVisibilidadEF()">
+            <span>🔒 <b>Restringida</b> — solo comerciales seleccionados</span>
+          </label>
+          <div id="ef-comerciales" style="display:${f.publico ? 'none' : 'block'};margin-top:10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:10px;max-height:200px;overflow-y:auto">
+            <p style="font-size:12px;color:#6b7280;margin:0 0 6px 0">Cargando comerciales…</p>
+          </div>
         </div>
+
+        <!-- Bloque 3 JJ1: Reemplazar archivo (opcional) -->
+        <div class="form-group" style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px">
+          <label style="font-weight:600;margin-bottom:6px;display:block">📎 Archivo</label>
+          <div style="font-size:12px;color:#6b7280;margin-bottom:8px">
+            Actual: <b>${escape(f.archivo_nombre)}</b> (${formatearTamano(f.archivo_size)})
+          </div>
+          <label style="font-size:13px;font-weight:normal;margin-bottom:4px;display:block">Reemplazar (opcional)</label>
+          <input type="file" id="ef-archivo-nuevo"
+                 accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.ppt,.pptx,.mp4,.webm,.mov"
+                 style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;background:#fff">
+          <input type="text" id="ef-notas-version" placeholder="Notas (opcional): qué cambia respecto a la anterior" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:13px;margin-top:6px;background:#fff">
+          <small style="color:#6b7280">Si subes un nuevo archivo, el actual pasa al historial de versiones.</small>
+        </div>
+
         <div id="ef-msg"></div>
         <div class="modal-acciones">
           <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
-          <button type="submit" class="btn btn-primary">💾 Guardar cambios</button>
+          <button type="submit" class="btn btn-primary" id="ef-submit">💾 Guardar cambios</button>
         </div>
       </form>
     </div>
   `;
   document.body.appendChild(modal);
+
+  // Cargar comerciales con permisos actuales marcados
+  cargarComercialesParaPermisos('ef-comerciales', permisosActuales);
+
   document.getElementById('form-editar-formacion').addEventListener('submit', async (e) => {
     e.preventDefault();
     const $msg = document.getElementById('ef-msg');
+    const $btn = document.getElementById('ef-submit');
+    const esRestringido = document.querySelector('input[name="ef-visibilidad"]:checked')?.value === 'restringido';
+    let permisosIds = [];
+    if (esRestringido) {
+      permisosIds = Array.from(document.querySelectorAll('#ef-comerciales input[type="checkbox"]:checked'))
+        .map(cb => Number(cb.value));
+      if (permisosIds.length === 0) {
+        $msg.innerHTML = '<div class="error-msg">Marca al menos un comercial o vuelve a "Pública"</div>';
+        return;
+      }
+    }
+
+    $btn.disabled = true;
+    $btn.textContent = '⏳ Guardando…';
     try {
+      // 1) Actualizar metadatos + flag publico
       await api('/api/formaciones/' + id, {
         method: 'PUT',
         body: {
@@ -6216,16 +6343,53 @@ async function abrirModalEditarFormacion(id) {
           nombre: document.getElementById('ef-nombre').value,
           tematica: document.getElementById('ef-tematica').value,
           descripcion: document.getElementById('ef-descripcion').value,
-          fecha_formacion: document.getElementById('ef-fecha').value || null
+          fecha_formacion: document.getElementById('ef-fecha').value || null,
+          publico: !esRestringido
         }
       });
+
+      // 2) Si es restringida, actualizar permisos (II2: si pasa a pública NO los borramos, pero tampoco los enviamos)
+      if (esRestringido) {
+        await api('/api/formaciones/' + id + '/permisos', {
+          method: 'PUT',
+          body: { user_ids: permisosIds }
+        });
+      }
+
+      // 3) Si hay archivo nuevo, reemplazarlo (esto disparará email automático)
+      const archivoNuevo = document.getElementById('ef-archivo-nuevo').files[0];
+      if (archivoNuevo) {
+        $btn.textContent = '⏳ Subiendo archivo…';
+        const fd = new FormData();
+        fd.append('archivo', archivoNuevo);
+        const notas = document.getElementById('ef-notas-version').value;
+        if (notas) fd.append('notas', notas);
+        const token = localStorage.getItem('cpv2_token') || '';
+        const resp = await fetch('/api/formaciones/' + id + '/reemplazar-archivo', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token },
+          body: fd
+        });
+        const json = await resp.json();
+        if (!json.success) throw new Error(json.error || 'Error reemplazando archivo');
+      }
+
       modal.remove();
       mostrarNotificacionOnline('✅ Cambios guardados', '#16a34a');
       renderAula();
     } catch (err) {
       $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+      $btn.disabled = false;
+      $btn.textContent = '💾 Guardar cambios';
     }
   });
+}
+
+// Toggle visibilidad editar formación
+function cambiarVisibilidadEF() {
+  const restringido = document.querySelector('input[name="ef-visibilidad"]:checked')?.value === 'restringido';
+  const $cont = document.getElementById('ef-comerciales');
+  if ($cont) $cont.style.display = restringido ? 'block' : 'none';
 }
 
 async function borrarFormacion(id) {
@@ -6249,7 +6413,6 @@ async function abrirFormacion(id, nombreArchivo, mime) {
       headers: { Authorization: 'Bearer ' + token }
     });
     if (!resp.ok) {
-      // Intentar leer el JSON de error si es < 5 MB
       try {
         const json = await resp.json();
         throw new Error(json.error || 'Error ' + resp.status);
@@ -6259,8 +6422,6 @@ async function abrirFormacion(id, nombreArchivo, mime) {
     }
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
-    // PDFs e imágenes y vídeos: visualizar inline en pestaña nueva.
-    // Otros (Word, PowerPoint): descargar directamente.
     const visualizable = mime && (
       mime === 'application/pdf' ||
       mime.startsWith('image/') ||
@@ -6268,10 +6429,8 @@ async function abrirFormacion(id, nombreArchivo, mime) {
     );
     if (visualizable) {
       window.open(url, '_blank');
-      // Liberar URL después de un rato (el navegador ya tiene la pestaña abierta)
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     } else {
-      // Forzar descarga
       const a = document.createElement('a');
       a.href = url;
       a.download = nombreArchivo || 'formacion';
@@ -6282,6 +6441,94 @@ async function abrirFormacion(id, nombreArchivo, mime) {
     }
   } catch (err) {
     alert('Error al abrir: ' + err.message);
+  }
+}
+
+// Bloque 3 KK2: modal con versiones archivadas
+async function abrirModalVersionesFormacion(id) {
+  const f = (_aulaCache || []).find(x => x.id === id);
+  if (!f) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width:640px;max-height:90vh;overflow-y:auto">
+      <div class="modal-header">
+        <h3>📚 Versiones anteriores de "${escape(f.nombre)}"</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p style="color:#6b7280;font-size:13px;margin:0 0 12px 0">
+        Cada vez que reemplazas el archivo, la versión anterior queda aquí archivada.
+      </p>
+      <div id="versiones-lista"><p style="color:#6b7280;font-size:13px">Cargando…</p></div>
+      <div class="modal-acciones">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  try {
+    const r = await api('/api/formaciones/' + id + '/versiones');
+    const versiones = r.versiones || [];
+    const $lista = document.getElementById('versiones-lista');
+    if (versiones.length === 0) {
+      $lista.innerHTML = '<p style="color:#6b7280;font-size:13px">Sin versiones archivadas.</p>';
+      return;
+    }
+    $lista.innerHTML = versiones.map(v => {
+      const fecha = new Date(v.archivado_at).toLocaleString('es-ES', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const icono = iconoFormacion(v.archivo_mime);
+      return `
+        <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px;background:#f9fafb">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+            <div style="flex:1">
+              <div style="font-size:14px;font-weight:600;color:#111827">${icono} ${escape(v.archivo_nombre)}</div>
+              <div style="font-size:11px;color:#6b7280;margin-top:4px">
+                📅 ${escape(fecha)} · 📦 ${formatearTamano(v.archivo_size)}
+                ${v.reemplazado_por_nombre ? ` · 👤 ${escape(v.reemplazado_por_nombre)}` : ''}
+              </div>
+              ${v.notas ? `<div style="font-size:12px;color:#4b5563;margin-top:6px;font-style:italic">"${escape(v.notas)}"</div>` : ''}
+            </div>
+            <button class="btn btn-primary btn-pequeno" onclick="descargarVersionArchivada(${v.id}, '${escape((v.archivo_nombre || '').replace(/'/g, "\\'"))}', '${escape(v.archivo_mime || '')}')">📥 Descargar</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    document.getElementById('versiones-lista').innerHTML = `<div class="error-msg">${escape(e.message)}</div>`;
+  }
+}
+
+async function descargarVersionArchivada(versionId, nombreArchivo, mime) {
+  try {
+    const token = localStorage.getItem('cpv2_token') || '';
+    const resp = await fetch('/api/formaciones/versiones/' + versionId + '/descargar', {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    if (!resp.ok) {
+      try {
+        const json = await resp.json();
+        throw new Error(json.error || 'Error ' + resp.status);
+      } catch (_) {
+        throw new Error('Error ' + resp.status);
+      }
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const visualizable = mime && (mime === 'application/pdf' || mime.startsWith('image/') || mime.startsWith('video/'));
+    if (visualizable) {
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } else {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = nombreArchivo || 'version';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+  } catch (err) {
+    alert('Error: ' + err.message);
   }
 }
 

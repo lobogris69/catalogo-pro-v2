@@ -669,7 +669,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'aula-fix-descarga-09jun',
+    build: 'aula-bloque3-09jun',
     service: 'CatalogPRO v2'
   });
 });
@@ -5780,6 +5780,9 @@ app.post('/api/formaciones', verifyToken, requireRealAdmin, uploadFormacion.sing
         req.user!.id
       ]
     );
+    // LL2: disparar email automático al CREAR (en background, no bloquea la respuesta)
+    notificarFormacion(r.rows[0].id, 'nueva', req.user!.id)
+      .catch((e: any) => console.error('[notif-formacion]:', e.message));
     res.json({ success: true, formacion: r.rows[0] });
   } catch (e) {
     // Si falló a mitad, limpiar archivo subido
@@ -5933,6 +5936,312 @@ app.get('/api/formaciones/laboratorios', verifyToken, async (req: AuthRequest, r
     res.status(500).json({ success: false, error: (e as Error).message });
   }
 });
+
+// ============================================================================
+// AULA — BLOQUE 3: Permisos individuales por comercial
+// HH1: integrado en modal crear/editar (frontend manda lista de user_ids)
+// II2: al cambiar de restringida a pública, NO se borran permisos (se conservan)
+// ============================================================================
+
+// GET listar IDs de comerciales con permiso explícito sobre una formación
+app.get('/api/formaciones/:id/permisos', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(
+      `SELECT user_id FROM formacion_permisos WHERE formacion_id = $1`, [id]
+    );
+    res.json({ success: true, user_ids: r.rows.map((x: any) => x.user_id) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// PUT actualizar permisos: reemplaza la lista completa
+// Body: { user_ids: [1, 2, 3] }
+app.put('/api/formaciones/:id/permisos', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { user_ids } = req.body;
+    if (!Array.isArray(user_ids)) {
+      res.status(400).json({ success: false, error: 'user_ids debe ser un array' });
+      return;
+    }
+    const f = await pool.query(`SELECT id FROM formaciones WHERE id = $1`, [id]);
+    if (f.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Formación no encontrada' });
+      return;
+    }
+    // Estrategia simple: borrar todos y reinsertar (transacción para atomicidad)
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`DELETE FROM formacion_permisos WHERE formacion_id = $1`, [id]);
+      for (const uid of user_ids) {
+        const uidNum = Number(uid);
+        if (!isNaN(uidNum)) {
+          await client.query(
+            `INSERT INTO formacion_permisos (formacion_id, user_id) VALUES ($1, $2)
+             ON CONFLICT (formacion_id, user_id) DO NOTHING`,
+            [id, uidNum]
+          );
+        }
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+    res.json({ success: true, count: user_ids.length });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// AULA — BLOQUE 3: Reemplazar archivo (histórico de versiones)
+// JJ1: integrado en modal editar (campo opcional "Reemplazar archivo")
+// Si se sube nuevo archivo: el anterior va a formacion_versions, el nuevo
+// pasa a ser el activo. Disparará email automático (LL2).
+// ============================================================================
+app.post('/api/formaciones/:id/reemplazar-archivo', verifyToken, requireRealAdmin,
+  uploadFormacion.single('archivo'),
+  async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ success: false, error: 'Falta el archivo' });
+      return;
+    }
+    const id = Number(req.params.id);
+    const { notas } = req.body;
+    // Validar tamaño según tipo
+    const esVideo = MIMES_FORMACION_VIDEO.includes(req.file.mimetype);
+    const limite = esVideo ? 200 * 1024 * 1024 : 50 * 1024 * 1024;
+    if (req.file.size > limite) {
+      try { require('fs').unlinkSync(req.file.path); } catch (_) {}
+      res.status(400).json({
+        success: false,
+        error: `Archivo demasiado grande. Máximo: ${esVideo ? '200 MB para vídeos' : '50 MB para documentos'}`
+      });
+      return;
+    }
+    // Cargar formación actual
+    const f = await pool.query(`SELECT * FROM formaciones WHERE id = $1`, [id]);
+    if (f.rows.length === 0) {
+      try { require('fs').unlinkSync(req.file.path); } catch (_) {}
+      res.status(404).json({ success: false, error: 'Formación no encontrada' });
+      return;
+    }
+    const actual = f.rows[0];
+    // Mover el archivo actual al histórico
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`
+        INSERT INTO formacion_versions
+          (formacion_id, archivo_path, archivo_nombre, archivo_mime, archivo_size, notas, reemplazado_por)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `, [
+        id,
+        actual.archivo_path,
+        actual.archivo_nombre,
+        actual.archivo_mime,
+        actual.archivo_size,
+        notas ? String(notas).trim() : null,
+        req.user!.id
+      ]);
+      // Actualizar la formación con el nuevo archivo
+      await client.query(`
+        UPDATE formaciones SET
+          archivo_path = $1,
+          archivo_nombre = $2,
+          archivo_mime = $3,
+          archivo_size = $4,
+          updated_at = NOW()
+        WHERE id = $5
+      `, [
+        req.file.path,
+        req.file.originalname,
+        req.file.mimetype,
+        req.file.size,
+        id
+      ]);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      // Si la transacción falla, borrar el archivo recién subido
+      try { require('fs').unlinkSync(req.file.path); } catch (_) {}
+      throw e;
+    } finally {
+      client.release();
+    }
+    // Disparar email automático en background (LL2 + MM2)
+    notificarFormacion(id, 'actualizada', req.user!.id)
+      .catch((e: any) => console.error('[notif-formacion]:', e.message));
+    res.json({ success: true });
+  } catch (e) {
+    if (req.file) {
+      try { require('fs').unlinkSync(req.file.path); } catch (_) {}
+    }
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET listar versiones archivadas
+app.get('/api/formaciones/:id/versiones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(`
+      SELECT v.*, u.name AS reemplazado_por_nombre
+      FROM formacion_versions v
+      LEFT JOIN users u ON u.id = v.reemplazado_por
+      WHERE v.formacion_id = $1
+      ORDER BY v.archivado_at DESC
+    `, [id]);
+    res.json({ success: true, versiones: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET descargar versión archivada
+app.get('/api/formaciones/versiones/:versionId/descargar', verifyToken, requireRealAdmin,
+  async (req: AuthRequest, res: Response) => {
+  try {
+    const versionId = Number(req.params.versionId);
+    const r = await pool.query(`SELECT * FROM formacion_versions WHERE id = $1`, [versionId]);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Versión no encontrada' });
+      return;
+    }
+    const v = r.rows[0];
+    const fs = require('fs');
+    if (!fs.existsSync(v.archivo_path)) {
+      res.status(404).json({ success: false, error: 'Archivo de versión no existe en disco' });
+      return;
+    }
+    res.setHeader('Content-Type', v.archivo_mime || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(v.archivo_nombre)}"`);
+    fs.createReadStream(v.archivo_path).pipe(res);
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: (e as Error).message });
+    }
+  }
+});
+
+// ============================================================================
+// AULA — BLOQUE 3: Email automático al crear/actualizar (LL2 + MM2)
+// MM2: solo a comerciales con acceso REAL (públicas: todos; restringida: solo los autorizados)
+// Respeta toggle GG3 (recibir_notificaciones)
+// ============================================================================
+async function notificarFormacion(formacionId: number, accion: 'nueva' | 'actualizada', actorId: number) {
+  try {
+    // Cargar formación
+    const fR = await pool.query(`SELECT * FROM formaciones WHERE id = $1`, [formacionId]);
+    if (fR.rows.length === 0) return;
+    const f = fR.rows[0];
+
+    // Determinar destinatarios según pública/restringida y toggle de notificaciones
+    let destinatarios: any[] = [];
+    if (f.publico) {
+      // Públicas: todos los comerciales activos con notificaciones ON
+      const r = await pool.query(`
+        SELECT id, email, name FROM users
+        WHERE role = 'sales' AND is_active = TRUE
+          AND COALESCE(recibir_notificaciones, TRUE) = TRUE
+          AND email IS NOT NULL AND email <> ''
+      `);
+      destinatarios = r.rows;
+    } else {
+      // Restringidas: solo los del formacion_permisos con notificaciones ON
+      const r = await pool.query(`
+        SELECT u.id, u.email, u.name
+        FROM users u
+        JOIN formacion_permisos fp ON fp.user_id = u.id
+        WHERE fp.formacion_id = $1
+          AND u.role = 'sales' AND u.is_active = TRUE
+          AND COALESCE(u.recibir_notificaciones, TRUE) = TRUE
+          AND u.email IS NOT NULL AND u.email <> ''
+      `, [formacionId]);
+      destinatarios = r.rows;
+    }
+
+    if (destinatarios.length === 0) {
+      console.log('[notif-formacion] Sin destinatarios para formación ' + formacionId);
+      return;
+    }
+
+    // Nombre del actor
+    let nombreActor = 'el administrador';
+    try {
+      const a = await pool.query(`SELECT name FROM users WHERE id = $1`, [actorId]);
+      if (a.rows.length > 0) nombreActor = a.rows[0].name;
+    } catch (_) {}
+
+    const appUrl = process.env.APP_PUBLIC_URL || 'https://catalogo-pro-v2-production.up.railway.app';
+    const verbo = accion === 'nueva' ? 'subido nueva' : 'actualizado';
+    const asunto = `🎓 Formación ${accion === 'nueva' ? 'nueva' : 'actualizada'} · ${f.laboratorio}: ${f.nombre}`;
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333">
+        <div style="background: linear-gradient(135deg, #cc007a 0%, #a3005f 100%); color: #fff; padding: 24px; border-radius: 8px 8px 0 0">
+          <h2 style="margin: 0; font-size: 20px">🎓 Aula de formación</h2>
+          <p style="margin: 8px 0 0 0; opacity: 0.9; font-size: 14px">CatalogPRO · LOMHIFAR</p>
+        </div>
+        <div style="background: #fff; padding: 24px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px">
+          <p style="margin: 0 0 14px 0; font-size: 14px">Hola,</p>
+          <p style="margin: 0 0 14px 0; font-size: 14px">
+            <b>${escapeHtml(nombreActor)}</b> ha ${verbo} formación en el aula:
+          </p>
+          <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 14px 0">
+            <div style="font-size: 11px; text-transform: uppercase; color: #be185d; font-weight: 700; margin-bottom: 4px">
+              🧪 ${escapeHtml(f.laboratorio)}
+            </div>
+            <div style="font-size: 16px; font-weight: 600; color: #111827; margin-bottom: 6px">
+              ${escapeHtml(f.nombre)}
+            </div>
+            ${f.tematica ? `<div style="font-size: 12px; color: #6b7280">Temática: ${escapeHtml(f.tematica)}</div>` : ''}
+            ${f.descripcion ? `<div style="font-size: 13px; color: #4b5563; margin-top: 8px">${escapeHtml(String(f.descripcion).substring(0, 200))}${f.descripcion.length > 200 ? '…' : ''}</div>` : ''}
+          </div>
+          <p style="margin: 14px 0; font-size: 14px">
+            Entra al aula para verlo:
+          </p>
+          <div style="text-align: center; margin: 24px 0">
+            <a href="${appUrl}" style="display: inline-block; background: #cc007a; color: #fff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px">
+              🎓 Abrir Aula
+            </a>
+          </div>
+          <hr style="border: none; border-top: 1px solid #f3f4f6; margin: 20px 0">
+          <p style="font-size: 11px; color: #9ca3af; margin: 0">
+            Recibes este email porque tienes activadas las notificaciones en tu cuenta.
+            Para desactivarlas: <b>Mi cuenta</b> → Notificaciones.
+          </p>
+        </div>
+      </div>
+    `;
+
+    let ok = 0, err = 0;
+    for (const d of destinatarios) {
+      try {
+        const r = await enviarEmailConRedireccion({
+          rol: 'comercial',
+          destinatarioReal: d.email,
+          asunto,
+          html
+        });
+        if (r.ok) ok++; else err++;
+      } catch (e: any) {
+        err++;
+        console.error('[notif-formacion] Error a ' + d.email + ':', e.message);
+      }
+    }
+    console.log(`[notif-formacion] Formación ${formacionId} (${accion}): ${ok} OK, ${err} fallidos de ${destinatarios.length}`);
+  } catch (e: any) {
+    console.error('[notif-formacion] Error global:', e.message);
+  }
+}
 
 // ============================================================================
 // FRONTEND FALLBACK (DEBE ser el último GET, después de todos los /api/*)
