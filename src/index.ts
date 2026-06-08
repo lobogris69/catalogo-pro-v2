@@ -465,6 +465,57 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_pph_product ON product_price_history(product_id);
       CREATE INDEX IF NOT EXISTS idx_pph_date ON product_price_history(changed_at DESC);
+
+      -- ====================================================================
+      -- AULA DE FORMACIÓN
+      -- ====================================================================
+      -- Tabla principal: cada fila es una formación (archivo + metadatos)
+      CREATE TABLE IF NOT EXISTS formaciones (
+        id              SERIAL PRIMARY KEY,
+        laboratorio     VARCHAR(150) NOT NULL,        -- 'Bayer', 'Cantabria Labs', etc.
+        nombre          VARCHAR(255) NOT NULL,        -- título de la formación
+        tematica        VARCHAR(150),                 -- 'Dermatología', 'Solar', etc.
+        descripcion     TEXT,
+        archivo_path    VARCHAR(500) NOT NULL,        -- ruta en disco
+        archivo_nombre  VARCHAR(255) NOT NULL,        -- nombre original
+        archivo_mime    VARCHAR(100),                 -- 'application/pdf', 'video/mp4', etc.
+        archivo_size    BIGINT,                       -- tamaño en bytes
+        fecha_formacion DATE,                         -- fecha que indica el material (opcional)
+        publico         BOOLEAN DEFAULT TRUE,         -- TRUE = todos comerciales; FALSE = solo los de formacion_permisos
+        creado_por      INTEGER REFERENCES users(id),
+        created_at      TIMESTAMP DEFAULT NOW(),
+        updated_at      TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_formaciones_lab ON formaciones(laboratorio);
+      CREATE INDEX IF NOT EXISTS idx_formaciones_tematica ON formaciones(tematica);
+      CREATE INDEX IF NOT EXISTS idx_formaciones_fecha ON formaciones(fecha_formacion DESC);
+
+      -- Histórico de versiones: cuando se actualiza el archivo, la versión anterior
+      -- queda registrada aquí para auditoría. NO se borra el archivo viejo.
+      CREATE TABLE IF NOT EXISTS formacion_versions (
+        id              SERIAL PRIMARY KEY,
+        formacion_id    INTEGER NOT NULL REFERENCES formaciones(id) ON DELETE CASCADE,
+        archivo_path    VARCHAR(500) NOT NULL,
+        archivo_nombre  VARCHAR(255) NOT NULL,
+        archivo_mime    VARCHAR(100),
+        archivo_size    BIGINT,
+        notas           TEXT,                         -- p.ej. "actualización tras feedback"
+        reemplazado_por INTEGER REFERENCES users(id), -- quién subió la versión nueva (causando que esta pasase a histórico)
+        archivado_at    TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_form_versions_formacion ON formacion_versions(formacion_id);
+
+      -- Permisos: si la formación tiene publico=FALSE, solo los usuarios listados aquí la ven.
+      -- Si publico=TRUE, esta tabla se ignora (todos los comerciales activos la ven).
+      CREATE TABLE IF NOT EXISTS formacion_permisos (
+        id              SERIAL PRIMARY KEY,
+        formacion_id    INTEGER NOT NULL REFERENCES formaciones(id) ON DELETE CASCADE,
+        user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at      TIMESTAMP DEFAULT NOW(),
+        UNIQUE(formacion_id, user_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_form_permisos_formacion ON formacion_permisos(formacion_id);
+      CREATE INDEX IF NOT EXISTS idx_form_permisos_user ON formacion_permisos(user_id);
     `;
     await pool.query(schemaSQL);
 
@@ -618,7 +669,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'express-historial-tab-09jun',
+    build: 'aula-bloque1-09jun',
     service: 'CatalogPRO v2'
   });
 });
@@ -5619,6 +5670,265 @@ app.delete('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: Auth
     const zoneId = Number(req.params.zoneId);
     const r = await pool.query(`DELETE FROM sheet_zones WHERE id = $1`, [zoneId]);
     res.json({ success: true, borrada: (r.rowCount || 0) > 0 });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// AULA DE FORMACIÓN (Bloque 1: backend admin)
+// Almacenamiento: /app/data/uploads/formaciones/
+// Formatos: PDF, imágenes, DOCX, PPTX, MP4 (1A)
+// Tamaño: 50 MB documentos / 200 MB vídeos (2A)
+// ============================================================================
+
+// Directorio dedicado a formaciones (separado del resto de uploads)
+function getFormacionesDir(): string {
+  const path = require('path');
+  const fs = require('fs');
+  const dir = path.join(UPLOADS_DIR, 'formaciones');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// Storage específico para formaciones
+const storageFormaciones = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, getFormacionesDir()),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 80);
+    cb(null, `${Date.now()}_${safe}`);
+  }
+});
+
+// Validación de tipos MIME permitidos
+// 1A: PDF, imágenes, DOCX, PPTX, vídeos MP4
+const MIMES_FORMACION_DOC = [
+  'application/pdf',
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+];
+const MIMES_FORMACION_VIDEO = [
+  'video/mp4', 'video/webm', 'video/quicktime'
+];
+
+const uploadFormacion = multer({
+  storage: storageFormaciones,
+  // Límite mayor (200 MB) — luego validamos por tipo en el handler (50 MB doc / 200 MB vídeo)
+  limits: { fileSize: 200 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const tipo = file.mimetype;
+    if (MIMES_FORMACION_DOC.includes(tipo) || MIMES_FORMACION_VIDEO.includes(tipo)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Formato no permitido: ${tipo}. Solo PDF, imágenes, Word, PowerPoint o vídeos MP4.`));
+    }
+  }
+});
+
+// POST crear formación (admin sube archivo + metadatos)
+app.post('/api/formaciones', verifyToken, requireRealAdmin, uploadFormacion.single('archivo'),
+  async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ success: false, error: 'Falta el archivo' });
+      return;
+    }
+    // Validación de tamaño por tipo (50 MB documento, 200 MB vídeo)
+    const esVideo = MIMES_FORMACION_VIDEO.includes(req.file.mimetype);
+    const limite = esVideo ? 200 * 1024 * 1024 : 50 * 1024 * 1024;
+    if (req.file.size > limite) {
+      // Borrar el archivo recién subido para no dejar basura
+      try { require('fs').unlinkSync(req.file.path); } catch (_) {}
+      res.status(400).json({
+        success: false,
+        error: `Archivo demasiado grande. Máximo: ${esVideo ? '200 MB para vídeos' : '50 MB para documentos'}`
+      });
+      return;
+    }
+    const { laboratorio, nombre, tematica, descripcion, fecha_formacion, publico } = req.body;
+    if (!laboratorio || !String(laboratorio).trim()) {
+      try { require('fs').unlinkSync(req.file.path); } catch (_) {}
+      res.status(400).json({ success: false, error: 'Falta el laboratorio' });
+      return;
+    }
+    if (!nombre || !String(nombre).trim()) {
+      try { require('fs').unlinkSync(req.file.path); } catch (_) {}
+      res.status(400).json({ success: false, error: 'Falta el nombre' });
+      return;
+    }
+    const r = await pool.query(`
+      INSERT INTO formaciones
+        (laboratorio, nombre, tematica, descripcion, archivo_path, archivo_nombre,
+         archivo_mime, archivo_size, fecha_formacion, publico, creado_por)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      RETURNING *`,
+      [
+        String(laboratorio).trim(),
+        String(nombre).trim(),
+        tematica ? String(tematica).trim() : null,
+        descripcion ? String(descripcion).trim() : null,
+        req.file.path,
+        req.file.originalname,
+        req.file.mimetype,
+        req.file.size,
+        fecha_formacion ? fecha_formacion : null,
+        publico === 'false' || publico === false ? false : true,
+        req.user!.id
+      ]
+    );
+    res.json({ success: true, formacion: r.rows[0] });
+  } catch (e) {
+    // Si falló a mitad, limpiar archivo subido
+    if (req.file) {
+      try { require('fs').unlinkSync(req.file.path); } catch (_) {}
+    }
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET listar todas las formaciones (admin ve todo, comercial ve las que puede)
+app.get('/api/formaciones', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const esAdmin = req.user?.role === 'admin';
+    const userId = effectiveUserId(req);
+    let sql = `
+      SELECT f.*,
+             u.name AS creador_nombre,
+             (SELECT COUNT(*)::int FROM formacion_versions WHERE formacion_id = f.id) AS num_versiones_archivadas
+      FROM formaciones f
+      LEFT JOIN users u ON u.id = f.creado_por
+    `;
+    const params: any[] = [];
+    if (!esAdmin) {
+      // Comercial: solo las públicas O las que tiene permisos individuales
+      sql += `
+        WHERE f.publico = TRUE
+          OR f.id IN (SELECT formacion_id FROM formacion_permisos WHERE user_id = $1)
+      `;
+      params.push(userId);
+    }
+    sql += ` ORDER BY f.fecha_formacion DESC NULLS LAST, f.created_at DESC`;
+    const r = await pool.query(sql, params);
+    res.json({ success: true, formaciones: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET descargar archivo de formación (con verificación de permisos)
+app.get('/api/formaciones/:id/descargar', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const esAdmin = req.user?.role === 'admin';
+    const userId = effectiveUserId(req);
+    const f = await pool.query(`SELECT * FROM formaciones WHERE id = $1`, [id]);
+    if (f.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Formación no encontrada' });
+      return;
+    }
+    const formacion = f.rows[0];
+    // Verificar permisos si no es admin
+    if (!esAdmin && !formacion.publico) {
+      const p = await pool.query(
+        `SELECT 1 FROM formacion_permisos WHERE formacion_id = $1 AND user_id = $2`,
+        [id, userId]
+      );
+      if (p.rows.length === 0) {
+        res.status(403).json({ success: false, error: 'No tienes acceso a esta formación' });
+        return;
+      }
+    }
+    const fs = require('fs');
+    if (!fs.existsSync(formacion.archivo_path)) {
+      res.status(404).json({ success: false, error: 'Archivo no encontrado en el servidor' });
+      return;
+    }
+    res.setHeader('Content-Type', formacion.archivo_mime || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(formacion.archivo_nombre)}"`);
+    fs.createReadStream(formacion.archivo_path).pipe(res);
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: (e as Error).message });
+    }
+  }
+});
+
+// PUT editar metadatos (sin tocar archivo)
+app.put('/api/formaciones/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { laboratorio, nombre, tematica, descripcion, fecha_formacion, publico } = req.body;
+    const f = await pool.query(`SELECT id FROM formaciones WHERE id = $1`, [id]);
+    if (f.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Formación no encontrada' });
+      return;
+    }
+    const r = await pool.query(`
+      UPDATE formaciones SET
+        laboratorio = COALESCE($1, laboratorio),
+        nombre = COALESCE($2, nombre),
+        tematica = $3,
+        descripcion = $4,
+        fecha_formacion = $5,
+        publico = COALESCE($6, publico),
+        updated_at = NOW()
+      WHERE id = $7 RETURNING *`,
+      [
+        laboratorio ? String(laboratorio).trim() : null,
+        nombre ? String(nombre).trim() : null,
+        tematica !== undefined ? (tematica ? String(tematica).trim() : null) : null,
+        descripcion !== undefined ? (descripcion ? String(descripcion).trim() : null) : null,
+        fecha_formacion !== undefined ? (fecha_formacion || null) : null,
+        (publico === true || publico === 'true') ? true : (publico === false || publico === 'false') ? false : null,
+        id
+      ]
+    );
+    res.json({ success: true, formacion: r.rows[0] });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// DELETE eliminar formación (borra archivo físico y registros)
+app.delete('/api/formaciones/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const f = await pool.query(`SELECT archivo_path FROM formaciones WHERE id = $1`, [id]);
+    if (f.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Formación no encontrada' });
+      return;
+    }
+    // También borrar archivos de versiones archivadas
+    const versiones = await pool.query(
+      `SELECT archivo_path FROM formacion_versions WHERE formacion_id = $1`, [id]
+    );
+    // Borrar archivos físicos
+    const fs = require('fs');
+    try { if (fs.existsSync(f.rows[0].archivo_path)) fs.unlinkSync(f.rows[0].archivo_path); } catch (_) {}
+    for (const v of versiones.rows) {
+      try { if (fs.existsSync(v.archivo_path)) fs.unlinkSync(v.archivo_path); } catch (_) {}
+    }
+    // Borrar registros (CASCADE elimina versions y permisos)
+    await pool.query(`DELETE FROM formaciones WHERE id = $1`, [id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET listar laboratorios distintos (para el filtro)
+app.get('/api/formaciones/laboratorios', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`
+      SELECT DISTINCT laboratorio FROM formaciones
+      WHERE laboratorio IS NOT NULL AND laboratorio <> ''
+      ORDER BY laboratorio
+    `);
+    res.json({ success: true, laboratorios: r.rows.map((x: any) => x.laboratorio) });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }

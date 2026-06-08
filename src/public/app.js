@@ -199,6 +199,7 @@ async function renderApp() {
         <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
         <button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>
         <button class="navtab ${appState.vista === 'planning' ? 'navtab-activa' : ''}" onclick="irA('planning')">🗓️ Planning</button>
+        <button class="navtab ${appState.vista === 'aula' ? 'navtab-activa' : ''}" onclick="irA('aula')">🎓 Aula</button>
         <button class="navtab ${appState.vista === 'mapa' ? 'navtab-activa' : ''}" onclick="irA('mapa')">🗺️ Mapa</button>
         ${esAdmin ? `<button class="navtab ${appState.vista === 'productos' ? 'navtab-activa' : ''}" onclick="irA('productos')">📦 Productos</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
@@ -218,7 +219,7 @@ async function renderApp() {
 function routerVista() {
   // I.2: vistas que NO funcionan offline (requieren API y no tienen cache offline)
   // Clientes y Planning SÍ funcionan offline (I.3 + I-Planning) leyendo desde IndexedDB
-  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion', 'productos', 'dashboard'];
+  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion', 'productos', 'dashboard', 'aula'];
   if (!navigator.onLine && vistasOnlineOnly.includes(appState.vista)) {
     renderVistaNoDisponibleOffline(appState.vista);
     return;
@@ -226,6 +227,10 @@ function routerVista() {
 
   if (appState.vista === 'dashboard') {
     renderDashboard();
+    return;
+  }
+  if (appState.vista === 'aula') {
+    renderAula();
     return;
   }
   if (appState.vista === 'clientes') {
@@ -5895,6 +5900,345 @@ function mostrarModalVisitaEnCurso() {
     </div>
   `;
   document.body.appendChild(modal);
+}
+
+// ============================================================================
+// AULA DE FORMACIÓN (Bloque 1: vista admin + listado)
+// ============================================================================
+let _aulaCache = null;
+
+async function renderAula() {
+  const $v = document.getElementById('vista-contenido');
+  if (!$v) return;
+  const esAdmin = (typeof user !== 'undefined' && user && user.role === 'admin');
+
+  $v.innerHTML = `
+    <div class="contenedor">
+      <div class="titulo-pagina">
+        <div>
+          <h2 style="margin:0">🎓 Aula de formación</h2>
+          <p style="color:var(--gris-texto);font-size:13px;margin:4px 0 0 0">
+            ${esAdmin
+              ? 'Sube y gestiona el material de formación de los laboratorios.'
+              : 'Materiales de formación disponibles para tu consulta.'}
+          </p>
+        </div>
+        ${esAdmin ? `
+          <button class="btn btn-primary" onclick="abrirModalSubirFormacion()">
+            + Nueva formación
+          </button>
+        ` : ''}
+      </div>
+
+      <div id="aula-filtros" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" id="aula-filtro-texto" placeholder="🔍 Buscar (nombre, temática, laboratorio)…"
+               style="flex:1;min-width:240px;padding:8px 12px;border:1px solid var(--gris-borde);border-radius:8px;font-size:13px">
+        <select id="aula-filtro-lab" style="padding:8px 12px;border:1px solid var(--gris-borde);border-radius:8px;font-size:13px">
+          <option value="">Todos los laboratorios</option>
+        </select>
+      </div>
+
+      <div id="aula-contenido">
+        <p style="text-align:center;color:var(--gris-texto);padding:24px">Cargando…</p>
+      </div>
+    </div>
+  `;
+
+  try {
+    const r = await api('/api/formaciones');
+    _aulaCache = r.formaciones || [];
+    const labs = [...new Set(_aulaCache.map(f => f.laboratorio).filter(Boolean))].sort();
+    const $selLab = document.getElementById('aula-filtro-lab');
+    if ($selLab) {
+      labs.forEach(l => {
+        const opt = document.createElement('option');
+        opt.value = l;
+        opt.textContent = l;
+        $selLab.appendChild(opt);
+      });
+      $selLab.addEventListener('change', pintarAula);
+    }
+    const $txt = document.getElementById('aula-filtro-texto');
+    if ($txt) {
+      let t;
+      $txt.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(pintarAula, 200);
+      });
+    }
+    pintarAula();
+  } catch (e) {
+    document.getElementById('aula-contenido').innerHTML =
+      `<div class="error-msg">${escape(e.message)}</div>`;
+  }
+}
+
+function pintarAula() {
+  const $c = document.getElementById('aula-contenido');
+  if (!$c || !_aulaCache) return;
+  const fTexto = (document.getElementById('aula-filtro-texto')?.value || '').toLowerCase().trim();
+  const fLab = document.getElementById('aula-filtro-lab')?.value || '';
+  const esAdmin = (typeof user !== 'undefined' && user && user.role === 'admin');
+
+  let filtradas = _aulaCache;
+  if (fLab) filtradas = filtradas.filter(f => f.laboratorio === fLab);
+  if (fTexto) {
+    filtradas = filtradas.filter(f => {
+      const hay = (f.nombre + ' ' + (f.tematica || '') + ' ' + f.laboratorio + ' ' + (f.descripcion || '')).toLowerCase();
+      return hay.includes(fTexto);
+    });
+  }
+
+  if (filtradas.length === 0) {
+    $c.innerHTML = `
+      <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:32px;text-align:center;color:#6b7280">
+        ${_aulaCache.length === 0
+          ? (esAdmin
+              ? '🎓 Aún no hay formaciones subidas. Pulsa <b>"+ Nueva formación"</b> para empezar.'
+              : '🎓 Aún no hay formaciones disponibles.')
+          : 'Sin resultados con esos filtros.'}
+      </div>
+    `;
+    return;
+  }
+
+  const porLab = {};
+  filtradas.forEach(f => {
+    if (!porLab[f.laboratorio]) porLab[f.laboratorio] = [];
+    porLab[f.laboratorio].push(f);
+  });
+
+  let html = '';
+  Object.keys(porLab).sort().forEach(lab => {
+    html += `<h3 style="margin:18px 0 8px 0;font-size:15px;color:#374151;border-bottom:2px solid #f3f4f6;padding-bottom:6px">🧪 ${escape(lab)} <span style="color:#9ca3af;font-weight:400;font-size:12px">(${porLab[lab].length})</span></h3>`;
+    html += `<div class="aula-grid">`;
+    porLab[lab].forEach(f => {
+      html += renderTarjetaFormacion(f, esAdmin);
+    });
+    html += `</div>`;
+  });
+  $c.innerHTML = html;
+}
+
+function renderTarjetaFormacion(f, esAdmin) {
+  const icono = iconoFormacion(f.archivo_mime);
+  const tamano = formatearTamano(f.archivo_size);
+  const fecha = f.fecha_formacion
+    ? new Date(f.fecha_formacion).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })
+    : new Date(f.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
+  return `
+    <div class="aula-card">
+      <div class="aula-card-icono">${icono}</div>
+      <div class="aula-card-cuerpo">
+        <div class="aula-card-titulo">${escape(f.nombre)}</div>
+        ${f.tematica ? `<div class="aula-card-tematica">${escape(f.tematica)}</div>` : ''}
+        <div class="aula-card-meta">
+          📅 ${escape(fecha)} · 📦 ${tamano}
+          ${!f.publico ? ' · 🔒 Restringido' : ''}
+        </div>
+        ${f.descripcion ? `<div class="aula-card-desc">${escape(f.descripcion.substring(0, 120))}${f.descripcion.length > 120 ? '…' : ''}</div>` : ''}
+      </div>
+      <div class="aula-card-acciones">
+        <a href="/api/formaciones/${f.id}/descargar" target="_blank" class="btn btn-primary btn-pequeno">📥 Ver / Descargar</a>
+        ${esAdmin ? `
+          <button class="btn btn-secondary btn-pequeno" onclick="abrirModalEditarFormacion(${f.id})">✏️ Editar</button>
+          <button class="btn btn-danger btn-pequeno" onclick="borrarFormacion(${f.id})">🗑️</button>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function iconoFormacion(mime) {
+  if (!mime) return '📄';
+  if (mime.startsWith('video/')) return '🎬';
+  if (mime.startsWith('image/')) return '🖼️';
+  if (mime === 'application/pdf') return '📕';
+  if (mime.includes('word')) return '📘';
+  if (mime.includes('presentation') || mime.includes('powerpoint')) return '📙';
+  return '📄';
+}
+
+function formatearTamano(bytes) {
+  if (!bytes) return '—';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+function abrirModalSubirFormacion() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width:560px">
+      <div class="modal-header">
+        <h3>+ Nueva formación</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <form id="form-nueva-formacion">
+        <div class="form-group">
+          <label>Laboratorio <span style="color:#dc2626">*</span></label>
+          <input type="text" id="nf-laboratorio" required placeholder="Ej: Cantabria Labs, Bayer, ISDIN…" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+        </div>
+        <div class="form-group">
+          <label>Nombre de la formación <span style="color:#dc2626">*</span></label>
+          <input type="text" id="nf-nombre" required placeholder="Ej: Heliocare 360 - Nueva gama 2026" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="form-group">
+            <label>Temática</label>
+            <input type="text" id="nf-tematica" placeholder="Solar, Dermatología…" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+          </div>
+          <div class="form-group">
+            <label>Fecha</label>
+            <input type="date" id="nf-fecha" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Descripción <small style="color:#9ca3af">opcional</small></label>
+          <textarea id="nf-descripcion" rows="2" placeholder="Breve descripción del contenido…" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit;font-size:14px;box-sizing:border-box"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Archivo <span style="color:#dc2626">*</span></label>
+          <input type="file" id="nf-archivo" required
+                 accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.ppt,.pptx,.mp4,.webm,.mov"
+                 style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+          <small style="color:#6b7280">PDF, imágenes, Word, PowerPoint o vídeo. Máx 50 MB (200 MB vídeo).</small>
+        </div>
+        <div id="nf-msg"></div>
+        <div class="modal-acciones">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="nf-submit">📤 Subir</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  document.getElementById('form-nueva-formacion').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const $msg = document.getElementById('nf-msg');
+    const $btn = document.getElementById('nf-submit');
+    const archivo = document.getElementById('nf-archivo').files[0];
+    if (!archivo) {
+      $msg.innerHTML = '<div class="error-msg">Selecciona un archivo</div>';
+      return;
+    }
+    const formData = new FormData();
+    formData.append('archivo', archivo);
+    formData.append('laboratorio', document.getElementById('nf-laboratorio').value);
+    formData.append('nombre', document.getElementById('nf-nombre').value);
+    formData.append('tematica', document.getElementById('nf-tematica').value);
+    formData.append('descripcion', document.getElementById('nf-descripcion').value);
+    const fecha = document.getElementById('nf-fecha').value;
+    if (fecha) formData.append('fecha_formacion', fecha);
+
+    $btn.disabled = true;
+    $btn.textContent = '⏳ Subiendo…';
+    $msg.innerHTML = '<div style="color:#6b7280;font-size:13px">Subiendo archivo, puede tardar según tamaño…</div>';
+
+    try {
+      const token = localStorage.getItem('cpv2_token') || '';
+      const resp = await fetch('/api/formaciones', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token },
+        body: formData
+      });
+      const json = await resp.json();
+      if (!json.success) throw new Error(json.error || 'Error subiendo');
+      modal.remove();
+      mostrarNotificacionOnline('✅ Formación subida', '#16a34a');
+      renderAula();
+    } catch (err) {
+      $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+      $btn.disabled = false;
+      $btn.textContent = '📤 Subir';
+    }
+  });
+}
+
+async function abrirModalEditarFormacion(id) {
+  const f = (_aulaCache || []).find(x => x.id === id);
+  if (!f) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width:560px">
+      <div class="modal-header">
+        <h3>✏️ Editar formación</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <form id="form-editar-formacion">
+        <div class="form-group">
+          <label>Laboratorio</label>
+          <input type="text" id="ef-laboratorio" required value="${escape(f.laboratorio || '')}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+        </div>
+        <div class="form-group">
+          <label>Nombre</label>
+          <input type="text" id="ef-nombre" required value="${escape(f.nombre || '')}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="form-group">
+            <label>Temática</label>
+            <input type="text" id="ef-tematica" value="${escape(f.tematica || '')}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+          </div>
+          <div class="form-group">
+            <label>Fecha</label>
+            <input type="date" id="ef-fecha" value="${f.fecha_formacion ? new Date(f.fecha_formacion).toISOString().substring(0,10) : ''}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Descripción</label>
+          <textarea id="ef-descripcion" rows="2" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit;font-size:14px;box-sizing:border-box">${escape(f.descripcion || '')}</textarea>
+        </div>
+        <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;font-size:12px;color:#6b7280;margin-bottom:12px">
+          📎 Archivo actual: <b>${escape(f.archivo_nombre)}</b> (${formatearTamano(f.archivo_size)})
+          <br><small>Para reemplazar el archivo, vendrá en el Bloque 3 (histórico de versiones).</small>
+        </div>
+        <div id="ef-msg"></div>
+        <div class="modal-acciones">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+          <button type="submit" class="btn btn-primary">💾 Guardar cambios</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('form-editar-formacion').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const $msg = document.getElementById('ef-msg');
+    try {
+      await api('/api/formaciones/' + id, {
+        method: 'PUT',
+        body: {
+          laboratorio: document.getElementById('ef-laboratorio').value,
+          nombre: document.getElementById('ef-nombre').value,
+          tematica: document.getElementById('ef-tematica').value,
+          descripcion: document.getElementById('ef-descripcion').value,
+          fecha_formacion: document.getElementById('ef-fecha').value || null
+        }
+      });
+      modal.remove();
+      mostrarNotificacionOnline('✅ Cambios guardados', '#16a34a');
+      renderAula();
+    } catch (err) {
+      $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
+}
+
+async function borrarFormacion(id) {
+  const f = (_aulaCache || []).find(x => x.id === id);
+  if (!f) return;
+  if (!confirm(`¿Eliminar la formación "${f.nombre}"?\n\nSe borrará el archivo del servidor.\nEsta acción no se puede deshacer.`)) return;
+  try {
+    await api('/api/formaciones/' + id, { method: 'DELETE' });
+    mostrarNotificacionOnline('Formación eliminada', '#6b7280');
+    renderAula();
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
 }
 
 // ============================================================================
