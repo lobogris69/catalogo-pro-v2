@@ -618,7 +618,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fix-cerrar-version-express-29may',
+    build: 'express-historial-tab-09jun',
     service: 'CatalogPRO v2'
   });
 });

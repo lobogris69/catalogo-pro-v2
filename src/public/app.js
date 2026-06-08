@@ -758,6 +758,9 @@ function pintarEditorExpress() {
   });
 
   const $v = document.getElementById('vista-contenido');
+  // Por defecto, abrir en pestaña láminas
+  const pestanaActual = appState.editorPestana || 'laminas';
+
   $v.innerHTML = `
     <div class="contenedor">
       <div class="titulo-pagina">
@@ -776,6 +779,27 @@ function pintarEditorExpress() {
         </div>
       </div>
 
+      <!-- Pestañas Láminas / Historial (igual que el editor maestro) -->
+      <div class="editor-pestanas">
+        <button class="editor-pestana ${pestanaActual !== 'historial' ? 'editor-pestana-activa' : ''}" onclick="cambiarPestanaEditorExpress('laminas')">📄 Láminas (${sheetsExpress.length})</button>
+        <button class="editor-pestana ${pestanaActual === 'historial' ? 'editor-pestana-activa' : ''}" onclick="cambiarPestanaEditorExpress('historial')">📚 Historial</button>
+      </div>
+
+      <div id="editor-pestana-contenido">
+        ${pestanaActual === 'historial' ? '<div class="loading">Cargando historial…</div>' : ''}
+      </div>
+    </div>
+  `;
+
+  // Si la pestaña activa es Historial, cargarlo y salir (no pintamos las columnas)
+  if (pestanaActual === 'historial') {
+    pintarPestanaHistorial(id);
+    return;
+  }
+
+  // Pestaña Láminas: pintar las 2 columnas dentro del contenedor de la pestaña
+  const $cont = document.getElementById('editor-pestana-contenido');
+  $cont.innerHTML = `
       <div class="express-grid">
         <!-- COLUMNA IZQUIERDA: laminas del maestro -->
         <div class="editor-panel express-panel">
@@ -852,7 +876,6 @@ function pintarEditorExpress() {
           </div>
         </div>
       </div>
-    </div>
   `;
 
   // Listeners de checkboxes (maestro)
@@ -4296,6 +4319,12 @@ window.addEventListener('online', async () => {
 function cambiarPestanaEditor(pestana) {
   appState.editorPestana = pestana;
   if (appState.catalogoActual) renderEditorCatalogo(appState.catalogoActual);
+}
+
+// Cambiar pestaña en el editor Express (Láminas/Historial)
+function cambiarPestanaEditorExpress(pestana) {
+  appState.editorPestana = pestana;
+  pintarEditorExpress();
 }
 
 // Pinta la pestaña Historial dentro del editor de catálogo
