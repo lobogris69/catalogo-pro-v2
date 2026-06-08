@@ -3683,3 +3683,22 @@ body.con-banner-update {
   border-bottom: 1px solid #f3f4f6;
 }
 .dash-tabla tr:last-child td { border-bottom: none; }
+
+/* Toggle notificaciones email */
+.notif-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.notif-toggle input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  accent-color: #cc007a;
+}
+.notif-toggle-text {
+  font-size: 14px;
+  color: #374151;
+}

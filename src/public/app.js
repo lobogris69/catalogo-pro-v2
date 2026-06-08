@@ -770,6 +770,8 @@ function pintarEditorExpress() {
         </div>
         <div style="display:flex;gap:6px;align-self:flex-start;flex-wrap:wrap">
           <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
+          ${sheetsExpress.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>` : ''}
+          ${sheetsExpress.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>` : ''}
           ${sheetsExpress.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="vaciarExpress(${id}, ${sheetsExpress.length})">🗑️ Vaciar Express</button>` : ''}
         </div>
       </div>
@@ -1888,6 +1890,14 @@ function desactivarUsuario(id, nombre) {
 // ============================================================================
 async function renderMiCuenta() {
   const $v = document.getElementById('vista-contenido');
+  // Refrescar perfil del usuario para tener el toggle de notificaciones al día
+  try {
+    const r = await api('/api/users/me');
+    if (r.user) {
+      user.recibir_notificaciones = r.user.recibir_notificaciones !== false;
+      try { localStorage.setItem('cpv2_user', JSON.stringify(user)); } catch (_) {}
+    }
+  } catch (_) { /* no bloquea si falla */ }
   $v.innerHTML = `
     <div class="contenedor" style="max-width:600px">
       <div class="titulo-pagina">
@@ -1931,6 +1941,20 @@ async function renderMiCuenta() {
           <button type="submit" class="btn btn-primary">Guardar código Sage</button>
         </form>
       </div>
+
+      ${user.role === 'sales' ? `
+      <div class="editor-panel" style="margin-top:1rem">
+        <h3>🔔 Notificaciones por email</h3>
+        <p style="font-size:13px;color:var(--gris-texto);margin:0 0 12px 0">
+          Recibe un email cuando se publique una nueva versión de un catálogo asignado a ti.
+        </p>
+        <div id="cuenta-notif-msg"></div>
+        <label class="notif-toggle">
+          <input type="checkbox" id="notif-toggle" ${(user.recibir_notificaciones !== false) ? 'checked' : ''}>
+          <span class="notif-toggle-text"><b id="notif-toggle-label">${(user.recibir_notificaciones !== false) ? '✓ Activadas' : '✗ Desactivadas'}</b></span>
+        </label>
+      </div>
+      ` : ''}
     </div>
   `;
 
@@ -1971,6 +1995,28 @@ async function renderMiCuenta() {
       $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
     }
   });
+
+  // Toggle notificaciones email (solo si es comercial)
+  const $notif = document.getElementById('notif-toggle');
+  if ($notif) {
+    $notif.addEventListener('change', async () => {
+      const $msg = document.getElementById('cuenta-notif-msg');
+      const $label = document.getElementById('notif-toggle-label');
+      const recibir = $notif.checked;
+      try {
+        await api('/api/users/me/notificaciones', { method: 'PUT', body: { recibir } });
+        user.recibir_notificaciones = recibir;
+        localStorage.setItem('cpv2_user', JSON.stringify(user));
+        $label.textContent = recibir ? '✓ Activadas' : '✗ Desactivadas';
+        $msg.innerHTML = '<div class="exito-msg" style="margin-bottom:8px">✓ Guardado</div>';
+        setTimeout(() => { if ($msg) $msg.innerHTML = ''; }, 2000);
+      } catch (err) {
+        // Revertir el toggle
+        $notif.checked = !recibir;
+        $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+      }
+    });
+  }
 }
 
 // ============================================================================

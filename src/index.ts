@@ -367,6 +367,11 @@ async function initDB(): Promise<void> {
                        WHERE table_name='annotations' AND column_name='zone_id') THEN
           ALTER TABLE annotations ADD COLUMN zone_id INTEGER REFERENCES sheet_zones(id) ON DELETE SET NULL;
         END IF;
+        -- Notificaciones por email: comerciales reciben aviso al cerrar versión nueva
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='users' AND column_name='recibir_notificaciones') THEN
+          ALTER TABLE users ADD COLUMN recibir_notificaciones BOOLEAN DEFAULT TRUE;
+        END IF;
       END$migrate$;
 
       -- B5: tabla de union para catalogos Express
@@ -613,7 +618,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'dashboard-fase2-29may',
+    build: 'fix-cerrar-version-express-29may',
     service: 'CatalogPRO v2'
   });
 });
@@ -789,6 +794,35 @@ app.put('/api/users/me/sage-code', verifyToken, async (req: AuthRequest, res: Re
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GG3: toggle simple ON/OFF para recibir notificaciones por email
+app.put('/api/users/me/notificaciones', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { recibir } = req.body;
+    const valor = recibir === true || recibir === 'true' || recibir === 1;
+    await pool.query('UPDATE users SET recibir_notificaciones=$1 WHERE id=$2', [valor, req.user!.id]);
+    res.json({ success: true, recibir_notificaciones: valor });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Devolver perfil del usuario actual (incluye preferencias)
+app.get('/api/users/me', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      'SELECT id, email, name, role, sage_commercial_code, COALESCE(recibir_notificaciones, TRUE) AS recibir_notificaciones FROM users WHERE id=$1',
+      [req.user!.id]
+    );
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+      return;
+    }
+    res.json({ success: true, user: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
   }
 });
 
@@ -1312,6 +1346,10 @@ app.post('/api/catalogs/:id/close-version', verifyToken, requireRealAdmin, async
       `UPDATE catalogs SET version = $1, updated_at = NOW() WHERE id = $2`,
       [versionACerrar + 1, id]
     );
+
+    // Notificación email a comerciales asignados (fire-and-forget, no bloquea)
+    notificarComercialesNuevaVersion(id, versionACerrar, sheets.length, req.user?.id || null)
+      .catch((e: any) => console.error('[notif] Error disparando notificación:', e.message));
 
     res.json({
       success: true,
@@ -4437,6 +4475,103 @@ function escapeHtml(s: any): string {
   return String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// EE1+FF3+GG3: notificar a comerciales asignados cuando se cierra una versión nueva.
+// Fire-and-forget: si algo falla, solo se loguea, no rompe el cierre de versión.
+// Respeta el toggle ON/OFF de cada comercial (recibir_notificaciones).
+async function notificarComercialesNuevaVersion(catalogId: number, versionCerrada: number, totalLaminas: number, cerradorId: number | null) {
+  try {
+    // 1) Cargar info del catálogo
+    const catR = await pool.query(`SELECT id, name, tipo FROM catalogs WHERE id = $1`, [catalogId]);
+    if (catR.rows.length === 0) return;
+    const cat = catR.rows[0];
+
+    // 2) Nombre del admin que cerró la versión (si lo conocemos)
+    let nombreCerrador = 'el administrador';
+    if (cerradorId) {
+      const adminR = await pool.query(`SELECT name FROM users WHERE id = $1`, [cerradorId]);
+      if (adminR.rows.length > 0) nombreCerrador = adminR.rows[0].name;
+    }
+
+    // 3) Buscar comerciales asignados a este catálogo, activos y con notificaciones ON
+    const comerciales = await pool.query(`
+      SELECT u.id, u.email, u.name
+      FROM users u
+      JOIN catalog_assignments ca ON ca.user_id = u.id
+      WHERE ca.catalog_id = $1
+        AND u.is_active = TRUE
+        AND u.role = 'sales'
+        AND COALESCE(u.recibir_notificaciones, TRUE) = TRUE
+        AND u.email IS NOT NULL AND u.email <> ''
+    `, [catalogId]);
+
+    if (comerciales.rows.length === 0) {
+      console.log('[notif] Sin comerciales asignados a notificar para catálogo ' + catalogId);
+      return;
+    }
+
+    // 4) Enlace a la app (Railway URL desde env o fallback)
+    const appUrl = process.env.APP_PUBLIC_URL || 'https://catalogo-pro-v2-production.up.railway.app';
+
+    // 5) HTML del email (FF3: aviso + resumen + enlace)
+    const asunto = `📚 Nueva versión disponible · ${cat.name}`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333">
+        <div style="background: linear-gradient(135deg, #cc007a 0%, #a3005f 100%); color: #fff; padding: 24px; border-radius: 8px 8px 0 0">
+          <h2 style="margin: 0; font-size: 20px">📚 Nueva versión del catálogo</h2>
+          <p style="margin: 8px 0 0 0; opacity: 0.9; font-size: 14px">CatalogPRO · LOMHIFAR</p>
+        </div>
+        <div style="background: #fff; padding: 24px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px">
+          <p style="margin: 0 0 14px 0; font-size: 14px">Hola,</p>
+          <p style="margin: 0 0 14px 0; font-size: 14px">
+            <b>${escapeHtml(nombreCerrador)}</b> acaba de cerrar una nueva versión de uno de tus catálogos asignados:
+          </p>
+          <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 14px 0">
+            <div style="font-size: 16px; font-weight: 600; color: #111827; margin-bottom: 8px">
+              ${escapeHtml(cat.name)} ${cat.tipo === 'express' ? '<span style="background:#eff6ff;color:#1e40af;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600">EXPRESS</span>' : ''}
+            </div>
+            <div style="font-size: 13px; color: #6b7280">
+              📌 Versión <b>${versionCerrada}</b> · 📄 ${totalLaminas} láminas
+            </div>
+          </div>
+          <p style="margin: 14px 0; font-size: 14px">
+            Abre la app y sincroniza para tener las novedades en tu dispositivo:
+          </p>
+          <div style="text-align: center; margin: 24px 0">
+            <a href="${appUrl}" style="display: inline-block; background: #cc007a; color: #fff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px">
+              🚀 Abrir CatalogPRO
+            </a>
+          </div>
+          <hr style="border: none; border-top: 1px solid #f3f4f6; margin: 20px 0">
+          <p style="font-size: 11px; color: #9ca3af; margin: 0">
+            Recibes este email porque tienes activadas las notificaciones en tu cuenta.
+            Para desactivarlas, entra a la app → <b>Mi cuenta</b> → Notificaciones.
+          </p>
+        </div>
+      </div>
+    `;
+
+    // 6) Enviar a cada comercial (en paralelo, fire-and-forget)
+    let okCount = 0, errCount = 0;
+    for (const com of comerciales.rows) {
+      try {
+        const r = await enviarEmailConRedireccion({
+          rol: 'comercial',
+          destinatarioReal: com.email,
+          asunto,
+          html
+        });
+        if (r.ok) okCount++; else errCount++;
+      } catch (e: any) {
+        errCount++;
+        console.error('[notif] Error enviando a ' + com.email + ':', e.message);
+      }
+    }
+    console.log(`[notif] Catálogo ${catalogId} v${versionCerrada}: ${okCount} OK, ${errCount} fallidos de ${comerciales.rows.length}`);
+  } catch (e: any) {
+    console.error('[notif] Error global notificando nueva versión:', e.message);
+  }
 }
 
 // Funcion principal: envia los 3 emails al cerrar visita
