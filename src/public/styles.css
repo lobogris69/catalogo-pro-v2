@@ -407,7 +407,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 1rem;
-  z-index: 100;
+  z-index: 99000; /* Más alto que el visor fullscreen para que el modal de anotar pedido salga por delante */
 }
 .modal-card {
   background: white;
