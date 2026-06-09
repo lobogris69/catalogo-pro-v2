@@ -15,6 +15,8 @@ let appState = {
   visorIndice: 0,
   visorBusqueda: '',
   visorZoom: 1,
+  visorPanX: 0,                // pan horizontal cuando hay zoom
+  visorPanY: 0,                // pan vertical cuando hay zoom
   visitaActiva: null,         // B6: { id, client_id, cliente_nombre, catalog_id, ... } o null
   visitaVerId: null,          // B6: si !=null se muestra detalle de una visita pasada
   editorPestana: 'laminas'    // E: 'laminas' | 'historial' - pestaña activa en editor catálogo
@@ -1319,9 +1321,11 @@ async function ejecutarSubidaMasiva() {
         ✅ Todas las láminas subidas correctamente (${subidasOK} de ${_bulkFiles.length})
       </div>
     `;
+    // Guardar el catalogId ANTES de cerrar (cerrarModalBulk lo pone a null)
+    const catIdParaRecargar = _bulkCatalogId;
     setTimeout(() => {
       cerrarModalBulk();
-      renderEditorCatalogo(_bulkCatalogId);
+      renderEditorCatalogo(catIdParaRecargar);
     }, 1500);
   } else {
     $msg.innerHTML = `
@@ -2541,7 +2545,7 @@ function pintarPresentacion(visibles) {
       </div>
 
       <div class="visor-imagen-contenedor" id="visor-img-contenedor">
-        <div class="visor-imagen-zoom" id="visor-img-zoom" style="transform: scale(${appState.visorZoom})">
+        <div class="visor-imagen-zoom" id="visor-img-zoom" style="transform: translate(${appState.visorPanX||0}px, ${appState.visorPanY||0}px) scale(${appState.visorZoom})">
           <div class="visor-imagen-wrapper" id="visor-imagen-wrapper" data-sheet-id="${sheet.id}">
             <img src="${escape(sheet.imagen_path)}" class="visor-imagen" id="visor-imagen" alt="${escape(sheet.titulo || '')}" draggable="false">
             ${pins}
@@ -2633,6 +2637,8 @@ function pintarMosaico(visibles) {
 function cambiarVisorModo(modo) {
   appState.visorModo = modo;
   appState.visorZoom = 1;
+  appState.visorPanX = 0;
+  appState.visorPanY = 0;
   pintarVisor();
 }
 
@@ -2640,6 +2646,8 @@ function visorAnterior() {
   if (appState.visorIndice > 0) {
     appState.visorIndice--;
     appState.visorZoom = 1;
+    appState.visorPanX = 0;
+    appState.visorPanY = 0;
     pintarVisor();
   }
 }
@@ -2656,12 +2664,16 @@ function visorSiguiente() {
   if (appState.visorIndice < visibles.length - 1) {
     appState.visorIndice++;
     appState.visorZoom = 1;
+    appState.visorPanX = 0;
+    appState.visorPanY = 0;
     pintarVisor();
   }
 }
 
 function visorZoomReset() {
   appState.visorZoom = 1;
+  appState.visorPanX = 0;
+  appState.visorPanY = 0;
   pintarVisor();
 }
 
@@ -2669,6 +2681,8 @@ function abrirLaminaDesdeMosaico(idx) {
   appState.visorIndice = idx;
   appState.visorModo = 'presentacion';
   appState.visorZoom = 1;
+  appState.visorPanX = 0;
+  appState.visorPanY = 0;
   pintarVisor();
 }
 
@@ -2678,7 +2692,7 @@ function limpiarVisorBusqueda() {
   pintarVisor();
 }
 
-// ----- Gestos: pinch-zoom, doble-tap, swipe -----
+// ----- Gestos: pinch-zoom, doble-tap, swipe, pan (arrastre con zoom) -----
 function engancharGestosPresentacion() {
   const $cont = document.getElementById('visor-img-contenedor');
   const $zoom = document.getElementById('visor-img-zoom');
@@ -2690,27 +2704,61 @@ function engancharGestosPresentacion() {
   let initialPinchDist = null;
   let zoomAlInicioPinch = 1;
 
-  // Doble tap (touch + click)
+  // PAN: estado de desplazamiento al hacer zoom (translate en píxeles)
+  if (!appState.visorPanX) appState.visorPanX = 0;
+  if (!appState.visorPanY) appState.visorPanY = 0;
+  let panInicioX = 0;
+  let panInicioY = 0;
+  let panActivo = false;
+
+  // Función helper: actualiza el transform combinando zoom + pan
+  function aplicarTransform() {
+    $zoom.style.transform = `translate(${appState.visorPanX}px, ${appState.visorPanY}px) scale(${appState.visorZoom})`;
+  }
+  // Aplicar transform inicial (por si hay zoom guardado)
+  aplicarTransform();
+
+  // Función helper: limitar el pan a los bordes de la imagen ampliada
+  function limitarPan() {
+    if (appState.visorZoom <= 1) {
+      appState.visorPanX = 0;
+      appState.visorPanY = 0;
+      return;
+    }
+    // Tamaño del contenedor
+    const w = $cont.clientWidth;
+    const h = $cont.clientHeight;
+    // Margen máximo de pan (cuanto puede salirse la imagen ampliada)
+    const maxX = (w * (appState.visorZoom - 1)) / 2;
+    const maxY = (h * (appState.visorZoom - 1)) / 2;
+    appState.visorPanX = Math.max(-maxX, Math.min(maxX, appState.visorPanX));
+    appState.visorPanY = Math.max(-maxY, Math.min(maxY, appState.visorPanY));
+  }
+
+  // Doble tap (touch + click): zoom rápido
   $cont.addEventListener('click', (e) => {
-    // Solo si NO hubo pinch
     if (e.target.closest('.visor-zoom-reset')) return;
+    // Si estabamos en medio de un pan, ignorar el click
+    if (panActivo) { panActivo = false; return; }
     const ahora = Date.now();
     if (ahora - lastTap < 350) {
-      // Doble click/tap: zoom rapido
       if (appState.visorZoom < 1.5) {
         appState.visorZoom = 2.5;
       } else {
         appState.visorZoom = 1;
+        appState.visorPanX = 0;
+        appState.visorPanY = 0;
       }
-      $zoom.style.transform = `scale(${appState.visorZoom})`;
+      aplicarTransform();
       pintarVisor();
     }
     lastTap = ahora;
   });
 
-  // Pinch zoom (touch screens)
+  // TOUCH START: detectar pinch o pan
   $cont.addEventListener('touchstart', (e) => {
     if (e.touches.length === 2) {
+      // PINCH ZOOM
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       initialPinchDist = Math.hypot(dx, dy);
@@ -2718,11 +2766,19 @@ function engancharGestosPresentacion() {
     } else if (e.touches.length === 1) {
       touchStartX = e.touches[0].clientX;
       touchStartY = e.touches[0].clientY;
+      // Si hay zoom activo, este 1-dedo es PAN
+      if (appState.visorZoom > 1.05) {
+        panActivo = true;
+        panInicioX = appState.visorPanX;
+        panInicioY = appState.visorPanY;
+      }
     }
   }, { passive: true });
 
+  // TOUCH MOVE: pinch o pan
   $cont.addEventListener('touchmove', (e) => {
     if (e.touches.length === 2 && initialPinchDist !== null) {
+      // PINCH ZOOM
       e.preventDefault();
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
@@ -2731,22 +2787,46 @@ function engancharGestosPresentacion() {
       let nuevoZoom = zoomAlInicioPinch * factor;
       nuevoZoom = Math.max(1, Math.min(4, nuevoZoom));
       appState.visorZoom = nuevoZoom;
-      $zoom.style.transform = `scale(${nuevoZoom})`;
+      // Si pasa a zoom 1 reseteamos pan
+      if (nuevoZoom <= 1.05) {
+        appState.visorPanX = 0;
+        appState.visorPanY = 0;
+      }
+      limitarPan();
+      aplicarTransform();
+    } else if (e.touches.length === 1 && panActivo && touchStartX !== null) {
+      // PAN con 1 dedo (solo si hay zoom)
+      e.preventDefault();
+      const dx = e.touches[0].clientX - touchStartX;
+      const dy = e.touches[0].clientY - touchStartY;
+      appState.visorPanX = panInicioX + dx;
+      appState.visorPanY = panInicioY + dy;
+      limitarPan();
+      aplicarTransform();
     }
   }, { passive: false });
 
+  // TOUCH END
   $cont.addEventListener('touchend', (e) => {
-    // Si terminó un pinch, repintar para mostrar boton reset
     if (initialPinchDist !== null) {
       initialPinchDist = null;
       pintarVisor();
       return;
     }
-    // Si fue 1 dedo y no zoom, mirar swipe
+    // Si fue pan, no procesar swipe (esperamos al click para resetear panActivo)
+    if (panActivo) {
+      touchStartX = null;
+      touchStartY = null;
+      // panActivo se resetea en el siguiente click o nuevo touch
+      // Forzar repintado de boton reset zoom
+      const $reset = $cont.querySelector('.visor-zoom-reset');
+      if (!$reset && appState.visorZoom > 1) pintarVisor();
+      return;
+    }
+    // Si fue 1 dedo sin zoom, ver si es swipe
     if (touchStartX !== null && e.changedTouches.length === 1 && appState.visorZoom < 1.2) {
       const dx = e.changedTouches[0].clientX - touchStartX;
       const dy = e.changedTouches[0].clientY - touchStartY;
-      // Swipe horizontal claramente más fuerte que vertical
       if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
         if (dx > 0) visorAnterior();
         else visorSiguiente();
@@ -2756,7 +2836,54 @@ function engancharGestosPresentacion() {
     touchStartY = null;
   });
 
-  // Wheel zoom (escritorio con rueda)
+  // MOUSE DRAG (escritorio): pan cuando hay zoom
+  let mouseDragActivo = false;
+  let mouseStartX = 0;
+  let mouseStartY = 0;
+  let mousePanInicioX = 0;
+  let mousePanInicioY = 0;
+
+  $cont.addEventListener('mousedown', (e) => {
+    if (appState.visorZoom > 1.05 && e.button === 0) {
+      mouseDragActivo = true;
+      mouseStartX = e.clientX;
+      mouseStartY = e.clientY;
+      mousePanInicioX = appState.visorPanX;
+      mousePanInicioY = appState.visorPanY;
+      $cont.style.cursor = 'grabbing';
+      e.preventDefault();
+    }
+  });
+
+  $cont.addEventListener('mousemove', (e) => {
+    if (mouseDragActivo) {
+      const dx = e.clientX - mouseStartX;
+      const dy = e.clientY - mouseStartY;
+      appState.visorPanX = mousePanInicioX + dx;
+      appState.visorPanY = mousePanInicioY + dy;
+      limitarPan();
+      aplicarTransform();
+    } else if (appState.visorZoom > 1.05) {
+      $cont.style.cursor = 'grab';
+    } else {
+      $cont.style.cursor = '';
+    }
+  });
+
+  $cont.addEventListener('mouseup', () => {
+    if (mouseDragActivo) {
+      mouseDragActivo = false;
+      $cont.style.cursor = appState.visorZoom > 1.05 ? 'grab' : '';
+    }
+  });
+  $cont.addEventListener('mouseleave', () => {
+    if (mouseDragActivo) {
+      mouseDragActivo = false;
+      $cont.style.cursor = '';
+    }
+  });
+
+  // Wheel zoom (escritorio con rueda + Ctrl)
   $cont.addEventListener('wheel', (e) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
@@ -2764,14 +2891,15 @@ function engancharGestosPresentacion() {
       let nuevoZoom = appState.visorZoom * factor;
       nuevoZoom = Math.max(1, Math.min(4, nuevoZoom));
       appState.visorZoom = nuevoZoom;
-      $zoom.style.transform = `scale(${nuevoZoom})`;
-      // Actualizar boton reset
-      const $reset = $cont.querySelector('.visor-zoom-reset');
-      if (nuevoZoom > 1 && !$reset) {
-        pintarVisor();
-      } else if (nuevoZoom <= 1 && $reset) {
-        pintarVisor();
+      if (nuevoZoom <= 1.05) {
+        appState.visorPanX = 0;
+        appState.visorPanY = 0;
       }
+      limitarPan();
+      aplicarTransform();
+      const $reset = $cont.querySelector('.visor-zoom-reset');
+      if (nuevoZoom > 1 && !$reset) pintarVisor();
+      else if (nuevoZoom <= 1 && $reset) pintarVisor();
     }
   }, { passive: false });
 
@@ -2785,7 +2913,12 @@ function engancharGestosPresentacion() {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       if (e.key === 'ArrowLeft') { e.preventDefault(); visorAnterior(); }
       else if (e.key === 'ArrowRight') { e.preventDefault(); visorSiguiente(); }
-      else if (e.key === 'Escape' && appState.visorZoom > 1) { appState.visorZoom = 1; pintarVisor(); }
+      else if (e.key === 'Escape' && appState.visorZoom > 1) {
+        appState.visorZoom = 1;
+        appState.visorPanX = 0;
+        appState.visorPanY = 0;
+        pintarVisor();
+      }
       else if (e.key === 'Escape' && _fullscreenActivo) { salirPantallaCompleta(); }
     });
   }
