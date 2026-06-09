@@ -669,7 +669,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'ayudas-fix-visor-09jun',
+    build: 'fix-mosaico-colision-09jun',
     service: 'CatalogPRO v2'
   });
 });

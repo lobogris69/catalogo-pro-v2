@@ -8915,10 +8915,10 @@ async function abrirMosaicoLaminas(catalogId) {
     <div class="mosaico-grid" id="mosaico-grid"></div>
   `;
   document.body.appendChild(overlay);
-  pintarMosaico();
+  pintarMosaicoReorden();
 }
 
-function pintarMosaico() {
+function pintarMosaicoReorden() {
   const grid = document.getElementById('mosaico-grid');
   if (!grid) return;
   grid.innerHTML = '';
@@ -8992,7 +8992,7 @@ async function aplicarMoverPorNumero(input) {
   _mosaicoSheets.splice(destinoIdx, 0, movido);
 
   // Repintar y guardar
-  pintarMosaico();
+  pintarMosaicoReorden();
   await guardarOrdenMosaico();
 }
 
