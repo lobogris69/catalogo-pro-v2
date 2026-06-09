@@ -560,6 +560,7 @@ async function renderEditorCatalogo(id) {
             <div style="display:flex;gap:6px;align-self:flex-start;flex-wrap:wrap">
               <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
               ${sheets.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>${ayuda('Vista en cuadrícula para reordenar las láminas. Arrastra y suelta o escribe el número de orden.')}` : ''}
+              ${sheets.length > 0 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalDescargarPdf(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar PDF del catálogo">📥 Descargar PDF</button>${ayuda('Genera el PDF del catálogo en alta calidad (impresión) o pequeño (para enviar por WhatsApp/email a clientes).')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo actual: genera PDF + ZIP de respaldo descargables, queda registrado en el historial, y la versión sube V1→V2. Útil al final de cada temporada.', 'izq')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="borrarTodasLaminas(${id}, ${sheets.length})">🗑️ Borrar todas</button>` : ''}
             </div>
@@ -797,6 +798,7 @@ function pintarEditorExpress() {
         <div style="display:flex;gap:6px;align-self:flex-start;flex-wrap:wrap">
           <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
           ${sheetsExpress.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>${ayuda('Vista en cuadrícula para reordenar las láminas. Arrastra y suelta o escribe el número de orden.')}` : ''}
+          ${sheetsExpress.length > 0 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalDescargarPdf(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar PDF del catálogo">📥 Descargar PDF</button>${ayuda('Genera el PDF del catálogo Express en alta calidad o pequeño (para enviar por WhatsApp/email a clientes).')}` : ''}
           ${sheetsExpress.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo Express actual: PDF+ZIP descargables, queda en historial, V1→V2. Útil para archivar ofertas pasadas (ej: ofertas mayo, ofertas verano).', 'izq')}` : ''}
           ${sheetsExpress.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="vaciarExpress(${id}, ${sheetsExpress.length})">🗑️ Vaciar Express</button>` : ''}
         </div>
@@ -4780,6 +4782,92 @@ async function pintarPestanaHistorial(catalogId) {
     `;
   } catch (err) {
     $cont.innerHTML = `<div class="error-msg">Error: ${escape(err.message)}</div>`;
+  }
+}
+
+// Modal selector calidad PDF: alta (original) o pequeño (WhatsApp/email)
+function abrirModalDescargarPdf(catalogId, nombreCatalogo) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width:480px">
+      <div class="modal-header">
+        <h3>📥 Descargar PDF</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p style="color:#6b7280;font-size:13px;margin:0 0 14px 0">
+        Catálogo: <b>${escape(nombreCatalogo)}</b>
+      </p>
+      <p style="margin:0 0 12px 0;font-size:14px">Elige la calidad según el uso:</p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <button class="btn-calidad-pdf" onclick="descargarPdfCalidad(${catalogId}, 'alta', this)">
+          <div class="bcp-icono">🖨️</div>
+          <div class="bcp-cuerpo">
+            <div class="bcp-titulo">Alta calidad</div>
+            <div class="bcp-sub">Original sin compresión · para impresión o archivo</div>
+            <div class="bcp-tam">Tamaño grande (puede ser >100 MB en catálogos extensos)</div>
+          </div>
+        </button>
+        <button class="btn-calidad-pdf" onclick="descargarPdfCalidad(${catalogId}, 'pequena', this)">
+          <div class="bcp-icono">📱</div>
+          <div class="bcp-cuerpo">
+            <div class="bcp-titulo">Calidad reducida</div>
+            <div class="bcp-sub">Optimizado · para enviar por WhatsApp o email</div>
+            <div class="bcp-tam">Tamaño pequeño · imágenes a 1200px / JPEG 80%</div>
+          </div>
+        </button>
+      </div>
+      <div id="dl-pdf-msg" style="margin-top:12px"></div>
+      <div class="modal-acciones">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function descargarPdfCalidad(catalogId, calidad, btnEl) {
+  const $msg = document.getElementById('dl-pdf-msg');
+  // Deshabilitar ambos botones mientras genera
+  const $btns = document.querySelectorAll('.btn-calidad-pdf');
+  $btns.forEach(b => b.disabled = true);
+  if (btnEl) btnEl.style.opacity = '0.6';
+  $msg.innerHTML = `<div style="color:#6b7280;font-size:13px">⏳ Generando PDF (${calidad === 'pequena' ? 'calidad reducida, puede tardar 1-3 min según número de láminas' : 'alta calidad'})…</div>`;
+
+  try {
+    const token = localStorage.getItem('cpv2_token') || '';
+    const url = `/api/catalogs/${catalogId}/download-pdf?calidad=${calidad}`;
+    const resp = await fetch(url, {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    if (!resp.ok) {
+      try {
+        const json = await resp.json();
+        throw new Error(json.error || 'Error ' + resp.status);
+      } catch (_) {
+        throw new Error('Error ' + resp.status);
+      }
+    }
+    const blob = await resp.blob();
+    const tamMB = (blob.size / 1024 / 1024).toFixed(1);
+    // Forzar descarga
+    const urlBlob = URL.createObjectURL(blob);
+    // Sacar el nombre del header si existe, sino usar fallback
+    const disp = resp.headers.get('Content-Disposition') || '';
+    const m = disp.match(/filename="?([^"]+)"?/);
+    const filename = m ? m[1] : `catalogo${calidad === 'pequena' ? '_pequeno' : ''}.pdf`;
+    const a = document.createElement('a');
+    a.href = urlBlob;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(urlBlob), 5000);
+    $msg.innerHTML = `<div class="exito-msg">✅ PDF descargado (${tamMB} MB)</div>`;
+    $btns.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
+  } catch (err) {
+    $msg.innerHTML = `<div class="error-msg">Error: ${escape(err.message)}</div>`;
+    $btns.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
   }
 }
 

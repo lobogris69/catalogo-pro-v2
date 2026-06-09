@@ -669,7 +669,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fix-modal-fullscreen-09jun',
+    build: 'pdf-calidad-baja-09jun',
     service: 'CatalogPRO v2'
   });
 });
@@ -1092,13 +1092,44 @@ function nombreFicheroSeguro(s: string): string {
 
 // J/E: Generar PDF del catálogo a un stream cualquiera (res HTTP o fichero).
 // Devuelve una promesa que resuelve cuando el PDF está completo.
-function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream: any): Promise<void> {
+// calidad: 'alta' = original sin compresión; 'pequena' = redimensionado a 1200px lado largo y JPEG 80% (apto WhatsApp/email)
+async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream: any, calidad: 'alta' | 'pequena' = 'alta'): Promise<void> {
+  const fs = require('fs');
+  const sharp = require('sharp');
+  const path = require('path');
+  // Si es pequeña, pre-procesar imágenes a un directorio temporal
+  let imagenesProcesadas: { [key: number]: string } = {};
+  let tempDir = '';
+  if (calidad === 'pequena') {
+    const os = require('os');
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-low-'));
+    for (const sheet of sheets) {
+      const imgPath = getSheetImagePath(sheet);
+      if (!fs.existsSync(imgPath)) continue;
+      try {
+        const outPath = path.join(tempDir, `s${sheet.id}.jpg`);
+        await sharp(imgPath)
+          .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 80, mozjpeg: true })
+          .toFile(outPath);
+        imagenesProcesadas[sheet.id] = outPath;
+      } catch (e: any) {
+        console.warn('[PDF-pequena] Fallo redimensionando lámina ' + sheet.id + ':', e.message);
+      }
+    }
+  }
+
   return new Promise((resolve, reject) => {
-    const fs = require('fs');
     const PDFDocumentLib = require('pdfkit');
     const doc = new PDFDocumentLib({ size: 'A4', margin: 0, autoFirstPage: false });
     doc.pipe(destStream);
-    destStream.on('finish', () => resolve());
+    destStream.on('finish', () => {
+      // Limpiar temporales
+      if (tempDir) {
+        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+      }
+      resolve();
+    });
     destStream.on('error', (e: any) => reject(e));
     doc.on('error', (e: any) => reject(e));
 
@@ -1118,13 +1149,16 @@ function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream: any):
       { align: 'center' }
     );
     doc.fontSize(9).fillColor('#999').text(
-      `Generado: ${new Date().toLocaleString('es-ES')}`,
+      `Generado: ${new Date().toLocaleString('es-ES')}${calidad === 'pequena' ? ' · Calidad reducida' : ''}`,
       { align: 'center' }
     );
 
     // Cada lámina en una página, ajustada al tamaño
     for (const sheet of sheets) {
-      const imgPath = getSheetImagePath(sheet);
+      // Usar imagen procesada si es pequeña y existe, sino la original
+      const imgPath = (calidad === 'pequena' && imagenesProcesadas[sheet.id])
+        ? imagenesProcesadas[sheet.id]
+        : getSheetImagePath(sheet);
       if (!fs.existsSync(imgPath)) {
         console.warn('[PDF] Imagen no encontrada: ' + imgPath);
         continue;
@@ -1234,10 +1268,12 @@ app.get('/api/catalogs/:id/download-pdf', verifyToken, async (req: AuthRequest, 
       res.status(400).json({ success: false, error: 'Este catálogo no tiene láminas' });
       return;
     }
-    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}.pdf`;
+    const calidad = (req.query.calidad === 'pequena') ? 'pequena' : 'alta';
+    const sufijo = calidad === 'pequena' ? '_pequeno' : '';
+    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}${sufijo}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    await generarPdfCatalogoStream(catalog, sheets, res);
+    await generarPdfCatalogoStream(catalog, sheets, res, calidad);
   } catch (e) {
     if (!res.headersSent) {
       res.status(500).json({ success: false, error: (e as Error).message });
