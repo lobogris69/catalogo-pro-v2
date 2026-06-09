@@ -2541,7 +2541,7 @@ function pintarPresentacion(visibles) {
           <span class="visor-contador-total">/ ${_visorSheets.length}</span>
         </div>
         <button class="visor-nav-btn" ${nextDisabled} onclick="visorSiguiente()">Siguiente ▶</button>
-        ${appState.visitaActiva ? `<button class="visor-fullscreen-btn" onclick="entrarPantallaCompleta()" title="Modo pantalla completa">⛶<span class="visor-fullscreen-btn-texto"> Pantalla completa</span></button>` : ''}
+        <button class="visor-fullscreen-btn" onclick="entrarPantallaCompleta()" title="Modo pantalla completa">⛶<span class="visor-fullscreen-btn-texto"> Pantalla completa</span></button>
       </div>
 
       <div class="visor-imagen-contenedor" id="visor-img-contenedor">
@@ -3273,10 +3273,6 @@ let _fullscreenActivo = false;
 let _fullscreenHideTimer = null;
 
 function entrarPantallaCompleta() {
-  if (!appState.visitaActiva) {
-    alert('La pantalla completa solo está disponible durante una visita activa.');
-    return;
-  }
   _fullscreenActivo = true;
   // Intentar pantalla completa del navegador (si soportado)
   try {
