@@ -669,7 +669,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fix-mosaico-colision-09jun',
+    build: 'subida-masiva-09jun',
     service: 'CatalogPRO v2'
   });
 });
@@ -1546,6 +1546,93 @@ app.post('/api/catalogs/:id/sheets', verifyToken, requireAdmin, upload.single('i
     );
     await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
     res.status(201).json({ success: true, sheet: r.rows[0] });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// SUBIDA MASIVA de láminas (multi-upload con orden secuencial por nombre)
+// Acepta hasta 50 archivos por petición (límite seguro Railway).
+// Frontend puede llamar varias veces si tiene >50.
+// ============================================================================
+const uploadMultiple = multer({
+  storage,
+  limits: {
+    fileSize: 20 * 1024 * 1024,      // 20 MB por archivo
+    files: 50                          // hasta 50 archivos por petición
+  }
+});
+
+app.post('/api/catalogs/:id/sheets/bulk', verifyToken, requireAdmin,
+  uploadMultiple.array('imagenes', 50),
+  async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.id);
+    if (!(await assertNotExpress(catalogId, res))) return;
+    const files = (req.files as Express.Multer.File[]) || [];
+    if (files.length === 0) {
+      res.status(400).json({ success: false, error: 'No se han subido archivos' });
+      return;
+    }
+    // Validar todos son imágenes
+    for (const f of files) {
+      if (!f.mimetype.startsWith('image/')) {
+        // Limpiar todos los archivos subidos
+        const fs = require('fs');
+        for (const fx of files) {
+          try { fs.unlinkSync(fx.path); } catch (_) {}
+        }
+        res.status(400).json({
+          success: false,
+          error: `Solo se aceptan imágenes. "${f.originalname}" es ${f.mimetype}`
+        });
+        return;
+      }
+    }
+    // ORDEN: alfabético por nombre original (los nombres deben venir con 001, 002...)
+    files.sort((a, b) => a.originalname.localeCompare(b.originalname, 'es', { numeric: true }));
+
+    // Obtener el siguiente orden disponible
+    const maxR = await pool.query(
+      'SELECT COALESCE(MAX(orden),0) AS max_orden FROM sheets WHERE catalog_id = $1',
+      [catalogId]
+    );
+    let ordenSiguiente = Number(maxR.rows[0].max_orden) + 1;
+
+    const insertadas: any[] = [];
+    const errores: any[] = [];
+
+    for (const f of files) {
+      try {
+        const imagenPath = '/uploads/' + f.filename;
+        // Título: el nombre del archivo sin extensión (limpio)
+        const tituloAuto = f.originalname.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || `Lámina ${ordenSiguiente}`;
+        const r = await pool.query(
+          `INSERT INTO sheets (catalog_id, orden, titulo, notas, imagen_path, tags)
+           VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+          [catalogId, ordenSiguiente, tituloAuto, '', imagenPath, '']
+        );
+        insertadas.push(r.rows[0]);
+        ordenSiguiente++;
+      } catch (e: any) {
+        errores.push({ archivo: f.originalname, error: e.message });
+        // Si falla la BD, también borrar el archivo físico
+        try { require('fs').unlinkSync(f.path); } catch (_) {}
+      }
+    }
+
+    if (insertadas.length > 0) {
+      await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
+    }
+
+    res.json({
+      success: errores.length === 0,
+      total: files.length,
+      insertadas: insertadas.length,
+      errores: errores,
+      sheets: insertadas
+    });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
   }

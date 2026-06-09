@@ -597,8 +597,16 @@ async function renderEditorCatalogo(id) {
 
             <div style="text-align:center; margin:14px 0 10px; color:var(--gris-texto); font-size:11px;">— o —</div>
 
-            <div class="upload-zona upload-zona-pdf" id="upload-zona-pdf" onclick="document.getElementById('upload-pdf-input').click()">
+            <div class="upload-zona" id="upload-zona-multi" onclick="abrirModalSubidaMasiva(${id})" style="background:#fef3f9;border-color:#f9a8d4">
               <div class="upload-zona-icono">📚</div>
+              <div class="upload-zona-texto">Subida masiva</div>
+              <div class="upload-zona-sub">varias láminas a la vez (ordenadas por nombre)</div>
+            </div>
+
+            <div style="text-align:center; margin:14px 0 10px; color:var(--gris-texto); font-size:11px;">— o —</div>
+
+            <div class="upload-zona upload-zona-pdf" id="upload-zona-pdf" onclick="document.getElementById('upload-pdf-input').click()">
+              <div class="upload-zona-icono">📕</div>
               <div class="upload-zona-texto">Subir PDF completo</div>
               <div class="upload-zona-sub">se trocea en láminas automáticamente</div>
             </div>
@@ -1087,6 +1095,245 @@ async function subirLamina(catalogId, file) {
     setTimeout(() => renderEditorCatalogo(catalogId), 600);
   } catch (err) {
     $prog.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+  }
+}
+
+// ===== SUBIDA MASIVA (multi-archivo con renombrado automático) =====
+let _bulkFiles = [];      // archivos seleccionados (con posible renombrado)
+let _bulkCatalogId = null;
+
+function abrirModalSubidaMasiva(catalogId) {
+  _bulkFiles = [];
+  _bulkCatalogId = catalogId;
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.id = 'modal-bulk';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width:720px;max-height:90vh;overflow-y:auto">
+      <div class="modal-header">
+        <h3>📚 Subida masiva de láminas</h3>
+        <button class="modal-cerrar" onclick="cerrarModalBulk()">×</button>
+      </div>
+
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:14px;font-size:13px;color:#4b5563">
+        <b>📋 Cómo funciona:</b>
+        <ol style="margin:6px 0 0 18px;padding:0">
+          <li>Selecciona varias imágenes (PNG, JPG) — hasta 50 a la vez</li>
+          <li>Se ordenarán <b>alfabéticamente por nombre</b> de archivo</li>
+          <li>Recomendado: numera los archivos como <code>001.png</code>, <code>002.png</code>… (ceros a la izquierda)</li>
+          <li>Si no están bien numerados, marca <b>"Renombrar automáticamente"</b> abajo</li>
+        </ol>
+      </div>
+
+      <div class="upload-zona" id="bulk-drop" onclick="document.getElementById('bulk-input').click()" style="margin-bottom:14px">
+        <div class="upload-zona-icono">📂</div>
+        <div class="upload-zona-texto">Pulsa para elegir archivos</div>
+        <div class="upload-zona-sub">o arrastra y suelta aquí</div>
+      </div>
+      <input type="file" id="bulk-input" accept="image/*" multiple style="display:none">
+
+      <label style="display:flex;align-items:center;gap:8px;padding:10px;background:#fef3f9;border:1px solid #f9a8d4;border-radius:8px;margin-bottom:14px;cursor:pointer">
+        <input type="checkbox" id="bulk-renombrar">
+        <div>
+          <div style="font-weight:600;font-size:13px">Renombrar automáticamente</div>
+          <div style="font-size:11px;color:#6b7280">Los renombrará a 001, 002, 003… según el orden en que los selecciones (no por su nombre original)</div>
+        </div>
+      </label>
+
+      <div id="bulk-lista" style="display:none">
+        <h4 style="margin:0 0 8px 0;font-size:14px">📋 Archivos seleccionados (<span id="bulk-count">0</span>)</h4>
+        <div id="bulk-preview" style="max-height:300px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px;padding:6px"></div>
+      </div>
+
+      <div id="bulk-msg"></div>
+
+      <div class="modal-acciones">
+        <button type="button" class="btn btn-secondary" onclick="cerrarModalBulk()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="bulk-submit" onclick="ejecutarSubidaMasiva()" disabled>📤 Subir todas</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  document.getElementById('bulk-input').addEventListener('change', (e) => {
+    procesarArchivosBulk(Array.from(e.target.files));
+  });
+
+  // Drag & drop
+  const $drop = document.getElementById('bulk-drop');
+  $drop.addEventListener('dragover', (e) => { e.preventDefault(); $drop.style.background = '#fef3f9'; });
+  $drop.addEventListener('dragleave', () => { $drop.style.background = ''; });
+  $drop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    $drop.style.background = '';
+    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+    procesarArchivosBulk(files);
+  });
+
+  // Listener para renombrado auto (re-pintar preview)
+  document.getElementById('bulk-renombrar').addEventListener('change', pintarPreviewBulk);
+}
+
+function cerrarModalBulk() {
+  _bulkFiles = [];
+  _bulkCatalogId = null;
+  const m = document.getElementById('modal-bulk');
+  if (m) m.remove();
+}
+
+function procesarArchivosBulk(nuevos) {
+  // Validar que son imágenes
+  const validos = nuevos.filter(f => f.type.startsWith('image/'));
+  const rechazados = nuevos.length - validos.length;
+  // Acumular (permitir varias selecciones)
+  _bulkFiles = _bulkFiles.concat(validos);
+  // Ordenar por nombre (orden natural: "img2" antes que "img10")
+  _bulkFiles.sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true }));
+  pintarPreviewBulk();
+  if (rechazados > 0) {
+    document.getElementById('bulk-msg').innerHTML =
+      `<div class="error-msg">${rechazados} archivos descartados (no son imágenes).</div>`;
+    setTimeout(() => { document.getElementById('bulk-msg').innerHTML = ''; }, 3000);
+  }
+}
+
+function pintarPreviewBulk() {
+  const $lista = document.getElementById('bulk-lista');
+  const $count = document.getElementById('bulk-count');
+  const $prev = document.getElementById('bulk-preview');
+  const $btn = document.getElementById('bulk-submit');
+  if (_bulkFiles.length === 0) {
+    $lista.style.display = 'none';
+    $btn.disabled = true;
+    return;
+  }
+  $lista.style.display = 'block';
+  $count.textContent = _bulkFiles.length;
+  $btn.disabled = false;
+  const renombrar = document.getElementById('bulk-renombrar').checked;
+  // Calcular padding del número
+  const pad = String(_bulkFiles.length).length;
+  $prev.innerHTML = _bulkFiles.map((f, idx) => {
+    const numero = String(idx + 1).padStart(pad, '0');
+    const nombreFinal = renombrar
+      ? `${numero}.${(f.name.split('.').pop() || 'png').toLowerCase()}`
+      : f.name;
+    const tamMB = (f.size / 1024 / 1024).toFixed(2);
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:6px;border-bottom:1px solid #f3f4f6">
+        <span style="font-family:monospace;font-size:12px;color:#9ca3af;min-width:30px">${numero}</span>
+        <span style="flex:1;font-size:13px">${escape(nombreFinal)}</span>
+        <span style="font-size:11px;color:#6b7280">${tamMB} MB</span>
+        <button class="btn-borrar" onclick="quitarArchivoBulk(${idx})" title="Quitar">✖</button>
+      </div>
+    `;
+  }).join('');
+  // Indicador de tamaño total
+  const totalMB = (_bulkFiles.reduce((s, f) => s + f.size, 0) / 1024 / 1024).toFixed(1);
+  $prev.insertAdjacentHTML('beforeend',
+    `<div style="padding:8px;text-align:right;font-size:12px;color:#6b7280;font-weight:600">Total: ${totalMB} MB</div>`
+  );
+}
+
+function quitarArchivoBulk(idx) {
+  _bulkFiles.splice(idx, 1);
+  pintarPreviewBulk();
+}
+
+async function ejecutarSubidaMasiva() {
+  if (_bulkFiles.length === 0) return;
+  const $btn = document.getElementById('bulk-submit');
+  const $msg = document.getElementById('bulk-msg');
+  const renombrar = document.getElementById('bulk-renombrar').checked;
+  const pad = String(_bulkFiles.length).length;
+
+  $btn.disabled = true;
+  // Trocear en lotes de 25 (50 es el máximo del backend, pero 25 es más estable en móvil)
+  const TAMANO_LOTE = 25;
+  const totalLotes = Math.ceil(_bulkFiles.length / TAMANO_LOTE);
+  let subidasOK = 0;
+  let erroresTotales = [];
+
+  for (let lote = 0; lote < totalLotes; lote++) {
+    const desde = lote * TAMANO_LOTE;
+    const hasta = Math.min(desde + TAMANO_LOTE, _bulkFiles.length);
+    const archivosLote = _bulkFiles.slice(desde, hasta);
+
+    $msg.innerHTML = `
+      <div class="subida-progreso">
+        <span class="spinner"></span>
+        Subiendo lote ${lote + 1} de ${totalLotes} (${archivosLote.length} archivos)…
+        <br><small>Total subidas hasta ahora: ${subidasOK} de ${_bulkFiles.length}</small>
+      </div>
+    `;
+
+    const fd = new FormData();
+    archivosLote.forEach((f, i) => {
+      let archivoFinal = f;
+      if (renombrar) {
+        const numero = String(desde + i + 1).padStart(pad, '0');
+        const ext = (f.name.split('.').pop() || 'png').toLowerCase();
+        archivoFinal = new File([f], `${numero}.${ext}`, { type: f.type });
+      }
+      fd.append('imagenes', archivoFinal);
+    });
+
+    // Reintento automático: hasta 3 intentos por lote
+    let exitoLote = false;
+    for (let intento = 1; intento <= 3 && !exitoLote; intento++) {
+      try {
+        const token = localStorage.getItem('cpv2_token') || '';
+        const resp = await fetch(`/api/catalogs/${_bulkCatalogId}/sheets/bulk`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token },
+          body: fd
+        });
+        const json = await resp.json();
+        if (json.insertadas !== undefined) {
+          subidasOK += json.insertadas;
+          if (json.errores && json.errores.length > 0) {
+            erroresTotales = erroresTotales.concat(json.errores);
+          }
+          exitoLote = true;
+        } else {
+          throw new Error(json.error || 'Error desconocido');
+        }
+      } catch (err) {
+        if (intento === 3) {
+          erroresTotales.push({
+            archivo: `Lote ${lote + 1} (${archivosLote.length} archivos)`,
+            error: err.message
+          });
+        } else {
+          // Esperar 2 segundos antes de reintentar
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    }
+  }
+
+  // Resultado final
+  if (erroresTotales.length === 0) {
+    $msg.innerHTML = `
+      <div class="exito-msg" style="padding:12px;font-size:14px">
+        ✅ Todas las láminas subidas correctamente (${subidasOK} de ${_bulkFiles.length})
+      </div>
+    `;
+    setTimeout(() => {
+      cerrarModalBulk();
+      renderEditorCatalogo(_bulkCatalogId);
+    }, 1500);
+  } else {
+    $msg.innerHTML = `
+      <div class="error-msg" style="padding:12px;font-size:13px">
+        ⚠️ ${subidasOK} de ${_bulkFiles.length} subidas. Hubo ${erroresTotales.length} errores:
+        <ul style="margin:6px 0 0 16px;padding:0">
+          ${erroresTotales.slice(0, 5).map(e => `<li>${escape(e.archivo)}: ${escape(e.error)}</li>`).join('')}
+        </ul>
+      </div>
+    `;
+    $btn.disabled = false;
+    $btn.textContent = '📤 Reintentar fallidos';
   }
 }
 
