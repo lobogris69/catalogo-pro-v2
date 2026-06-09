@@ -2181,9 +2181,10 @@ function pintarVisor() {
       <div class="visor-cabecera-fila">
         <button class="btn-icon-volver" onclick="volverACatalogos()" title="Volver a catálogos">←</button>
         <div class="visor-titulo-bloque">
-          <div class="visor-titulo">${escape(_visorCatalog.name)}${appState.visitaActiva ? ayuda('Estás en visita. Toca las zonas marcadas sobre las láminas para añadir productos al pedido (aparecen al pasar el dedo o ratón). También puedes anotar manualmente con el icono ✏️. Al terminar, pulsa "Cerrar visita" para enviar el pedido.') : ''}</div>
+          <div class="visor-titulo">${escape(_visorCatalog.name)}</div>
           <div class="visor-subtitulo">${totalReal} láminas${busca ? ` · ${visibles.length} resultados` : ''}</div>
         </div>
+        ${appState.visitaActiva ? `<div style="display:flex;align-items:center">${ayuda('Estás en visita. Toca las zonas marcadas sobre las láminas para añadir productos al pedido (aparecen al pasar el dedo o ratón). También puedes anotar manualmente con el icono ✏️. Al terminar, pulsa "Cerrar visita" para enviar el pedido.', 'abajo')}</div>` : ''}
         <div class="visor-modo-switch">
           ${appState.visitaActiva ? `<button class="visor-modo-btn" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Última visita con este cliente">📋</button>` : ''}
           <button class="visor-modo-btn" onclick="abrirModalDescargarCatalogo(${_visorCatalog.id}, '${escape((_visorCatalog.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">📥</button>

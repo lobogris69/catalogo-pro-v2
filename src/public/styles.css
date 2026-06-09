@@ -3804,6 +3804,8 @@ body.con-banner-update {
   flex-shrink: 0;
   line-height: 1;
   transition: background 0.15s ease, color 0.15s ease;
+  /* Forzar overflow visible para que el tooltip pueda salir del contenedor */
+  overflow: visible !important;
 }
 .ayuda-tip:hover,
 .ayuda-tip:focus {
