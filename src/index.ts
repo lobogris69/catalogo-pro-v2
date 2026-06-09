@@ -516,6 +516,24 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_form_permisos_formacion ON formacion_permisos(formacion_id);
       CREATE INDEX IF NOT EXISTS idx_form_permisos_user ON formacion_permisos(user_id);
+
+      -- ===== CATEGORIAS / TAGS para láminas =====
+      CREATE TABLE IF NOT EXISTS categorias (
+        id              SERIAL PRIMARY KEY,
+        nombre          VARCHAR(80) NOT NULL UNIQUE,
+        color           VARCHAR(20) DEFAULT '#cc007a',
+        orden           INTEGER DEFAULT 0,
+        created_at      TIMESTAMP DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS sheet_categorias (
+        id              SERIAL PRIMARY KEY,
+        sheet_id        INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+        categoria_id    INTEGER NOT NULL REFERENCES categorias(id) ON DELETE CASCADE,
+        created_at      TIMESTAMP DEFAULT NOW(),
+        UNIQUE(sheet_id, categoria_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_sheet_cat_sheet ON sheet_categorias(sheet_id);
+      CREATE INDEX IF NOT EXISTS idx_sheet_cat_cat ON sheet_categorias(categoria_id);
     `;
     await pool.query(schemaSQL);
 
@@ -669,7 +687,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fixes-tablet-pdf-nav-09jun',
+    build: 'tags-categorias-09jun',
     service: 'CatalogPRO v2'
   });
 });
@@ -1063,6 +1081,25 @@ async function cargarCatalogoConAcceso(catalogId: number, req: AuthRequest):
         [catalogId]
       );
       sheetsRows = r.rows;
+    }
+    // Enriquecer cada lámina con sus categorías (si las tiene)
+    if (sheetsRows.length > 0) {
+      const sheetIds = sheetsRows.map((s: any) => s.id);
+      const catsR = await pool.query(`
+        SELECT sc.sheet_id, c.id, c.nombre, c.color
+        FROM sheet_categorias sc
+        INNER JOIN categorias c ON c.id = sc.categoria_id
+        WHERE sc.sheet_id = ANY($1::int[])
+        ORDER BY c.orden ASC, c.nombre ASC
+      `, [sheetIds]);
+      const catsBySheet: { [key: number]: any[] } = {};
+      for (const row of catsR.rows) {
+        if (!catsBySheet[row.sheet_id]) catsBySheet[row.sheet_id] = [];
+        catsBySheet[row.sheet_id].push({ id: row.id, nombre: row.nombre, color: row.color });
+      }
+      for (const s of sheetsRows) {
+        s.categorias = catsBySheet[s.id] || [];
+      }
     }
     return { catalog: cat, sheets: sheetsRows };
   } catch (e) {
@@ -5913,6 +5950,162 @@ app.post('/api/formaciones', verifyToken, requireRealAdmin, uploadFormacion.sing
     res.status(400).json({ success: false, error: (e as Error).message });
   }
 });
+
+// ============================================================================
+// CATEGORÍAS / TAGS DE LÁMINAS
+// ============================================================================
+
+// GET listar todas las categorías (admin y comerciales pueden leer)
+app.get('/api/categorias', verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`
+      SELECT c.*,
+             (SELECT COUNT(*)::int FROM sheet_categorias sc WHERE sc.categoria_id = c.id) AS num_laminas
+      FROM categorias c
+      ORDER BY c.orden ASC, c.nombre ASC
+    `);
+    res.json({ success: true, categorias: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST crear categoría (solo admin)
+app.post('/api/categorias', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { nombre, color, orden } = req.body || {};
+    if (!nombre || typeof nombre !== 'string' || nombre.trim().length === 0) {
+      res.status(400).json({ success: false, error: 'El nombre es obligatorio' });
+      return;
+    }
+    const r = await pool.query(
+      'INSERT INTO categorias (nombre, color, orden) VALUES ($1, $2, $3) RETURNING *',
+      [nombre.trim().substring(0, 80), color || '#cc007a', orden || 0]
+    );
+    res.status(201).json({ success: true, categoria: r.rows[0] });
+  } catch (e: any) {
+    if (e.code === '23505') { // unique violation
+      res.status(400).json({ success: false, error: 'Ya existe una categoría con ese nombre' });
+    } else {
+      res.status(400).json({ success: false, error: e.message });
+    }
+  }
+});
+
+// PUT editar categoría (solo admin)
+app.put('/api/categorias/:id', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { nombre, color, orden } = req.body || {};
+    const r = await pool.query(
+      `UPDATE categorias SET
+         nombre = COALESCE($1, nombre),
+         color = COALESCE($2, color),
+         orden = COALESCE($3, orden)
+       WHERE id = $4 RETURNING *`,
+      [nombre ? nombre.trim().substring(0, 80) : null, color, orden, id]
+    );
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Categoría no encontrada' });
+      return;
+    }
+    res.json({ success: true, categoria: r.rows[0] });
+  } catch (e: any) {
+    if (e.code === '23505') {
+      res.status(400).json({ success: false, error: 'Ya existe otra categoría con ese nombre' });
+    } else {
+      res.status(400).json({ success: false, error: e.message });
+    }
+  }
+});
+
+// DELETE eliminar categoría (solo admin)
+app.delete('/api/categorias/:id', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query('DELETE FROM categorias WHERE id = $1', [id]);
+    if (r.rowCount === 0) {
+      res.status(404).json({ success: false, error: 'Categoría no encontrada' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// GET categorías asignadas a una lámina
+app.get('/api/sheets/:id/categorias', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(`
+      SELECT c.* FROM categorias c
+      INNER JOIN sheet_categorias sc ON sc.categoria_id = c.id
+      WHERE sc.sheet_id = $1
+      ORDER BY c.orden ASC, c.nombre ASC
+    `, [id]);
+    res.json({ success: true, categorias: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// PUT actualizar categorías de una lámina (reemplaza todas) — solo admin
+app.put('/api/sheets/:id/categorias', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const sheetId = Number(req.params.id);
+    const { categoria_ids } = req.body || {};
+    if (!Array.isArray(categoria_ids)) {
+      res.status(400).json({ success: false, error: 'categoria_ids debe ser un array' });
+      return;
+    }
+    await client.query('BEGIN');
+    await client.query('DELETE FROM sheet_categorias WHERE sheet_id = $1', [sheetId]);
+    for (const catId of categoria_ids) {
+      const cid = Number(catId);
+      if (!isNaN(cid)) {
+        await client.query(
+          'INSERT INTO sheet_categorias (sheet_id, categoria_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [sheetId, cid]
+        );
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ success: false, error: (e as Error).message });
+  } finally {
+    client.release();
+  }
+});
+
+// GET listar todas las categorias incluidas en TODAS las laminas de un catalogo
+// (para que el visor del comercial pueda mostrar solo los filtros relevantes)
+app.get('/api/catalogs/:id/categorias-disponibles', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.id);
+    const r = await pool.query(`
+      SELECT DISTINCT c.*,
+             (SELECT COUNT(*)::int FROM sheet_categorias sc2
+               INNER JOIN sheets s2 ON s2.id = sc2.sheet_id
+              WHERE sc2.categoria_id = c.id AND s2.catalog_id = $1) AS num_laminas
+      FROM categorias c
+      INNER JOIN sheet_categorias sc ON sc.categoria_id = c.id
+      INNER JOIN sheets s ON s.id = sc.sheet_id
+      WHERE s.catalog_id = $1
+      ORDER BY c.orden ASC, c.nombre ASC
+    `, [catalogId]);
+    res.json({ success: true, categorias: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// FORMACIONES (Aula)
+// ============================================================================
 
 // GET listar todas las formaciones (admin ve todo, comercial ve las que puede)
 app.get('/api/formaciones', verifyToken, async (req: AuthRequest, res: Response) => {

@@ -4008,3 +4008,131 @@ body.con-banner-update {
   font-size: 11px;
   color: #9ca3af;
 }
+
+/* ============================================================================
+   CATEGORÍAS / TAGS - chips y selector
+   ============================================================================ */
+
+/* Chips de categoría en la fila de cada lámina (admin editor) */
+.lamina-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0;
+}
+.lamina-cat-chip {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+/* Gestión de categorías en Configuración */
+.cat-fila {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+.cat-color-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid #00000010;
+}
+.cat-nombre-input {
+  flex: 1;
+  border: 0;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 4px;
+  background: transparent;
+  outline: none;
+  font-family: inherit;
+}
+.cat-nombre-input:focus {
+  background: #f9fafb;
+  border-radius: 4px;
+}
+.cat-color-input {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 2px;
+}
+.cat-cuenta {
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+/* Checkboxes de categorías en modal editar lámina */
+.cat-chip-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 3px;
+  padding: 5px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 14px;
+  cursor: pointer;
+  font-size: 12px;
+  background: #fff;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+.cat-chip-edit:hover {
+  background: #f9fafb;
+  border-color: #9ca3af;
+}
+.cat-chip-edit input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+.cat-chip-edit:has(input:checked) {
+  background: #fef3f9;
+  border-color: #cc007a;
+}
+.cat-chip-color {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* Chips de filtro en visor */
+.visor-chips-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.visor-chip-cat {
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 14px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  color: #4b5563;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.visor-chip-cat:hover {
+  border-color: #cc007a;
+  color: #cc007a;
+}
+.visor-chip-cat-activo {
+  background: #cc007a;
+  color: #fff !important;
+  border-color: #cc007a !important;
+}

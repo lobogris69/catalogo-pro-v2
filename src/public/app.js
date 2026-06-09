@@ -14,6 +14,7 @@ let appState = {
   visorModo: 'presentacion', // 'presentacion' | 'mosaico'
   visorIndice: 0,
   visorBusqueda: '',
+  visorFiltroCat: null,        // categoría filtrada en visor (id) o null
   visorZoom: 1,
   visorPanX: 0,                // pan horizontal cuando hay zoom
   visorPanY: 0,                // pan vertical cuando hay zoom
@@ -629,13 +630,19 @@ async function renderEditorCatalogo(id) {
             </div>
             <div id="laminas-lista">
               ${sheets.length === 0 ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">Sin láminas todavía. ${esAdmin ? 'Sube la primera con el panel de la izquierda.' : ''}</p>` : ''}
-              ${sheets.map((s, idx) => `
-                <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-numero="${idx + 1}" ${esAdmin ? 'draggable="true"' : ''}>
+              ${sheets.map((s, idx) => {
+                const catsIds = (s.categorias || []).map(c => c.id).join(',');
+                const catsChips = (s.categorias || []).map(c =>
+                  `<span class="lamina-cat-chip" style="background:${escape(c.color || '#cc007a')}20;color:${escape(c.color || '#cc007a')};border:1px solid ${escape(c.color || '#cc007a')}40">${escape(c.nombre)}</span>`
+                ).join('');
+                return `
+                <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${idx + 1}" ${esAdmin ? 'draggable="true"' : ''}>
                   ${esAdmin ? `<div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>` : ''}
                   <div class="lamina-numero">${idx + 1}</div>
                   <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
+                    ${catsChips ? `<div class="lamina-cats">${catsChips}</div>` : ''}
                     ${esAdmin ? `
                       <input type="text" class="lamina-tags-input" value="${escape(s.tags || '')}"
                              placeholder="🏷️ tags (ej: gafas, sol, coronation, oferta 12+12)"
@@ -653,7 +660,7 @@ async function renderEditorCatalogo(id) {
                   </div>
                   ` : ''}
                 </div>
-              `).join('')}
+              `;}).join('')}
             </div>
           </div>
         </div>
@@ -1418,6 +1425,8 @@ async function guardarTagsLamina(sheetId) {
 function filtrarLaminasEditor(texto) {
   const t = texto.trim().toLowerCase();
   const numero = parseInt(t);
+  // Si el texto empieza por #, filtra por categoría (ej: "#verano")
+  const filtroCat = t.startsWith('#') ? t.substring(1) : '';
   document.querySelectorAll('#laminas-lista .lamina-fila').forEach(fila => {
     if (!t) {
       fila.style.display = '';
@@ -1426,10 +1435,19 @@ function filtrarLaminasEditor(texto) {
     const titulo = fila.dataset.titulo || '';
     const tags = fila.dataset.tags || '';
     const num = fila.dataset.numero || '';
+    // Nombres de categorías de esta lámina (extraídos del DOM)
+    const catChipsTexto = Array.from(fila.querySelectorAll('.lamina-cat-chip'))
+      .map(el => (el.textContent || '').toLowerCase()).join(' ');
     let coincide = false;
-    if (!isNaN(numero) && String(numero) === num) coincide = true;
-    if (titulo.includes(t)) coincide = true;
-    if (tags.includes(t)) coincide = true;
+    if (filtroCat) {
+      // Solo categoría
+      if (catChipsTexto.includes(filtroCat)) coincide = true;
+    } else {
+      if (!isNaN(numero) && String(numero) === num) coincide = true;
+      if (titulo.includes(t)) coincide = true;
+      if (tags.includes(t)) coincide = true;
+      if (catChipsTexto.includes(t)) coincide = true;
+    }
     fila.style.display = coincide ? '' : 'none';
   });
 }
@@ -1653,6 +1671,13 @@ function abrirModalEditarLamina(sheet, catalogId) {
           <input type="text" id="ed-tags" value="${escape(sheet.tags || '')}" placeholder="ej: gafas, sol, coronation, oferta 12+12">
         </div>
         <div class="form-group">
+          <label>🏷️ Categorías</label>
+          <div id="ed-cats-cont" style="border:1px solid #d1d5db;border-radius:6px;padding:8px;min-height:42px;max-height:200px;overflow-y:auto;background:#fff">
+            <div style="font-size:12px;color:#9ca3af">Cargando categorías…</div>
+          </div>
+          <small style="color:var(--gris-texto);display:block;margin-top:4px">Gestiona las categorías en ⚙️ Configuración.</small>
+        </div>
+        <div class="form-group">
           <label style="display:flex;justify-content:space-between;align-items:center">
             <span>Sustituir imagen</span>
             <span style="font-size:11px;color:var(--gris-texto)">opcional</span>
@@ -1676,6 +1701,34 @@ function abrirModalEditarLamina(sheet, catalogId) {
     </div>
   `;
   document.body.appendChild(modal);
+
+  // Cargar categorías disponibles + las que tiene esta lámina
+  (async () => {
+    try {
+      const [todasR, asignadasR] = await Promise.all([
+        api('/api/categorias'),
+        api(`/api/sheets/${sheet.id}/categorias`)
+      ]);
+      const todas = todasR.categorias || [];
+      const asignadasIds = new Set((asignadasR.categorias || []).map(c => c.id));
+      const $cont = document.getElementById('ed-cats-cont');
+      if (todas.length === 0) {
+        $cont.innerHTML = `<div style="font-size:12px;color:#9ca3af">Sin categorías definidas. <a href="#" onclick="event.preventDefault();this.closest('.modal-bg').remove();irA('configuracion');">Crear categorías →</a></div>`;
+        return;
+      }
+      $cont.innerHTML = todas.map(c => `
+        <label class="cat-chip-edit">
+          <input type="checkbox" name="ed-cat" value="${c.id}" ${asignadasIds.has(c.id) ? 'checked' : ''}>
+          <span class="cat-chip-color" style="background:${escape(c.color || '#cc007a')}"></span>
+          <span>${escape(c.nombre)}</span>
+        </label>
+      `).join('');
+    } catch (err) {
+      const $cont = document.getElementById('ed-cats-cont');
+      if ($cont) $cont.innerHTML = `<div style="font-size:12px;color:#dc2626">Error: ${escape(err.message)}</div>`;
+    }
+  })();
+
   document.getElementById('form-edit-lamina').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
@@ -1688,7 +1741,14 @@ function abrirModalEditarLamina(sheet, catalogId) {
           tags: document.getElementById('ed-tags').value.trim()
         }
       });
-      // 2) Si hay imagen nueva, sustituirla
+      // 2) Guardar categorías seleccionadas
+      const catIds = Array.from(document.querySelectorAll('input[name="ed-cat"]:checked')).map(i => Number(i.value));
+      await api(`/api/sheets/${sheet.id}/categorias`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoria_ids: catIds })
+      });
+      // 3) Si hay imagen nueva, sustituirla
       const fileInput = document.getElementById('ed-imagen');
       if (fileInput.files.length > 0) {
         const fd = new FormData();
@@ -2410,15 +2470,20 @@ function pintarVisor() {
   const $v = document.getElementById('vista-contenido');
   const totalReal = _visorSheets.length;
   const busca = appState.visorBusqueda.trim().toLowerCase();
+  const filtroCatId = appState.visorFiltroCat || null;
 
-  // Filtrar por búsqueda
+  // Filtrar por búsqueda Y/O filtro de categoría
   let visibles = _visorSheets;
+  if (filtroCatId) {
+    visibles = visibles.filter(s => (s.categorias || []).some(c => c.id === filtroCatId));
+  }
   if (busca) {
-    // Búsqueda por número de lámina o por texto
+    // Búsqueda por número de lámina o por texto (incluye nombres de categorías)
     const numero = parseInt(busca);
-    visibles = _visorSheets.filter((s, i) => {
+    visibles = visibles.filter((s, i) => {
       if (!isNaN(numero) && (i + 1) === numero) return true;
-      const blob = [s.titulo, s.notas, s.tags].filter(Boolean).join(' ').toLowerCase();
+      const catsNombres = (s.categorias || []).map(c => c.nombre).join(' ');
+      const blob = [s.titulo, s.notas, s.tags, catsNombres].filter(Boolean).join(' ').toLowerCase();
       return blob.includes(busca);
     });
   }
@@ -2450,11 +2515,31 @@ function pintarVisor() {
         </div>
       </div>
       <div class="visor-buscador-fila">
-        <input type="text" id="visor-buscar" placeholder="🔍 Buscar (nombre, oferta, número de lámina…)"
+        <input type="text" id="visor-buscar" placeholder="🔍 Buscar (nombre, oferta, número de lámina, categoría…)"
                value="${escape(appState.visorBusqueda)}"
                class="visor-buscador">
         ${appState.visorBusqueda ? '<button class="visor-buscador-clear" onclick="limpiarVisorBusqueda()">✕</button>' : ''}
       </div>
+      ${(() => {
+        // Recopilar todas las categorías que aparecen en este catálogo
+        const catsMap = {};
+        _visorSheets.forEach(s => (s.categorias || []).forEach(c => { catsMap[c.id] = c; }));
+        const cats = Object.values(catsMap);
+        if (cats.length === 0) return '';
+        return `
+          <div class="visor-chips-cats">
+            <button class="visor-chip-cat ${!appState.visorFiltroCat ? 'visor-chip-cat-activo' : ''}" onclick="filtrarVisorPorCategoria(null)">
+              Todas (${_visorSheets.length})
+            </button>
+            ${cats.map(c => {
+              const num = _visorSheets.filter(s => (s.categorias || []).some(sc => sc.id === c.id)).length;
+              return `<button class="visor-chip-cat ${appState.visorFiltroCat === c.id ? 'visor-chip-cat-activo' : ''}"
+                       style="${appState.visorFiltroCat === c.id ? `background:${escape(c.color || '#cc007a')};color:#fff;border-color:${escape(c.color || '#cc007a')}` : `color:${escape(c.color || '#cc007a')};border-color:${escape(c.color || '#cc007a')}40`}"
+                       onclick="filtrarVisorPorCategoria(${c.id})">${escape(c.nombre)} (${num})</button>`;
+            }).join('')}
+          </div>
+        `;
+      })()}
     </div>
   `;
 
@@ -2690,6 +2775,17 @@ function abrirLaminaDesdeMosaico(idx) {
 
 function limpiarVisorBusqueda() {
   appState.visorBusqueda = '';
+  appState.visorIndice = 0;
+  pintarVisor();
+}
+
+function filtrarVisorPorCategoria(catId) {
+  // Toggle: si pulsas la categoría ya activa, se quita el filtro
+  if (appState.visorFiltroCat === catId) {
+    appState.visorFiltroCat = null;
+  } else {
+    appState.visorFiltroCat = catId;
+  }
   appState.visorIndice = 0;
   pintarVisor();
 }
@@ -3882,6 +3978,23 @@ async function renderConfiguracion() {
           <button class="btn btn-primary" onclick="guardarConfiguracion()">💾 Guardar cambios</button>
         </div>
 
+        <!-- PANEL CATEGORÍAS / TAGS -->
+        <div class="editor-panel" style="margin-bottom:14px">
+          <h3 style="margin-top:0">🏷️ Categorías de láminas ${ayuda('Define las categorías que se podrán asignar a cada lámina (ej: Verano, Promo, Vista, Presbicia, Higiene). Una lámina puede tener varias categorías. Sirven para filtrar en el editor y en el visor de los comerciales, y para buscar con Ctrl+K.')}</h3>
+          <div style="font-size:13px;color:var(--gris-texto);margin-bottom:12px">
+            Las categorías ayudan a organizar las láminas. Cada lámina puede tener varias.
+          </div>
+          <div id="categorias-lista" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+            <div class="loading" style="padding:1rem">Cargando categorías…</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid #e5e7eb;padding-top:12px">
+            <input type="text" id="cat-nueva-nombre" placeholder="Nueva categoría (ej: Verano)" maxlength="80" style="flex:1;min-width:160px;padding:8px;border:1px solid #d1d5db;border-radius:6px">
+            <input type="color" id="cat-nueva-color" value="#cc007a" title="Color" style="width:50px;height:36px;border:1px solid #d1d5db;border-radius:6px;cursor:pointer">
+            <button class="btn btn-primary btn-pequeno" onclick="crearCategoria()">+ Crear</button>
+          </div>
+          <div id="cat-msg" style="margin-top:8px"></div>
+        </div>
+
         <div id="config-msg"></div>
       </div>
     `;
@@ -3890,8 +4003,90 @@ async function renderConfiguracion() {
     actualizarStatsGeocoding();
     // Cargar recuento de datos de prueba
     cargarStatsLimpiarPruebas();
+    // Cargar lista de categorías
+    cargarListaCategorias();
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
+  }
+}
+
+// ===== CATEGORÍAS / TAGS =====
+let _categoriasCache = [];
+
+async function cargarListaCategorias() {
+  const $lista = document.getElementById('categorias-lista');
+  if (!$lista) return;
+  try {
+    const r = await api('/api/categorias');
+    _categoriasCache = r.categorias || [];
+    if (_categoriasCache.length === 0) {
+      $lista.innerHTML = `<div style="padding:1rem;background:#f9fafb;border-radius:8px;color:#6b7280;font-size:13px;text-align:center">
+        Aún no hay categorías. Crea la primera abajo (ej: "Verano", "Promo", "Vista", "Presbicia").
+      </div>`;
+      return;
+    }
+    $lista.innerHTML = _categoriasCache.map(c => `
+      <div class="cat-fila" data-cat-id="${c.id}">
+        <span class="cat-color-dot" style="background:${escape(c.color || '#cc007a')}"></span>
+        <input type="text" class="cat-nombre-input" value="${escape(c.nombre)}" maxlength="80" onchange="actualizarCategoria(${c.id}, this.value, document.querySelector('[data-cat-id=\\'${c.id}\\'] .cat-color-input').value)">
+        <input type="color" class="cat-color-input" value="${escape(c.color || '#cc007a')}" onchange="actualizarCategoria(${c.id}, document.querySelector('[data-cat-id=\\'${c.id}\\'] .cat-nombre-input').value, this.value)">
+        <span class="cat-cuenta">${c.num_laminas || 0} láminas</span>
+        <button class="btn-borrar" onclick="borrarCategoria(${c.id}, '${escape((c.nombre || '').replace(/'/g, "\\'"))}', ${c.num_laminas || 0})" title="Eliminar categoría">✖</button>
+      </div>
+    `).join('');
+  } catch (err) {
+    $lista.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+  }
+}
+
+async function crearCategoria() {
+  const $nombre = document.getElementById('cat-nueva-nombre');
+  const $color = document.getElementById('cat-nueva-color');
+  const $msg = document.getElementById('cat-msg');
+  const nombre = ($nombre.value || '').trim();
+  if (!nombre) {
+    $msg.innerHTML = `<div class="error-msg">Escribe un nombre para la categoría</div>`;
+    return;
+  }
+  try {
+    await api('/api/categorias', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nombre, color: $color.value, orden: _categoriasCache.length })
+    });
+    $nombre.value = '';
+    $msg.innerHTML = `<div class="exito-msg">✓ Categoría creada</div>`;
+    setTimeout(() => { $msg.innerHTML = ''; }, 2000);
+    cargarListaCategorias();
+  } catch (err) {
+    $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+  }
+}
+
+async function actualizarCategoria(id, nombre, color) {
+  try {
+    await api(`/api/categorias/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nombre: (nombre || '').trim(), color })
+    });
+  } catch (err) {
+    alert('Error actualizando: ' + err.message);
+    cargarListaCategorias();
+  }
+}
+
+async function borrarCategoria(id, nombre, numLaminas) {
+  let msg = `¿Eliminar la categoría "${nombre}"?`;
+  if (numLaminas > 0) {
+    msg += `\n\n⚠️ Está asignada a ${numLaminas} láminas. Si la borras, se quitará de esas láminas (pero las láminas se mantienen).`;
+  }
+  if (!confirm(msg)) return;
+  try {
+    await api(`/api/categorias/${id}`, { method: 'DELETE' });
+    cargarListaCategorias();
+  } catch (err) {
+    alert('Error borrando: ' + err.message);
   }
 }
 
