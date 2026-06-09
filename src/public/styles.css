@@ -812,6 +812,7 @@ body {
   padding: 8px 12px;
   border-radius: 10px;
   border: 1px solid var(--gris-borde);
+  flex-wrap: wrap;
 }
 .visor-nav-btn {
   background: var(--rosa);
@@ -1990,20 +1991,30 @@ body {
    ============================================================================ */
 
 .visor-fullscreen-btn {
-  background: transparent;
-  border: 1px solid var(--gris-borde);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  color: #444;
+  background: var(--rosa);
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   font-family: inherit;
-  margin-left: auto;
+  flex-shrink: 0;
 }
 .visor-fullscreen-btn:hover {
-  background: #f3f4f6;
-  border-color: var(--rosa);
-  color: var(--rosa);
+  background: var(--rosa-oscuro);
+}
+
+/* En tablet/móvil: solo icono para ahorrar espacio */
+@media (max-width: 900px) {
+  .visor-fullscreen-btn {
+    padding: 9px 12px;
+    min-width: 44px;
+  }
+  .visor-fullscreen-btn-texto {
+    display: none;
+  }
 }
 
 /* Cuando body tiene .visor-fullscreen-activo: ocultar todo lo que no sea la imagen */

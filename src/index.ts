@@ -669,7 +669,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'visor-fullscreen-pan-09jun',
+    build: 'fix-fullscreen-btn-tablet-09jun',
     service: 'CatalogPRO v2'
   });
 });

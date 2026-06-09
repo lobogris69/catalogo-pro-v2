@@ -2541,7 +2541,7 @@ function pintarPresentacion(visibles) {
           <span class="visor-contador-total">/ ${_visorSheets.length}</span>
         </div>
         <button class="visor-nav-btn" ${nextDisabled} onclick="visorSiguiente()">Siguiente ▶</button>
-        ${appState.visitaActiva ? `<button class="visor-fullscreen-btn" onclick="entrarPantallaCompleta()" title="Modo presentación pantalla completa">⛶ Pantalla completa</button>` : ''}
+        ${appState.visitaActiva ? `<button class="visor-fullscreen-btn" onclick="entrarPantallaCompleta()" title="Modo pantalla completa">⛶<span class="visor-fullscreen-btn-texto"> Pantalla completa</span></button>` : ''}
       </div>
 
       <div class="visor-imagen-contenedor" id="visor-img-contenedor">
