@@ -4790,9 +4790,9 @@ function abrirModalDescargarPdf(catalogId, nombreCatalogo) {
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
   modal.innerHTML = `
-    <div class="modal-card" style="max-width:480px">
+    <div class="modal-card" style="max-width:480px;width:95vw;max-height:90vh;overflow-y:auto">
       <div class="modal-header">
-        <h3>📥 Descargar PDF</h3>
+        <h3 style="margin:0">📥 Descargar PDF</h3>
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
       </div>
       <p style="color:#6b7280;font-size:13px;margin:0 0 14px 0">
@@ -4804,16 +4804,16 @@ function abrirModalDescargarPdf(catalogId, nombreCatalogo) {
           <div class="bcp-icono">🖨️</div>
           <div class="bcp-cuerpo">
             <div class="bcp-titulo">Alta calidad</div>
-            <div class="bcp-sub">Original sin compresión · para impresión o archivo</div>
-            <div class="bcp-tam">Tamaño grande (puede ser >100 MB en catálogos extensos)</div>
+            <div class="bcp-sub">Original · para impresión o archivo</div>
+            <div class="bcp-tam">Tamaño grande (>100 MB en catálogos extensos)</div>
           </div>
         </button>
         <button class="btn-calidad-pdf" onclick="descargarPdfCalidad(${catalogId}, 'pequena', this)">
           <div class="bcp-icono">📱</div>
           <div class="bcp-cuerpo">
             <div class="bcp-titulo">Calidad reducida</div>
-            <div class="bcp-sub">Optimizado · para enviar por WhatsApp o email</div>
-            <div class="bcp-tam">Tamaño pequeño · imágenes a 1200px / JPEG 80%</div>
+            <div class="bcp-sub">Optimizado · para WhatsApp / email</div>
+            <div class="bcp-tam">Tamaño pequeño · imágenes a 1200px</div>
           </div>
         </button>
       </div>

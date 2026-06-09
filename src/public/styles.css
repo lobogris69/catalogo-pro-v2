@@ -18,6 +18,10 @@ body {
   color: var(--texto);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+html {
+  overflow-x: hidden;
 }
 .loading { text-align: center; padding: 4rem 2rem; color: var(--gris-texto); }
 
@@ -166,6 +170,17 @@ body {
   padding: 0 1rem;
   max-width: 1200px;
   margin: 0 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+.navtabs::-webkit-scrollbar {
+  height: 4px;
+}
+.navtabs::-webkit-scrollbar-thumb {
+  background: var(--gris-borde);
+  border-radius: 2px;
 }
 .navtab {
   background: transparent;
@@ -179,11 +194,24 @@ body {
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   transition: color 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .navtab:hover { color: var(--rosa); }
 .navtab.navtab-activa {
   color: var(--rosa);
   border-bottom-color: var(--rosa);
+}
+
+/* En tablet/móvil: padding más compacto en los tabs para que entren más */
+@media (max-width: 1024px) {
+  .navtab {
+    padding: 12px 12px;
+    font-size: 12px;
+  }
+  .navtabs {
+    padding: 0 0.5rem;
+  }
 }
 
 /* ===== CLIENTES ===== */

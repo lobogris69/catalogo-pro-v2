@@ -669,7 +669,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'pdf-calidad-baja-09jun',
+    build: 'fixes-tablet-pdf-nav-09jun',
     service: 'CatalogPRO v2'
   });
 });
@@ -1165,19 +1165,17 @@ async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream:
       }
       try {
         doc.addPage({ size: 'A4', layout: 'landscape', margin: 20 });
+        // Cabecera de la página: nombre del catálogo + lámina + título (todo en una línea)
         doc.fontSize(8).fillColor('#666').text(
           `${catalog.name} · Lám. ${sheet.orden || '?'}${sheet.titulo ? ' · ' + sheet.titulo : ''}`,
           20, 10, { width: 800, align: 'left' }
         );
+        // Imagen ocupando casi toda la página (sin texto "Página X" abajo que forzaba salto)
         doc.image(imgPath, 20, 25, {
-          fit: [800, 540],
+          fit: [800, 555],
           align: 'center',
           valign: 'center'
         });
-        doc.fontSize(8).fillColor('#999').text(
-          `Página ${sheet.orden || '?'}`,
-          20, 575, { width: 800, align: 'center' }
-        );
       } catch (err) {
         console.error('[PDF] Error añadiendo lámina ' + sheet.id + ':', (err as Error).message);
       }
