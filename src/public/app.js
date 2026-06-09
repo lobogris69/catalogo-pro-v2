@@ -75,6 +75,14 @@ function escape(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
 
+// Helper: genera tooltip contextual (?). Posición opcional: '', 'abajo', 'izq'
+function ayuda(texto, posicion) {
+  const clase = posicion === 'abajo' ? 'ayuda-tip tip-abajo'
+              : posicion === 'izq' ? 'ayuda-tip tip-izq'
+              : 'ayuda-tip';
+  return `<span class="${clase}" tabindex="0" data-tip="${escape(texto)}">?</span>`;
+}
+
 function logout() {
   localStorage.removeItem('cpv2_token');
   localStorage.removeItem('cpv2_user');
@@ -345,7 +353,7 @@ async function renderListaCatalogos() {
         <div class="titulo-pagina">
           <h2>Catálogos${modoOffline ? ' <span style="font-size:13px;color:var(--gris-texto);font-weight:normal">(modo offline)</span>' : ''}</h2>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            ${esAdmin && !modoOffline ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoCatalogo()">+ Nuevo catálogo</button>` : ''}
+            ${esAdmin && !modoOffline ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoCatalogo()">+ Nuevo catálogo</button>${ayuda('Crea un catálogo nuevo. Tipo "Maestro" = catálogo principal con todas las láminas. Tipo "Express" = subcatálogo de ofertas que selecciona algunas láminas del maestro (ej: ofertas verano).', 'izq')}` : ''}
             ${!modoOffline ? `<button class="btn btn-secondary btn-pequeno" onclick="descargarMisClientes()" title="Descargar tu lista de clientes a este dispositivo para uso offline">👥 Descargar clientes</button>` : ''}
           </div>
         </div>
@@ -549,8 +557,8 @@ async function renderEditorCatalogo(id) {
           ${esAdmin ? `
             <div style="display:flex;gap:6px;align-self:flex-start;flex-wrap:wrap">
               <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
-              ${sheets.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>` : ''}
-              ${sheets.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>` : ''}
+              ${sheets.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>${ayuda('Vista en cuadrícula para reordenar las láminas. Arrastra y suelta o escribe el número de orden.')}` : ''}
+              ${sheets.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo actual: genera PDF + ZIP de respaldo descargables, queda registrado en el historial, y la versión sube V1→V2. Útil al final de cada temporada.', 'izq')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="borrarTodasLaminas(${id}, ${sheets.length})">🗑️ Borrar todas</button>` : ''}
             </div>
           ` : ''}
@@ -778,8 +786,8 @@ function pintarEditorExpress() {
         </div>
         <div style="display:flex;gap:6px;align-self:flex-start;flex-wrap:wrap">
           <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
-          ${sheetsExpress.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>` : ''}
-          ${sheetsExpress.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>` : ''}
+          ${sheetsExpress.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>${ayuda('Vista en cuadrícula para reordenar las láminas. Arrastra y suelta o escribe el número de orden.')}` : ''}
+          ${sheetsExpress.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo Express actual: PDF+ZIP descargables, queda en historial, V1→V2. Útil para archivar ofertas pasadas (ej: ofertas mayo, ofertas verano).', 'izq')}` : ''}
           ${sheetsExpress.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="vaciarExpress(${id}, ${sheetsExpress.length})">🗑️ Vaciar Express</button>` : ''}
         </div>
       </div>
@@ -1457,7 +1465,7 @@ async function renderListaClientes() {
     <div class="contenedor">
       <div class="titulo-pagina">
         <div>
-          <h2>Clientes</h2>
+          <h2>Clientes ${ayuda('Cada cliente tiene un semáforo de planning: 🔴 Urgente = visita atrasada (>90 días desde última visita). 🟡 Próxima = visita pronto (entre 75-90 días). 🟢 Al día = visitado recientemente. ⚪ Sin historial = nunca visitado. El ciclo se configura en ⚙️ Configuración.')}</h2>
           <div id="clientes-resumen" style="font-size:12px;color:var(--gris-texto);margin-top:4px">cargando…</div>
         </div>
         ${esAdmin ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalImportarSage()">📊 Importar Excel Sage</button>` : ''}
@@ -1972,7 +1980,7 @@ async function renderMiCuenta() {
 
       ${user.role === 'sales' ? `
       <div class="editor-panel" style="margin-top:1rem">
-        <h3>🔔 Notificaciones por email</h3>
+        <h3>🔔 Notificaciones por email ${ayuda('Si está activado, recibirás emails cuando: (1) se cierre una versión de un catálogo asignado a ti, (2) se suba o reemplace una formación en el aula a la que tengas acceso. Si está desactivado, no recibes ningún email.')}</h3>
         <p style="font-size:13px;color:var(--gris-texto);margin:0 0 12px 0">
           Recibe un email cuando se publique una nueva versión de un catálogo asignado a ti.
         </p>
@@ -2173,7 +2181,7 @@ function pintarVisor() {
       <div class="visor-cabecera-fila">
         <button class="btn-icon-volver" onclick="volverACatalogos()" title="Volver a catálogos">←</button>
         <div class="visor-titulo-bloque">
-          <div class="visor-titulo">${escape(_visorCatalog.name)}</div>
+          <div class="visor-titulo">${escape(_visorCatalog.name)}${appState.visitaActiva ? ayuda('Estás en visita. Toca las zonas marcadas sobre las láminas para añadir productos al pedido (aparecen al pasar el dedo o ratón). También puedes anotar manualmente con el icono ✏️. Al terminar, pulsa "Cerrar visita" para enviar el pedido.') : ''}</div>
           <div class="visor-subtitulo">${totalReal} láminas${busca ? ` · ${visibles.length} resultados` : ''}</div>
         </div>
         <div class="visor-modo-switch">
@@ -3370,7 +3378,7 @@ async function renderConfiguracion() {
 
         <!-- BLOQUE 1: Modo (interruptor pruebas/producción) -->
         <div class="editor-panel" style="margin-bottom:14px">
-          <h3 style="margin-top:0">Modo de envío</h3>
+          <h3 style="margin-top:0">Modo de envío ${ayuda('PRUEBAS = los emails se redirigen a las direcciones de prueba (no llegan al cliente real). Sirve para probar sin spamear. PRODUCCIÓN = los emails se envían a destinatarios reales (oficina, cliente, comerciales). Cambia a PRODUCCIÓN solo cuando estés seguro.')}</h3>
           <div class="modo-switch-bg" id="modo-switch-bg">
             <button class="modo-btn ${!esProd ? 'modo-btn-activo modo-btn-pruebas' : ''}" onclick="cambiarModo('pruebas')">🔴 MODO PRUEBAS</button>
             <button class="modo-btn ${esProd ? 'modo-btn-activo modo-btn-prod' : ''}" onclick="cambiarModo('produccion')">🟢 MODO PRODUCCIÓN</button>
@@ -5519,8 +5527,8 @@ async function renderDetalleCliente(id) {
               ${c.categoria ? ` · Categoría ${escape(c.categoria)}` : ''}
             </div>
           </div>
-          <div style="display:flex; gap:6px; align-self:flex-start; flex-wrap:wrap">
-            <button class="btn btn-primary" onclick="iniciarVisitaParaCliente(${c.id})">🛒 Empezar visita</button>
+          <div style="display:flex; gap:6px; align-self:flex-start; flex-wrap:wrap; align-items:center">
+            <button class="btn btn-primary" onclick="iniciarVisitaParaCliente(${c.id})">🛒 Empezar visita</button>${ayuda('Inicia una visita comercial al cliente. Abre el visor del catálogo para que añadas productos pulsando las zonas clicables o anotando. Al cerrar la visita, se envía un email a la oficina con el pedido y opcional al cliente.', 'izq')}
           </div>
         </div>
 
@@ -5916,7 +5924,7 @@ async function renderAula() {
     <div class="contenedor">
       <div class="titulo-pagina">
         <div>
-          <h2 style="margin:0">🎓 Aula de formación</h2>
+          <h2 style="margin:0">🎓 Aula de formación ${ayuda(esAdmin ? 'Sube material de formación de los laboratorios (PDF, imágenes, vídeos, PowerPoint). Los comerciales podrán verlo y descargarlo. Si marcas una formación como "Restringida", solo los comerciales que selecciones podrán acceder. Cuando subes o reemplazas un archivo, los comerciales con acceso reciben un email automático.' : 'Material de formación de los laboratorios. Pulsa "Ver / Descargar" en cada tarjeta: los PDFs, imágenes y vídeos se abren en pestaña nueva; los Word y PowerPoint se descargan. Si tienes notificaciones activadas, recibirás un email cuando haya material nuevo.')}</h2>
           <p style="color:var(--gris-texto);font-size:13px;margin:4px 0 0 0">
             ${esAdmin
               ? 'Sube y gestiona el material de formación de los laboratorios.'
@@ -6110,7 +6118,7 @@ function abrirModalSubirFormacion() {
 
         <!-- Bloque 3 HH1: Visibilidad / Permisos -->
         <div class="form-group" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px">
-          <label style="font-weight:600;margin-bottom:8px;display:block">Visibilidad</label>
+          <label style="font-weight:600;margin-bottom:8px;display:block">Visibilidad ${ayuda('Pública = todos los comerciales pueden ver y descargar la formación. Restringida = solo los comerciales que marques abajo podrán verla. Útil para material confidencial de un laboratorio concreto.')}</label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;margin-bottom:6px">
             <input type="radio" name="nf-visibilidad" value="publico" checked onchange="cambiarVisibilidadNF()">
             <span>🔓 <b>Pública</b> — todos los comerciales pueden verla</span>
@@ -7773,9 +7781,9 @@ async function renderListaProductos() {
             Catálogo maestro de productos. Sirve para vincular láminas y emitir pedidos con códigos exactos.
           </div>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-secondary btn-pequeno" onclick="abrirModalImportarProductos()">📊 Importar Excel Sage</button>
-          <button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoProducto()">+ Nuevo (expositor/promo)</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-secondary btn-pequeno" onclick="abrirModalImportarProductos()">📊 Importar Excel Sage</button>${ayuda('Sube el Excel exportado de Sage. Detecta productos nuevos, cambios de precio y bajas. Muestra un resumen ANTES de aplicar para que revises los cambios. Idempotente: puedes subir el mismo Excel varias veces sin duplicar.')}
+          <button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoProducto()">+ Nuevo (expositor/promo)</button>${ayuda('Crea productos manuales que no vienen del Excel de Sage (expositores, promociones internas, etc).')}
         </div>
       </div>
 

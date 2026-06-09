@@ -3776,3 +3776,115 @@ body.con-banner-update {
   min-width: 0;
   text-align: center;
 }
+
+/* ============================================================================
+   SISTEMA DE AYUDAS — Tooltips contextuales (?)
+   Uso: <span class="ayuda-tip" data-tip="texto explicativo">?</span>
+   Aparece al pasar el ratón o al recibir foco (táctil).
+   ============================================================================ */
+.ayuda-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  color: #4b5563;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: Arial, sans-serif;
+  cursor: help;
+  position: relative;
+  margin-left: 6px;
+  vertical-align: middle;
+  user-select: none;
+  border: none;
+  outline: none;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.ayuda-tip:hover,
+.ayuda-tip:focus {
+  background: #cc007a;
+  color: #fff;
+}
+
+/* El globo aparece al hover o focus, encima del icono */
+.ayuda-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #111827;
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+  width: max-content;
+  max-width: 280px;
+  text-align: left;
+  z-index: 10000;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+/* Flecha apuntando hacia el icono */
+.ayuda-tip::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: #111827;
+  z-index: 10000;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+}
+
+.ayuda-tip:hover::after,
+.ayuda-tip:hover::before,
+.ayuda-tip:focus::after,
+.ayuda-tip:focus::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Variante: tooltip que se abre hacia abajo (cuando el ? está cerca del borde superior) */
+.ayuda-tip.tip-abajo::after {
+  bottom: auto;
+  top: calc(100% + 8px);
+}
+.ayuda-tip.tip-abajo::before {
+  bottom: auto;
+  top: calc(100% + 2px);
+  border-top-color: transparent;
+  border-bottom-color: #111827;
+}
+
+/* Variante: tooltip que se abre hacia la izquierda (cuando el ? está pegado al borde derecho) */
+.ayuda-tip.tip-izq::after {
+  left: auto;
+  right: calc(100% + 8px);
+  bottom: 50%;
+  transform: translateY(50%);
+}
+.ayuda-tip.tip-izq::before {
+  left: auto;
+  right: calc(100% + 2px);
+  bottom: 50%;
+  transform: translateY(50%);
+  border-top-color: transparent;
+  border-left-color: #111827;
+}

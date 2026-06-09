@@ -669,7 +669,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'aula-bloque3-09jun',
+    build: 'ayudas-tooltips-09jun',
     service: 'CatalogPRO v2'
   });
 });
