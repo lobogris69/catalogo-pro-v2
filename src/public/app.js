@@ -6510,13 +6510,24 @@ async function confirmarIniciarVisita(clientId, catalogId) {
 }
 
 // ----- ABRIR VISITA ACTIVA (botón "Ver visita" de la barra) -----
+// Admin → detalle informativo de la visita (resumen, anotaciones)
+// Comercial → visor del catálogo de la visita (para seguir anotando)
 function abrirVisitaActiva() {
   if (!appState.visitaActiva) return;
-  // Llevar al visor del catálogo de la visita
-  appState.vista = 'catalogos';
-  appState.clienteActual = null;
-  appState.visitaVerId = null;
-  appState.catalogoActual = appState.visitaActiva.catalog_id;
+  const esAdminReal_ = (typeof esAdminReal === 'function') ? esAdminReal() : false;
+  if (esAdminReal_) {
+    // Admin: ver detalle informativo de la visita
+    appState.vista = 'clientes';
+    appState.clienteActual = null;
+    appState.catalogoActual = null;
+    appState.visitaVerId = appState.visitaActiva.id;
+  } else {
+    // Comercial (o admin impersonando): ir al visor del catálogo para anotar
+    appState.vista = 'catalogos';
+    appState.clienteActual = null;
+    appState.visitaVerId = null;
+    appState.catalogoActual = appState.visitaActiva.catalog_id;
+  }
   render();
 }
 

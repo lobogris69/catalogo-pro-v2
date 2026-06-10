@@ -687,7 +687,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'fix-cats-editor-admin-10jun',
+    build: 'ux-ver-visita-admin-10jun',
     service: 'CatalogPRO v2'
   });
 });
