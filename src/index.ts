@@ -687,7 +687,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'tags-categorias-09jun',
+    build: 'backup-local-pdfs-10jun',
     service: 'CatalogPRO v2'
   });
 });
@@ -4433,6 +4433,64 @@ app.get('/api/visits/:id/pdf', verifyToken, async (req: AuthRequest, res: Respon
     if (!res.headersSent) {
       res.status(500).json({ success: false, error: (e as Error).message });
     }
+  }
+});
+
+// Endpoint para enviar un PDF de backup local por email (lo usa la pantalla "Mis pedidos guardados")
+const uploadBackupMem = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 } // 25 MB máx
+});
+app.post('/api/backup/enviar-email', verifyToken, uploadBackupMem.single('adjunto'),
+  async (req: AuthRequest, res: Response) => {
+  try {
+    const destinatario = (req.body?.destinatario || '').trim();
+    const asunto = (req.body?.asunto || '').trim() || 'Pedido LOMHIFAR';
+    const cuerpo = (req.body?.cuerpo || '').trim();
+    if (!destinatario || !destinatario.includes('@')) {
+      res.status(400).json({ success: false, error: 'Email destinatario no válido' });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({ success: false, error: 'Falta el archivo adjunto' });
+      return;
+    }
+    // Construir HTML con el cuerpo (preservando saltos de línea)
+    const cuerpoHtml = escapeHtml(cuerpo).replace(/\n/g, '<br>');
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background:#cc007a;color:white;padding:14px 20px;border-radius:8px 8px 0 0">
+          <h2 style="margin:0;font-size:18px">📦 Pedido LOMHIFAR</h2>
+        </div>
+        <div style="padding:18px;background:#fff;border:1px solid #e5e7eb;border-top:0;border-radius:0 0 8px 8px">
+          <div style="font-size:14px;color:#333;line-height:1.6">
+            ${cuerpoHtml || 'Adjunto el pedido en PDF.'}
+          </div>
+          <hr style="border:0;border-top:1px solid #e5e7eb;margin:20px 0">
+          <div style="font-size:12px;color:#9ca3af">
+            Email enviado desde CatalogPRO v2 — LOMHIFAR S.L.
+          </div>
+        </div>
+      </div>
+    `;
+    const result = await enviarEmailConRedireccion({
+      rol: 'cliente',
+      destinatarioReal: destinatario,
+      asunto,
+      html,
+      attachments: [{
+        filename: req.file.originalname || 'pedido.pdf',
+        content: req.file.buffer,
+        contentType: req.file.mimetype || 'application/pdf'
+      }]
+    });
+    if (!result.ok) {
+      res.status(500).json({ success: false, error: result.error || 'No se pudo enviar el email' });
+      return;
+    }
+    res.json({ success: true, destinatarioFinal: result.destinatarioFinal, modo: result.modo });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
   }
 });
 

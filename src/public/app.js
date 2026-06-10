@@ -216,6 +216,7 @@ async function renderApp() {
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'configuracion' ? 'navtab-activa' : ''}" onclick="irA('configuracion')">⚙️ Configuración</button>` : ''}
+        <button class="navtab ${appState.vista === 'pedidos-guardados' ? 'navtab-activa' : ''}" onclick="irA('pedidos-guardados')" title="Pedidos guardados localmente">📁 Mis pedidos</button>
         <button class="navtab navtab-lupa" onclick="abrirBusquedaGlobal()" title="Buscar (Ctrl+K)" style="margin-left:auto">🔍</button>
         <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')">⚙️ Mi cuenta</button>
       </div>
@@ -242,6 +243,10 @@ function routerVista() {
   }
   if (appState.vista === 'aula') {
     renderAula();
+    return;
+  }
+  if (appState.vista === 'pedidos-guardados') {
+    renderMisPedidosGuardados();
     return;
   }
   if (appState.vista === 'clientes') {
@@ -7971,6 +7976,8 @@ async function confirmarEnvioVisita() {
   const emailOverride = (document.getElementById('resumen-email-cliente')?.value || '').trim();
   const noEnviar = !!document.getElementById('resumen-no-enviar')?.checked;
   const emailOriginal = _resumenPreEnvio.cliente?.email || '';
+  const nombreCliente = _resumenPreEnvio.cliente?.razon_social || _resumenPreEnvio.cliente?.nombre_comercial || 'Cliente';
+  const visitaIdLocal = _resumenPreEnvio.visitId;
 
   try {
     await api('/api/visits/' + _resumenPreEnvio.visitId + '/confirm', {
@@ -7980,6 +7987,10 @@ async function confirmarEnvioVisita() {
         email_cliente_override: (emailOverride && emailOverride !== emailOriginal) ? emailOverride : null,
         no_enviar_cliente: noEnviar
       }
+    });
+    // Backup local del PDF en la tablet (async, no bloquea la UI)
+    guardarPdfBackupLocal(visitaIdLocal, nombreCliente).catch(err => {
+      console.warn('[backup] no se pudo guardar copia local:', err.message);
     });
     const visitaId = _resumenPreEnvio.visitId;
     cerrarResumenPreEnvio();
@@ -7992,6 +8003,431 @@ async function confirmarEnvioVisita() {
   } catch (err) {
     if ($msg) $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
     if ($btn) { $btn.disabled = false; $btn.textContent = '✅ Confirmar y enviar'; }
+  }
+}
+
+// ============================================================================
+// BACKUP LOCAL DE PEDIDOS (File System Access API + fallback a Descargas)
+// ============================================================================
+
+// Sanitiza un nombre para usar como nombre de archivo
+function _sanitizarNombreArchivo(nombre) {
+  return (nombre || 'cliente')
+    .replace(/[\\/:*?"<>|]/g, '')
+    .replace(/\s+/g, '_')
+    .substring(0, 80);
+}
+
+// Genera el nombre del archivo PDF: NombreCliente_AAAA-MM-DD.pdf
+function _nombreArchivoBackup(nombreCliente) {
+  const ahora = new Date();
+  const fecha = ahora.toISOString().substring(0, 10); // AAAA-MM-DD
+  return `${_sanitizarNombreArchivo(nombreCliente)}_${fecha}.pdf`;
+}
+
+// IndexedDB helper para persistir el directoryHandle entre sesiones
+const _BACKUP_DB_NAME = 'cpv2_backup';
+const _BACKUP_STORE = 'fs_handles';
+
+function _abrirBackupDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(_BACKUP_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(_BACKUP_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function _guardarHandleEnDB(handle) {
+  const db = await _abrirBackupDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([_BACKUP_STORE], 'readwrite');
+    const store = tx.objectStore(_BACKUP_STORE);
+    const req = store.put(handle, 'carpeta_pedidos');
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function _leerHandleDeDB() {
+  try {
+    const db = await _abrirBackupDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([_BACKUP_STORE], 'readonly');
+      const store = tx.objectStore(_BACKUP_STORE);
+      const req = store.get('carpeta_pedidos');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) {
+    return null;
+  }
+}
+
+async function _borrarHandleDeDB() {
+  try {
+    const db = await _abrirBackupDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([_BACKUP_STORE], 'readwrite');
+      const store = tx.objectStore(_BACKUP_STORE);
+      const req = store.delete('carpeta_pedidos');
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) { /* nada */ }
+}
+
+// Verifica que tenemos permiso de lectura/escritura sobre el handle (puede caducar)
+async function _verificarPermiso(handle, modo = 'readwrite') {
+  if (!handle) return false;
+  try {
+    const opts = { mode: modo };
+    if ((await handle.queryPermission(opts)) === 'granted') return true;
+    return (await handle.requestPermission(opts)) === 'granted';
+  } catch (e) {
+    return false;
+  }
+}
+
+// Pide al usuario que elija una carpeta (UI nativo del SO)
+async function configurarCarpetaBackup() {
+  if (!('showDirectoryPicker' in window)) {
+    alert('Tu navegador no soporta selección de carpeta automática. Los PDFs se guardarán en la carpeta Descargas de Chrome.');
+    return null;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({
+      mode: 'readwrite',
+      startIn: 'documents'
+    });
+    await _guardarHandleEnDB(handle);
+    return handle;
+  } catch (e) {
+    if (e.name === 'AbortError') return null; // usuario canceló
+    alert('Error eligiendo carpeta: ' + e.message);
+    return null;
+  }
+}
+
+// FUNCIÓN PRINCIPAL: descarga PDF de la visita y lo guarda en carpeta o Descargas
+async function guardarPdfBackupLocal(visitId, nombreCliente) {
+  // 1) Descargar el PDF del servidor
+  const token = localStorage.getItem('cpv2_token') || '';
+  const resp = await fetch(`/api/visits/${visitId}/pdf`, {
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  if (!resp.ok) throw new Error('No se pudo descargar PDF: ' + resp.status);
+  const blob = await resp.blob();
+  const nombreArchivo = _nombreArchivoBackup(nombreCliente);
+
+  // 2) Intentar guardar en carpeta configurada (File System Access API)
+  const handle = await _leerHandleDeDB();
+  if (handle && ('createWritable' in (await handle.getDirectoryHandle?.bind(handle) || {}) || handle.getFileHandle)) {
+    try {
+      const ok = await _verificarPermiso(handle, 'readwrite');
+      if (ok) {
+        const fileHandle = await handle.getFileHandle(nombreArchivo, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        // Guardar metadato en localStorage (última copia)
+        localStorage.setItem('cpv2_backup_ultimo', JSON.stringify({
+          archivo: nombreArchivo, ts: Date.now()
+        }));
+        return { metodo: 'carpeta', archivo: nombreArchivo };
+      }
+    } catch (e) {
+      console.warn('[backup] fallo carpeta, fallback Descargas:', e.message);
+    }
+  }
+
+  // 3) Fallback: descarga normal a carpeta Descargas
+  const urlBlob = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = urlBlob;
+  a.download = nombreArchivo;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(urlBlob), 5000);
+  localStorage.setItem('cpv2_backup_ultimo', JSON.stringify({
+    archivo: nombreArchivo, ts: Date.now()
+  }));
+  return { metodo: 'descargas', archivo: nombreArchivo };
+}
+
+// Lista PDFs guardados en la carpeta configurada
+async function listarPdfsBackup() {
+  const handle = await _leerHandleDeDB();
+  if (!handle) return { error: 'sin_carpeta', archivos: [] };
+  const ok = await _verificarPermiso(handle, 'read');
+  if (!ok) return { error: 'sin_permiso', archivos: [] };
+  const archivos = [];
+  try {
+    for await (const [nombre, fileHandle] of handle.entries()) {
+      if (fileHandle.kind !== 'file') continue;
+      if (!nombre.toLowerCase().endsWith('.pdf')) continue;
+      const file = await fileHandle.getFile();
+      archivos.push({
+        nombre,
+        tamano: file.size,
+        modificado: file.lastModified,
+        handle: fileHandle
+      });
+    }
+    // Ordenar por fecha modificación descendente
+    archivos.sort((a, b) => b.modificado - a.modificado);
+    return { archivos };
+  } catch (e) {
+    return { error: e.message, archivos: [] };
+  }
+}
+
+// Renderiza la pantalla "📁 Mis pedidos guardados"
+async function renderMisPedidosGuardados() {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando…</div></div>`;
+
+  const handle = await _leerHandleDeDB();
+  if (!handle) {
+    $v.innerHTML = `
+      <div class="contenedor" style="max-width:720px">
+        <div class="titulo-pagina">
+          <div>
+            <h2>📁 Mis pedidos guardados</h2>
+            <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+              Backup local de los pedidos en tu tablet.
+            </div>
+          </div>
+        </div>
+        <div class="editor-panel">
+          <div style="text-align:center;padding:2rem">
+            <div style="font-size:48px;margin-bottom:12px">📂</div>
+            <h3 style="margin:0 0 8px 0">Configura la carpeta de backup</h3>
+            <p style="color:var(--gris-texto);font-size:13px;margin:0 0 20px 0">
+              Elige una carpeta (idealmente en la tarjeta SD) donde se guardará automáticamente una copia local de cada pedido que cierres.
+            </p>
+            <button class="btn btn-primary" onclick="configurarCarpetaYRecargar()">📁 Elegir carpeta</button>
+            <p style="color:var(--gris-texto);font-size:11px;margin:14px 0 0 0">
+              Si tu navegador no soporta selección de carpeta, los PDFs irán a Descargas de Chrome.
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const ok = await _verificarPermiso(handle, 'read');
+  if (!ok) {
+    $v.innerHTML = `
+      <div class="contenedor" style="max-width:720px">
+        <div class="titulo-pagina"><h2>📁 Mis pedidos guardados</h2></div>
+        <div class="editor-panel">
+          <div style="text-align:center;padding:2rem">
+            <div style="font-size:48px;margin-bottom:12px">🔐</div>
+            <h3>Necesito acceso a la carpeta</h3>
+            <p style="color:var(--gris-texto);font-size:13px">
+              El navegador ha cerrado el permiso (puede pasar tras varios meses). Vuelve a confirmar el acceso a la misma carpeta.
+            </p>
+            <button class="btn btn-primary" onclick="configurarCarpetaYRecargar()">🔓 Re-autorizar carpeta</button>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const { archivos } = await listarPdfsBackup();
+  _backupArchivos = archivos;
+  pintarListaPedidosBackup();
+}
+
+let _backupArchivos = [];
+let _backupBusqueda = '';
+
+function pintarListaPedidosBackup() {
+  const $v = document.getElementById('vista-contenido');
+  const filtrados = _backupBusqueda
+    ? _backupArchivos.filter(a => a.nombre.toLowerCase().includes(_backupBusqueda.toLowerCase()))
+    : _backupArchivos;
+
+  $v.innerHTML = `
+    <div class="contenedor" style="max-width:780px">
+      <div class="titulo-pagina">
+        <div>
+          <h2>📁 Mis pedidos guardados ${ayuda('Lista de los PDFs de pedidos guardados en la tarjeta SD de tu tablet. Cada vez que cierras una visita, se guarda una copia local de respaldo aquí. Puedes verlos, enviarlos por email manual o compartirlos.')}</h2>
+          <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
+            ${_backupArchivos.length} pedido${_backupArchivos.length === 1 ? '' : 's'} en la carpeta de backup local
+          </div>
+        </div>
+        <button class="btn btn-secondary btn-pequeno" onclick="configurarCarpetaYRecargar()" title="Cambiar carpeta">📂 Cambiar carpeta</button>
+      </div>
+
+      ${_backupArchivos.length > 0 ? `
+        <div class="editor-panel" style="margin-bottom:12px;padding:10px">
+          <input type="text" id="backup-busca" placeholder="🔍 Buscar (cliente o fecha AAAA-MM-DD)" value="${escape(_backupBusqueda)}" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px">
+        </div>
+      ` : ''}
+
+      <div class="editor-panel">
+        ${filtrados.length === 0 ? `
+          <div style="text-align:center;padding:2rem;color:var(--gris-texto);font-size:13px">
+            ${_backupArchivos.length === 0
+              ? '📭 Aún no hay pedidos guardados. Cierra una visita y aparecerá aquí.'
+              : `Sin resultados para "${escape(_backupBusqueda)}"`}
+          </div>
+        ` : `
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${filtrados.map((a, idx) => {
+              const fecha = new Date(a.modificado).toLocaleString('es-ES');
+              const tamKB = (a.tamano / 1024).toFixed(0);
+              return `
+                <div class="backup-fila">
+                  <div class="backup-icono">📄</div>
+                  <div class="backup-info">
+                    <div class="backup-nombre">${escape(a.nombre)}</div>
+                    <div class="backup-meta">${fecha} · ${tamKB} KB</div>
+                  </div>
+                  <div class="backup-acciones">
+                    <button class="btn btn-secondary btn-pequeno" onclick="verPdfBackup(${idx})" title="Ver">👁️</button>
+                    <button class="btn btn-secondary btn-pequeno" onclick="enviarEmailPdfBackup(${idx})" title="Enviar por email">📧</button>
+                    <button class="btn btn-secondary btn-pequeno" onclick="compartirPdfBackup(${idx})" title="Compartir">↗️</button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `}
+      </div>
+    </div>
+  `;
+
+  const $b = document.getElementById('backup-busca');
+  if ($b) {
+    let t;
+    $b.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        _backupBusqueda = $b.value;
+        pintarListaPedidosBackup();
+      }, 200);
+    });
+  }
+}
+
+async function configurarCarpetaYRecargar() {
+  const h = await configurarCarpetaBackup();
+  if (h) {
+    renderMisPedidosGuardados();
+  }
+}
+
+async function verPdfBackup(idx) {
+  const a = _backupArchivos[idx];
+  if (!a) return;
+  try {
+    const file = await a.handle.getFile();
+    const url = URL.createObjectURL(file);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch (e) {
+    alert('Error abriendo PDF: ' + e.message);
+  }
+}
+
+async function compartirPdfBackup(idx) {
+  const a = _backupArchivos[idx];
+  if (!a) return;
+  try {
+    const file = await a.handle.getFile();
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        files: [file],
+        title: a.nombre,
+        text: 'Pedido ' + a.nombre
+      });
+    } else {
+      alert('Tu navegador no soporta compartir archivos. Usa el botón Email o Ver.');
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') alert('Error compartiendo: ' + e.message);
+  }
+}
+
+async function enviarEmailPdfBackup(idx) {
+  const a = _backupArchivos[idx];
+  if (!a) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width:520px;width:95vw">
+      <div class="modal-header">
+        <h3 style="margin:0">📧 Enviar pedido por email</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p style="font-size:13px;color:#6b7280;margin:0 0 12px 0">
+        Archivo: <b>${escape(a.nombre)}</b>
+      </p>
+      <div class="form-group">
+        <label>Destinatario (email)</label>
+        <input type="email" id="bk-email-dest" placeholder="cliente@ejemplo.com">
+      </div>
+      <div class="form-group">
+        <label>Asunto</label>
+        <input type="text" id="bk-email-asunto" value="Pedido LOMHIFAR · ${escape(a.nombre.replace(/\.pdf$/, ''))}">
+      </div>
+      <div class="form-group">
+        <label>Mensaje</label>
+        <textarea id="bk-email-msg" rows="4" placeholder="Mensaje opcional…">Hola,&#10;&#10;Adjunto el pedido en PDF.&#10;&#10;Un saludo.</textarea>
+      </div>
+      <div id="bk-email-msg-out"></div>
+      <div class="modal-acciones">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="bk-email-btn" onclick="enviarEmailPdfBackupConfirmar(${idx})">📧 Enviar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function enviarEmailPdfBackupConfirmar(idx) {
+  const a = _backupArchivos[idx];
+  if (!a) return;
+  const dest = (document.getElementById('bk-email-dest')?.value || '').trim();
+  const asunto = (document.getElementById('bk-email-asunto')?.value || '').trim();
+  const cuerpo = (document.getElementById('bk-email-msg')?.value || '').trim();
+  const $out = document.getElementById('bk-email-msg-out');
+  const $btn = document.getElementById('bk-email-btn');
+  if (!dest || !dest.includes('@')) {
+    $out.innerHTML = `<div class="error-msg">Email destinatario no válido</div>`;
+    return;
+  }
+  $btn.disabled = true;
+  $btn.textContent = 'Enviando…';
+  try {
+    const file = await a.handle.getFile();
+    const fd = new FormData();
+    fd.append('destinatario', dest);
+    fd.append('asunto', asunto);
+    fd.append('cuerpo', cuerpo);
+    fd.append('adjunto', file, a.nombre);
+    const token = localStorage.getItem('cpv2_token') || '';
+    const resp = await fetch('/api/backup/enviar-email', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token },
+      body: fd
+    });
+    const json = await resp.json();
+    if (!resp.ok || !json.success) throw new Error(json.error || 'Error ' + resp.status);
+    $out.innerHTML = `<div class="exito-msg">✅ Email enviado correctamente</div>`;
+    setTimeout(() => document.querySelector('.modal-bg')?.remove(), 1500);
+  } catch (e) {
+    $out.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`;
+    $btn.disabled = false;
+    $btn.textContent = '📧 Enviar';
   }
 }
 

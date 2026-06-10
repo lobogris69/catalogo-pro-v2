@@ -4136,3 +4136,52 @@ body.con-banner-update {
   color: #fff !important;
   border-color: #cc007a !important;
 }
+
+/* ============================================================================
+   BACKUP LOCAL DE PEDIDOS - lista
+   ============================================================================ */
+.backup-fila {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  transition: border-color 0.15s;
+}
+.backup-fila:hover {
+  border-color: #cc007a40;
+  background: #fefcfd;
+}
+.backup-icono {
+  font-size: 26px;
+  flex-shrink: 0;
+}
+.backup-info {
+  flex: 1;
+  min-width: 0;
+}
+.backup-nombre {
+  font-weight: 600;
+  font-size: 14px;
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.backup-meta {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+.backup-acciones {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  .backup-meta { font-size: 10px; }
+  .backup-acciones { gap: 2px; }
+  .backup-acciones button { padding: 6px 8px; font-size: 11px; }
+}
