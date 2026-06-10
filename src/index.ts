@@ -687,7 +687,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'ux-ver-visita-admin-10jun',
+    build: 'admin-sin-visitas-10jun',
     service: 'CatalogPRO v2'
   });
 });
@@ -2817,6 +2817,11 @@ function isEffectiveSales(req: AuthRequest): boolean {
 // Body: { client_id, catalog_id }
 app.post('/api/visits/start', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
+    // Admin real (sin impersonar) NO puede hacer visitas: bloqueado a nivel backend
+    if (req.user?.role === 'admin') {
+      res.status(403).json({ success: false, error: 'Como administrador no puedes hacer visitas. Usa "Ver como" o entra con cuenta comercial.' });
+      return;
+    }
     const { client_id, catalog_id } = req.body;
     if (!client_id || !catalog_id) {
       res.status(400).json({ success: false, error: 'client_id y catalog_id obligatorios' });

@@ -5969,7 +5969,7 @@ function pintarPlanningResultado() {
             🕐 Última visita: <b>${escape(fechaUlt)}</b> · ${escape(infoTiempo)}
           </div>
         </div>
-        <button class="btn btn-primary btn-pequeno planning-btn-visita" onclick="event.stopPropagation();iniciarVisitaParaCliente(${c.id})" title="Empezar visita">🛒</button>
+        ${(esAdminReal() && !impersonating) ? '' : `<button class="btn btn-primary btn-pequeno planning-btn-visita" onclick="event.stopPropagation();iniciarVisitaParaCliente(${c.id})" title="Empezar visita">🛒</button>`}
       </div>
     `;
   }).join('');
@@ -6193,7 +6193,10 @@ async function renderDetalleCliente(id) {
             </div>
           </div>
           <div style="display:flex; gap:6px; align-self:flex-start; flex-wrap:wrap; align-items:center">
-            <button class="btn btn-primary" onclick="iniciarVisitaParaCliente(${c.id})">🛒 Empezar visita</button>${ayuda('Inicia una visita comercial al cliente. Abre el visor del catálogo para que añadas productos pulsando las zonas clicables o anotando. Al cerrar la visita, se envía un email a la oficina con el pedido y opcional al cliente.', 'izq')}
+            ${esAdminReal() && !impersonating
+              ? `<div style="font-size:12px;color:#9ca3af;font-style:italic;max-width:260px">Como administrador no puedes hacer visitas. Usa <b>"Ver como"</b> para impersonar a un comercial, o entra con tu cuenta comercial.</div>`
+              : `<button class="btn btn-primary" onclick="iniciarVisitaParaCliente(${c.id})">🛒 Empezar visita</button>${ayuda('Inicia una visita comercial al cliente. Abre el visor del catálogo para que añadas productos pulsando las zonas clicables o anotando. Al cerrar la visita, se envía un email a la oficina con el pedido y opcional al cliente.', 'izq')}`
+            }
           </div>
         </div>
 
@@ -6426,6 +6429,11 @@ function renderBloqueStatsCliente(s, esAdmin) {
 
 // ----- INICIAR VISITA DESDE FICHA DE CLIENTE -----
 async function iniciarVisitaParaCliente(clientId) {
+  // Admin real (sin impersonar) NO puede hacer visitas: usar "Ver como" o cuenta comercial
+  if (esAdminReal() && !impersonating) {
+    alert('Como administrador no puedes hacer visitas.\n\nUsa "Ver como" para impersonar a un comercial, o entra con tu cuenta comercial.');
+    return;
+  }
   // Si ya hay visita activa con OTRO cliente, mostrar modal informativo
   if (appState.visitaActiva && appState.visitaActiva.client_id !== clientId) {
     mostrarModalVisitaEnCurso();
