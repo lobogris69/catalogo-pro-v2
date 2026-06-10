@@ -687,7 +687,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     version: '2.0.0',
-    build: 'backup-local-pdfs-10jun',
+    build: 'fix-cats-editor-admin-10jun',
     service: 'CatalogPRO v2'
   });
 });
@@ -1030,6 +1030,25 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
         [id]
       );
       sheetsRows = r.rows;
+    }
+    // Enriquecer cada lámina con sus categorías asignadas (para mostrar chips en editor admin)
+    if (sheetsRows.length > 0) {
+      const sheetIds = sheetsRows.map((s: any) => s.id);
+      const catsR = await pool.query(`
+        SELECT sc.sheet_id, c.id, c.nombre, c.color
+        FROM sheet_categorias sc
+        INNER JOIN categorias c ON c.id = sc.categoria_id
+        WHERE sc.sheet_id = ANY($1::int[])
+        ORDER BY c.orden ASC, c.nombre ASC
+      `, [sheetIds]);
+      const catsBySheet: { [key: number]: any[] } = {};
+      for (const row of catsR.rows) {
+        if (!catsBySheet[row.sheet_id]) catsBySheet[row.sheet_id] = [];
+        catsBySheet[row.sheet_id].push({ id: row.id, nombre: row.nombre, color: row.color });
+      }
+      for (const s of sheetsRows) {
+        s.categorias = catsBySheet[s.id] || [];
+      }
     }
     res.json({ success: true, catalog: cat, sheets: sheetsRows });
   } catch (e) {
