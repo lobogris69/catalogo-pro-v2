@@ -81,10 +81,26 @@ async function generarMiniatura(rutaOriginalAbs: string, nombreOriginal: string)
   }
 }
 
-// Postgres
+// ============================================================================
+// POSTGRES POOL (resiliente)
+// - max 10 conexiones simultaneas (suficiente para nuestro trafico)
+// - idle timeout 30s para soltar conexiones inactivas
+// - connection timeout 10s al levantar (no se cuelga eternamente al arrancar)
+// - error handler: si una conexion idle muere (red, reinicio Postgres),
+//   se LOGUEA pero el proceso NO crashea. La proxima query la sustituye.
+// ============================================================================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  max: 10,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+});
+// Sin este handler, un error en una conexion idle CRASHEA el proceso entero.
+// Con el, lo logueamos y seguimos: el pool descartara esa conexion y abrira
+// otra cuando la necesite. Patron oficial recomendado por node-postgres.
+pool.on('error', (err) => {
+  console.error('[pg-pool] error en conexion idle (no crashea):', err.message);
 });
 
 // ============================================================================
@@ -790,13 +806,33 @@ async function initDB(): Promise<void> {
 // ============================================================================
 // HEALTH
 // ============================================================================
-app.get('/api/health', (req, res) => {
-  res.json({
-    ok: true,
-    version: '2.0.0',
-    build: 'admin-sin-visitas-10jun',
-    service: 'CatalogPRO v2'
-  });
+// /api/health verifica que la BD responde. Si no responde devuelve 503,
+// Railway lo detecta como unhealthy y reinicia el contenedor.
+// Timeout 3s para no quedarse colgado si BD esta saturada.
+app.get('/api/health', async (_req, res) => {
+  try {
+    const t0 = Date.now();
+    // SELECT 1 con timeout (statement_timeout en query)
+    await Promise.race([
+      pool.query('SELECT 1'),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('db timeout 3s')), 3000))
+    ]);
+    res.json({
+      ok: true,
+      version: '2.0.0',
+      build: 'admin-sin-visitas-10jun',
+      service: 'CatalogPRO v2',
+      db_ms: Date.now() - t0,
+      uptime_s: Math.round(process.uptime()),
+      memory_MB: Math.round(process.memoryUsage().rss / 1024 / 1024)
+    });
+  } catch (e) {
+    res.status(503).json({
+      ok: false,
+      error: 'db_unreachable',
+      detail: (e as Error).message
+    });
+  }
 });
 
 // ============================================================================
@@ -6852,12 +6888,78 @@ app.get('*', (req, res) => {
 });
 
 // ============================================================================
-// ARRANQUE
+// ERROR HANDLER GLOBAL DE EXPRESS (debe ir DESPUES de todas las rutas)
+// Si alguna ruta async lanza una excepcion no capturada, Express por defecto
+// la silencia y deja la peticion colgada hasta timeout. Este middleware la
+// captura, devuelve JSON limpio al cliente y loguea el stack completo.
 // ============================================================================
+app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+  console.error('[express-error]', req.method, req.path, '-', err?.message || err);
+  if (err?.stack) console.error(err.stack);
+  if (res.headersSent) return;
+  res.status(500).json({
+    success: false,
+    error: 'Error interno del servidor',
+    detail: process.env.NODE_ENV === 'production' ? undefined : String(err?.message || err)
+  });
+});
+
+// ============================================================================
+// PROCESS-LEVEL CRASH GUARDS
+// uncaughtException: error sincrono no capturado en ningun try/catch.
+// unhandledRejection: promise rechazada sin .catch().
+// Estrategia: log detallado + exit(1). Railway re-arranca el contenedor
+// automaticamente cuando el proceso sale con codigo distinto de 0. Esto es
+// PREFERIBLE a seguir vivo en estado corrupto (puede tener memoria leakeada
+// o pool roto). Recuperacion rapida (~3-5s) y consistente.
+// ============================================================================
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL uncaughtException]', err?.message, err?.stack);
+  // Dar 1s a que los logs floten antes de salir
+  setTimeout(() => process.exit(1), 1000).unref();
+});
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[FATAL unhandledRejection]', reason?.message || reason, reason?.stack);
+  setTimeout(() => process.exit(1), 1000).unref();
+});
+
+// ============================================================================
+// ARRANQUE + GRACEFUL SHUTDOWN
+// ============================================================================
+let server: import('http').Server | null = null;
+let shuttingDown = false;
+
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] Recibido ${signal}, cerrando ordenadamente...`);
+  // 1) Dejar de aceptar nuevas conexiones HTTP
+  if (server) {
+    await new Promise<void>(resolve => server!.close(() => resolve()));
+    console.log('[shutdown] HTTP server cerrado');
+  }
+  // 2) Cerrar pool de PostgreSQL (espera queries en vuelo)
+  try {
+    await pool.end();
+    console.log('[shutdown] Pool PG cerrado');
+  } catch (e) {
+    console.error('[shutdown] Error cerrando pool:', (e as Error).message);
+  }
+  console.log('[shutdown] Listo. Bye.');
+  process.exit(0);
+}
+
+// Railway envia SIGTERM al redeployar; tambien manejamos SIGINT (Ctrl+C local)
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 initDB().then(() => {
-  app.listen(PORT, '0.0.0.0', () => {
+  server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ CatalogPRO v2 escuchando en puerto ${PORT}`);
   });
+  // Keep-alive timeout > 60s para no cortar peticiones largas (PDF, ZIP)
+  server.keepAliveTimeout = 120_000;
+  server.headersTimeout = 125_000;
 }).catch(e => {
   console.error('❌ Error fatal al arrancar - DETALLE COMPLETO:');
   console.error('  Tipo:', typeof e);
@@ -6867,5 +6969,6 @@ initDB().then(() => {
     console.error('  Mensaje:', e.message);
     console.error('  Stack:', e.stack);
   }
+  // Exit con codigo 1 -> Railway re-arranca el contenedor automaticamente
   process.exit(1);
 });
