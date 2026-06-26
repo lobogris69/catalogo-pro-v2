@@ -1,6 +1,8 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import compression from 'compression';
+import rateLimit from 'express-rate-limit';
 import { Pool } from 'pg';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -20,6 +22,9 @@ dotenv.config();
 // CONFIGURACION
 // ============================================================================
 const app = express();
+// Railway esta detras de un proxy. Confiar en X-Forwarded-For (1 hop) para
+// que req.ip devuelva la IP real del cliente (necesario para rate-limit).
+app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'cambia-este-secreto-en-produccion';
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/app/data/uploads';
@@ -90,6 +95,18 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 app.use(cors());
+// Compresion HTTP gzip/brotli para respuestas de texto (JS, CSS, JSON, HTML).
+// Las imagenes ya estan comprimidas (PNG/JPG/WebP) -> filter las salta.
+app.use(compression({
+  threshold: 1024, // no comprimir respuestas <1KB
+  filter: (req, res) => {
+    const ct = res.getHeader('content-type');
+    if (typeof ct === 'string' && /(image|video|application\/octet-stream|application\/pdf|application\/zip)/i.test(ct)) {
+      return false;
+    }
+    return compression.filter(req, res);
+  }
+}));
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
@@ -342,6 +359,18 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_sheets_catalog ON sheets(catalog_id);
       CREATE INDEX IF NOT EXISTS idx_sheets_orden ON sheets(catalog_id, orden);
+      -- Indices clave para visits y annotations (faltaban; queries de
+      -- "mis visitas", "historial cliente" y "anotaciones visita" hacian
+      -- full table scan).
+      CREATE INDEX IF NOT EXISTS idx_visits_client ON visits(client_id);
+      CREATE INDEX IF NOT EXISTS idx_visits_user ON visits(user_id);
+      CREATE INDEX IF NOT EXISTS idx_visits_status ON visits(status);
+      CREATE INDEX IF NOT EXISTS idx_visits_user_created ON visits(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_annotations_visit ON annotations(visit_id);
+      CREATE INDEX IF NOT EXISTS idx_annotations_sheet ON annotations(sheet_id);
+      -- Assignments: UNIQUE(user_id, catalog_id) ya da indice compuesto;
+      -- anadir uno por catalog_id para "que comerciales tiene este catalogo"
+      CREATE INDEX IF NOT EXISTS idx_assignments_catalog ON catalog_assignments(catalog_id);
 
       -- FASE 2.b': ZONAS CLICABLES sobre láminas (admin las dibuja, comercial las pulsa)
       -- Coordenadas en PORCENTAJE (0-100) respecto al ancho/alto de la imagen,
@@ -773,7 +802,20 @@ app.get('/api/health', (req, res) => {
 // ============================================================================
 // AUTH
 // ============================================================================
-app.post('/api/auth/login', async (req: Request, res: Response) => {
+// Rate limit del login: max 10 intentos por IP cada 15 min. Para evitar
+// fuerza bruta sobre el endpoint mas sensible. No bloquea a un comercial
+// real (que normalmente loguea 1-2 veces por dia desde la misma IP).
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Demasiados intentos de login. Espera 15 minutos.' },
+  // Solo cuenta intentos fallidos (no penalizar logins legitimos repetidos)
+  skipSuccessfulRequests: true
+});
+
+app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
