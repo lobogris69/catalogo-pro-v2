@@ -644,7 +644,7 @@ async function renderEditorCatalogo(id) {
                 <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${idx + 1}" ${esAdmin ? 'draggable="true"' : ''}>
                   ${esAdmin ? `<div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>` : ''}
                   <div class="lamina-numero">${idx + 1}</div>
-                  <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
+                  <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
                     ${catsChips ? `<div class="lamina-cats">${catsChips}</div>` : ''}
@@ -868,7 +868,7 @@ function pintarEditorExpress() {
                            ${seleccionada ? 'checked' : ''}
                            title="${yaEsta ? 'Ya está en el Express' : 'Seleccionar para añadir'}">
                     <div class="lamina-numero" style="font-size:11px">${s.orden}</div>
-                    <img src="${escape(s.imagen_path)}" class="lamina-mini" alt=""
+                    <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async"
                          onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${s.orden})">
                     <div class="lamina-info">
                       <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
@@ -898,7 +898,7 @@ function pintarEditorExpress() {
                 <div class="express-fila lamina-fila" data-id="${s.id}" draggable="true">
                   <div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>
                   <div class="lamina-numero">${idx + 1}</div>
-                  <img src="${escape(s.imagen_path)}" class="lamina-mini" alt=""
+                  <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async"
                        onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
@@ -2471,6 +2471,21 @@ async function renderVisorComercial(catalogId) {
 // I.2: flag global del visor offline
 let _visorModoOffline = false;
 
+// I.3: precarga de laminas vecinas (anterior, siguiente, +2) para navegacion instantanea
+// Solo crea Image() en memoria; el navegador la descarga en background y la cachea.
+function precargarVecinasVisor(sheets, idx) {
+  if (!Array.isArray(sheets) || sheets.length === 0) return;
+  [idx - 1, idx + 1, idx + 2].forEach(i => {
+    if (i >= 0 && i < sheets.length && sheets[i] && sheets[i].imagen_path) {
+      try {
+        const img = new Image();
+        img.decoding = 'async';
+        img.src = sheets[i].imagen_path;
+      } catch (_) {}
+    }
+  });
+}
+
 function pintarVisor() {
   const $v = document.getElementById('vista-contenido');
   const totalReal = _visorSheets.length;
@@ -2623,6 +2638,9 @@ function pintarPresentacion(visibles) {
               <span class="visor-pin-icon">${icon}</span>
             </button>`;
     }).join('');
+
+  // Precargar laminas vecinas para que el deslizar siguiente/anterior sea instantaneo
+  precargarVecinasVisor(visibles, appState.visorIndice);
 
   return `
     <div class="visor-presentacion">

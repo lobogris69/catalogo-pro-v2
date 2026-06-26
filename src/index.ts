@@ -48,8 +48,17 @@ app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
 // Servir frontend estatico
 app.use(express.static(FRONTEND_DIR));
-// Servir uploads
-app.use('/uploads', express.static(UPLOADS_DIR));
+// Servir uploads con cache agresivo (los nombres incluyen timestamp/hash, son immutable)
+// Una vez que el navegador descarga una lamina, no la vuelve a pedir durante 1 ano.
+app.use('/uploads', express.static(UPLOADS_DIR, {
+  maxAge: '365d',
+  immutable: true,
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  }
+}));
 
 // ============================================================================
 // AUTH MIDDLEWARE
