@@ -2284,6 +2284,10 @@ app.get('/api/clients/:id', verifyToken, async (req: AuthRequest, res: Response)
   try {
     if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
     const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ success: false, error: 'ID de cliente invalido' });
+      return;
+    }
     const r = await pool.query('SELECT * FROM clients WHERE id = $1', [id]);
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Cliente no encontrado' });
@@ -3995,6 +3999,10 @@ app.get('/api/map/clients', verifyToken, async (req: AuthRequest, res: Response)
 app.get('/api/visits/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ success: false, error: 'ID de visita invalido' });
+      return;
+    }
     const userId = effectiveUserId(req);
     const v = await pool.query(`
       SELECT v.*, c.razon_social AS cliente_nombre, cat.name AS catalog_nombre, u.name AS comercial_nombre
