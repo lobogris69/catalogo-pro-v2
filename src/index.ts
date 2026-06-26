@@ -39,6 +39,23 @@ if (!fs.existsSync(THUMBS_DIR)) {
 // MINIATURAS (sharp) - se usan en listas/mosaicos. El PNG original se mantiene
 // intacto para el visor a pantalla completa donde se necesita maxima calidad.
 // ============================================================================
+// Borra un archivo de /uploads/ de forma segura (no lanza si no existe o falla).
+// Acepta tanto rutas web ("/uploads/abc.jpg") como solo el filename.
+function borrarUploadSeguro(rutaWeb: string | null | undefined): void {
+  if (!rutaWeb) return;
+  try {
+    let rel = String(rutaWeb);
+    if (rel.startsWith('/uploads/')) rel = rel.substring('/uploads/'.length);
+    else if (rel.startsWith('uploads/')) rel = rel.substring('uploads/'.length);
+    const abs = path.join(UPLOADS_DIR, rel);
+    // Sanity check: que el path resuelto este DENTRO de UPLOADS_DIR (evitar ../../etc/passwd)
+    if (!abs.startsWith(UPLOADS_DIR)) return;
+    if (fs.existsSync(abs)) fs.unlinkSync(abs);
+  } catch (e) {
+    console.warn('[borrarUploadSeguro] falla borrando ' + rutaWeb + ':', (e as Error).message);
+  }
+}
+
 async function generarMiniatura(rutaOriginalAbs: string, nombreOriginal: string): Promise<string | null> {
   try {
     if (!fs.existsSync(rutaOriginalAbs)) return null;
@@ -89,6 +106,28 @@ app.use('/uploads', express.static(UPLOADS_DIR, {
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   }
 }));
+
+// ============================================================================
+// PARAM VALIDATION (Express app.param)
+// Valida AUTOMATICAMENTE que cualquier :id, :cid, :sid, :uid, :sheetId, :zoneId,
+// :versionId, :versionNumber en la ruta sea un entero positivo. Si no, responde
+// 400 con mensaje limpio (evita el SQL error 500 "invalid input syntax for
+// type integer: NaN" cuando alguien pide /api/clients/count u otros paths con
+// texto donde la app espera un numero).
+// ============================================================================
+const validateNumericParam = (paramName: string) => (
+  req: Request, res: Response, next: NextFunction, value: string
+): void => {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0 || n > Number.MAX_SAFE_INTEGER) {
+    res.status(400).json({ success: false, error: `Parametro ${paramName} invalido (debe ser entero positivo)` });
+    return;
+  }
+  next();
+};
+['id', 'cid', 'sid', 'uid', 'sheetId', 'zoneId', 'versionId', 'versionNumber'].forEach(name => {
+  app.param(name, validateNumericParam(name));
+});
 
 // ============================================================================
 // AUTH MIDDLEWARE
@@ -2038,6 +2077,11 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
       res.status(400).json({ success: false, error: 'No se ha subido ninguna imagen' });
       return;
     }
+    // Capturar paths antiguos para borrar tras commit
+    const oldR = await pool.query('SELECT imagen_path, miniatura_path FROM sheets WHERE id=$1', [id]);
+    const oldImagen = oldR.rows[0]?.imagen_path;
+    const oldMini = oldR.rows[0]?.miniatura_path;
+
     const nuevoPath = '/uploads/' + req.file.filename;
     // Regenerar miniatura tras sustituir imagen
     const nuevaMini = await generarMiniatura(req.file.path, req.file.filename);
@@ -2049,6 +2093,9 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
       res.status(404).json({ success: false, error: 'Lamina no encontrada' });
       return;
     }
+    // Borrar archivos antiguos del disco (no bloquea respuesta si falla)
+    borrarUploadSeguro(oldImagen);
+    borrarUploadSeguro(oldMini);
     res.json({ success: true, sheet: r.rows[0] });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
@@ -2059,11 +2106,14 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
 app.delete('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const r = await pool.query('DELETE FROM sheets WHERE id = $1 RETURNING *', [id]);
+    const r = await pool.query('DELETE FROM sheets WHERE id = $1 RETURNING imagen_path, miniatura_path', [id]);
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Lamina no encontrada' });
       return;
     }
+    // Limpiar archivos huerfanos en disco
+    borrarUploadSeguro(r.rows[0].imagen_path);
+    borrarUploadSeguro(r.rows[0].miniatura_path);
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
@@ -2284,10 +2334,6 @@ app.get('/api/clients/:id', verifyToken, async (req: AuthRequest, res: Response)
   try {
     if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
     const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0) {
-      res.status(400).json({ success: false, error: 'ID de cliente invalido' });
-      return;
-    }
     const r = await pool.query('SELECT * FROM clients WHERE id = $1', [id]);
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Cliente no encontrado' });
@@ -3999,10 +4045,6 @@ app.get('/api/map/clients', verifyToken, async (req: AuthRequest, res: Response)
 app.get('/api/visits/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0) {
-      res.status(400).json({ success: false, error: 'ID de visita invalido' });
-      return;
-    }
     const userId = effectiveUserId(req);
     const v = await pool.query(`
       SELECT v.*, c.razon_social AS cliente_nombre, cat.name AS catalog_nombre, u.name AS comercial_nombre
