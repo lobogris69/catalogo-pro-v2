@@ -6789,8 +6789,23 @@ async function notificarFormacion(formacionId: number, accion: 'nueva' | 'actual
 
 // ============================================================================
 // FRONTEND FALLBACK (DEBE ser el último GET, después de todos los /api/*)
+// Solo sirve index.html para rutas tipo "SPA" (sin extension o html).
+// Para /api/* y /uploads/* responde 404 limpio en lugar de devolver HTML 200
+// (eso confundia al navegador: al pedir una imagen huerfana recibia HTML
+// y la mostraba como broken image).
 // ============================================================================
 app.get('*', (req, res) => {
+  const url = req.path;
+  if (url.startsWith('/api/') || url.startsWith('/uploads/')) {
+    res.status(404).json({ success: false, error: 'Recurso no encontrado' });
+    return;
+  }
+  // Si pide un archivo con extension reconocible (.css/.js/.png/etc) que no existe,
+  // 404 en vez de devolver el HTML del SPA (que generaria errores raros).
+  if (/\.[a-z0-9]{2,5}$/i.test(url) && !url.endsWith('.html')) {
+    res.status(404).send('Not found');
+    return;
+  }
   res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
 });
 
