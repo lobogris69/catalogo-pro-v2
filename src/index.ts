@@ -10,6 +10,7 @@ import fs from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import dotenv from 'dotenv';
+import sharp from 'sharp';
 
 const execAsync = promisify(exec);
 
@@ -27,6 +28,35 @@ const FRONTEND_DIR = path.join(__dirname, 'public');
 // Crear directorio de uploads si no existe
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+// Carpeta dedicada a miniaturas (~400px WebP) generadas con sharp
+const THUMBS_DIR = path.join(UPLOADS_DIR, 'thumbs');
+if (!fs.existsSync(THUMBS_DIR)) {
+  fs.mkdirSync(THUMBS_DIR, { recursive: true });
+}
+
+// ============================================================================
+// MINIATURAS (sharp) - se usan en listas/mosaicos. El PNG original se mantiene
+// intacto para el visor a pantalla completa donde se necesita maxima calidad.
+// ============================================================================
+async function generarMiniatura(rutaOriginalAbs: string, nombreOriginal: string): Promise<string | null> {
+  try {
+    if (!fs.existsSync(rutaOriginalAbs)) return null;
+    // Nombre del thumb: mismo basename pero forzado a .webp
+    const base = path.parse(nombreOriginal).name; // sin extension
+    const thumbName = base + '.webp';
+    const thumbAbs = path.join(THUMBS_DIR, thumbName);
+    // Si ya existe (regeneracion), sobreescribimos
+    await sharp(rutaOriginalAbs)
+      .resize({ width: 400, height: 600, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 78 })
+      .toFile(thumbAbs);
+    return '/uploads/thumbs/' + thumbName;
+  } catch (e) {
+    // Si sharp falla (formato raro, archivo corrupto), seguimos sin miniatura
+    console.warn('[thumbs] generarMiniatura falló para ' + nombreOriginal + ':', (e as Error).message);
+    return null;
+  }
 }
 
 // Postgres
@@ -1638,10 +1668,13 @@ app.post('/api/catalogs/:id/sheets', verifyToken, requireAdmin, upload.single('i
     const notas = (req.body.notas || '').trim();
     const tags = (req.body.tags || '').trim();
 
+    // Generar miniatura WebP ~400px (no bloquea si falla)
+    const miniaturaPath = await generarMiniatura(req.file.path, req.file.filename);
+
     const r = await pool.query(
-      `INSERT INTO sheets (catalog_id, orden, titulo, notas, imagen_path, tags)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [catalogId, orden, titulo, notas, imagenPath, tags]
+      `INSERT INTO sheets (catalog_id, orden, titulo, notas, imagen_path, miniatura_path, tags)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [catalogId, orden, titulo, notas, imagenPath, miniaturaPath, tags]
     );
     await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
     res.status(201).json({ success: true, sheet: r.rows[0] });
@@ -1707,10 +1740,12 @@ app.post('/api/catalogs/:id/sheets/bulk', verifyToken, requireAdmin,
         const imagenPath = '/uploads/' + f.filename;
         // Título: el nombre del archivo sin extensión (limpio)
         const tituloAuto = f.originalname.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || `Lámina ${ordenSiguiente}`;
+        // Generar miniatura WebP (si falla queda null y se usa imagen_path)
+        const miniaturaPath = await generarMiniatura(f.path, f.filename);
         const r = await pool.query(
-          `INSERT INTO sheets (catalog_id, orden, titulo, notas, imagen_path, tags)
-           VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-          [catalogId, ordenSiguiente, tituloAuto, '', imagenPath, '']
+          `INSERT INTO sheets (catalog_id, orden, titulo, notas, imagen_path, miniatura_path, tags)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+          [catalogId, ordenSiguiente, tituloAuto, '', imagenPath, miniaturaPath, '']
         );
         insertadas.push(r.rows[0]);
         ordenSiguiente++;
@@ -2004,9 +2039,11 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
       return;
     }
     const nuevoPath = '/uploads/' + req.file.filename;
+    // Regenerar miniatura tras sustituir imagen
+    const nuevaMini = await generarMiniatura(req.file.path, req.file.filename);
     const r = await pool.query(
-      `UPDATE sheets SET imagen_path=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
-      [nuevoPath, id]
+      `UPDATE sheets SET imagen_path=$1, miniatura_path=$2, updated_at=NOW() WHERE id=$3 RETURNING *`,
+      [nuevoPath, nuevaMini, id]
     );
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Lamina no encontrada' });
@@ -2149,16 +2186,18 @@ app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadP
 
     console.log(`[PDF] ${archivos.length} paginas generadas`);
 
-    // Insertar cada pagina como una lamina en BD
+    // Insertar cada pagina como una lamina en BD (+ generar miniatura)
     const laminasCreadas = [];
     for (let i = 0; i < archivos.length; i++) {
       const archivo = archivos[i];
       const imagenPath = '/uploads/' + archivo;
       const titulo = `Lamina ${ordenSiguiente}`;
+      const rutaAbs = path.join(UPLOADS_DIR, archivo);
+      const miniaturaPath = await generarMiniatura(rutaAbs, archivo);
       const r = await pool.query(
-        `INSERT INTO sheets (catalog_id, orden, titulo, imagen_path)
-         VALUES ($1,$2,$3,$4) RETURNING id, orden, titulo, imagen_path`,
-        [catalogId, ordenSiguiente, titulo, imagenPath]
+        `INSERT INTO sheets (catalog_id, orden, titulo, imagen_path, miniatura_path)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id, orden, titulo, imagen_path, miniatura_path`,
+        [catalogId, ordenSiguiente, titulo, imagenPath, miniaturaPath]
       );
       laminasCreadas.push(r.rows[0]);
       ordenSiguiente++;
@@ -3576,6 +3615,56 @@ app.post('/api/geocode-cancel', verifyToken, requireRealAdmin, async (req: AuthR
 // NO toca: productos, clientes, usuarios, configuración de email, plantillas.
 // Pensado para que Fernando arranque de cero el catálogo cuando termine las
 // pruebas, sin perder los 10.607 productos ni los clientes importados.
+// Backfill de miniaturas: recorre las laminas sin miniatura_path y genera la WebP.
+// Idempotente, se puede llamar las veces que haga falta. Devuelve progreso al final.
+// Limit opcional (?limit=50) para procesar en lotes y no exceder el timeout HTTP.
+app.post('/api/admin/backfill-thumbnails', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 100));
+    const pending = await pool.query(
+      `SELECT id, imagen_path FROM sheets
+       WHERE (miniatura_path IS NULL OR miniatura_path = '')
+         AND imagen_path IS NOT NULL
+       ORDER BY id
+       LIMIT $1`,
+      [limit]
+    );
+    let ok = 0, ko = 0;
+    const errores: any[] = [];
+    for (const row of pending.rows) {
+      let rel = row.imagen_path as string;
+      if (rel.startsWith('/uploads/')) rel = rel.substring('/uploads/'.length);
+      else if (rel.startsWith('uploads/')) rel = rel.substring('uploads/'.length);
+      const rutaAbs = path.join(UPLOADS_DIR, rel);
+      const filename = path.basename(rel);
+      const mini = await generarMiniatura(rutaAbs, filename);
+      if (mini) {
+        await pool.query('UPDATE sheets SET miniatura_path=$1 WHERE id=$2', [mini, row.id]);
+        ok++;
+      } else {
+        ko++;
+        errores.push({ sheet_id: row.id, imagen_path: row.imagen_path });
+      }
+    }
+    // Cuantas quedan
+    const restantesR = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM sheets
+       WHERE (miniatura_path IS NULL OR miniatura_path = '')
+         AND imagen_path IS NOT NULL`
+    );
+    res.json({
+      success: true,
+      procesadas: pending.rows.length,
+      generadas: ok,
+      fallidas: ko,
+      restantes: restantesR.rows[0].n,
+      errores: errores.slice(0, 10)
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
 app.get('/api/admin/limpiar-pruebas/preview', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const counts: any = {};

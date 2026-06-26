@@ -644,7 +644,7 @@ async function renderEditorCatalogo(id) {
                 <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${idx + 1}" ${esAdmin ? 'draggable="true"' : ''}>
                   ${esAdmin ? `<div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>` : ''}
                   <div class="lamina-numero">${idx + 1}</div>
-                  <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
+                  <img src="${escape(s.miniatura_path || s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
                     ${catsChips ? `<div class="lamina-cats">${catsChips}</div>` : ''}
@@ -868,7 +868,7 @@ function pintarEditorExpress() {
                            ${seleccionada ? 'checked' : ''}
                            title="${yaEsta ? 'Ya está en el Express' : 'Seleccionar para añadir'}">
                     <div class="lamina-numero" style="font-size:11px">${s.orden}</div>
-                    <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async"
+                    <img src="${escape(s.miniatura_path || s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async"
                          onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${s.orden})">
                     <div class="lamina-info">
                       <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
@@ -898,7 +898,7 @@ function pintarEditorExpress() {
                 <div class="express-fila lamina-fila" data-id="${s.id}" draggable="true">
                   <div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>
                   <div class="lamina-numero">${idx + 1}</div>
-                  <img src="${escape(s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async"
+                  <img src="${escape(s.miniatura_path || s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async"
                        onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
@@ -2733,7 +2733,7 @@ function pintarMosaico(visibles) {
         const anots = (appState.visitaActiva && _anotacionesVisita[s.id]) ? _anotacionesVisita[s.id].length : 0;
         return `
           <div class="visor-mosaico-celda" onclick="abrirLaminaDesdeMosaico(${idxOriginal})">
-            <img src="${escape(s.imagen_path)}" class="visor-mosaico-img" alt="" loading="lazy">
+            <img src="${escape(s.miniatura_path || s.imagen_path)}" class="visor-mosaico-img" alt="" loading="lazy" decoding="async">
             <div class="visor-mosaico-num">${numeroOriginal}</div>
             ${anots > 0 ? `<div class="visor-mosaico-anots" title="${anots} anotaciones">📝 ${anots}</div>` : ''}
             ${s.titulo ? `<div class="visor-mosaico-titulo">${escape(s.titulo)}</div>` : ''}
@@ -2906,7 +2906,7 @@ function engancharGestosPresentacion() {
       const dist = Math.hypot(dx, dy);
       const factor = dist / initialPinchDist;
       let nuevoZoom = zoomAlInicioPinch * factor;
-      nuevoZoom = Math.max(1, Math.min(4, nuevoZoom));
+      nuevoZoom = Math.max(1, Math.min(6, nuevoZoom));
       appState.visorZoom = nuevoZoom;
       // Si pasa a zoom 1 reseteamos pan
       if (nuevoZoom <= 1.05) {
@@ -3010,7 +3010,7 @@ function engancharGestosPresentacion() {
       e.preventDefault();
       const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
       let nuevoZoom = appState.visorZoom * factor;
-      nuevoZoom = Math.max(1, Math.min(4, nuevoZoom));
+      nuevoZoom = Math.max(1, Math.min(6, nuevoZoom));
       appState.visorZoom = nuevoZoom;
       if (nuevoZoom <= 1.05) {
         appState.visorPanX = 0;
@@ -10062,7 +10062,7 @@ function pintarMosaicoReorden() {
     card.innerHTML = `
       <input type="text" class="mosaico-num" value="${idx + 1}" title="Escribe la posición y pulsa Enter"
              inputmode="numeric" draggable="false" data-pos="${idx + 1}">
-      <img src="${escape(s.imagen_path)}" class="mosaico-img" alt="" loading="lazy"
+      <img src="${escape(s.miniatura_path || s.imagen_path)}" class="mosaico-img" alt="" loading="lazy" decoding="async"
            onerror="this.style.background='#374151'">
       <div class="mosaico-titulo">${escape(s.titulo || 'Sin título')}</div>
     `;

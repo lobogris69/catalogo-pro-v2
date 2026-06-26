@@ -893,6 +893,10 @@ html {
   width: 100%;
   transform-origin: center center;
   transition: transform 0.15s;
+  /* Aceleracion GPU para zoom/pan fluido en tablet */
+  will-change: transform;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 .visor-imagen {
   width: 100%;
@@ -900,6 +904,11 @@ html {
   display: block;
   border-radius: 8px;
   pointer-events: none;
+  /* Mantener nitidez en zoom alto (PNG 150 dpi con textos pequenos) */
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: high-quality;
+  /* GPU layer para zoom fluido */
+  transform: translateZ(0);
 }
 .visor-zoom-reset {
   position: absolute;
