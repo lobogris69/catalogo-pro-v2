@@ -695,20 +695,26 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_mega_catalog ON mega_backups(catalog_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mega_user ON mega_backups(destino_user_id, created_at DESC);
 
-      -- ===== MEGA SHARE LINKS (link permanente por comercial o /General/) =====
-      -- Compartir cada subcarpeta de cada catalogo era rechazado por MEGA
-      -- (rate-limit desde IPs de servidor). Nueva estrategia: compartir UNA
-      -- VEZ la carpeta raiz del comercial (o /General/). El link no cambia;
-      -- el comercial siempre entra al mismo sitio y ve todos SUS catalogos.
-      CREATE TABLE IF NOT EXISTS mega_share_links (
+      -- ===== MEGA FOLDERS (catalogo dinamico de carpetas raiz en MEGA) =====
+      -- Cada fila = una carpeta raiz existente en /CatalogPRO backup/ en MEGA.
+      -- El admin comparte la carpeta manualmente en MEGA y pega el URL aqui
+      -- (MEGA rate-limitea la generacion de share links via API).
+      -- user_id opcional: si esta puesto, el email del backup se envia a ese
+      -- comercial concreto. Si es NULL, la carpeta es "laboratorio" y el admin
+      -- decide manualmente a quien enviar el link (multi-destinatario).
+      CREATE TABLE IF NOT EXISTS mega_folders (
         id            SERIAL PRIMARY KEY,
-        tipo          VARCHAR(20) NOT NULL CHECK (tipo IN ('comercial','general')),
-        user_id       INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        mega_url      TEXT NOT NULL,
-        folder_name   VARCHAR(255) NOT NULL,
+        nombre        VARCHAR(200) NOT NULL UNIQUE,
+        mega_url      TEXT NOT NULL DEFAULT '',
+        user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        descripcion   VARCHAR(255),
+        orden         INTEGER DEFAULT 0,
+        is_active     BOOLEAN DEFAULT TRUE,
         created_at    TIMESTAMP DEFAULT NOW(),
-        UNIQUE(tipo, user_id)
+        updated_at    TIMESTAMP DEFAULT NOW()
       );
+      CREATE INDEX IF NOT EXISTS idx_mega_folders_orden ON mega_folders(orden, id);
+      CREATE INDEX IF NOT EXISTS idx_mega_folders_user ON mega_folders(user_id);
     `;
     await pool.query(schemaSQL);
 
@@ -3851,60 +3857,6 @@ app.post('/api/admin/backfill-thumbnails', verifyToken, requireRealAdmin, async 
 // devuelve nombre del usuario y espacio disponible.
 // ============================================================================
 // ============================================================================
-// MEGA SHARE LINK - link permanente por comercial (o /General/)
-// - Consulta cache en tabla mega_share_links
-// - Si no existe, asegura la carpeta en MEGA y genera share link
-// - Guarda para reutilizacion futura
-// ============================================================================
-async function obtenerOCrearShareLink(
-  tipo: 'comercial' | 'general',
-  userId: number | null,
-  userName: string
-): Promise<{ mega_url: string; folder_name: string; reutilizado: boolean }> {
-  // 1) Buscar en cache
-  const cached = await pool.query(
-    tipo === 'general'
-      ? `SELECT mega_url, folder_name FROM mega_share_links WHERE tipo = 'general'`
-      : `SELECT mega_url, folder_name FROM mega_share_links WHERE tipo = 'comercial' AND user_id = $1`,
-    tipo === 'general' ? [] : [userId]
-  );
-  if (cached.rows.length > 0 && cached.rows[0].mega_url) {
-    return {
-      mega_url: cached.rows[0].mega_url,
-      folder_name: cached.rows[0].folder_name,
-      reutilizado: true
-    };
-  }
-  // 2) No hay -> asegurar carpeta en MEGA
-  const storage = await getMegaStorage();
-  const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
-  let carpeta;
-  let folderName;
-  if (tipo === 'general') {
-    carpeta = await ensureFolder(rootCP, GENERAL_FOLDER);
-    folderName = GENERAL_FOLDER;
-  } else {
-    const comerciales = await ensureFolder(rootCP, COMERCIALES_FOLDER);
-    folderName = sanitizeName(userName);
-    carpeta = await ensureFolder(comerciales, folderName);
-  }
-  // 3) Generar share link con reintentos
-  const megaUrl = await shareFolderLink(carpeta);
-  // 4) Guardar (ON CONFLICT UPDATE por si otra request corrio en paralelo)
-  await pool.query(
-    tipo === 'general'
-      ? `INSERT INTO mega_share_links (tipo, user_id, mega_url, folder_name)
-         VALUES ('general', NULL, $1, $2)
-         ON CONFLICT (tipo, user_id) DO UPDATE SET mega_url = EXCLUDED.mega_url`
-      : `INSERT INTO mega_share_links (tipo, user_id, mega_url, folder_name)
-         VALUES ('comercial', $1, $2, $3)
-         ON CONFLICT (tipo, user_id) DO UPDATE SET mega_url = EXCLUDED.mega_url`,
-    tipo === 'general' ? [megaUrl, folderName] : [userId, megaUrl, folderName]
-  );
-  return { mega_url: megaUrl, folder_name: folderName, reutilizado: false };
-}
-
-// ============================================================================
 // MEGA BACKUP - jobs asincronos con progreso
 // ============================================================================
 // Los jobs viven en memoria. Un catalogo de 400 laminas puede tardar 10+ min
@@ -3922,15 +3874,16 @@ interface MegaJob {
   total_laminas: number;
   subidas: number;
   fallidas: number;
+  // Destinos = carpetas MEGA seleccionadas por el admin al lanzar el backup
   destinos: Array<{
-    tipo: 'comercial' | 'general';
-    user_id: number | null;
-    user_name: string;
-    folder_name: string; // nombre de la carpeta del catalogo (subcarpeta)
-    ruta_interna?: string; // ruta dentro de MEGA para localizar el catalogo desde el link raiz
-    mega_url?: string; // link publico a la carpeta RAIZ del comercial (o /General/)
+    mega_folder_id: number;
+    folder_nombre: string; // nombre de la carpeta raiz en MEGA (ej: "Catalogo Lomhifar Eva 2026")
+    user_id: number | null; // comercial destinatario del email si esta configurado
+    user_name: string | null;
+    mega_url: string; // link publico raiz (pegado por admin previamente)
+    subcarpeta_creada?: string; // ruta interna dentro de la carpeta raiz
     error?: string;
-    backup_id?: number; // id de la fila en tabla mega_backups
+    backup_id?: number;
   }>;
   error?: string;
   started_at: number;
@@ -3944,10 +3897,10 @@ function nuevoJobId(): string {
 }
 
 // Ejecuta el backup en background (no bloquea la respuesta HTTP inicial).
+// El admin selecciona previamente a que mega_folders subir (por checkbox).
 async function ejecutarBackupMega(job: MegaJob): Promise<void> {
   try {
     job.fase = 'Cargando datos del catalogo...';
-    // Cargar catalogo + laminas
     const catR = await pool.query('SELECT id, name, version FROM catalogs WHERE id = $1', [job.catalog_id]);
     if (catR.rows.length === 0) throw new Error('Catalogo no encontrado');
     const cat = catR.rows[0];
@@ -3959,33 +3912,14 @@ async function ejecutarBackupMega(job: MegaJob): Promise<void> {
     const sheets = sheetsR.rows;
     job.total_laminas = sheets.length;
     if (sheets.length === 0) throw new Error('El catalogo no tiene laminas');
+    if (!job.destinos || job.destinos.length === 0) {
+      throw new Error('No has seleccionado ninguna carpeta MEGA de destino');
+    }
 
-    // Determinar destinos: asignaciones + comerciales activos
-    const asignR = await pool.query(
-      `SELECT u.id, u.name FROM catalog_assignments ca
-       JOIN users u ON u.id = ca.user_id
-       WHERE ca.catalog_id = $1 AND u.role = 'sales' AND u.is_active = TRUE
-       ORDER BY u.name`,
-      [job.catalog_id]
-    );
-    const asignados = asignR.rows;
-    const activosR = await pool.query(
-      `SELECT COUNT(*)::int AS n FROM users WHERE role = 'sales' AND is_active = TRUE`
-    );
-    const totalActivos = activosR.rows[0].n;
-    const esGeneral = asignados.length === totalActivos && totalActivos > 0;
-
-    if (esGeneral) {
-      job.destinos = [{ tipo: 'general', user_id: null, user_name: 'General (todos los comerciales)', folder_name: '' }];
-    } else if (asignados.length === 0) {
-      throw new Error('Este catalogo no tiene comerciales asignados. Asigna comerciales antes de hacer backup.');
-    } else {
-      job.destinos = asignados.map((u: any) => ({
-        tipo: 'comercial' as const,
-        user_id: u.id,
-        user_name: u.name,
-        folder_name: ''
-      }));
+    // Validar que todos los destinos tienen mega_url configurado
+    const sinLink = job.destinos.filter(d => !d.mega_url);
+    if (sinLink.length > 0) {
+      throw new Error('Carpetas sin URL configurada: ' + sinLink.map(d => d.folder_nombre).join(', ') + '. Ve a "Carpetas MEGA" y pega el link publico primero.');
     }
 
     job.fase = 'Conectando a MEGA...';
@@ -3993,27 +3927,21 @@ async function ejecutarBackupMega(job: MegaJob): Promise<void> {
     const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
     const carpetaCat = nombreCarpetaCatalogo(cat.name, cat.version);
 
-    // Para cada destino, crear la carpeta del catalogo y subir las laminas
+    // Para cada destino: crear subcarpeta del backup dentro de la carpeta raiz
     for (const destino of job.destinos) {
-      job.fase = `Preparando carpeta para ${destino.user_name}...`;
-      const parentDestino = destino.tipo === 'general'
-        ? await ensureFolder(rootCP, GENERAL_FOLDER)
-        : await ensureFolder(
-            await ensureFolder(rootCP, COMERCIALES_FOLDER),
-            sanitizeName(destino.user_name)
-          );
-      const carpetaSubida = await ensureFolder(parentDestino, carpetaCat);
-      destino.folder_name = carpetaCat;
+      job.fase = `Preparando "${destino.folder_nombre}"...`;
+      const carpetaRaiz = await ensureFolder(rootCP, destino.folder_nombre);
+      const carpetaSubida = await ensureFolder(carpetaRaiz, carpetaCat);
+      destino.subcarpeta_creada = carpetaCat;
 
-      // Subir cada lamina (reset contador por destino)
+      // Reset contadores por destino
       job.subidas = 0;
       job.fallidas = 0;
       let sizeTotal = 0;
       for (let i = 0; i < sheets.length; i++) {
         const s = sheets[i];
-        job.fase = `[${destino.user_name}] Subiendo ${i + 1}/${sheets.length}...`;
+        job.fase = `[${destino.folder_nombre}] Subiendo ${i + 1}/${sheets.length}...`;
         try {
-          // Resolver ruta fisica de la imagen
           let rel = String(s.imagen_path || '');
           if (rel.startsWith('/uploads/')) rel = rel.substring('/uploads/'.length);
           else if (rel.startsWith('uploads/')) rel = rel.substring('uploads/'.length);
@@ -4031,21 +3959,7 @@ async function ejecutarBackupMega(job: MegaJob): Promise<void> {
         }
       }
 
-      // NUEVA ESTRATEGIA: no compartir la subcarpeta del catalogo (MEGA
-      // rate-limitea share desde IPs de servidor). Compartir UNA VEZ la
-      // carpeta raiz del comercial (o /General/) y reutilizar el link.
-      job.fase = `[${destino.user_name}] Obteniendo enlace raiz...`;
-      try {
-        const share = await obtenerOCrearShareLink(destino.tipo, destino.user_id, destino.user_name);
-        destino.mega_url = share.mega_url;
-        // Guardar en el destino la ruta interna donde encontrar el catalogo
-        (destino as any).ruta_interna = carpetaCat;
-      } catch (e: any) {
-        destino.error = 'no se pudo obtener link raiz: ' + e.message;
-        console.error('[mega-backup] share link raiz fallo:', e.message);
-      }
-
-      // Guardar en tabla historial y capturar id para permitir reintento del link
+      // Guardar en historial (usa mega_url ya configurado por el admin)
       try {
         const ins = await pool.query(
           `INSERT INTO mega_backups
@@ -4054,8 +3968,9 @@ async function ejecutarBackupMega(job: MegaJob): Promise<void> {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
           [
             job.catalog_id, cat.name, cat.version,
-            destino.tipo, destino.user_id, destino.user_name,
-            destino.mega_url || '', carpetaCat,
+            destino.user_id ? 'comercial' : 'general',
+            destino.user_id, destino.user_name || destino.folder_nombre,
+            destino.mega_url, destino.folder_nombre + ' / ' + carpetaCat,
             job.subidas, Number((sizeTotal / 1024 / 1024).toFixed(2)),
             job.created_by
           ]
@@ -4077,17 +3992,46 @@ async function ejecutarBackupMega(job: MegaJob): Promise<void> {
   }
 }
 
-// Iniciar backup - devuelve jobId al instante
+// Iniciar backup - body: { mega_folder_ids: number[] }
 app.post('/api/admin/mega-backup/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const catalogId = Number(req.params.id);
-    // Sanity: existe el catalogo?
+    const megaFolderIds: number[] = Array.isArray(req.body?.mega_folder_ids)
+      ? req.body.mega_folder_ids.map((x: any) => Number(x)).filter((n: number) => Number.isInteger(n) && n > 0)
+      : [];
+    if (megaFolderIds.length === 0) {
+      res.status(400).json({ success: false, error: 'Debes seleccionar al menos una carpeta MEGA de destino' });
+      return;
+    }
+
     const catR = await pool.query('SELECT id, name, version FROM catalogs WHERE id = $1', [catalogId]);
     if (catR.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Catalogo no encontrado' });
       return;
     }
     const cat = catR.rows[0];
+
+    // Cargar las carpetas seleccionadas (con usuario para email)
+    const foldersR = await pool.query(
+      `SELECT f.id, f.nombre, f.mega_url, f.user_id, u.name AS user_name
+       FROM mega_folders f
+       LEFT JOIN users u ON u.id = f.user_id
+       WHERE f.id = ANY($1::int[]) AND f.is_active = TRUE
+       ORDER BY f.orden, f.id`,
+      [megaFolderIds]
+    );
+    if (foldersR.rows.length === 0) {
+      res.status(400).json({ success: false, error: 'Ninguna de las carpetas seleccionadas esta activa' });
+      return;
+    }
+
+    const destinos = foldersR.rows.map((f: any) => ({
+      mega_folder_id: f.id,
+      folder_nombre: f.nombre,
+      user_id: f.user_id,
+      user_name: f.user_name,
+      mega_url: f.mega_url || ''
+    }));
 
     const job: MegaJob = {
       id: nuevoJobId(),
@@ -4099,13 +4043,12 @@ app.post('/api/admin/mega-backup/:id', verifyToken, requireRealAdmin, async (req
       total_laminas: 0,
       subidas: 0,
       fallidas: 0,
-      destinos: [],
+      destinos,
       started_at: Date.now(),
       created_by: req.user!.id
     };
     megaJobs.set(job.id, job);
 
-    // Arrancar en background (no await)
     ejecutarBackupMega(job).catch(e => {
       console.error('[mega-backup] uncaught en job', job.id, e);
     });
@@ -4166,6 +4109,8 @@ app.get('/api/admin/mega-backup/history/:id', verifyToken, requireRealAdmin, asy
 // (tipico caso: share() dio EAGAIN inicialmente). Encuentra la carpeta
 // en MEGA por su ruta -> comercial/general -> nombre_carpeta.
 // Track de operaciones de regenerar link en curso (para polling)
+// NOTA: regenerate-link es LEGACY del enfoque anterior; queda para no romper
+// clientes con state antiguo. En el flujo nuevo el admin pega el link manualmente.
 const regenLinkJobs = new Map<number, { status: 'running' | 'done' | 'error'; mega_url?: string; error?: string; started_at: number }>();
 
 app.post('/api/admin/mega-backup/regenerate-link/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
@@ -4334,6 +4279,172 @@ app.post('/api/admin/mega-backup/send-email', verifyToken, requireRealAdmin, asy
     } else {
       res.status(500).json({ success: false, error: result.error || 'fallo enviando email' });
     }
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================================
+// MEGA FOLDERS - CRUD y seed
+// ============================================================================
+app.get('/api/admin/mega-folders', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`
+      SELECT f.id, f.nombre, f.mega_url, f.user_id, f.descripcion, f.orden, f.is_active,
+             u.name AS user_name, u.email AS user_email
+      FROM mega_folders f
+      LEFT JOIN users u ON u.id = f.user_id
+      ORDER BY f.orden, f.id`);
+    res.json({ success: true, folders: r.rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/admin/mega-folders', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { nombre, mega_url, user_id, descripcion, orden, crear_en_mega } = req.body || {};
+    if (!nombre || !String(nombre).trim()) {
+      res.status(400).json({ success: false, error: 'nombre es obligatorio' });
+      return;
+    }
+    const nombreLimpio = String(nombre).trim().substring(0, 200);
+    // Crear la carpeta en MEGA (opcional) - por defecto lo hacemos
+    let creadaEnMega = false;
+    if (crear_en_mega !== false) {
+      try {
+        const storage = await getMegaStorage();
+        const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
+        await ensureFolder(rootCP, nombreLimpio);
+        creadaEnMega = true;
+      } catch (e: any) {
+        console.warn('[mega-folders] no se pudo crear en MEGA:', e.message);
+        // Seguimos: el admin puede crearla manual en MEGA
+      }
+    }
+    const ins = await pool.query(
+      `INSERT INTO mega_folders (nombre, mega_url, user_id, descripcion, orden, is_active)
+       VALUES ($1, $2, $3, $4, $5, TRUE) RETURNING *`,
+      [
+        nombreLimpio,
+        String(mega_url || '').trim(),
+        user_id ? Number(user_id) : null,
+        descripcion ? String(descripcion).trim().substring(0, 255) : null,
+        Number(orden) || 0
+      ]
+    );
+    res.status(201).json({ success: true, folder: ins.rows[0], creada_en_mega: creadaEnMega });
+  } catch (e: any) {
+    if (e.code === '23505') {
+      res.status(400).json({ success: false, error: 'Ya existe una carpeta con ese nombre' });
+    } else {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  }
+});
+
+app.put('/api/admin/mega-folders/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { mega_url, user_id, descripcion, orden, is_active, nombre } = req.body || {};
+    const r = await pool.query(
+      `UPDATE mega_folders SET
+         nombre = COALESCE($1, nombre),
+         mega_url = COALESCE($2, mega_url),
+         user_id = $3,
+         descripcion = $4,
+         orden = COALESCE($5, orden),
+         is_active = COALESCE($6, is_active),
+         updated_at = NOW()
+       WHERE id = $7 RETURNING *`,
+      [
+        nombre !== undefined ? String(nombre).trim().substring(0, 200) : null,
+        mega_url !== undefined ? String(mega_url).trim() : null,
+        user_id !== undefined ? (user_id ? Number(user_id) : null) : undefined === undefined ? null : null,
+        descripcion !== undefined ? (descripcion ? String(descripcion).trim().substring(0, 255) : null) : null,
+        orden !== undefined ? Number(orden) : null,
+        is_active !== undefined ? Boolean(is_active) : null,
+        id
+      ]
+    );
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Carpeta no encontrada' });
+      return;
+    }
+    res.json({ success: true, folder: r.rows[0] });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/admin/mega-folders/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query('DELETE FROM mega_folders WHERE id = $1 RETURNING id', [id]);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Carpeta no encontrada' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Seed: crea las 6 carpetas iniciales en MEGA y las inserta en BD.
+// Idempotente: si ya existen se salta sin error.
+app.post('/api/admin/mega-folders/seed', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    // Buscar user ids por nombre (los del sistema)
+    const usersR = await pool.query(
+      `SELECT id, name FROM users WHERE role = 'sales' AND is_active = TRUE`
+    );
+    const users = usersR.rows;
+    const findUserId = (patron: string): number | null => {
+      const u = users.find((x: any) => x.name.toLowerCase().includes(patron.toLowerCase()));
+      return u ? u.id : null;
+    };
+    const evaId = findUserId('eva');
+    const fernandoId = findUserId('fernando ayllon martiarena');
+    const miguelId = findUserId('miguel');
+
+    const iniciales = [
+      { nombre: 'Catalogo Lomhifar Fernando 2026', user_id: fernandoId, descripcion: 'Comercial: Fernando (Sage 2)', orden: 10 },
+      { nombre: 'Catalogo Lomhifar Eva 2026',       user_id: evaId,      descripcion: 'Comercial: Eva Lomillo (Sage 1)', orden: 20 },
+      { nombre: 'Catalogo Lomhifar Duofarma 2026',  user_id: miguelId,   descripcion: 'Comercial: Miguel Angel (Vizcaya, Sage 6)', orden: 30 },
+      { nombre: 'Catalogo Essity 2026',             user_id: null,       descripcion: 'Laboratorio Essity', orden: 40 },
+      { nombre: 'Catalogo Beter 2026',              user_id: null,       descripcion: 'Laboratorio Beter', orden: 50 },
+      { nombre: 'Catalogo Onevit 2026',             user_id: null,       descripcion: 'Laboratorio Onevit', orden: 60 }
+    ];
+
+    // Crear todas en MEGA
+    const storage = await getMegaStorage();
+    const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
+    const resultados: any[] = [];
+    for (const f of iniciales) {
+      let creadaEnMega = false;
+      try {
+        await ensureFolder(rootCP, f.nombre);
+        creadaEnMega = true;
+      } catch (e: any) {
+        console.warn('[seed] error creando en MEGA', f.nombre, ':', e.message);
+      }
+      // Insertar en BD si no existe
+      const ins = await pool.query(
+        `INSERT INTO mega_folders (nombre, mega_url, user_id, descripcion, orden, is_active)
+         VALUES ($1, '', $2, $3, $4, TRUE)
+         ON CONFLICT (nombre) DO NOTHING
+         RETURNING *`,
+        [f.nombre, f.user_id, f.descripcion, f.orden]
+      );
+      resultados.push({
+        nombre: f.nombre,
+        creada_en_mega: creadaEnMega,
+        insertada_en_bd: ins.rows.length > 0,
+        ya_existia: ins.rows.length === 0
+      });
+    }
+    res.json({ success: true, resultados });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }

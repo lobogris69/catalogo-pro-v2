@@ -4019,6 +4019,24 @@ async function renderConfiguracion() {
           <div id="cat-msg" style="margin-top:8px"></div>
         </div>
 
+        <!-- BLOQUE: Carpetas MEGA (sistema de respaldo) -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">☁️ Carpetas MEGA (sistema de respaldo)
+            ${ayuda('Carpetas raíz en tu cuenta MEGA donde se suben los backups de catálogos como fotos sueltas. Cada carpeta debe compartirse manualmente desde MEGA (clic derecho → Obtener enlace) y pegar el enlace público aquí.', 'izq')}
+          </h3>
+          <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">
+            El sistema sube las láminas correctamente pero MEGA <b>no permite generar el enlace público desde el servidor</b>.
+            La solución: tú compartes cada carpeta manualmente en MEGA una vez y pegas el enlace aquí.
+          </div>
+          <div id="mega-folders-lista">
+            <div style="color:var(--gris-texto);font-size:13px;padding:12px;text-align:center">Cargando carpetas…</div>
+          </div>
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--gris-borde)">
+            <button class="btn btn-primary btn-pequeno" onclick="abrirNuevaCarpetaMega()">+ Nueva carpeta MEGA</button>
+            <button class="btn btn-secondary btn-pequeno" onclick="seedCarpetasMega(this)" style="margin-left:8px">🌱 Crear las 6 carpetas iniciales</button>
+          </div>
+        </div>
+
         <div id="config-msg"></div>
       </div>
     `;
@@ -4029,6 +4047,8 @@ async function renderConfiguracion() {
     cargarStatsLimpiarPruebas();
     // Cargar lista de categorías
     cargarListaCategorias();
+    // Cargar carpetas MEGA
+    cargarCarpetasMega();
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
   }
@@ -5091,9 +5111,165 @@ async function descargarPdfCalidad(catalogId, calidad, btnEl) {
 }
 
 // ============================================================================
+// MEGA FOLDERS - gestion admin (Configuracion → Carpetas MEGA)
+// ============================================================================
+let _megaComerciales = []; // cache de comerciales para el dropdown de user_id
+
+async function cargarCarpetasMega() {
+  const $lista = document.getElementById('mega-folders-lista');
+  if (!$lista) return;
+  try {
+    const [r, ru] = await Promise.all([
+      api('/api/admin/mega-folders'),
+      api('/api/users')
+    ]);
+    _megaComerciales = (ru.users || []).filter(u => u.role === 'sales' && u.is_active);
+    const folders = r.folders || [];
+    if (folders.length === 0) {
+      $lista.innerHTML = `<div style="color:var(--gris-texto);font-size:13px;padding:12px;text-align:center;background:#f9fafb;border-radius:8px">
+        Todavía no hay carpetas configuradas. Pulsa "🌱 Crear las 6 carpetas iniciales" para empezar.
+      </div>`;
+      return;
+    }
+    $lista.innerHTML = `
+      <div style="overflow-x:auto">
+      <table style="width:100%;font-size:13px;border-collapse:collapse">
+        <thead>
+          <tr style="background:#f9fafb;text-align:left">
+            <th style="padding:8px;border-bottom:1px solid var(--gris-borde)">Nombre carpeta MEGA</th>
+            <th style="padding:8px;border-bottom:1px solid var(--gris-borde)">Enlace público</th>
+            <th style="padding:8px;border-bottom:1px solid var(--gris-borde)">Email a</th>
+            <th style="padding:8px;border-bottom:1px solid var(--gris-borde)">Estado</th>
+            <th style="padding:8px;border-bottom:1px solid var(--gris-borde)"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${folders.map(f => `
+            <tr data-folder-id="${f.id}" style="border-bottom:1px solid var(--gris-borde);${!f.is_active ? 'opacity:0.5' : ''}">
+              <td style="padding:8px;vertical-align:top">
+                <div style="font-weight:600">${escape(f.nombre)}</div>
+                ${f.descripcion ? `<div style="font-size:11px;color:var(--gris-texto);margin-top:2px">${escape(f.descripcion)}</div>` : ''}
+              </td>
+              <td style="padding:8px;vertical-align:top;min-width:200px">
+                <input type="text" class="mega-url-input" value="${escape(f.mega_url || '')}" placeholder="Pega aquí el enlace https://mega.nz/..." data-folder-id="${f.id}"
+                       style="width:100%;padding:4px 8px;border:1px solid var(--gris-borde);border-radius:4px;font-size:12px;font-family:monospace">
+                ${!f.mega_url ? `<div style="font-size:10px;color:#dc2626;margin-top:2px">⚠️ Sin enlace</div>` : ''}
+              </td>
+              <td style="padding:8px;vertical-align:top">
+                <select class="mega-user-select" data-folder-id="${f.id}" style="padding:4px 6px;border:1px solid var(--gris-borde);border-radius:4px;font-size:12px">
+                  <option value="">— sin destinatario —</option>
+                  ${_megaComerciales.map(u => `<option value="${u.id}" ${f.user_id === u.id ? 'selected' : ''}>${escape(u.name)}</option>`).join('')}
+                </select>
+              </td>
+              <td style="padding:8px;vertical-align:top">
+                <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
+                  <input type="checkbox" class="mega-active-check" data-folder-id="${f.id}" ${f.is_active ? 'checked' : ''}>
+                  ${f.is_active ? 'Activa' : 'Oculta'}
+                </label>
+              </td>
+              <td style="padding:8px;vertical-align:top;white-space:nowrap">
+                <button class="btn btn-primary btn-pequeno" onclick="guardarCarpetaMega(${f.id}, this)">💾</button>
+                <button class="btn btn-danger btn-pequeno" onclick="borrarCarpetaMega(${f.id}, '${escape(f.nombre)}', this)">🗑️</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      </div>
+    `;
+  } catch (e) {
+    $lista.innerHTML = `<div class="error-msg">Error cargando carpetas: ${escape(e.message)}</div>`;
+  }
+}
+
+async function guardarCarpetaMega(folderId, boton) {
+  const $url = document.querySelector('.mega-url-input[data-folder-id="' + folderId + '"]');
+  const $user = document.querySelector('.mega-user-select[data-folder-id="' + folderId + '"]');
+  const $active = document.querySelector('.mega-active-check[data-folder-id="' + folderId + '"]');
+  const t = boton.textContent;
+  boton.disabled = true;
+  boton.textContent = '⏳';
+  try {
+    const r = await api('/api/admin/mega-folders/' + folderId, {
+      method: 'PUT',
+      body: JSON.stringify({
+        mega_url: ($url.value || '').trim(),
+        user_id: $user.value ? Number($user.value) : null,
+        is_active: $active.checked
+      })
+    });
+    if (r.success) {
+      boton.textContent = '✅';
+      setTimeout(() => { boton.textContent = t; boton.disabled = false; cargarCarpetasMega(); }, 1200);
+    } else {
+      boton.textContent = '❌';
+      setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 2000);
+      alert('Error: ' + (r.error || 'no se pudo guardar'));
+    }
+  } catch (e) {
+    boton.textContent = '❌';
+    setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 2000);
+    alert('Error: ' + e.message);
+  }
+}
+
+async function borrarCarpetaMega(folderId, nombre, boton) {
+  if (!confirm(`¿Borrar la carpeta "${nombre}" de la app?\n\n⚠️ NO borra la carpeta de MEGA (los archivos se conservan). Solo la elimina de esta lista.`)) return;
+  boton.disabled = true;
+  try {
+    const r = await api('/api/admin/mega-folders/' + folderId, { method: 'DELETE' });
+    if (r.success) cargarCarpetasMega();
+    else alert('Error: ' + (r.error || 'no se pudo borrar'));
+  } catch (e) {
+    alert('Error: ' + e.message);
+    boton.disabled = false;
+  }
+}
+
+async function abrirNuevaCarpetaMega() {
+  const nombre = prompt('Nombre exacto de la carpeta en MEGA:\n(se creará automáticamente si no existe)');
+  if (!nombre || !nombre.trim()) return;
+  try {
+    const r = await api('/api/admin/mega-folders', {
+      method: 'POST',
+      body: JSON.stringify({ nombre: nombre.trim() })
+    });
+    if (r.success) {
+      cargarCarpetasMega();
+    } else {
+      alert('Error: ' + (r.error || 'no se pudo crear'));
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function seedCarpetasMega(boton) {
+  if (!confirm('¿Crear las 6 carpetas iniciales en MEGA?\n\n• Catalogo Lomhifar Fernando 2026 (Comercial Fernando)\n• Catalogo Lomhifar Eva 2026 (Comercial Eva)\n• Catalogo Lomhifar Duofarma 2026 (Miguel Ángel)\n• Catalogo Essity 2026 (Laboratorio)\n• Catalogo Beter 2026 (Laboratorio)\n• Catalogo Onevit 2026 (Laboratorio)\n\nPuede tardar 1-2 minutos.')) return;
+  const t = boton.textContent;
+  boton.disabled = true;
+  boton.textContent = '⏳ Creando en MEGA (hasta 2 min)…';
+  try {
+    const r = await api('/api/admin/mega-folders/seed', { method: 'POST' });
+    if (r.success) {
+      const ok = r.resultados.filter(x => x.creada_en_mega).length;
+      alert(`✅ Listo. ${ok}/6 creadas en MEGA.\n\nAhora ve a MEGA → clic derecho en cada una → "Obtener enlace" → pégalo en la tabla.`);
+      cargarCarpetasMega();
+    } else {
+      alert('Error: ' + (r.error || 'seed falló'));
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  } finally {
+    boton.textContent = t;
+    boton.disabled = false;
+  }
+}
+
+// ============================================================================
 // MEGA BACKUP - modal que arranca el job asincrono + polling con progreso
 // ============================================================================
-function abrirBackupMega(catalogId, nombreCatalogo) {
+async function abrirBackupMega(catalogId, nombreCatalogo) {
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
   modal.innerHTML = `
@@ -5104,14 +5280,11 @@ function abrirBackupMega(catalogId, nombreCatalogo) {
       </div>
       <p style="font-size:13px;color:var(--gris-texto);margin-bottom:14px">
         <b>${escape(nombreCatalogo)}</b><br>
-        Se subirá una copia como PNG sueltos a MEGA. Si el catálogo está asignado a
-        <b>todos</b> los comerciales, se sube <b>una sola vez</b> a la carpeta
-        <code>/General/</code>. Si no, se sube en la carpeta de cada comercial asignado.
+        Elige a qué carpetas de MEGA quieres subir las láminas como fotos sueltas.
+        Cada carpeta seleccionada recibirá una subcarpeta con este catálogo (nombre y fecha).
       </p>
-      <div id="mega-pre-confirm">
-        <button class="btn btn-primary" onclick="lanzarBackupMega(${catalogId})">☁️ Empezar backup</button>
-        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
-      </div>
+      <div id="mega-cargando" style="text-align:center;padding:20px;color:var(--gris-texto)">Cargando carpetas MEGA…</div>
+      <div id="mega-pre-confirm" style="display:none"></div>
       <div id="mega-progreso" style="display:none">
         <div id="mega-fase" style="font-size:13px;margin-bottom:8px">Iniciando...</div>
         <div style="background:#e5e7eb;height:20px;border-radius:10px;overflow:hidden;margin-bottom:8px">
@@ -5124,14 +5297,70 @@ function abrirBackupMega(catalogId, nombreCatalogo) {
     </div>
   `;
   document.body.appendChild(modal);
+
+  // Cargar carpetas MEGA disponibles
+  try {
+    const r = await api('/api/admin/mega-folders');
+    const activas = (r.folders || []).filter(f => f.is_active);
+    document.getElementById('mega-cargando').style.display = 'none';
+    const $conf = document.getElementById('mega-pre-confirm');
+    $conf.style.display = 'block';
+    if (activas.length === 0) {
+      $conf.innerHTML = `
+        <div style="padding:16px;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;font-size:13px">
+          ⚠️ No hay carpetas MEGA configuradas todavía.<br><br>
+          Ve a <b>⚙️ Configuración → Carpetas MEGA</b> para configurarlas antes de hacer backups.
+        </div>
+        <div style="margin-top:14px">
+          <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+        </div>
+      `;
+      return;
+    }
+    const sinLink = activas.filter(f => !f.mega_url);
+    $conf.innerHTML = `
+      ${sinLink.length > 0 ? `<div style="padding:10px;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;font-size:12px;margin-bottom:14px">
+        ⚠️ ${sinLink.length} carpeta(s) sin enlace público configurado. Ve a Configuración → Carpetas MEGA para pegar los enlaces.
+      </div>` : ''}
+      <div style="font-size:13px;font-weight:600;margin-bottom:10px">📁 Selecciona destinos:</div>
+      <div style="max-height:280px;overflow-y:auto;border:1px solid var(--gris-borde);border-radius:8px;padding:8px">
+        ${activas.map(f => `
+          <label style="display:flex;align-items:flex-start;gap:10px;padding:8px;cursor:${f.mega_url ? 'pointer' : 'not-allowed'};border-radius:6px;${!f.mega_url ? 'opacity:0.5' : ''}">
+            <input type="checkbox" class="mega-folder-check" data-folder-id="${f.id}" ${!f.mega_url ? 'disabled' : ''} style="margin-top:3px">
+            <div style="flex:1">
+              <div style="font-weight:600;font-size:13px">${escape(f.nombre)}</div>
+              ${f.descripcion ? `<div style="font-size:11px;color:var(--gris-texto)">${escape(f.descripcion)}</div>` : ''}
+              ${f.user_name ? `<div style="font-size:11px;color:var(--gris-texto)">✉️ Email a: ${escape(f.user_name)}</div>` : `<div style="font-size:11px;color:var(--gris-texto)">🌐 Sin destinatario (envío manual)</div>`}
+              ${!f.mega_url ? `<div style="font-size:11px;color:#dc2626">⚠️ Sin enlace público</div>` : ''}
+            </div>
+          </label>
+        `).join('')}
+      </div>
+      <div style="margin-top:14px;display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="lanzarBackupMega(${catalogId})">☁️ Empezar backup</button>
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('mega-cargando').innerHTML = `<div class="error-msg">Error cargando carpetas: ${escape(e.message)}</div>`;
+  }
 }
 
 async function lanzarBackupMega(catalogId) {
+  const seleccionadas = Array.from(document.querySelectorAll('.mega-folder-check:checked'))
+    .map(c => Number(c.dataset.folderId));
+  if (seleccionadas.length === 0) {
+    alert('Selecciona al menos una carpeta MEGA de destino');
+    return;
+  }
   document.getElementById('mega-pre-confirm').style.display = 'none';
   document.getElementById('mega-progreso').style.display = 'block';
   window._megaJobRunning = true;
   try {
-    const r = await api('/api/admin/mega-backup/' + catalogId, { method: 'POST' });
+    const r = await api('/api/admin/mega-backup/' + catalogId, {
+      method: 'POST',
+      body: JSON.stringify({ mega_folder_ids: seleccionadas })
+    });
     if (!r.job_id) throw new Error(r.error || 'No se pudo iniciar el backup');
     seguirBackupMega(r.job_id);
   } catch (e) {
@@ -5182,40 +5411,36 @@ async function seguirBackupMega(jobId) {
 
 function pintarResultadosBackupMega(job) {
   const dests = job.destinos || [];
-  const items = dests.map((d, idx) => {
-    const icono = d.tipo === 'general' ? '🌐' : '👤';
+  const items = dests.map((d) => {
+    const rutaInterna = d.subcarpeta_creada || '';
     if (!d.mega_url) {
-      // Las láminas se subieron pero el link falló → botón reintentar link
       return `
-        <div style="border:1px solid #ef4444;border-radius:8px;padding:12px;margin-bottom:8px;background:#fef2f2" data-destino-idx="${idx}">
-          <b>${icono} ${escape(d.user_name)}</b>
-          <div style="font-size:11px;color:var(--gris-texto);margin:4px 0">📁 ${escape(d.folder_name || '')} · ${job.subidas} láminas subidas OK</div>
-          <span style="color:#dc2626;font-size:12px">⚠️ Las fotos SÍ están en MEGA, pero el enlace público falló al crear:<br><small>${escape(d.error || 'error desconocido')}</small></span>
-          ${d.backup_id ? `<div style="margin-top:8px">
-            <button class="btn btn-primary btn-pequeno" onclick="reintentarLinkMega(${d.backup_id}, this)">🔄 Reintentar link</button>
-          </div>` : ''}
+        <div style="border:1px solid #ef4444;border-radius:8px;padding:12px;margin-bottom:8px;background:#fef2f2">
+          <b>📁 ${escape(d.folder_nombre)}</b>
+          <div style="font-size:11px;color:#dc2626;margin-top:4px">
+            ⚠️ ${escape(d.error || 'Esta carpeta no tiene enlace público configurado')}
+          </div>
         </div>
       `;
     }
-    const rutaInterna = d.ruta_interna || d.folder_name || '';
     return `
       <div style="border:1px solid var(--gris-borde);border-radius:8px;padding:12px;margin-bottom:8px">
-        <b>${icono} ${escape(d.user_name)}</b>
+        <b>📁 ${escape(d.folder_nombre)}</b>
         <div style="font-size:11px;color:var(--gris-texto);margin:4px 0">
-          El nuevo backup está dentro en 📁 <b>${escape(rutaInterna)}</b>
+          El nuevo backup está en la subcarpeta 📂 <b>${escape(rutaInterna)}</b>
         </div>
         <input type="text" value="${escape(d.mega_url)}" readonly onclick="this.select()"
                style="width:100%;padding:6px 10px;border:1px solid var(--gris-borde);border-radius:6px;font-size:12px;font-family:monospace;background:#f9fafb">
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-secondary btn-pequeno" onclick="copiarAlPortapapeles('${escape(d.mega_url)}', this)">📋 Copiar link</button>
           <a href="${escape(d.mega_url)}" target="_blank" class="btn btn-secondary btn-pequeno" style="text-decoration:none">🔗 Abrir en MEGA</a>
-          ${d.user_id ? `<button class="btn btn-primary btn-pequeno" onclick="enviarLinkMegaEmail(${d.user_id}, '${escape(d.mega_url)}', '${escape(job.catalog_name)}', ${job.catalog_version}, '${escape(rutaInterna)}', this)">✉️ Enviar por email</button>` : ''}
+          ${d.user_id ? `<button class="btn btn-primary btn-pequeno" onclick="enviarLinkMegaEmail(${d.user_id}, '${escape(d.mega_url)}', '${escape(job.catalog_name)}', ${job.catalog_version}, '${escape(rutaInterna)}', this)">✉️ Enviar por email a ${escape(d.user_name || '')}</button>` : `<span style="font-size:11px;color:var(--gris-texto);padding:6px">🌐 Sin destinatario configurado</span>`}
         </div>
       </div>
     `;
   }).join('');
   return `
-    <div style="font-size:13px;font-weight:600;margin-bottom:8px">📤 Enlaces generados (${dests.length})</div>
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px">📤 Resultado (${dests.length} carpeta${dests.length > 1 ? 's' : ''})</div>
     ${items}
   `;
 }
