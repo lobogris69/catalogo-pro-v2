@@ -567,6 +567,7 @@ async function renderEditorCatalogo(id) {
               <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
               ${sheets.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>${ayuda('Vista en cuadrícula para reordenar las láminas. Arrastra y suelta o escribe el número de orden.')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalDescargarPdf(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar PDF del catálogo">📥 Descargar PDF</button>${ayuda('Genera el PDF del catálogo en alta calidad (impresión) o pequeño (para enviar por WhatsApp/email a clientes).')}` : ''}
+              ${sheets.length > 0 && esAdminReal() ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirBackupMega(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Copia de respaldo en MEGA como fotos sueltas para cada comercial">☁️ Backup MEGA</button>${ayuda('Sube todas las láminas como PNG sueltos a MEGA en la carpeta de cada comercial (o en /General si el catálogo está asignado a todos). Sistema de respaldo por si la app falla: los comerciales abren la carpeta con el visor de fotos del móvil.', 'izq')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo actual: genera PDF + ZIP de respaldo descargables, queda registrado en el historial, y la versión sube V1→V2. Útil al final de cada temporada.', 'izq')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="borrarTodasLaminas(${id}, ${sheets.length})">🗑️ Borrar todas</button>` : ''}
             </div>
@@ -5086,6 +5087,158 @@ async function descargarPdfCalidad(catalogId, calidad, btnEl) {
   } catch (err) {
     $msg.innerHTML = `<div class="error-msg">Error: ${escape(err.message)}</div>`;
     $btns.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
+  }
+}
+
+// ============================================================================
+// MEGA BACKUP - modal que arranca el job asincrono + polling con progreso
+// ============================================================================
+function abrirBackupMega(catalogId, nombreCatalogo) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width:640px">
+      <div class="modal-header">
+        <h3>☁️ Backup en MEGA</h3>
+        <button class="modal-cerrar" onclick="if(!window._megaJobRunning)this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p style="font-size:13px;color:var(--gris-texto);margin-bottom:14px">
+        <b>${escape(nombreCatalogo)}</b><br>
+        Se subirá una copia como PNG sueltos a MEGA. Si el catálogo está asignado a
+        <b>todos</b> los comerciales, se sube <b>una sola vez</b> a la carpeta
+        <code>/General/</code>. Si no, se sube en la carpeta de cada comercial asignado.
+      </p>
+      <div id="mega-pre-confirm">
+        <button class="btn btn-primary" onclick="lanzarBackupMega(${catalogId})">☁️ Empezar backup</button>
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+      </div>
+      <div id="mega-progreso" style="display:none">
+        <div id="mega-fase" style="font-size:13px;margin-bottom:8px">Iniciando...</div>
+        <div style="background:#e5e7eb;height:20px;border-radius:10px;overflow:hidden;margin-bottom:8px">
+          <div id="mega-barra" style="background:linear-gradient(90deg,#cc007a,#dc2675);height:100%;width:0%;transition:width 0.4s"></div>
+        </div>
+        <div id="mega-contador" style="font-size:12px;color:var(--gris-texto);text-align:center">0 / 0 láminas</div>
+      </div>
+      <div id="mega-resultados" style="display:none;margin-top:14px"></div>
+      <div id="mega-error"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function lanzarBackupMega(catalogId) {
+  document.getElementById('mega-pre-confirm').style.display = 'none';
+  document.getElementById('mega-progreso').style.display = 'block';
+  window._megaJobRunning = true;
+  try {
+    const r = await api('/api/admin/mega-backup/' + catalogId, { method: 'POST' });
+    if (!r.job_id) throw new Error(r.error || 'No se pudo iniciar el backup');
+    seguirBackupMega(r.job_id);
+  } catch (e) {
+    window._megaJobRunning = false;
+    document.getElementById('mega-error').innerHTML = `<div class="error-msg">❌ ${escape(e.message)}</div>`;
+  }
+}
+
+async function seguirBackupMega(jobId) {
+  const $fase = document.getElementById('mega-fase');
+  const $barra = document.getElementById('mega-barra');
+  const $cont = document.getElementById('mega-contador');
+  const $err = document.getElementById('mega-error');
+  const $res = document.getElementById('mega-resultados');
+  let ticks = 0;
+  const interval = setInterval(async () => {
+    ticks++;
+    try {
+      const r = await api('/api/admin/mega-backup/status/' + jobId);
+      if (!r.job) throw new Error('sin job');
+      const j = r.job;
+      $fase.textContent = j.fase || 'Trabajando...';
+      const pct = j.total_laminas > 0 ? Math.round((j.subidas / j.total_laminas) * 100) : 0;
+      $barra.style.width = pct + '%';
+      $cont.textContent = `${j.subidas} / ${j.total_laminas} láminas${j.fallidas ? ' · ' + j.fallidas + ' fallidas' : ''}${j.duracion_s ? ' · ' + j.duracion_s + 's' : ''}`;
+      if (j.status === 'done') {
+        clearInterval(interval);
+        window._megaJobRunning = false;
+        $barra.style.width = '100%';
+        $fase.innerHTML = '✅ Completado en ' + j.duracion_s + 's';
+        $res.style.display = 'block';
+        $res.innerHTML = pintarResultadosBackupMega(j);
+      } else if (j.status === 'error') {
+        clearInterval(interval);
+        window._megaJobRunning = false;
+        $err.innerHTML = `<div class="error-msg">❌ ${escape(j.error || 'Error desconocido')}</div>`;
+      }
+    } catch (e) {
+      // fallo puntual -> reintenta
+      if (ticks > 200) { // ~10 min max
+        clearInterval(interval);
+        window._megaJobRunning = false;
+        $err.innerHTML = `<div class="error-msg">Timeout esperando al servidor: ${escape(e.message)}</div>`;
+      }
+    }
+  }, 3000);
+}
+
+function pintarResultadosBackupMega(job) {
+  const dests = job.destinos || [];
+  const items = dests.map(d => {
+    const icono = d.tipo === 'general' ? '🌐' : '👤';
+    if (!d.mega_url) {
+      return `
+        <div style="border:1px solid #ef4444;border-radius:8px;padding:12px;margin-bottom:8px;background:#fef2f2">
+          <b>${icono} ${escape(d.user_name)}</b><br>
+          <span style="color:#dc2626;font-size:12px">❌ ${escape(d.error || 'sin link')}</span>
+        </div>
+      `;
+    }
+    return `
+      <div style="border:1px solid var(--gris-borde);border-radius:8px;padding:12px;margin-bottom:8px">
+        <b>${icono} ${escape(d.user_name)}</b>
+        <div style="font-size:11px;color:var(--gris-texto);margin:4px 0">📁 ${escape(d.folder_name)}</div>
+        <input type="text" value="${escape(d.mega_url)}" readonly onclick="this.select()"
+               style="width:100%;padding:6px 10px;border:1px solid var(--gris-borde);border-radius:6px;font-size:12px;font-family:monospace;background:#f9fafb">
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-pequeno" onclick="copiarAlPortapapeles('${escape(d.mega_url)}', this)">📋 Copiar link</button>
+          <a href="${escape(d.mega_url)}" target="_blank" class="btn btn-secondary btn-pequeno" style="text-decoration:none">🔗 Abrir en MEGA</a>
+          ${d.user_id ? `<button class="btn btn-primary btn-pequeno" onclick="enviarLinkMegaEmail(${d.user_id}, '${escape(d.mega_url)}', '${escape(job.catalog_name)}', ${job.catalog_version}, this)">✉️ Enviar por email</button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+  return `
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px">📤 Enlaces generados (${dests.length})</div>
+    ${items}
+  `;
+}
+
+function copiarAlPortapapeles(texto, boton) {
+  navigator.clipboard.writeText(texto).then(() => {
+    const t = boton.textContent;
+    boton.textContent = '✅ Copiado';
+    setTimeout(() => { boton.textContent = t; }, 1500);
+  });
+}
+
+async function enviarLinkMegaEmail(userId, url, catalogName, version, boton) {
+  boton.disabled = true;
+  const t = boton.textContent;
+  boton.textContent = '⏳ Enviando...';
+  try {
+    const r = await api('/api/admin/mega-backup/send-email', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, mega_url: url, catalog_name: catalogName, catalog_version: version })
+    });
+    if (r.success) {
+      boton.textContent = '✅ Enviado';
+      setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 2500);
+    } else {
+      boton.textContent = '❌ ' + (r.error || 'falló');
+      setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 3000);
+    }
+  } catch (e) {
+    boton.textContent = '❌ Error red';
+    setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 3000);
   }
 }
 

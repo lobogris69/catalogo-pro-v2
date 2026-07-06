@@ -3834,6 +3834,334 @@ app.post('/api/admin/backfill-thumbnails', verifyToken, requireRealAdmin, async 
 // codificar el flujo completo. GET /api/admin/mega-test -> intenta login,
 // devuelve nombre del usuario y espacio disponible.
 // ============================================================================
+// ============================================================================
+// MEGA BACKUP - jobs asincronos con progreso
+// ============================================================================
+// Los jobs viven en memoria. Un catalogo de 400 laminas puede tardar 10+ min
+// en subir. El cliente hace polling a /api/admin/mega-backup/status/:jobId.
+// Si el proceso reinicia (Railway redeploy), el job se pierde -> aceptable
+// para MVP; el usuario simplemente relanza el backup.
+type MegaJobStatus = 'running' | 'done' | 'error';
+interface MegaJob {
+  id: string;
+  catalog_id: number;
+  catalog_name: string;
+  catalog_version: number;
+  status: MegaJobStatus;
+  fase: string;
+  total_laminas: number;
+  subidas: number;
+  fallidas: number;
+  destinos: Array<{
+    tipo: 'comercial' | 'general';
+    user_id: number | null;
+    user_name: string;
+    folder_name: string;
+    mega_url?: string;
+    error?: string;
+  }>;
+  error?: string;
+  started_at: number;
+  ended_at?: number;
+  created_by: number;
+}
+const megaJobs = new Map<string, MegaJob>();
+
+function nuevoJobId(): string {
+  return 'mj_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 8);
+}
+
+// Ejecuta el backup en background (no bloquea la respuesta HTTP inicial).
+async function ejecutarBackupMega(job: MegaJob): Promise<void> {
+  try {
+    job.fase = 'Cargando datos del catalogo...';
+    // Cargar catalogo + laminas
+    const catR = await pool.query('SELECT id, name, version FROM catalogs WHERE id = $1', [job.catalog_id]);
+    if (catR.rows.length === 0) throw new Error('Catalogo no encontrado');
+    const cat = catR.rows[0];
+
+    const sheetsR = await pool.query(
+      'SELECT id, orden, titulo, imagen_path FROM sheets WHERE catalog_id = $1 AND oculta = FALSE ORDER BY orden, id',
+      [job.catalog_id]
+    );
+    const sheets = sheetsR.rows;
+    job.total_laminas = sheets.length;
+    if (sheets.length === 0) throw new Error('El catalogo no tiene laminas');
+
+    // Determinar destinos: asignaciones + comerciales activos
+    const asignR = await pool.query(
+      `SELECT u.id, u.name FROM catalog_assignments ca
+       JOIN users u ON u.id = ca.user_id
+       WHERE ca.catalog_id = $1 AND u.role = 'sales' AND u.is_active = TRUE
+       ORDER BY u.name`,
+      [job.catalog_id]
+    );
+    const asignados = asignR.rows;
+    const activosR = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM users WHERE role = 'sales' AND is_active = TRUE`
+    );
+    const totalActivos = activosR.rows[0].n;
+    const esGeneral = asignados.length === totalActivos && totalActivos > 0;
+
+    if (esGeneral) {
+      job.destinos = [{ tipo: 'general', user_id: null, user_name: 'General (todos los comerciales)', folder_name: '' }];
+    } else if (asignados.length === 0) {
+      throw new Error('Este catalogo no tiene comerciales asignados. Asigna comerciales antes de hacer backup.');
+    } else {
+      job.destinos = asignados.map((u: any) => ({
+        tipo: 'comercial' as const,
+        user_id: u.id,
+        user_name: u.name,
+        folder_name: ''
+      }));
+    }
+
+    job.fase = 'Conectando a MEGA...';
+    const storage = await getMegaStorage();
+    const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
+    const carpetaCat = nombreCarpetaCatalogo(cat.name, cat.version);
+
+    // Para cada destino, crear la carpeta del catalogo y subir las laminas
+    for (const destino of job.destinos) {
+      job.fase = `Preparando carpeta para ${destino.user_name}...`;
+      const parentDestino = destino.tipo === 'general'
+        ? await ensureFolder(rootCP, GENERAL_FOLDER)
+        : await ensureFolder(
+            await ensureFolder(rootCP, COMERCIALES_FOLDER),
+            sanitizeName(destino.user_name)
+          );
+      const carpetaSubida = await ensureFolder(parentDestino, carpetaCat);
+      destino.folder_name = carpetaCat;
+
+      // Subir cada lamina (reset contador por destino)
+      job.subidas = 0;
+      job.fallidas = 0;
+      let sizeTotal = 0;
+      for (let i = 0; i < sheets.length; i++) {
+        const s = sheets[i];
+        job.fase = `[${destino.user_name}] Subiendo ${i + 1}/${sheets.length}...`;
+        try {
+          // Resolver ruta fisica de la imagen
+          let rel = String(s.imagen_path || '');
+          if (rel.startsWith('/uploads/')) rel = rel.substring('/uploads/'.length);
+          else if (rel.startsWith('uploads/')) rel = rel.substring('uploads/'.length);
+          const abs = path.join(UPLOADS_DIR, rel);
+          if (!fs.existsSync(abs)) throw new Error('archivo no existe en disco: ' + rel);
+          const buf = fs.readFileSync(abs);
+          sizeTotal += buf.length;
+          const ext = path.extname(rel) || '.png';
+          const nombre = nombreLaminaOrdenada(s.orden || (i + 1), s.titulo, ext);
+          await uploadFileBuffer(carpetaSubida, nombre, buf);
+          job.subidas++;
+        } catch (e: any) {
+          console.error(`[mega-backup] lamina ${s.id} fallo:`, e.message);
+          job.fallidas++;
+        }
+      }
+
+      // Generar link publico compartido de la carpeta
+      job.fase = `[${destino.user_name}] Generando enlace publico...`;
+      try {
+        destino.mega_url = await shareFolderLink(carpetaSubida);
+      } catch (e: any) {
+        destino.error = 'no se pudo generar link: ' + e.message;
+        console.error('[mega-backup] share link fallo:', e.message);
+      }
+
+      // Guardar en tabla historial
+      try {
+        await pool.query(
+          `INSERT INTO mega_backups
+             (catalog_id, catalog_name, catalog_version, destino_tipo, destino_user_id,
+              destino_user_name, mega_url, mega_folder_name, num_laminas, size_mb, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [
+            job.catalog_id, cat.name, cat.version,
+            destino.tipo, destino.user_id, destino.user_name,
+            destino.mega_url || '', carpetaCat,
+            job.subidas, Number((sizeTotal / 1024 / 1024).toFixed(2)),
+            job.created_by
+          ]
+        );
+      } catch (e: any) {
+        console.error('[mega-backup] insert historial fallo:', e.message);
+      }
+    }
+
+    job.fase = 'Completado';
+    job.status = 'done';
+    job.ended_at = Date.now();
+  } catch (e: any) {
+    console.error('[mega-backup] job fallo:', e.message);
+    job.status = 'error';
+    job.error = e.message;
+    job.ended_at = Date.now();
+  }
+}
+
+// Iniciar backup - devuelve jobId al instante
+app.post('/api/admin/mega-backup/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.id);
+    // Sanity: existe el catalogo?
+    const catR = await pool.query('SELECT id, name, version FROM catalogs WHERE id = $1', [catalogId]);
+    if (catR.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Catalogo no encontrado' });
+      return;
+    }
+    const cat = catR.rows[0];
+
+    const job: MegaJob = {
+      id: nuevoJobId(),
+      catalog_id: catalogId,
+      catalog_name: cat.name,
+      catalog_version: cat.version,
+      status: 'running',
+      fase: 'Iniciando...',
+      total_laminas: 0,
+      subidas: 0,
+      fallidas: 0,
+      destinos: [],
+      started_at: Date.now(),
+      created_by: req.user!.id
+    };
+    megaJobs.set(job.id, job);
+
+    // Arrancar en background (no await)
+    ejecutarBackupMega(job).catch(e => {
+      console.error('[mega-backup] uncaught en job', job.id, e);
+    });
+
+    res.json({ success: true, job_id: job.id });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Polling de estado
+app.get('/api/admin/mega-backup/status/:jobId', verifyToken, requireRealAdmin, (req: AuthRequest, res: Response) => {
+  const job = megaJobs.get(req.params.jobId);
+  if (!job) {
+    res.status(404).json({ success: false, error: 'Job no encontrado (puede haber caducado tras reinicio del servidor)' });
+    return;
+  }
+  res.json({
+    success: true,
+    job: {
+      id: job.id,
+      status: job.status,
+      fase: job.fase,
+      catalog_name: job.catalog_name,
+      catalog_version: job.catalog_version,
+      total_laminas: job.total_laminas,
+      subidas: job.subidas,
+      fallidas: job.fallidas,
+      destinos: job.destinos,
+      error: job.error,
+      started_at: job.started_at,
+      ended_at: job.ended_at,
+      duracion_s: job.ended_at ? Math.round((job.ended_at - job.started_at) / 1000) : Math.round((Date.now() - job.started_at) / 1000)
+    }
+  });
+});
+
+// Listado del historial de backups de un catalogo
+app.get('/api/admin/mega-backup/history/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.id);
+    const r = await pool.query(
+      `SELECT id, catalog_version, destino_tipo, destino_user_id, destino_user_name,
+              mega_url, mega_folder_name, num_laminas, size_mb, email_enviado_at, created_at
+       FROM mega_backups
+       WHERE catalog_id = $1
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [catalogId]
+    );
+    res.json({ success: true, backups: r.rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Enviar por email un link MEGA al comercial destinatario
+app.post('/api/admin/mega-backup/send-email', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { user_id, mega_url, catalog_name, catalog_version } = req.body || {};
+    if (!user_id || !mega_url || !catalog_name) {
+      res.status(400).json({ success: false, error: 'Faltan user_id / mega_url / catalog_name' });
+      return;
+    }
+    const u = await pool.query(
+      `SELECT id, email, name FROM users
+       WHERE id = $1 AND role = 'sales' AND is_active = TRUE`,
+      [user_id]
+    );
+    if (u.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Comercial no encontrado o inactivo' });
+      return;
+    }
+    const dest = u.rows[0];
+    if (!dest.email) {
+      res.status(400).json({ success: false, error: 'El comercial no tiene email' });
+      return;
+    }
+    const asunto = `☁️ Copia de seguridad del catálogo · ${catalog_name} · V${catalog_version || '?'}`;
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;color:#333">
+        <div style="background:linear-gradient(135deg,#cc007a 0%,#a3005f 100%);color:#fff;padding:24px;border-radius:8px 8px 0 0">
+          <h2 style="margin:0;font-size:20px">☁️ Backup en MEGA</h2>
+          <p style="margin:8px 0 0 0;opacity:0.9;font-size:14px">CatalogPRO · LOMHIFAR</p>
+        </div>
+        <div style="background:#fff;padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px">
+          <p style="margin:0 0 14px 0;font-size:14px">Hola ${escapeHtml(dest.name)},</p>
+          <p style="margin:0 0 14px 0;font-size:14px">
+            Tienes disponible en <b>MEGA</b> una copia de respaldo del catálogo con todas las láminas
+            como fotos PNG numeradas. <b>Guarda este enlace</b> por si algún día la app falla o no tienes cobertura:
+            podrás abrir esta carpeta desde el móvil y presentar el catálogo al cliente con el visor de fotos.
+          </p>
+          <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:14px 0">
+            <div style="font-size:11px;text-transform:uppercase;color:#be185d;font-weight:700;margin-bottom:4px">📚 Catálogo</div>
+            <div style="font-size:16px;font-weight:600;color:#111827">${escapeHtml(catalog_name)} · V${catalog_version || '?'}</div>
+          </div>
+          <div style="text-align:center;margin:24px 0">
+            <a href="${escapeHtml(mega_url)}" style="display:inline-block;background:#cc007a;color:#fff;padding:12px 28px;text-decoration:none;border-radius:6px;font-weight:600;font-size:14px">
+              ☁️ Abrir carpeta en MEGA
+            </a>
+          </div>
+          <p style="font-size:12px;color:#6b7280;margin:14px 0 0 0">
+            Enlace directo: <a href="${escapeHtml(mega_url)}" style="color:#cc007a;word-break:break-all">${escapeHtml(mega_url)}</a>
+          </p>
+          <hr style="border:none;border-top:1px solid #f3f4f6;margin:20px 0">
+          <p style="font-size:11px;color:#9ca3af;margin:0">
+            No respondas a este correo. Es un envio automatico desde CatalogPRO.
+          </p>
+        </div>
+      </div>
+    `;
+    const result = await enviarEmailConRedireccion({
+      rol: 'comercial',
+      destinatarioReal: dest.email,
+      asunto,
+      html
+    });
+    if (result.ok) {
+      // Marcar en el ultimo backup coincidente el email como enviado
+      await pool.query(
+        `UPDATE mega_backups
+         SET email_enviado_at = NOW()
+         WHERE destino_user_id = $1 AND mega_url = $2 AND email_enviado_at IS NULL`,
+        [user_id, mega_url]
+      );
+      res.json({ success: true, destinatario: result.destinatarioFinal, modo: result.modo });
+    } else {
+      res.status(500).json({ success: false, error: result.error || 'fallo enviando email' });
+    }
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.get('/api/admin/mega-test', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
   const cred = debugCredenciales();
   try {
