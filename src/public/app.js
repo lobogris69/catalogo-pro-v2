@@ -4037,6 +4037,29 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE: Resumen a oficina -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">📊 Resumen a oficina
+            ${ayuda('Botón manual (no automático) para enviar a los emails de la oficina un resumen con: los links MEGA a los catálogos actualizados + una lista de las láminas que se han creado, modificado o eliminado desde el último envío. Sirve para que la oficina actualice el programa de gestión (precios, altas, bajas).', 'izq')}
+          </h3>
+          <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">
+            Cuando termines de actualizar los catálogos, pulsa el botón para enviar el resumen.
+            El sistema calcula automáticamente lo que ha cambiado desde el último envío.
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+            <button class="btn btn-primary" onclick="abrirEnviarResumenOficina()">✉️ Enviar resumen a oficina</button>
+            <button class="btn btn-secondary btn-pequeno" onclick="verHistorialResumenes()">📋 Ver últimos envíos</button>
+          </div>
+          <div style="font-size:12px;font-weight:600;margin-top:16px;margin-bottom:6px">Destinatarios (oficina):</div>
+          <div id="office-recipients-lista">
+            <div style="color:var(--gris-texto);font-size:12px;padding:8px">Cargando…</div>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:8px">
+            <button class="btn btn-secondary btn-pequeno" onclick="abrirNuevoDestinatarioOficina()">+ Nuevo destinatario</button>
+            <button class="btn btn-secondary btn-pequeno" onclick="seedDestinatariosOficina(this)">🌱 Añadir los 4 iniciales</button>
+          </div>
+        </div>
+
         <div id="config-msg"></div>
       </div>
     `;
@@ -4049,6 +4072,8 @@ async function renderConfiguracion() {
     cargarListaCategorias();
     // Cargar carpetas MEGA
     cargarCarpetasMega();
+    // Cargar destinatarios oficina
+    cargarDestinatariosOficina();
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
   }
@@ -5263,6 +5288,230 @@ async function seedCarpetasMega(boton) {
   } finally {
     boton.textContent = t;
     boton.disabled = false;
+  }
+}
+
+// ============================================================================
+// RESUMEN A OFICINA
+// ============================================================================
+async function cargarDestinatariosOficina() {
+  const $lista = document.getElementById('office-recipients-lista');
+  if (!$lista) return;
+  try {
+    const r = await api('/api/admin/office-recipients');
+    const recs = r.recipients || [];
+    if (recs.length === 0) {
+      $lista.innerHTML = `<div style="color:var(--gris-texto);font-size:12px;padding:8px;background:#f9fafb;border-radius:6px">
+        No hay destinatarios. Pulsa "🌱 Añadir los 4 iniciales" para configurar los emails de oficina.
+      </div>`;
+      return;
+    }
+    $lista.innerHTML = `
+      <div style="border:1px solid var(--gris-borde);border-radius:6px;overflow:hidden">
+        ${recs.map(r => `
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid #f3f4f6;${!r.is_active ? 'opacity:0.5' : ''}">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+              <input type="checkbox" ${r.is_active ? 'checked' : ''} onchange="toggleDestinatarioOficina(${r.id}, this.checked)">
+              ${r.is_active ? '✅' : '⚪'}
+            </label>
+            <div style="flex:1">
+              <div style="font-size:13px;font-weight:600">${escape(r.email)}</div>
+              ${r.nombre ? `<div style="font-size:11px;color:var(--gris-texto)">${escape(r.nombre)}</div>` : ''}
+            </div>
+            <button class="btn btn-danger btn-pequeno" onclick="borrarDestinatarioOficina(${r.id}, '${escape(r.email)}', this)">🗑️</button>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } catch (e) {
+    $lista.innerHTML = `<div class="error-msg">Error: ${escape(e.message)}</div>`;
+  }
+}
+
+async function toggleDestinatarioOficina(id, isActive) {
+  try {
+    await api('/api/admin/office-recipients/' + id, {
+      method: 'PUT',
+      body: JSON.stringify({ is_active: isActive })
+    });
+    cargarDestinatariosOficina();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function borrarDestinatarioOficina(id, email, boton) {
+  if (!confirm('¿Borrar el destinatario "' + email + '"?')) return;
+  boton.disabled = true;
+  try {
+    await api('/api/admin/office-recipients/' + id, { method: 'DELETE' });
+    cargarDestinatariosOficina();
+  } catch (e) {
+    alert('Error: ' + e.message);
+    boton.disabled = false;
+  }
+}
+
+async function abrirNuevoDestinatarioOficina() {
+  const email = prompt('Email de oficina:');
+  if (!email || !email.includes('@')) return;
+  const nombre = prompt('Nombre (opcional):') || '';
+  try {
+    await api('/api/admin/office-recipients', {
+      method: 'POST',
+      body: JSON.stringify({ email: email.trim(), nombre: nombre.trim() })
+    });
+    cargarDestinatariosOficina();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function seedDestinatariosOficina(boton) {
+  if (!confirm('¿Añadir los 4 emails iniciales de oficina?\n\n• lomhifar@comercial.com\n• administracion@comercial.com\n• comercial@lomhifar.com\n• lomhifartablet@lomhifar.com')) return;
+  boton.disabled = true;
+  const t = boton.textContent;
+  boton.textContent = '⏳';
+  try {
+    await api('/api/admin/office-recipients/seed', { method: 'POST' });
+    cargarDestinatariosOficina();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  } finally {
+    boton.textContent = t;
+    boton.disabled = false;
+  }
+}
+
+async function abrirEnviarResumenOficina() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width:820px">
+      <div class="modal-header">
+        <h3>✉️ Enviar resumen a oficina</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div id="office-preview-cargando" style="padding:20px;text-align:center;color:var(--gris-texto)">Calculando cambios…</div>
+      <div id="office-preview-contenido" style="display:none"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  try {
+    const p = await api('/api/admin/office-summary/preview');
+    document.getElementById('office-preview-cargando').style.display = 'none';
+    const $c = document.getElementById('office-preview-contenido');
+    $c.style.display = 'block';
+    const total = p.resumen.nuevas + p.resumen.modificadas + p.resumen.eliminadas;
+    $c.innerHTML = `
+      <div style="background:#f9fafb;padding:12px;border-radius:8px;margin-bottom:14px">
+        <div style="font-size:12px;color:var(--gris-texto)">Periodo: ${new Date(p.desde).toLocaleDateString('es-ES')} → hoy</div>
+        <div style="font-size:14px;font-weight:600;margin-top:4px">
+          ${total === 0 ? '✅ Sin cambios' : `${total} cambio${total > 1 ? 's' : ''} en láminas`}
+        </div>
+        <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">
+          ➕ ${p.resumen.nuevas} nuevas · ✏️ ${p.resumen.modificadas} modificadas · 🗑️ ${p.resumen.eliminadas} eliminadas
+        </div>
+      </div>
+
+      ${p.laminas_nuevas.length > 0 ? `
+        <div style="font-size:12px;font-weight:600;color:#16a34a;margin:10px 0 4px 0">➕ Láminas nuevas (${p.laminas_nuevas.length})</div>
+        <div style="max-height:150px;overflow-y:auto;font-size:11px;border:1px solid var(--gris-borde);border-radius:6px;padding:8px">
+          ${p.laminas_nuevas.map(l => `<div style="padding:2px 0">• <b>${escape(l.titulo || '')}</b> · ${escape(l.catalog_name || '')} · ${new Date(l.created_at).toLocaleDateString('es-ES')}</div>`).join('')}
+        </div>
+      ` : ''}
+
+      ${p.laminas_modificadas.length > 0 ? `
+        <div style="font-size:12px;font-weight:600;color:#ca8a04;margin:10px 0 4px 0">✏️ Láminas modificadas (${p.laminas_modificadas.length})</div>
+        <div style="max-height:150px;overflow-y:auto;font-size:11px;border:1px solid var(--gris-borde);border-radius:6px;padding:8px">
+          ${p.laminas_modificadas.map(l => `<div style="padding:2px 0">• <b>${escape(l.titulo || '')}</b> · ${escape(l.catalog_name || '')} · ${new Date(l.created_at).toLocaleDateString('es-ES')}</div>`).join('')}
+        </div>
+      ` : ''}
+
+      ${p.laminas_eliminadas.length > 0 ? `
+        <div style="font-size:12px;font-weight:600;color:#dc2626;margin:10px 0 4px 0">🗑️ Láminas eliminadas (${p.laminas_eliminadas.length})</div>
+        <div style="max-height:150px;overflow-y:auto;font-size:11px;border:1px solid var(--gris-borde);border-radius:6px;padding:8px">
+          ${p.laminas_eliminadas.map(l => `<div style="padding:2px 0">• <b>${escape(l.titulo || '')}</b> · ${escape(l.catalog_name || '')} · ${new Date(l.created_at).toLocaleDateString('es-ES')}</div>`).join('')}
+        </div>
+      ` : ''}
+
+      <div style="font-size:12px;font-weight:600;margin:14px 0 4px 0">📚 Catálogos MEGA que se incluirán (${p.mega_carpetas.length})</div>
+      <div style="max-height:120px;overflow-y:auto;font-size:11px;border:1px solid var(--gris-borde);border-radius:6px;padding:8px">
+        ${p.mega_carpetas.map(f => `<div style="padding:2px 0">• <b>${escape(f.nombre)}</b>${f.ultimo_catalogo ? ` · último: ${escape(f.ultimo_catalogo)} V${f.ultima_version}` : ' · sin backups'}</div>`).join('')}
+      </div>
+
+      <div style="font-size:12px;font-weight:600;margin:14px 0 4px 0">📧 Destinatarios (${p.destinatarios.length})</div>
+      <div style="font-size:11px;background:#f9fafb;padding:8px;border-radius:6px">
+        ${p.destinatarios.map(d => escape(d.email)).join(' · ') || '<span style="color:#dc2626">⚠️ Sin destinatarios configurados</span>'}
+      </div>
+
+      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button id="office-btn-enviar" class="btn btn-primary" ${p.destinatarios.length === 0 ? 'disabled' : ''} onclick="enviarResumenOficinaConfirmar(this)">✉️ Enviar ahora</button>
+      </div>
+      <div id="office-envio-result" style="margin-top:12px"></div>
+    `;
+  } catch (e) {
+    document.getElementById('office-preview-cargando').innerHTML = `<div class="error-msg">Error: ${escape(e.message)}</div>`;
+  }
+}
+
+async function enviarResumenOficinaConfirmar(boton) {
+  if (!confirm('¿Confirmar envío del resumen a la oficina?\n\nSe registrará como enviado y el próximo resumen incluirá solo los cambios posteriores a este.')) return;
+  boton.disabled = true;
+  const t = boton.textContent;
+  boton.textContent = '⏳ Enviando…';
+  try {
+    const r = await api('/api/admin/office-summary/send', { method: 'POST' });
+    const $res = document.getElementById('office-envio-result');
+    if (r.success) {
+      $res.innerHTML = `<div style="padding:12px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;color:#166534;font-size:13px">
+        ✅ Enviado a ${r.enviados} destinatarios (${r.resumen.nuevas} nuevas, ${r.resumen.modificadas} modificadas, ${r.resumen.eliminadas} eliminadas).
+      </div>`;
+      boton.textContent = '✅ Enviado';
+    } else {
+      $res.innerHTML = `<div class="error-msg">Envío parcial. Fallos: ${(r.fallos || []).join(', ')}</div>`;
+      boton.textContent = t;
+      boton.disabled = false;
+    }
+  } catch (e) {
+    document.getElementById('office-envio-result').innerHTML = `<div class="error-msg">Error: ${escape(e.message)}</div>`;
+    boton.textContent = t;
+    boton.disabled = false;
+  }
+}
+
+async function verHistorialResumenes() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `<div class="modal-card"><div class="modal-header"><h3>📋 Últimos envíos</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div><div id="hist-content">Cargando…</div></div>`;
+  document.body.appendChild(modal);
+  try {
+    const r = await api('/api/admin/office-summary/history');
+    const $c = document.getElementById('hist-content');
+    if ((r.history || []).length === 0) {
+      $c.innerHTML = '<div style="color:var(--gris-texto);font-size:13px;padding:12px;text-align:center">No hay envíos todavía.</div>';
+      return;
+    }
+    $c.innerHTML = `
+      <div style="max-height:400px;overflow-y:auto">
+        ${r.history.map(h => `
+          <div style="padding:10px;border-bottom:1px solid var(--gris-borde);font-size:12px">
+            <div style="font-weight:600">📅 ${new Date(h.sent_at).toLocaleString('es-ES')}</div>
+            <div style="color:var(--gris-texto);margin-top:4px">
+              ${h.num_nuevas + h.num_modificadas + h.num_eliminadas} cambios ·
+              ${h.num_nuevas} nuevas · ${h.num_modificadas} mod · ${h.num_eliminadas} elim
+            </div>
+            <div style="color:var(--gris-texto);font-size:11px;margin-top:2px">
+              A: ${(h.destinatarios || []).join(', ')}
+            </div>
+            ${h.sent_by_name ? `<div style="color:var(--gris-texto);font-size:11px">Por: ${escape(h.sent_by_name)}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('hist-content').innerHTML = `<div class="error-msg">Error: ${escape(e.message)}</div>`;
   }
 }
 

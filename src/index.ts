@@ -75,6 +75,46 @@ function borrarUploadSeguro(rutaWeb: string | null | undefined): void {
   }
 }
 
+// ============================================================================
+// AUDIT LOG de laminas (no lanza si falla; nunca debe romper la operacion)
+// tipo_cambio: 'created' | 'updated_image' | 'updated_meta' | 'deleted'
+// ============================================================================
+async function logSheetChange(
+  tipoCambio: 'created' | 'updated_image' | 'updated_meta' | 'deleted',
+  sheetId: number | null,
+  catalogId: number | null,
+  titulo: string | null,
+  campos: any,
+  actor: { id?: number; name?: string } | null
+): Promise<void> {
+  try {
+    // Traer nombre del catalogo para el snapshot (util cuando la lamina
+    // se borra: el catalog_name queda registrado para el email de resumen).
+    let catalogName: string | null = null;
+    if (catalogId) {
+      const c = await pool.query('SELECT name FROM catalogs WHERE id = $1', [catalogId]);
+      catalogName = c.rows[0]?.name || null;
+    }
+    await pool.query(
+      `INSERT INTO sheet_audit_log
+         (sheet_id, catalog_id, catalog_name, titulo, tipo_cambio, campos_json, actor_id, actor_name)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        sheetId,
+        catalogId,
+        catalogName,
+        titulo ? String(titulo).substring(0, 255) : null,
+        tipoCambio,
+        campos ? JSON.stringify(campos) : null,
+        actor?.id || null,
+        actor?.name || null
+      ]
+    );
+  } catch (e: any) {
+    console.warn('[audit-log] no se pudo registrar cambio:', e.message);
+  }
+}
+
 async function generarMiniatura(rutaOriginalAbs: string, nombreOriginal: string): Promise<string | null> {
   try {
     if (!fs.existsSync(rutaOriginalAbs)) return null;
@@ -715,6 +755,53 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_mega_folders_orden ON mega_folders(orden, id);
       CREATE INDEX IF NOT EXISTS idx_mega_folders_user ON mega_folders(user_id);
+
+      -- ===== AUDITORIA DE CAMBIOS EN LAMINAS =====
+      -- Cada operacion sobre sheets (crear/editar/borrar) registra una fila
+      -- aqui con snapshot del titulo y catalog_name (para poder mostrar la
+      -- info despues incluso si la lamina se borro). Usado por el resumen
+      -- semanal a oficina.
+      CREATE TABLE IF NOT EXISTS sheet_audit_log (
+        id            SERIAL PRIMARY KEY,
+        sheet_id      INTEGER,
+        catalog_id    INTEGER,
+        catalog_name  VARCHAR(255),
+        titulo        VARCHAR(255),
+        tipo_cambio   VARCHAR(30) NOT NULL CHECK (tipo_cambio IN ('created','updated_image','updated_meta','deleted')),
+        campos_json   JSONB,
+        actor_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        actor_name    VARCHAR(150),
+        created_at    TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_sheet_audit_catalog ON sheet_audit_log(catalog_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_sheet_audit_sheet ON sheet_audit_log(sheet_id);
+      CREATE INDEX IF NOT EXISTS idx_sheet_audit_created ON sheet_audit_log(created_at DESC);
+
+      -- ===== DESTINATARIOS OFICINA (resumen a oficina) =====
+      CREATE TABLE IF NOT EXISTS office_summary_recipients (
+        id            SERIAL PRIMARY KEY,
+        email         VARCHAR(150) NOT NULL UNIQUE,
+        nombre        VARCHAR(150),
+        is_active     BOOLEAN DEFAULT TRUE,
+        created_at    TIMESTAMP DEFAULT NOW()
+      );
+
+      -- ===== HISTORIAL DE ENVIOS DE RESUMEN =====
+      -- Cada fila = un envio del resumen. Guarda el punto de corte (fecha)
+      -- y a quienes se envio. Permite saber "desde cuando calcular los
+      -- cambios" para el siguiente envio.
+      CREATE TABLE IF NOT EXISTS office_summary_sent (
+        id                 SERIAL PRIMARY KEY,
+        sent_at            TIMESTAMP DEFAULT NOW(),
+        cambios_desde      TIMESTAMP NOT NULL,
+        cambios_hasta      TIMESTAMP NOT NULL,
+        num_nuevas         INTEGER DEFAULT 0,
+        num_modificadas    INTEGER DEFAULT 0,
+        num_eliminadas     INTEGER DEFAULT 0,
+        destinatarios      TEXT[],
+        sent_by            INTEGER REFERENCES users(id) ON DELETE SET NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_office_summary_sent_at ON office_summary_sent(sent_at DESC);
     `;
     await pool.query(schemaSQL);
 
@@ -1852,6 +1939,9 @@ app.post('/api/catalogs/:id/sheets', verifyToken, requireAdmin, upload.single('i
       [catalogId, orden, titulo, notas, imagenPath, miniaturaPath, tags]
     );
     await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
+    await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
+      { orden: r.rows[0].orden, imagen_path: r.rows[0].imagen_path },
+      { id: req.user?.id, name: req.user?.name });
     res.status(201).json({ success: true, sheet: r.rows[0] });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
@@ -1923,6 +2013,9 @@ app.post('/api/catalogs/:id/sheets/bulk', verifyToken, requireAdmin,
           [catalogId, ordenSiguiente, tituloAuto, '', imagenPath, miniaturaPath, '']
         );
         insertadas.push(r.rows[0]);
+        await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
+          { orden: r.rows[0].orden, imagen_path: r.rows[0].imagen_path, origen: 'bulk' },
+          { id: req.user?.id, name: req.user?.name });
         ordenSiguiente++;
       } catch (e: any) {
         errores.push({ archivo: f.originalname, error: e.message });
@@ -2190,6 +2283,9 @@ app.put('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest, r
   try {
     const id = Number(req.params.id);
     const { titulo, notas, tags, enlace_externo_url, enlace_externo_titulo } = req.body;
+    // Snapshot ANTES para saber que cambio
+    const antesR = await pool.query('SELECT titulo, notas, tags FROM sheets WHERE id=$1', [id]);
+    const antes = antesR.rows[0] || {};
     const r = await pool.query(
       `UPDATE sheets SET titulo=$1, notas=$2, tags=$3, enlace_externo_url=$4, enlace_externo_titulo=$5, updated_at=NOW()
        WHERE id=$6 RETURNING *`,
@@ -2198,6 +2294,15 @@ app.put('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest, r
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Lamina no encontrada' });
       return;
+    }
+    // Solo loguear si algo cambio realmente
+    const cambios: any = {};
+    if (antes.titulo !== r.rows[0].titulo) cambios.titulo = { antes: antes.titulo, ahora: r.rows[0].titulo };
+    if (antes.notas !== r.rows[0].notas) cambios.notas = { antes: antes.notas, ahora: r.rows[0].notas };
+    if (antes.tags !== r.rows[0].tags) cambios.tags = { antes: antes.tags, ahora: r.rows[0].tags };
+    if (Object.keys(cambios).length > 0) {
+      await logSheetChange('updated_meta', id, r.rows[0].catalog_id, r.rows[0].titulo,
+        cambios, { id: req.user?.id, name: req.user?.name });
     }
     res.json({ success: true, sheet: r.rows[0] });
   } catch (e) {
@@ -2232,6 +2337,9 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
     // Borrar archivos antiguos del disco (no bloquea respuesta si falla)
     borrarUploadSeguro(oldImagen);
     borrarUploadSeguro(oldMini);
+    await logSheetChange('updated_image', id, r.rows[0].catalog_id, r.rows[0].titulo,
+      { imagen_path_nueva: nuevoPath, imagen_path_anterior: oldImagen },
+      { id: req.user?.id, name: req.user?.name });
     res.json({ success: true, sheet: r.rows[0] });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
@@ -2242,6 +2350,9 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
 app.delete('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
+    // Snapshot ANTES para audit
+    const antesR = await pool.query('SELECT catalog_id, titulo, tags FROM sheets WHERE id=$1', [id]);
+    const antes = antesR.rows[0];
     const r = await pool.query('DELETE FROM sheets WHERE id = $1 RETURNING imagen_path, miniatura_path', [id]);
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Lamina no encontrada' });
@@ -2250,6 +2361,10 @@ app.delete('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest
     // Limpiar archivos huerfanos en disco
     borrarUploadSeguro(r.rows[0].imagen_path);
     borrarUploadSeguro(r.rows[0].miniatura_path);
+    if (antes) {
+      await logSheetChange('deleted', id, antes.catalog_id, antes.titulo,
+        { tags: antes.tags }, { id: req.user?.id, name: req.user?.name });
+    }
     res.json({ success: true });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
@@ -2386,6 +2501,9 @@ app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadP
         [catalogId, ordenSiguiente, titulo, imagenPath, miniaturaPath]
       );
       laminasCreadas.push(r.rows[0]);
+      await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
+        { orden: r.rows[0].orden, imagen_path: r.rows[0].imagen_path, origen: 'from-pdf' },
+        { id: req.user?.id, name: req.user?.name });
       ordenSiguiente++;
     }
 
@@ -4464,6 +4582,334 @@ app.post('/api/admin/mega-folders/seed', verifyToken, requireRealAdmin, async (_
       });
     }
     res.json({ success: true, resultados });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================================
+// OFFICE SUMMARY - resumen a oficina de cambios en catalogos + links MEGA.
+// Se envia manualmente cuando el admin termina de actualizar los catalogos.
+// ============================================================================
+
+// ---- CRUD destinatarios ----
+app.get('/api/admin/office-recipients', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query('SELECT * FROM office_summary_recipients ORDER BY id');
+    res.json({ success: true, recipients: r.rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/admin/office-recipients', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { email, nombre } = req.body || {};
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) {
+      res.status(400).json({ success: false, error: 'Email invalido' });
+      return;
+    }
+    const ins = await pool.query(
+      `INSERT INTO office_summary_recipients (email, nombre) VALUES ($1, $2)
+       ON CONFLICT (email) DO UPDATE SET nombre = EXCLUDED.nombre, is_active = TRUE
+       RETURNING *`,
+      [String(email).trim().toLowerCase(), nombre ? String(nombre).trim() : null]
+    );
+    res.status(201).json({ success: true, recipient: ins.rows[0] });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.put('/api/admin/office-recipients/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const body = req.body || {};
+    const sets: string[] = [];
+    const params: any[] = [];
+    let idx = 1;
+    if (Object.prototype.hasOwnProperty.call(body, 'email')) {
+      sets.push(`email = $${idx++}`); params.push(String(body.email || '').trim().toLowerCase());
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'nombre')) {
+      sets.push(`nombre = $${idx++}`); params.push(body.nombre ? String(body.nombre).trim() : null);
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'is_active')) {
+      sets.push(`is_active = $${idx++}`); params.push(Boolean(body.is_active));
+    }
+    if (sets.length === 0) {
+      res.status(400).json({ success: false, error: 'Nada que actualizar' });
+      return;
+    }
+    params.push(id);
+    const r = await pool.query(`UPDATE office_summary_recipients SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`, params);
+    if (r.rows.length === 0) { res.status(404).json({ success: false, error: 'No encontrado' }); return; }
+    res.json({ success: true, recipient: r.rows[0] });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete('/api/admin/office-recipients/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query('DELETE FROM office_summary_recipients WHERE id = $1 RETURNING id', [Number(req.params.id)]);
+    if (r.rows.length === 0) { res.status(404).json({ success: false, error: 'No encontrado' }); return; }
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Seed de los 4 emails iniciales de oficina (idempotente)
+app.post('/api/admin/office-recipients/seed', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const emails = [
+      { email: 'lomhifar@comercial.com',       nombre: 'Oficina Lomhifar' },
+      { email: 'administracion@comercial.com', nombre: 'Administracion' },
+      { email: 'comercial@lomhifar.com',       nombre: 'Comercial Lomhifar' },
+      { email: 'lomhifartablet@lomhifar.com',  nombre: 'Tablet Oficina' }
+    ];
+    for (const e of emails) {
+      await pool.query(
+        `INSERT INTO office_summary_recipients (email, nombre) VALUES ($1, $2)
+         ON CONFLICT (email) DO UPDATE SET nombre = EXCLUDED.nombre, is_active = TRUE`,
+        [e.email, e.nombre]
+      );
+    }
+    const r = await pool.query('SELECT * FROM office_summary_recipients ORDER BY id');
+    res.json({ success: true, recipients: r.rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ---- Helper: cargar datos del resumen (cambios + links MEGA) ----
+async function cargarDatosResumen(): Promise<{
+  desde: Date;
+  hasta: Date;
+  laminas_nuevas: any[];
+  laminas_modificadas: any[];
+  laminas_eliminadas: any[];
+  mega_carpetas: any[];
+}> {
+  // Punto de corte: ultima vez que se envio, o hace 30 dias si nunca
+  const lastR = await pool.query('SELECT MAX(sent_at) AS last FROM office_summary_sent');
+  const desde: Date = lastR.rows[0]?.last || new Date(Date.now() - 30 * 24 * 3600 * 1000);
+  const hasta = new Date();
+
+  // Cargar cambios desde 'desde' (agrupados por tipo)
+  const audR = await pool.query(
+    `SELECT a.id, a.sheet_id, a.catalog_id, a.catalog_name, a.titulo,
+            a.tipo_cambio, a.campos_json, a.actor_name, a.created_at
+     FROM sheet_audit_log a
+     WHERE a.created_at > $1
+     ORDER BY a.created_at DESC`,
+    [desde]
+  );
+  const laminas_nuevas: any[] = [];
+  const laminas_modificadas: any[] = [];
+  const laminas_eliminadas: any[] = [];
+  // Deduplicar por sheet_id (nos quedamos con el cambio mas reciente por sheet)
+  const seen = new Set<number>();
+  for (const row of audR.rows) {
+    if (row.sheet_id && seen.has(row.sheet_id)) continue;
+    if (row.sheet_id) seen.add(row.sheet_id);
+    if (row.tipo_cambio === 'created') laminas_nuevas.push(row);
+    else if (row.tipo_cambio === 'deleted') laminas_eliminadas.push(row);
+    else laminas_modificadas.push(row);
+  }
+
+  // Ultimo backup MEGA por carpeta (Eva + laboratorios)
+  const megaR = await pool.query(`
+    SELECT DISTINCT ON (f.id)
+           f.id, f.nombre, f.mega_url, f.user_id, u.name AS user_name, f.descripcion,
+           b.catalog_name AS ultimo_catalogo, b.catalog_version AS ultima_version,
+           b.mega_folder_name AS ultima_subcarpeta, b.created_at AS ultimo_backup_at,
+           b.num_laminas AS ultimas_num_laminas
+    FROM mega_folders f
+    LEFT JOIN mega_backups b ON b.mega_url = f.mega_url
+    WHERE f.is_active = TRUE AND f.mega_url <> ''
+    ORDER BY f.id, b.created_at DESC NULLS LAST
+  `);
+
+  return {
+    desde,
+    hasta,
+    laminas_nuevas,
+    laminas_modificadas,
+    laminas_eliminadas,
+    mega_carpetas: megaR.rows
+  };
+}
+
+// ---- Preview (GET) ----
+app.get('/api/admin/office-summary/preview', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const datos = await cargarDatosResumen();
+    const destinatariosR = await pool.query(`SELECT email, nombre FROM office_summary_recipients WHERE is_active = TRUE ORDER BY id`);
+    res.json({
+      success: true,
+      desde: datos.desde,
+      hasta: datos.hasta,
+      resumen: {
+        nuevas: datos.laminas_nuevas.length,
+        modificadas: datos.laminas_modificadas.length,
+        eliminadas: datos.laminas_eliminadas.length,
+        carpetas_mega: datos.mega_carpetas.length
+      },
+      laminas_nuevas: datos.laminas_nuevas,
+      laminas_modificadas: datos.laminas_modificadas,
+      laminas_eliminadas: datos.laminas_eliminadas,
+      mega_carpetas: datos.mega_carpetas,
+      destinatarios: destinatariosR.rows
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ---- Enviar (POST) ----
+app.post('/api/admin/office-summary/send', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const datos = await cargarDatosResumen();
+    const destR = await pool.query(`SELECT email FROM office_summary_recipients WHERE is_active = TRUE`);
+    const destinatarios: string[] = destR.rows.map((r: any) => r.email);
+    if (destinatarios.length === 0) {
+      res.status(400).json({ success: false, error: 'No hay destinatarios de oficina configurados' });
+      return;
+    }
+
+    const fmt = (d: Date) => new Date(d).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
+    const fmtFecha = (d: Date | string) => new Date(d).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' });
+
+    const seccionMega = datos.mega_carpetas.length === 0 ? '' : `
+      <h3 style="color:#111827;font-size:16px;margin:20px 0 8px 0">📚 Catálogos en MEGA</h3>
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px">
+        ${datos.mega_carpetas.map((f: any) => `
+          <div style="padding:8px 0;border-bottom:1px solid #f3f4f6">
+            <div style="font-weight:600;font-size:13px">
+              <a href="${escapeHtml(f.mega_url)}" style="color:#cc007a;text-decoration:none">☁️ ${escapeHtml(f.nombre)}</a>
+            </div>
+            ${f.ultimo_catalogo ? `<div style="font-size:11px;color:#6b7280;margin-top:2px">
+              Último backup: <b>${escapeHtml(f.ultimo_catalogo)}</b> V${f.ultima_version} · ${f.ultimas_num_laminas} láminas · ${fmtFecha(f.ultimo_backup_at)}
+            </div>` : `<div style="font-size:11px;color:#9ca3af;margin-top:2px">Sin backups todavia</div>`}
+          </div>
+        `).join('')}
+      </div>
+    `;
+
+    const filaLamina = (l: any, tipo: string) => `
+      <tr style="border-bottom:1px solid #f3f4f6">
+        <td style="padding:6px 8px;font-size:12px;font-weight:600;color:#111827">${escapeHtml(l.titulo || '(sin título)')}</td>
+        <td style="padding:6px 8px;font-size:11px;color:#6b7280">${escapeHtml(l.catalog_name || '')}</td>
+        <td style="padding:6px 8px;font-size:11px;color:#6b7280;white-space:nowrap">${fmtFecha(l.created_at)}</td>
+        <td style="padding:6px 8px;font-size:11px;color:#6b7280">${escapeHtml(l.actor_name || '')}</td>
+      </tr>
+    `;
+
+    const seccionCambios = (titulo: string, color: string, items: any[]) => items.length === 0 ? '' : `
+      <h3 style="color:${color};font-size:15px;margin:16px 0 8px 0">${titulo} (${items.length})</h3>
+      <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden">
+        <thead>
+          <tr style="background:#f9fafb">
+            <th style="padding:6px 8px;text-align:left;font-size:11px;color:#374151;font-weight:600">Lámina</th>
+            <th style="padding:6px 8px;text-align:left;font-size:11px;color:#374151;font-weight:600">Catálogo</th>
+            <th style="padding:6px 8px;text-align:left;font-size:11px;color:#374151;font-weight:600">Fecha</th>
+            <th style="padding:6px 8px;text-align:left;font-size:11px;color:#374151;font-weight:600">Por</th>
+          </tr>
+        </thead>
+        <tbody>${items.map(l => filaLamina(l, titulo)).join('')}</tbody>
+      </table>
+    `;
+
+    const totalCambios = datos.laminas_nuevas.length + datos.laminas_modificadas.length + datos.laminas_eliminadas.length;
+    const asunto = `[Lomhifar] Resumen catálogos · ${fmt(datos.hasta)} · ${totalCambios} cambio${totalCambios === 1 ? '' : 's'}`;
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:720px;margin:0 auto;padding:20px;color:#333">
+        <div style="background:linear-gradient(135deg,#cc007a 0%,#a3005f 100%);color:#fff;padding:20px;border-radius:8px 8px 0 0">
+          <h2 style="margin:0;font-size:20px">📊 Resumen catálogos Lomhifar</h2>
+          <p style="margin:6px 0 0 0;opacity:0.9;font-size:13px">
+            Cambios desde ${fmt(datos.desde)} · Enviado ${fmt(datos.hasta)}
+          </p>
+        </div>
+        <div style="background:#fff;padding:20px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px">
+          ${totalCambios === 0
+            ? `<div style="padding:16px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;color:#166534;font-size:13px;text-align:center">
+                 ✅ No ha habido cambios en láminas desde el último envío.
+               </div>`
+            : `<p style="margin:0 0 12px 0;font-size:14px">
+                 Estos son los cambios en las láminas de los catálogos comerciales para que actualicéis
+                 el <b>programa de gestión</b> (precios, altas, bajas, modificaciones).
+               </p>
+               ${seccionCambios('➕ Láminas nuevas', '#16a34a', datos.laminas_nuevas)}
+               ${seccionCambios('✏️ Láminas modificadas', '#ca8a04', datos.laminas_modificadas)}
+               ${seccionCambios('🗑️ Láminas eliminadas', '#dc2626', datos.laminas_eliminadas)}
+              `
+          }
+          ${seccionMega}
+          <hr style="border:none;border-top:1px solid #f3f4f6;margin:20px 0">
+          <p style="font-size:11px;color:#9ca3af;margin:0">
+            Envío manual desde CatalogPRO por el administrador. Los enlaces MEGA apuntan a la carpeta
+            permanente de cada catálogo (dentro está la última versión).
+          </p>
+        </div>
+      </div>
+    `;
+
+    // Enviar a cada destinatario (usa la misma infra que emails de visita)
+    const fallos: string[] = [];
+    for (const dest of destinatarios) {
+      try {
+        const r = await enviarEmailConRedireccion({
+          rol: 'oficina',
+          destinatarioReal: dest,
+          asunto,
+          html
+        });
+        if (!r.ok) fallos.push(dest + ': ' + (r.error || 'fallo'));
+      } catch (e: any) {
+        fallos.push(dest + ': ' + e.message);
+      }
+    }
+
+    // Registrar el envio (para marcar el punto de corte)
+    await pool.query(
+      `INSERT INTO office_summary_sent
+         (sent_at, cambios_desde, cambios_hasta, num_nuevas, num_modificadas, num_eliminadas, destinatarios, sent_by)
+       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7)`,
+      [
+        datos.desde, datos.hasta,
+        datos.laminas_nuevas.length, datos.laminas_modificadas.length, datos.laminas_eliminadas.length,
+        destinatarios, req.user!.id
+      ]
+    );
+
+    res.json({
+      success: fallos.length === 0,
+      enviados: destinatarios.length - fallos.length,
+      fallos: fallos.length > 0 ? fallos : undefined,
+      resumen: {
+        nuevas: datos.laminas_nuevas.length,
+        modificadas: datos.laminas_modificadas.length,
+        eliminadas: datos.laminas_eliminadas.length
+      }
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Historial de envios
+app.get('/api/admin/office-summary/history', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`
+      SELECT s.id, s.sent_at, s.cambios_desde, s.cambios_hasta,
+             s.num_nuevas, s.num_modificadas, s.num_eliminadas,
+             s.destinatarios, s.sent_by, u.name AS sent_by_name
+      FROM office_summary_sent s
+      LEFT JOIN users u ON u.id = s.sent_by
+      ORDER BY s.sent_at DESC LIMIT 30`);
+    res.json({ success: true, history: r.rows });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
