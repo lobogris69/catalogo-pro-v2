@@ -5197,16 +5197,19 @@ function pintarResultadosBackupMega(job) {
         </div>
       `;
     }
+    const rutaInterna = d.ruta_interna || d.folder_name || '';
     return `
       <div style="border:1px solid var(--gris-borde);border-radius:8px;padding:12px;margin-bottom:8px">
         <b>${icono} ${escape(d.user_name)}</b>
-        <div style="font-size:11px;color:var(--gris-texto);margin:4px 0">📁 ${escape(d.folder_name)}</div>
+        <div style="font-size:11px;color:var(--gris-texto);margin:4px 0">
+          El nuevo backup está dentro en 📁 <b>${escape(rutaInterna)}</b>
+        </div>
         <input type="text" value="${escape(d.mega_url)}" readonly onclick="this.select()"
                style="width:100%;padding:6px 10px;border:1px solid var(--gris-borde);border-radius:6px;font-size:12px;font-family:monospace;background:#f9fafb">
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-secondary btn-pequeno" onclick="copiarAlPortapapeles('${escape(d.mega_url)}', this)">📋 Copiar link</button>
           <a href="${escape(d.mega_url)}" target="_blank" class="btn btn-secondary btn-pequeno" style="text-decoration:none">🔗 Abrir en MEGA</a>
-          ${d.user_id ? `<button class="btn btn-primary btn-pequeno" onclick="enviarLinkMegaEmail(${d.user_id}, '${escape(d.mega_url)}', '${escape(job.catalog_name)}', ${job.catalog_version}, this)">✉️ Enviar por email</button>` : ''}
+          ${d.user_id ? `<button class="btn btn-primary btn-pequeno" onclick="enviarLinkMegaEmail(${d.user_id}, '${escape(d.mega_url)}', '${escape(job.catalog_name)}', ${job.catalog_version}, '${escape(rutaInterna)}', this)">✉️ Enviar por email</button>` : ''}
         </div>
       </div>
     `;
@@ -5279,14 +5282,14 @@ function copiarAlPortapapeles(texto, boton) {
   });
 }
 
-async function enviarLinkMegaEmail(userId, url, catalogName, version, boton) {
+async function enviarLinkMegaEmail(userId, url, catalogName, version, folderName, boton) {
   boton.disabled = true;
   const t = boton.textContent;
   boton.textContent = '⏳ Enviando...';
   try {
     const r = await api('/api/admin/mega-backup/send-email', {
       method: 'POST',
-      body: JSON.stringify({ user_id: userId, mega_url: url, catalog_name: catalogName, catalog_version: version })
+      body: JSON.stringify({ user_id: userId, mega_url: url, catalog_name: catalogName, catalog_version: version, folder_name: folderName })
     });
     if (r.success) {
       boton.textContent = '✅ Enviado';

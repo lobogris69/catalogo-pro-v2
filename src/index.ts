@@ -694,6 +694,21 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_mega_catalog ON mega_backups(catalog_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_mega_user ON mega_backups(destino_user_id, created_at DESC);
+
+      -- ===== MEGA SHARE LINKS (link permanente por comercial o /General/) =====
+      -- Compartir cada subcarpeta de cada catalogo era rechazado por MEGA
+      -- (rate-limit desde IPs de servidor). Nueva estrategia: compartir UNA
+      -- VEZ la carpeta raiz del comercial (o /General/). El link no cambia;
+      -- el comercial siempre entra al mismo sitio y ve todos SUS catalogos.
+      CREATE TABLE IF NOT EXISTS mega_share_links (
+        id            SERIAL PRIMARY KEY,
+        tipo          VARCHAR(20) NOT NULL CHECK (tipo IN ('comercial','general')),
+        user_id       INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        mega_url      TEXT NOT NULL,
+        folder_name   VARCHAR(255) NOT NULL,
+        created_at    TIMESTAMP DEFAULT NOW(),
+        UNIQUE(tipo, user_id)
+      );
     `;
     await pool.query(schemaSQL);
 
@@ -3836,6 +3851,60 @@ app.post('/api/admin/backfill-thumbnails', verifyToken, requireRealAdmin, async 
 // devuelve nombre del usuario y espacio disponible.
 // ============================================================================
 // ============================================================================
+// MEGA SHARE LINK - link permanente por comercial (o /General/)
+// - Consulta cache en tabla mega_share_links
+// - Si no existe, asegura la carpeta en MEGA y genera share link
+// - Guarda para reutilizacion futura
+// ============================================================================
+async function obtenerOCrearShareLink(
+  tipo: 'comercial' | 'general',
+  userId: number | null,
+  userName: string
+): Promise<{ mega_url: string; folder_name: string; reutilizado: boolean }> {
+  // 1) Buscar en cache
+  const cached = await pool.query(
+    tipo === 'general'
+      ? `SELECT mega_url, folder_name FROM mega_share_links WHERE tipo = 'general'`
+      : `SELECT mega_url, folder_name FROM mega_share_links WHERE tipo = 'comercial' AND user_id = $1`,
+    tipo === 'general' ? [] : [userId]
+  );
+  if (cached.rows.length > 0 && cached.rows[0].mega_url) {
+    return {
+      mega_url: cached.rows[0].mega_url,
+      folder_name: cached.rows[0].folder_name,
+      reutilizado: true
+    };
+  }
+  // 2) No hay -> asegurar carpeta en MEGA
+  const storage = await getMegaStorage();
+  const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
+  let carpeta;
+  let folderName;
+  if (tipo === 'general') {
+    carpeta = await ensureFolder(rootCP, GENERAL_FOLDER);
+    folderName = GENERAL_FOLDER;
+  } else {
+    const comerciales = await ensureFolder(rootCP, COMERCIALES_FOLDER);
+    folderName = sanitizeName(userName);
+    carpeta = await ensureFolder(comerciales, folderName);
+  }
+  // 3) Generar share link con reintentos
+  const megaUrl = await shareFolderLink(carpeta);
+  // 4) Guardar (ON CONFLICT UPDATE por si otra request corrio en paralelo)
+  await pool.query(
+    tipo === 'general'
+      ? `INSERT INTO mega_share_links (tipo, user_id, mega_url, folder_name)
+         VALUES ('general', NULL, $1, $2)
+         ON CONFLICT (tipo, user_id) DO UPDATE SET mega_url = EXCLUDED.mega_url`
+      : `INSERT INTO mega_share_links (tipo, user_id, mega_url, folder_name)
+         VALUES ('comercial', $1, $2, $3)
+         ON CONFLICT (tipo, user_id) DO UPDATE SET mega_url = EXCLUDED.mega_url`,
+    tipo === 'general' ? [megaUrl, folderName] : [userId, megaUrl, folderName]
+  );
+  return { mega_url: megaUrl, folder_name: folderName, reutilizado: false };
+}
+
+// ============================================================================
 // MEGA BACKUP - jobs asincronos con progreso
 // ============================================================================
 // Los jobs viven en memoria. Un catalogo de 400 laminas puede tardar 10+ min
@@ -3857,10 +3926,11 @@ interface MegaJob {
     tipo: 'comercial' | 'general';
     user_id: number | null;
     user_name: string;
-    folder_name: string;
-    mega_url?: string;
+    folder_name: string; // nombre de la carpeta del catalogo (subcarpeta)
+    ruta_interna?: string; // ruta dentro de MEGA para localizar el catalogo desde el link raiz
+    mega_url?: string; // link publico a la carpeta RAIZ del comercial (o /General/)
     error?: string;
-    backup_id?: number; // id de la fila en tabla mega_backups (para reintentar link)
+    backup_id?: number; // id de la fila en tabla mega_backups
   }>;
   error?: string;
   started_at: number;
@@ -3961,13 +4031,18 @@ async function ejecutarBackupMega(job: MegaJob): Promise<void> {
         }
       }
 
-      // Generar link publico compartido de la carpeta
-      job.fase = `[${destino.user_name}] Generando enlace publico...`;
+      // NUEVA ESTRATEGIA: no compartir la subcarpeta del catalogo (MEGA
+      // rate-limitea share desde IPs de servidor). Compartir UNA VEZ la
+      // carpeta raiz del comercial (o /General/) y reutilizar el link.
+      job.fase = `[${destino.user_name}] Obteniendo enlace raiz...`;
       try {
-        destino.mega_url = await shareFolderLink(carpetaSubida);
+        const share = await obtenerOCrearShareLink(destino.tipo, destino.user_id, destino.user_name);
+        destino.mega_url = share.mega_url;
+        // Guardar en el destino la ruta interna donde encontrar el catalogo
+        (destino as any).ruta_interna = carpetaCat;
       } catch (e: any) {
-        destino.error = 'no se pudo generar link: ' + e.message;
-        console.error('[mega-backup] share link fallo:', e.message);
+        destino.error = 'no se pudo obtener link raiz: ' + e.message;
+        console.error('[mega-backup] share link raiz fallo:', e.message);
       }
 
       // Guardar en tabla historial y capturar id para permitir reintento del link
@@ -4184,7 +4259,7 @@ app.get('/api/admin/mega-backup/regenerate-link/status/:id', verifyToken, requir
 // Enviar por email un link MEGA al comercial destinatario
 app.post('/api/admin/mega-backup/send-email', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const { user_id, mega_url, catalog_name, catalog_version } = req.body || {};
+    const { user_id, mega_url, catalog_name, catalog_version, folder_name } = req.body || {};
     if (!user_id || !mega_url || !catalog_name) {
       res.status(400).json({ success: false, error: 'Faltan user_id / mega_url / catalog_name' });
       return;
@@ -4218,14 +4293,19 @@ app.post('/api/admin/mega-backup/send-email', verifyToken, requireRealAdmin, asy
             podrás abrir esta carpeta desde el móvil y presentar el catálogo al cliente con el visor de fotos.
           </p>
           <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:14px 0">
-            <div style="font-size:11px;text-transform:uppercase;color:#be185d;font-weight:700;margin-bottom:4px">📚 Catálogo</div>
+            <div style="font-size:11px;text-transform:uppercase;color:#be185d;font-weight:700;margin-bottom:4px">📚 Nuevo backup</div>
             <div style="font-size:16px;font-weight:600;color:#111827">${escapeHtml(catalog_name)} · V${catalog_version || '?'}</div>
+            ${folder_name ? `<div style="font-size:12px;color:#6b7280;margin-top:6px">📁 Entra en la subcarpeta: <b>${escapeHtml(folder_name)}</b></div>` : ''}
           </div>
           <div style="text-align:center;margin:24px 0">
             <a href="${escapeHtml(mega_url)}" style="display:inline-block;background:#cc007a;color:#fff;padding:12px 28px;text-decoration:none;border-radius:6px;font-weight:600;font-size:14px">
-              ☁️ Abrir carpeta en MEGA
+              ☁️ Abrir tu carpeta en MEGA
             </a>
           </div>
+          <p style="font-size:12px;color:#6b7280;margin:0 0 14px 0">
+            Este enlace es <b>permanente</b> y lleva a <b>tu carpeta personal</b> en MEGA.
+            Ahí verás el histórico de todos tus catálogos. Guárdalo en favoritos.
+          </p>
           <p style="font-size:12px;color:#6b7280;margin:14px 0 0 0">
             Enlace directo: <a href="${escapeHtml(mega_url)}" style="color:#cc007a;word-break:break-all">${escapeHtml(mega_url)}</a>
           </p>
