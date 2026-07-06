@@ -21,6 +21,7 @@ import {
   sanitizeName,
   nombreCarpetaCatalogo,
   nombreLaminaOrdenada,
+  debugCredenciales,
   ROOT_FOLDER,
   COMERCIALES_FOLDER,
   GENERAL_FOLDER
@@ -3834,12 +3835,11 @@ app.post('/api/admin/backfill-thumbnails', verifyToken, requireRealAdmin, async 
 // devuelve nombre del usuario y espacio disponible.
 // ============================================================================
 app.get('/api/admin/mega-test', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  const cred = debugCredenciales();
   try {
     const t0 = Date.now();
     const storage = await getMegaStorage();
     const loginMs = Date.now() - t0;
-    // Info basica
-    const email = process.env.MEGA_EMAIL;
     const rootHijos = (storage.root.children || []).length;
     // Buscar/crear estructura raiz de nuestro backup
     const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
@@ -3848,7 +3848,7 @@ app.get('/api/admin/mega-test', verifyToken, requireRealAdmin, async (_req: Auth
     res.json({
       success: true,
       login_ms: loginMs,
-      email_configurado: email,
+      credenciales: cred,
       root_folders_en_mega: rootHijos,
       backup_root_creado: '/' + ROOT_FOLDER,
       estructura_lista: true
@@ -3857,6 +3857,7 @@ app.get('/api/admin/mega-test', verifyToken, requireRealAdmin, async (_req: Auth
     res.status(500).json({
       success: false,
       error: e.message,
+      credenciales_diagnostico: cred,
       hint: 'Verifica MEGA_EMAIL y MEGA_PASSWORD en Railway env vars'
     });
   }

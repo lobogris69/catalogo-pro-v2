@@ -24,8 +24,9 @@ const LOGIN_TTL_MS = 60 * 60 * 1000; // re-login cada 1h
  * Si el login TTL expiro o nunca se hizo, reintenta.
  */
 export async function getMegaStorage(): Promise<any> {
-  const email = process.env.MEGA_EMAIL;
-  const password = process.env.MEGA_PASSWORD;
+  // trim por si al copiar la contrasena en Railway se colaron espacios/newlines
+  const email = (process.env.MEGA_EMAIL || '').trim();
+  const password = (process.env.MEGA_PASSWORD || '').trim();
   if (!email || !password) {
     throw new Error('MEGA_EMAIL/MEGA_PASSWORD no configuradas en env vars');
   }
@@ -40,6 +41,31 @@ export async function getMegaStorage(): Promise<any> {
   _storage = storage;
   _lastLoginAt = now;
   return storage;
+}
+
+/**
+ * Diagnostico de credenciales - devuelve info NO SENSIBLE para verificar
+ * que las env vars llegan tal cual el usuario espera.
+ */
+export function debugCredenciales(): {
+  email: string;
+  email_len: number;
+  password_len: number;
+  password_first2: string;
+  password_last2: string;
+  password_tiene_espacios_raros: boolean;
+} {
+  const emailRaw = process.env.MEGA_EMAIL || '';
+  const passRaw = process.env.MEGA_PASSWORD || '';
+  const passwordTrim = passRaw.trim();
+  return {
+    email: emailRaw.trim(),
+    email_len: emailRaw.length,
+    password_len: passRaw.length,
+    password_first2: passwordTrim.substring(0, 2),
+    password_last2: passwordTrim.substring(Math.max(0, passwordTrim.length - 2)),
+    password_tiene_espacios_raros: passRaw !== passwordTrim || /\s/.test(passwordTrim)
+  };
 }
 
 /**
