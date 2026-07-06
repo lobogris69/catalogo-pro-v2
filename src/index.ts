@@ -4346,26 +4346,45 @@ app.post('/api/admin/mega-folders', verifyToken, requireRealAdmin, async (req: A
 app.put('/api/admin/mega-folders/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { mega_url, user_id, descripcion, orden, is_active, nombre } = req.body || {};
+    const body = req.body || {};
+    // Solo actualizar los campos que VIENEN en el body. Los que no vienen NO
+    // se tocan (bug anterior: los ponia a null).
+    const sets: string[] = [];
+    const params: any[] = [];
+    let idx = 1;
+    if (Object.prototype.hasOwnProperty.call(body, 'nombre')) {
+      sets.push(`nombre = $${idx++}`);
+      params.push(String(body.nombre || '').trim().substring(0, 200));
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'mega_url')) {
+      sets.push(`mega_url = $${idx++}`);
+      params.push(String(body.mega_url || '').trim());
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'user_id')) {
+      sets.push(`user_id = $${idx++}`);
+      params.push(body.user_id ? Number(body.user_id) : null);
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'descripcion')) {
+      sets.push(`descripcion = $${idx++}`);
+      params.push(body.descripcion ? String(body.descripcion).trim().substring(0, 255) : null);
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'orden')) {
+      sets.push(`orden = $${idx++}`);
+      params.push(Number(body.orden) || 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'is_active')) {
+      sets.push(`is_active = $${idx++}`);
+      params.push(Boolean(body.is_active));
+    }
+    if (sets.length === 0) {
+      res.status(400).json({ success: false, error: 'No hay campos que actualizar' });
+      return;
+    }
+    sets.push(`updated_at = NOW()`);
+    params.push(id);
     const r = await pool.query(
-      `UPDATE mega_folders SET
-         nombre = COALESCE($1, nombre),
-         mega_url = COALESCE($2, mega_url),
-         user_id = $3,
-         descripcion = $4,
-         orden = COALESCE($5, orden),
-         is_active = COALESCE($6, is_active),
-         updated_at = NOW()
-       WHERE id = $7 RETURNING *`,
-      [
-        nombre !== undefined ? String(nombre).trim().substring(0, 200) : null,
-        mega_url !== undefined ? String(mega_url).trim() : null,
-        user_id !== undefined ? (user_id ? Number(user_id) : null) : undefined === undefined ? null : null,
-        descripcion !== undefined ? (descripcion ? String(descripcion).trim().substring(0, 255) : null) : null,
-        orden !== undefined ? Number(orden) : null,
-        is_active !== undefined ? Boolean(is_active) : null,
-        id
-      ]
+      `UPDATE mega_folders SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`,
+      params
     );
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Carpeta no encontrada' });
