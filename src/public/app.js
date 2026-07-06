@@ -5220,29 +5220,51 @@ function pintarResultadosBackupMega(job) {
 async function reintentarLinkMega(backupId, boton) {
   boton.disabled = true;
   const t = boton.textContent;
-  boton.textContent = '⏳ Reintentando (hasta 50s)...';
+  boton.textContent = '⏳ Iniciando reintento...';
   try {
-    const r = await api('/api/admin/mega-backup/regenerate-link/' + backupId, { method: 'POST' });
-    if (r.success && r.mega_url) {
-      // Reemplazar el bloque rojo por uno verde con link
+    // Disparar el reintento (respuesta inmediata, corre en background)
+    await api('/api/admin/mega-backup/regenerate-link/' + backupId, { method: 'POST' });
+    // Polling de status (hasta 2 minutos)
+    let ticks = 0;
+    const finalizarConLink = (megaUrl) => {
       const bloque = boton.closest('div[style*="fef2f2"]');
       if (bloque) {
         bloque.style.background = '#f0fdf4';
         bloque.style.borderColor = '#22c55e';
         bloque.innerHTML = `
           <b>✅ Link generado</b>
-          <input type="text" value="${escape(r.mega_url)}" readonly onclick="this.select()"
+          <input type="text" value="${escape(megaUrl)}" readonly onclick="this.select()"
                  style="width:100%;padding:6px 10px;margin-top:8px;border:1px solid var(--gris-borde);border-radius:6px;font-size:12px;font-family:monospace;background:#fff">
           <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-secondary btn-pequeno" onclick="copiarAlPortapapeles('${escape(r.mega_url)}', this)">📋 Copiar link</button>
-            <a href="${escape(r.mega_url)}" target="_blank" class="btn btn-secondary btn-pequeno" style="text-decoration:none">🔗 Abrir en MEGA</a>
+            <button class="btn btn-secondary btn-pequeno" onclick="copiarAlPortapapeles('${escape(megaUrl)}', this)">📋 Copiar link</button>
+            <a href="${escape(megaUrl)}" target="_blank" class="btn btn-secondary btn-pequeno" style="text-decoration:none">🔗 Abrir en MEGA</a>
           </div>
         `;
       }
-    } else {
-      boton.textContent = '❌ ' + (r.error || 'sigue fallando');
-      setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 3000);
-    }
+    };
+    const poll = setInterval(async () => {
+      ticks++;
+      try {
+        const s = await api('/api/admin/mega-backup/regenerate-link/status/' + backupId);
+        if (s.status === 'done' && s.mega_url) {
+          clearInterval(poll);
+          finalizarConLink(s.mega_url);
+          return;
+        }
+        boton.textContent = `⏳ Reintentando... ${s.duracion_s || ticks * 3}s`;
+        if (s.status === 'error') {
+          clearInterval(poll);
+          boton.textContent = '❌ ' + (s.error || 'falló');
+          setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 3500);
+          return;
+        }
+      } catch (_) { /* reintentar */ }
+      if (ticks > 40) {
+        clearInterval(poll);
+        boton.textContent = '❌ timeout (2 min)';
+        setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 3500);
+      }
+    }, 3000);
   } catch (e) {
     boton.textContent = '❌ Error red';
     setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 3000);

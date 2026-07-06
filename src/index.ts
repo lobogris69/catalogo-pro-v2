@@ -22,6 +22,7 @@ import {
   nombreCarpetaCatalogo,
   nombreLaminaOrdenada,
   debugCredenciales,
+  invalidarSesionMega,
   ROOT_FOLDER,
   COMERCIALES_FOLDER,
   GENERAL_FOLDER
@@ -4089,39 +4090,95 @@ app.get('/api/admin/mega-backup/history/:id', verifyToken, requireRealAdmin, asy
 // Regenera el link publico de una carpeta MEGA cuya URL fallo al crear
 // (tipico caso: share() dio EAGAIN inicialmente). Encuentra la carpeta
 // en MEGA por su ruta -> comercial/general -> nombre_carpeta.
+// Track de operaciones de regenerar link en curso (para polling)
+const regenLinkJobs = new Map<number, { status: 'running' | 'done' | 'error'; mega_url?: string; error?: string; started_at: number }>();
+
 app.post('/api/admin/mega-backup/regenerate-link/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  const backupId = Number(req.params.id);
   try {
-    const backupId = Number(req.params.id);
-    const r = await pool.query(
-      `SELECT id, destino_tipo, destino_user_name, mega_folder_name FROM mega_backups WHERE id = $1`,
-      [backupId]
-    );
-    if (r.rows.length === 0) {
+    // Si ya se completo antes, devolver directamente
+    const dbCheck = await pool.query(`SELECT mega_url FROM mega_backups WHERE id = $1`, [backupId]);
+    if (dbCheck.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Backup no encontrado' });
       return;
     }
-    const b = r.rows[0];
-    const storage = await getMegaStorage();
-    const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
-    let parent;
-    if (b.destino_tipo === 'general') {
-      parent = await ensureFolder(rootCP, GENERAL_FOLDER);
-    } else {
-      const comerciales = await ensureFolder(rootCP, COMERCIALES_FOLDER);
-      parent = await ensureFolder(comerciales, sanitizeName(b.destino_user_name || ''));
-    }
-    // Buscar la carpeta del backup (no crear si no existe)
-    const carpeta = (parent.children || []).find((c: any) => c.directory && c.name === b.mega_folder_name);
-    if (!carpeta) {
-      res.status(404).json({ success: false, error: 'Carpeta ya no existe en MEGA. Vuelve a lanzar backup.' });
+    if (dbCheck.rows[0].mega_url) {
+      res.json({ success: true, mega_url: dbCheck.rows[0].mega_url });
       return;
     }
-    const url = await shareFolderLink(carpeta);
-    await pool.query(`UPDATE mega_backups SET mega_url = $1 WHERE id = $2`, [url, backupId]);
-    res.json({ success: true, mega_url: url });
+    // Si hay un job en curso para este backup, esperarlo (polling)
+    const existing = regenLinkJobs.get(backupId);
+    if (existing && existing.status === 'running') {
+      res.json({ success: false, error: 'Ya hay un intento en curso, espera unos segundos y reintenta' });
+      return;
+    }
+    if (existing && existing.status === 'done' && existing.mega_url) {
+      res.json({ success: true, mega_url: existing.mega_url });
+      return;
+    }
+    // Arrancar en background
+    regenLinkJobs.set(backupId, { status: 'running', started_at: Date.now() });
+    (async () => {
+      try {
+        const r = await pool.query(
+          `SELECT id, destino_tipo, destino_user_name, mega_folder_name FROM mega_backups WHERE id = $1`,
+          [backupId]
+        );
+        const b = r.rows[0];
+        // Sesion fresca para evitar rate-limit de session anterior
+        invalidarSesionMega();
+        const storage = await getMegaStorage();
+        const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
+        let parent;
+        if (b.destino_tipo === 'general') {
+          parent = await ensureFolder(rootCP, GENERAL_FOLDER);
+        } else {
+          const comerciales = await ensureFolder(rootCP, COMERCIALES_FOLDER);
+          parent = await ensureFolder(comerciales, sanitizeName(b.destino_user_name || ''));
+        }
+        const carpeta = (parent.children || []).find((c: any) => c.directory && c.name === b.mega_folder_name);
+        if (!carpeta) throw new Error('Carpeta ya no existe en MEGA. Vuelve a lanzar backup.');
+        const url = await shareFolderLink(carpeta);
+        await pool.query(`UPDATE mega_backups SET mega_url = $1 WHERE id = $2`, [url, backupId]);
+        regenLinkJobs.set(backupId, { status: 'done', mega_url: url, started_at: existing?.started_at || Date.now() });
+      } catch (e: any) {
+        regenLinkJobs.set(backupId, { status: 'error', error: e.message, started_at: existing?.started_at || Date.now() });
+        console.error('[regenerate-link] backup ' + backupId + ' fallo:', e.message);
+      }
+    })();
+    // Responder al instante con "en curso" - cliente hace polling a GET status
+    res.json({ success: false, status: 'running', error: 'Regenerando en background, haz polling a /status/' + backupId });
   } catch (e: any) {
+    regenLinkJobs.set(backupId, { status: 'error', error: e.message, started_at: Date.now() });
     res.status(500).json({ success: false, error: e.message });
   }
+});
+
+// Polling del estado del regenerate
+app.get('/api/admin/mega-backup/regenerate-link/status/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  const backupId = Number(req.params.id);
+  // Consultar BD primero (fuente de verdad)
+  const dbR = await pool.query(`SELECT mega_url FROM mega_backups WHERE id = $1`, [backupId]);
+  if (dbR.rows.length === 0) {
+    res.status(404).json({ success: false, error: 'Backup no encontrado' });
+    return;
+  }
+  if (dbR.rows[0].mega_url) {
+    res.json({ success: true, status: 'done', mega_url: dbR.rows[0].mega_url });
+    return;
+  }
+  const job = regenLinkJobs.get(backupId);
+  if (!job) {
+    res.json({ success: false, status: 'nunca_intentado' });
+    return;
+  }
+  res.json({
+    success: job.status === 'done',
+    status: job.status,
+    mega_url: job.mega_url,
+    error: job.error,
+    duracion_s: Math.round((Date.now() - job.started_at) / 1000)
+  });
 });
 
 // Enviar por email un link MEGA al comercial destinatario

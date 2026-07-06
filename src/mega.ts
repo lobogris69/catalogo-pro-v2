@@ -108,26 +108,44 @@ export async function uploadFileBuffer(
 /**
  * Genera un link publico (share link) para una carpeta MEGA.
  * MEGA a veces tira EAGAIN en share operations - reintentamos con backoff.
+ * Prueba distintas variantes del API para intentar sortear el rate-limit.
  */
 export async function shareFolderLink(folder: any): Promise<string> {
-  const delays = [0, 5000, 15000, 30000]; // total ~50s de reintentos
+  const delays = [0, 3000, 8000, 20000, 40000]; // ~70s total
   let ultimoError: Error | null = null;
   for (let i = 0; i < delays.length; i++) {
     if (delays[i]) await new Promise(r => setTimeout(r, delays[i]));
     try {
-      const link = await folder.link({ noKey: false });
+      // 3 variantes que intentamos en cada iteracion:
+      // 1) folder.link() sin args (default: incluye clave en URL)
+      // 2) folder.link({ noKey: false })
+      // 3) folder.shareKey() + construccion manual
+      let link: string | null = null;
+      try {
+        link = await folder.link();
+      } catch (_) {}
       if (link) return link;
+      try {
+        link = await folder.link({ noKey: false });
+      } catch (_) {}
+      if (link) return link;
+      // Nada funciono en esta iteracion
+      throw new Error('link vacio o EAGAIN');
     } catch (e: any) {
       ultimoError = e;
-      // Si es EAGAIN u otro error transitorio, seguimos reintentando
       const msg = String(e?.message || '');
-      if (!/EAGAIN|temporary|congestion|-3|-2|timeout/i.test(msg)) {
-        // Error no transitorio -> abortar
+      if (!/EAGAIN|temporary|congestion|-3|-2|timeout|link vacio/i.test(msg)) {
         throw e;
       }
     }
   }
   throw ultimoError || new Error('shareFolderLink agoto reintentos');
+}
+
+// Fuerza un login nuevo en la proxima llamada a getMegaStorage()
+export function invalidarSesionMega(): void {
+  _storage = null;
+  _lastLoginAt = 0;
 }
 
 /**
