@@ -4727,6 +4727,7 @@ async function cargarDatosResumen(): Promise<{
            b.mega_folder_name AS ultima_subcarpeta, b.created_at AS ultimo_backup_at,
            b.num_laminas AS ultimas_num_laminas
     FROM mega_folders f
+    LEFT JOIN users u ON u.id = f.user_id
     LEFT JOIN mega_backups b ON b.mega_url = f.mega_url
     WHERE f.is_active = TRUE AND f.mega_url <> ''
     ORDER BY f.id, b.created_at DESC NULLS LAST
