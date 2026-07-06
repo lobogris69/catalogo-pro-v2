@@ -3859,6 +3859,7 @@ interface MegaJob {
     folder_name: string;
     mega_url?: string;
     error?: string;
+    backup_id?: number; // id de la fila en tabla mega_backups (para reintentar link)
   }>;
   error?: string;
   started_at: number;
@@ -3968,13 +3969,13 @@ async function ejecutarBackupMega(job: MegaJob): Promise<void> {
         console.error('[mega-backup] share link fallo:', e.message);
       }
 
-      // Guardar en tabla historial
+      // Guardar en tabla historial y capturar id para permitir reintento del link
       try {
-        await pool.query(
+        const ins = await pool.query(
           `INSERT INTO mega_backups
              (catalog_id, catalog_name, catalog_version, destino_tipo, destino_user_id,
               destino_user_name, mega_url, mega_folder_name, num_laminas, size_mb, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
           [
             job.catalog_id, cat.name, cat.version,
             destino.tipo, destino.user_id, destino.user_name,
@@ -3983,6 +3984,7 @@ async function ejecutarBackupMega(job: MegaJob): Promise<void> {
             job.created_by
           ]
         );
+        destino.backup_id = ins.rows[0].id;
       } catch (e: any) {
         console.error('[mega-backup] insert historial fallo:', e.message);
       }
@@ -4079,6 +4081,44 @@ app.get('/api/admin/mega-backup/history/:id', verifyToken, requireRealAdmin, asy
       [catalogId]
     );
     res.json({ success: true, backups: r.rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Regenera el link publico de una carpeta MEGA cuya URL fallo al crear
+// (tipico caso: share() dio EAGAIN inicialmente). Encuentra la carpeta
+// en MEGA por su ruta -> comercial/general -> nombre_carpeta.
+app.post('/api/admin/mega-backup/regenerate-link/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const backupId = Number(req.params.id);
+    const r = await pool.query(
+      `SELECT id, destino_tipo, destino_user_name, mega_folder_name FROM mega_backups WHERE id = $1`,
+      [backupId]
+    );
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Backup no encontrado' });
+      return;
+    }
+    const b = r.rows[0];
+    const storage = await getMegaStorage();
+    const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
+    let parent;
+    if (b.destino_tipo === 'general') {
+      parent = await ensureFolder(rootCP, GENERAL_FOLDER);
+    } else {
+      const comerciales = await ensureFolder(rootCP, COMERCIALES_FOLDER);
+      parent = await ensureFolder(comerciales, sanitizeName(b.destino_user_name || ''));
+    }
+    // Buscar la carpeta del backup (no crear si no existe)
+    const carpeta = (parent.children || []).find((c: any) => c.directory && c.name === b.mega_folder_name);
+    if (!carpeta) {
+      res.status(404).json({ success: false, error: 'Carpeta ya no existe en MEGA. Vuelve a lanzar backup.' });
+      return;
+    }
+    const url = await shareFolderLink(carpeta);
+    await pool.query(`UPDATE mega_backups SET mega_url = $1 WHERE id = $2`, [url, backupId]);
+    res.json({ success: true, mega_url: url });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }

@@ -5182,13 +5182,18 @@ async function seguirBackupMega(jobId) {
 
 function pintarResultadosBackupMega(job) {
   const dests = job.destinos || [];
-  const items = dests.map(d => {
+  const items = dests.map((d, idx) => {
     const icono = d.tipo === 'general' ? '🌐' : '👤';
     if (!d.mega_url) {
+      // Las láminas se subieron pero el link falló → botón reintentar link
       return `
-        <div style="border:1px solid #ef4444;border-radius:8px;padding:12px;margin-bottom:8px;background:#fef2f2">
-          <b>${icono} ${escape(d.user_name)}</b><br>
-          <span style="color:#dc2626;font-size:12px">❌ ${escape(d.error || 'sin link')}</span>
+        <div style="border:1px solid #ef4444;border-radius:8px;padding:12px;margin-bottom:8px;background:#fef2f2" data-destino-idx="${idx}">
+          <b>${icono} ${escape(d.user_name)}</b>
+          <div style="font-size:11px;color:var(--gris-texto);margin:4px 0">📁 ${escape(d.folder_name || '')} · ${job.subidas} láminas subidas OK</div>
+          <span style="color:#dc2626;font-size:12px">⚠️ Las fotos SÍ están en MEGA, pero el enlace público falló al crear:<br><small>${escape(d.error || 'error desconocido')}</small></span>
+          ${d.backup_id ? `<div style="margin-top:8px">
+            <button class="btn btn-primary btn-pequeno" onclick="reintentarLinkMega(${d.backup_id}, this)">🔄 Reintentar link</button>
+          </div>` : ''}
         </div>
       `;
     }
@@ -5210,6 +5215,38 @@ function pintarResultadosBackupMega(job) {
     <div style="font-size:13px;font-weight:600;margin-bottom:8px">📤 Enlaces generados (${dests.length})</div>
     ${items}
   `;
+}
+
+async function reintentarLinkMega(backupId, boton) {
+  boton.disabled = true;
+  const t = boton.textContent;
+  boton.textContent = '⏳ Reintentando (hasta 50s)...';
+  try {
+    const r = await api('/api/admin/mega-backup/regenerate-link/' + backupId, { method: 'POST' });
+    if (r.success && r.mega_url) {
+      // Reemplazar el bloque rojo por uno verde con link
+      const bloque = boton.closest('div[style*="fef2f2"]');
+      if (bloque) {
+        bloque.style.background = '#f0fdf4';
+        bloque.style.borderColor = '#22c55e';
+        bloque.innerHTML = `
+          <b>✅ Link generado</b>
+          <input type="text" value="${escape(r.mega_url)}" readonly onclick="this.select()"
+                 style="width:100%;padding:6px 10px;margin-top:8px;border:1px solid var(--gris-borde);border-radius:6px;font-size:12px;font-family:monospace;background:#fff">
+          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-secondary btn-pequeno" onclick="copiarAlPortapapeles('${escape(r.mega_url)}', this)">📋 Copiar link</button>
+            <a href="${escape(r.mega_url)}" target="_blank" class="btn btn-secondary btn-pequeno" style="text-decoration:none">🔗 Abrir en MEGA</a>
+          </div>
+        `;
+      }
+    } else {
+      boton.textContent = '❌ ' + (r.error || 'sigue fallando');
+      setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 3000);
+    }
+  } catch (e) {
+    boton.textContent = '❌ Error red';
+    setTimeout(() => { boton.textContent = t; boton.disabled = false; }, 3000);
+  }
 }
 
 function copiarAlPortapapeles(texto, boton) {
