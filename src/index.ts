@@ -13,6 +13,18 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import dotenv from 'dotenv';
 import sharp from 'sharp';
+import {
+  getMegaStorage,
+  ensureFolder,
+  uploadFileBuffer,
+  shareFolderLink,
+  sanitizeName,
+  nombreCarpetaCatalogo,
+  nombreLaminaOrdenada,
+  ROOT_FOLDER,
+  COMERCIALES_FOLDER,
+  GENERAL_FOLDER
+} from './mega';
 
 const execAsync = promisify(exec);
 
@@ -657,6 +669,29 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_sheet_cat_sheet ON sheet_categorias(sheet_id);
       CREATE INDEX IF NOT EXISTS idx_sheet_cat_cat ON sheet_categorias(categoria_id);
+
+      -- ===== MEGA BACKUPS (historial de respaldos subidos a MEGA) =====
+      -- Cada fila representa una subida a MEGA de un catalogo hacia un destino
+      -- (comercial concreto o General para todos). Se guarda el link publico
+      -- generado para poder reenviarlo por email sin regenerar.
+      CREATE TABLE IF NOT EXISTS mega_backups (
+        id                SERIAL PRIMARY KEY,
+        catalog_id        INTEGER NOT NULL REFERENCES catalogs(id) ON DELETE CASCADE,
+        catalog_name      VARCHAR(255) NOT NULL,
+        catalog_version   INTEGER NOT NULL,
+        destino_tipo      VARCHAR(20) NOT NULL CHECK (destino_tipo IN ('comercial','general')),
+        destino_user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        destino_user_name VARCHAR(150),
+        mega_url          TEXT NOT NULL,
+        mega_folder_name  VARCHAR(500) NOT NULL,
+        num_laminas       INTEGER NOT NULL DEFAULT 0,
+        size_mb           NUMERIC(10,2),
+        email_enviado_at  TIMESTAMP,
+        created_by        INTEGER REFERENCES users(id),
+        created_at        TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_mega_catalog ON mega_backups(catalog_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_mega_user ON mega_backups(destino_user_id, created_at DESC);
     `;
     await pool.query(schemaSQL);
 
@@ -3790,6 +3825,40 @@ app.post('/api/admin/backfill-thumbnails', verifyToken, requireRealAdmin, async 
     });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
+// MEGA BACKUP - endpoint temporal de test para verificar login antes de
+// codificar el flujo completo. GET /api/admin/mega-test -> intenta login,
+// devuelve nombre del usuario y espacio disponible.
+// ============================================================================
+app.get('/api/admin/mega-test', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const t0 = Date.now();
+    const storage = await getMegaStorage();
+    const loginMs = Date.now() - t0;
+    // Info basica
+    const email = process.env.MEGA_EMAIL;
+    const rootHijos = (storage.root.children || []).length;
+    // Buscar/crear estructura raiz de nuestro backup
+    const rootCP = await ensureFolder(storage.root, ROOT_FOLDER);
+    await ensureFolder(rootCP, COMERCIALES_FOLDER);
+    await ensureFolder(rootCP, GENERAL_FOLDER);
+    res.json({
+      success: true,
+      login_ms: loginMs,
+      email_configurado: email,
+      root_folders_en_mega: rootHijos,
+      backup_root_creado: '/' + ROOT_FOLDER,
+      estructura_lista: true
+    });
+  } catch (e: any) {
+    res.status(500).json({
+      success: false,
+      error: e.message,
+      hint: 'Verifica MEGA_EMAIL y MEGA_PASSWORD en Railway env vars'
+    });
   }
 });
 
