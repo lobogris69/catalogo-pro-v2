@@ -58,14 +58,14 @@ function api(endpoint, options = {}) {
     .then(async r => {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
-        // Si el backend dice que el token caducó/no vale, hacemos logout limpio para que el
-        // usuario vea la pantalla de login en vez de un error críptico en cualquier pantalla.
-        if (r.status === 401 && data.error && /token/i.test(data.error)) {
-          // Avisar y desloguear
+        // Cualquier 401 = sesión no válida/caducada → logout limpio y aviso claro,
+        // en vez de un "no autorizado" críptico en medio de cualquier pantalla.
+        if (r.status === 401) {
           setTimeout(() => {
             alert('Tu sesión ha caducado. Vuelve a iniciar sesión.');
             logout();
           }, 0);
+          throw new Error('Sesión caducada');
         }
         throw new Error(data.error || `Error ${r.status}`);
       }
