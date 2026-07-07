@@ -106,7 +106,7 @@ export async function detectarZonasIA(rutaImagenAbs: string): Promise<ZonaDetect
       try {
         resp = await client.chat.completions.create({
           model: 'gpt-4o',
-          max_tokens: 4000,
+          max_tokens: 16000, // subido de 4000 (algunas laminas grandes lo truncaban)
           temperature: 0.1,
           response_format: { type: 'json_object' },
           messages: [
