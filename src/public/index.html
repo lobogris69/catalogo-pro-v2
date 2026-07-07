@@ -66,13 +66,21 @@
               });
             });
 
-            // Cuando se activa un nuevo SW, recargar la página
-            // (solo si el usuario pulsó "actualizar" en el banner)
+            // Cuando se activa un nuevo SW, recargar la página SOLO si el usuario
+            // pulso "Actualizar" en el banner. Si el SW se activa por su cuenta
+            // (comprobacion periodica de fondo), NO recargamos: recargar sacaria al
+            // usuario de lo que este haciendo (p.ej. detiene el backfill de zonas,
+            // pierde un formulario a medias, etc.). El banner sigue visible para que
+            // actualice cuando quiera.
             let recargando = false;
             navigator.serviceWorker.addEventListener('controllerchange', () => {
               if (recargando) return;
+              if (!window._usuarioPidioActualizar) {
+                console.log('[PWA] Nuevo SW activo de fondo — NO recargo (el usuario no lo pidio)');
+                return;
+              }
               recargando = true;
-              console.log('[PWA] Nuevo SW activo, recargando...');
+              console.log('[PWA] Nuevo SW activo, recargando por peticion del usuario...');
               window.location.reload();
             });
 
@@ -87,6 +95,7 @@
 
     // Función global llamada por el banner al pulsar "Actualizar ahora"
     window.aplicarActualizacionPWA = function () {
+      window._usuarioPidioActualizar = true; // habilita la recarga en controllerchange
       if (window._swRegistration && window._swRegistration.waiting) {
         // Decir al SW que espera que se active YA
         window._swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
