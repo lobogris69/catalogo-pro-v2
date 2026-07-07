@@ -4053,6 +4053,21 @@ async function renderConfiguracion() {
           <div id="backfill-tags-out" style="font-size:12px;color:var(--gris-texto);margin-top:8px"></div>
         </div>
 
+        <!-- BLOQUE: Corrección perfil color PNG -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">🎨 Corregir colores oscuros de PNG
+            ${ayuda('Algunos PNG traen un perfil ICC embebido que los navegadores interpretan más oscuro que un visor de fotos. Este proceso quita ese perfil y fuerza sRGB estándar. Sin pérdida de calidad ni de resolución.', 'izq')}
+          </h3>
+          <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">
+            Si las láminas se ven oscuras al presentarlas, pulsa este botón para corregir los perfiles.
+            Solo tocará los PNG que tengan perfil ICC embebido (los ya normalizados se saltan).
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-primary btn-pequeno" onclick="backfillColorPerfil(this)">🎨 Corregir perfiles de color de todas las láminas</button>
+          </div>
+          <div id="backfill-color-out" style="font-size:12px;color:var(--gris-texto);margin-top:8px"></div>
+        </div>
+
         <!-- BLOQUE: Sincronización Sage -->
         <div class="editor-panel" style="margin-top:14px">
           <h3 style="margin-top:0">🔄 Sincronización con Sage
@@ -5372,6 +5387,34 @@ async function backfillTagsIA(boton) {
       totalKo += r.fallidas || 0;
       if ($out) $out.innerHTML = `Procesadas: ${totalOk + totalKo} · OK: ${totalOk} · fallidas: ${totalKo} · restantes: ${r.restantes}`;
       if (r.procesadas === 0 || r.restantes === 0) break;
+    }
+    boton.textContent = '✅ Terminado';
+    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 3000);
+  } catch (e) {
+    boton.textContent = '❌ Error';
+    alert('Error: ' + e.message);
+    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 2500);
+  }
+}
+
+async function backfillColorPerfil(boton) {
+  if (!confirm('¿Corregir el perfil de color de todos los PNG con perfil ICC embebido?\n\nSe procesa en lotes de 40 láminas. Sin pérdida de calidad, misma resolución.\nPuede tardar unos minutos según el número de láminas.')) return;
+  const orig = boton.textContent;
+  boton.disabled = true;
+  const $out = document.getElementById('backfill-color-out');
+  let totalCorregidas = 0, totalSinPerfil = 0, totalErrores = 0, offset = 0, ronda = 0;
+  try {
+    while (ronda < 40) { // seguridad: max 40 lotes de 40 = 1600 laminas
+      ronda++;
+      boton.textContent = '⏳ Lote ' + ronda + '...';
+      const r = await api('/api/admin/backfill-color-profile?limit=40&offset=' + offset, { method: 'POST' });
+      if (!r.success) throw new Error(r.error || 'sin exito');
+      totalCorregidas += r.corregidas || 0;
+      totalSinPerfil += r.sin_perfil || 0;
+      totalErrores += r.errores || 0;
+      offset += r.procesadas || 0;
+      if ($out) $out.innerHTML = `Recorridas: ${offset} / ${r.total} · Corregidas: ${totalCorregidas} · Ya OK: ${totalSinPerfil} · Errores: ${totalErrores}`;
+      if ((r.procesadas || 0) === 0 || offset >= r.total) break;
     }
     boton.textContent = '✅ Terminado';
     setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 3000);

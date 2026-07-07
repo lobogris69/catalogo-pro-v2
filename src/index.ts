@@ -137,6 +137,30 @@ async function logSheetChange(
   }
 }
 
+// Reprocesa un PNG in-place para corregir colores oscuros causados por perfiles
+// ICC embebidos que los navegadores interpretan distinto al visor de fotos.
+// Sin perdida, misma resolucion. Solo actua en PNG con perfil.
+// Devuelve true si tuvo que modificar el archivo.
+async function normalizarPngColor(rutaAbs: string): Promise<boolean> {
+  try {
+    if (!fs.existsSync(rutaAbs)) return false;
+    const ext = path.extname(rutaAbs).toLowerCase();
+    if (ext !== '.png') return false;
+    const meta = await sharp(rutaAbs).metadata();
+    // Solo si hay perfil ICC (los PNG limpios de sRGB no necesitan procesado)
+    if (!meta.hasProfile) return false;
+    const buf = await sharp(rutaAbs)
+      .toColorspace('srgb')
+      .png({ compressionLevel: 9, palette: false, effort: 6 })
+      .toBuffer();
+    fs.writeFileSync(rutaAbs, buf);
+    return true;
+  } catch (e: any) {
+    console.warn('[color-fix] falla en ' + rutaAbs + ':', e?.message || e);
+    return false;
+  }
+}
+
 async function generarMiniatura(rutaOriginalAbs: string, nombreOriginal: string): Promise<string | null> {
   try {
     if (!fs.existsSync(rutaOriginalAbs)) return null;
@@ -2014,6 +2038,8 @@ app.post('/api/catalogs/:id/sheets', verifyToken, requireAdmin, upload.single('i
     const notas = (req.body.notas || '').trim();
     const tags = (req.body.tags || '').trim();
 
+    // Corregir colores oscuros por perfil ICC embebido (solo PNG con perfil)
+    await normalizarPngColor(req.file.path);
     // Generar miniatura WebP ~400px (no bloquea si falla)
     const miniaturaPath = await generarMiniatura(req.file.path, req.file.filename);
 
@@ -2091,6 +2117,8 @@ app.post('/api/catalogs/:id/sheets/bulk', verifyToken, requireAdmin,
         const imagenPath = '/uploads/' + f.filename;
         // Título: el nombre del archivo sin extensión (limpio)
         const tituloAuto = f.originalname.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || `Lámina ${ordenSiguiente}`;
+        // Corregir colores oscuros por perfil ICC embebido (solo PNG con perfil)
+        await normalizarPngColor(f.path);
         // Generar miniatura WebP (si falla queda null y se usa imagen_path)
         const miniaturaPath = await generarMiniatura(f.path, f.filename);
         const r = await pool.query(
@@ -2412,6 +2440,8 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
     const oldMini = oldR.rows[0]?.miniatura_path;
 
     const nuevoPath = '/uploads/' + req.file.filename;
+    // Corregir colores oscuros por perfil ICC embebido
+    await normalizarPngColor(req.file.path);
     // Regenerar miniatura tras sustituir imagen
     const nuevaMini = await generarMiniatura(req.file.path, req.file.filename);
     const r = await pool.query(
@@ -2644,6 +2674,8 @@ app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadP
       const imagenPath = '/uploads/' + archivo;
       const titulo = `Lamina ${ordenSiguiente}`;
       const rutaAbs = path.join(UPLOADS_DIR, archivo);
+      // Corregir colores oscuros por perfil ICC embebido
+      await normalizarPngColor(rutaAbs);
       const miniaturaPath = await generarMiniatura(rutaAbs, archivo);
       const r = await pool.query(
         `INSERT INTO sheets (catalog_id, orden, titulo, imagen_path, miniatura_path)
@@ -4074,6 +4106,61 @@ app.post('/api/geocode-cancel', verifyToken, requireRealAdmin, async (req: AuthR
 // Backfill de miniaturas: recorre las laminas sin miniatura_path y genera la WebP.
 // Idempotente, se puede llamar las veces que haga falta. Devuelve progreso al final.
 // Limit opcional (?limit=50) para procesar en lotes y no exceder el timeout HTTP.
+// Backfill: corrige perfiles ICC de PNG existentes que se ven oscuros en navegador.
+// Recorre laminas cuya imagen es PNG y tiene perfil ICC. Lo elimina in-place con
+// sharp (sin perdida, misma resolucion) y regenera la miniatura WebP. Idempotente.
+app.post('/api/admin/backfill-color-profile', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 40));
+    // Consultar solo laminas con PNG y con miniatura ya generada (para no perder
+    // el resto de la logica de subida). Si necesitamos otras, se procesan aparte.
+    const pend = await pool.query(
+      `SELECT id, imagen_path FROM sheets
+       WHERE imagen_path IS NOT NULL AND imagen_path ILIKE '%.png'
+       ORDER BY id
+       LIMIT $1 OFFSET $2`,
+      [limit, Number(req.query.offset) || 0]
+    );
+    let procesadas = 0, corregidas = 0, sin_perfil = 0, errores = 0;
+    const fallos: any[] = [];
+    for (const row of pend.rows) {
+      procesadas++;
+      let rel = String(row.imagen_path);
+      if (rel.startsWith('/uploads/')) rel = rel.substring('/uploads/'.length);
+      else if (rel.startsWith('uploads/')) rel = rel.substring('uploads/'.length);
+      const abs = path.join(UPLOADS_DIR, rel);
+      if (!abs.startsWith(UPLOADS_DIR) || !fs.existsSync(abs)) {
+        errores++;
+        fallos.push({ id: row.id, motivo: 'archivo no existe en disco' });
+        continue;
+      }
+      try {
+        const modificado = await normalizarPngColor(abs);
+        if (modificado) {
+          corregidas++;
+          // Regenerar miniatura tambien para que las miniaturas usen la misma correccion
+          const nuevaMini = await generarMiniatura(abs, path.basename(abs));
+          if (nuevaMini) {
+            await pool.query('UPDATE sheets SET miniatura_path=$1, updated_at=NOW() WHERE id=$2', [nuevaMini, row.id]);
+          }
+        } else {
+          sin_perfil++;
+        }
+      } catch (e: any) {
+        errores++;
+        fallos.push({ id: row.id, motivo: (e?.message || e).toString().substring(0, 120) });
+      }
+    }
+    const restR = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM sheets
+       WHERE imagen_path IS NOT NULL AND imagen_path ILIKE '%.png'`
+    );
+    res.json({ success: true, procesadas, corregidas, sin_perfil, errores, total: restR.rows[0].n, fallos: fallos.slice(0, 10) });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post('/api/admin/backfill-thumbnails', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 100));
