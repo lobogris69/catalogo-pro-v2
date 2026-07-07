@@ -1242,28 +1242,9 @@ app.put('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequest
   }
 });
 
-// Admin: cambiar contraseña de cualquier usuario
-app.put('/api/users/:id/password', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
-  try {
-    const id = Number(req.params.id);
-    const { new_password } = req.body;
-    if (!new_password || new_password.length < 4) {
-      res.status(400).json({ success: false, error: 'La contraseña debe tener al menos 4 caracteres' });
-      return;
-    }
-    const hash = await bcrypt.hash(new_password, 10);
-    const r = await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2 RETURNING id, email', [hash, id]);
-    if (r.rows.length === 0) {
-      res.status(404).json({ success: false, error: 'Usuario no encontrado' });
-      return;
-    }
-    res.json({ success: true });
-  } catch (e) {
-    res.status(400).json({ success: false, error: (e as Error).message });
-  }
-});
-
 // Cualquier usuario: cambiar su propia contraseña (requiere la actual)
+// IMPORTANTE: esta ruta /me/... DEBE ir ANTES que /:id/... porque el validador
+// global de :id (entero positivo) rechaza "me" y devolveria "Parametro id invalido".
 app.put('/api/users/me/password', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const { current_password, new_password } = req.body;
@@ -1312,6 +1293,27 @@ app.put('/api/users/me/notificaciones', verifyToken, async (req: AuthRequest, re
     const valor = recibir === true || recibir === 'true' || recibir === 1;
     await pool.query('UPDATE users SET recibir_notificaciones=$1 WHERE id=$2', [valor, req.user!.id]);
     res.json({ success: true, recibir_notificaciones: valor });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Admin: cambiar contraseña de cualquier usuario (va DESPUES de las rutas /me/...)
+app.put('/api/users/:id/password', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { new_password } = req.body;
+    if (!new_password || new_password.length < 4) {
+      res.status(400).json({ success: false, error: 'La contraseña debe tener al menos 4 caracteres' });
+      return;
+    }
+    const hash = await bcrypt.hash(new_password, 10);
+    const r = await pool.query('UPDATE users SET password_hash=$1 WHERE id=$2 RETURNING id, email', [hash, id]);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+      return;
+    }
+    res.json({ success: true });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
   }

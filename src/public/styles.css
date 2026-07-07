@@ -167,20 +167,10 @@ html {
   background: white;
   border-bottom: 1px solid var(--gris-borde);
   display: flex;
+  flex-wrap: wrap;            /* que envuelva en varias filas → se ven TODAS las pestañas */
   padding: 0 1rem;
   max-width: 1200px;
   margin: 0 auto;
-  overflow-x: auto;
-  overflow-y: hidden;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
-}
-.navtabs::-webkit-scrollbar {
-  height: 4px;
-}
-.navtabs::-webkit-scrollbar-thumb {
-  background: var(--gris-borde);
-  border-radius: 2px;
 }
 .navtab {
   background: transparent;
