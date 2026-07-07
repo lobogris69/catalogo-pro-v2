@@ -4060,7 +4060,8 @@ async function renderConfiguracion() {
           </h3>
           <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">
             Solo procesa láminas <b>nuevas</b> o <b>que no hayan sido analizadas antes</b>.<br>
-            Coste: ~$0.02 (2 céntimos) por lámina. Se procesa en lotes de 10 en background.
+            Coste: ~$0.02 (2 céntimos) por lámina. Se procesa lámina a lámina con reintento automático.<br>
+            Puedes cerrar esta pantalla y volver más tarde: se reanuda desde donde iba.
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
             <button class="btn btn-primary btn-pequeno" onclick="backfillZonasIA(this)">🎯 Detectar zonas en todas las láminas pendientes</button>
@@ -5423,17 +5424,17 @@ async function backfillZonasIA(boton) {
     let ultErr = null;
     for (let i = 0; i < intentos; i++) {
       try {
-        return await api('/api/admin/backfill-detect-zones?limit=3', { method: 'POST' });
+        return await api('/api/admin/backfill-detect-zones?limit=1', { method: 'POST' });
       } catch (e) {
         ultErr = e;
-        // Esperar 2s antes de reintentar
-        await new Promise(r => setTimeout(r, 2000));
+        // Esperar 3s antes de reintentar (Railway 502 puede persistir un poco)
+        await new Promise(r => setTimeout(r, 3000));
       }
     }
     throw ultErr || new Error('sin exito tras varios intentos');
   };
   try {
-    while (ronda < 300) { // seguridad: max 300 lotes de 3 = 900 laminas
+    while (ronda < 1000) { // seguridad: max 1000 laminas
       ronda++;
       boton.textContent = '⏳ Lote ' + ronda + '...';
       const r = await llamarLote(3);
