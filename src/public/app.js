@@ -5437,8 +5437,9 @@ async function backfillZonasIA(boton) {
     for (let i = 0; i < intentos; i++) {
       if (_backfillZonasStop) throw new Error('detenido por el usuario');
       try {
-        // Lote de 4 laminas por llamada: ~4x mas rapido, aun por debajo del timeout de Railway
-        return await api('/api/admin/backfill-detect-zones?limit=4', { method: 'POST' });
+        // Lote de 2 laminas por llamada (~16s): 2x mas rapido que 1, y seguro por debajo
+        // del timeout de red/Railway aunque caiga alguna lamina grande de expositor.
+        return await api('/api/admin/backfill-detect-zones?limit=2', { method: 'POST' });
       } catch (e) {
         ultErr = e;
         await new Promise(r => setTimeout(r, 3000));
