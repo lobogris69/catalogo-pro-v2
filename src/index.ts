@@ -3046,6 +3046,25 @@ app.get('/api/admin/backfill-detect-zones/stats', verifyToken, requireRealAdmin,
   }
 });
 
+// Backfill puntual: corrige el PVF de los productos Sage ya guardados poniendolo = precio_compra
+// (que es donde llega el PVL real). Necesario para no esperar a la proxima sincronizacion.
+app.post('/api/admin/fix-pvf-desde-compra', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `UPDATE products
+         SET precio_pvf = precio_compra,
+             precio_pvf_1 = precio_compra,
+             precio_pvf_2 = precio_compra,
+             precio_pvf_3 = precio_compra,
+             updated_at = NOW()
+       WHERE tipo = 'sage' AND precio_compra IS NOT NULL`
+    );
+    res.json({ success: true, corregidos: r.rowCount || 0 });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: String(e?.message || e) });
+  }
+});
+
 // Re-match de FAMILIAS sobre zonas YA existentes sin producto (gafas procesadas antes
 // de la feature de familias). Usa la etiqueta guardada -> resolverFamilia. SIN coste de IA.
 app.post('/api/admin/rematch-familias', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
@@ -5917,10 +5936,14 @@ app.post('/api/sync/sage/products', async (req: Request, res: Response) => {
            synced_from_sage_at = NOW(),
            updated_at = NOW()
          RETURNING (xmax = 0) AS was_insert`,
+        // FIX MAPEO PRECIO (8 jul 2026): el PVL/tarifa real del usuario llega en el campo
+        // p.precio_compra del volcado de Sage (verificado cruzando laminas P.V.L. de Beter y BSN).
+        // El PVL es UNICO, asi que las 3 "tarifas" precio_pvf_1/2/3 y precio_pvf = PVL = p.precio_compra.
+        // (p.precio_venta_1/2/3 traia un neto mas bajo y erroneo; se descarta.)
         [codigo, nombre, p.codigo_alt_1 || null,
-         p.precio_venta_1 != null ? Number(p.precio_venta_1) : null,
-         p.precio_venta_2 != null ? Number(p.precio_venta_2) : null,
-         p.precio_venta_3 != null ? Number(p.precio_venta_3) : null,
+         p.precio_compra != null ? Number(p.precio_compra) : null,  // precio_pvf_1 = PVL
+         p.precio_compra != null ? Number(p.precio_compra) : null,  // precio_pvf_2 = PVL (unico)
+         p.precio_compra != null ? Number(p.precio_compra) : null,  // precio_pvf_3 = PVL (unico)
          p.precio_venta_iva_1 != null ? Number(p.precio_venta_iva_1) : null,
          p.precio_venta_iva_2 != null ? Number(p.precio_venta_iva_2) : null,
          p.precio_venta_iva_3 != null ? Number(p.precio_venta_iva_3) : null,
