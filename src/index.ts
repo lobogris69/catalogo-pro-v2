@@ -2737,6 +2737,30 @@ app.get('/api/admin/detect-zones-diag', verifyToken, requireRealAdmin, async (re
   }
 });
 
+// Resetea la marca zones_ia_at en laminas que fueron procesadas pero se quedaron sin zonas
+// (afectadas por el bug de max_tokens truncado). Asi el backfill las volvera a intentar.
+app.post('/api/admin/reset-detect-zones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const soloFallidas = String(req.query.solo_fallidas || '1') !== '0';
+    let sql: string;
+    if (soloFallidas) {
+      // Solo las procesadas pero sin zonas guardadas (los fallos del bug)
+      sql = `UPDATE sheets SET zones_ia_at = NULL
+             WHERE zones_ia_at IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM sheet_zones z WHERE z.sheet_id = sheets.id)
+             RETURNING id`;
+    } else {
+      // Reset absoluto: todas las procesadas (incluye las que si tenian zonas)
+      sql = `UPDATE sheets SET zones_ia_at = NULL WHERE zones_ia_at IS NOT NULL RETURNING id`;
+    }
+    const r = await pool.query(sql);
+    res.json({ success: true, reset: r.rowCount, solo_fallidas: soloFallidas });
+  } catch (e: any) {
+    console.warn('[reset-detect-zones] error:', e?.message || e);
+    res.status(500).json({ success: false, error: String(e?.message || e) });
+  }
+});
+
 app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 10));
