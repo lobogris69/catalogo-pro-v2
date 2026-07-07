@@ -5431,12 +5431,14 @@ async function backfillZonasIA(boton) {
   boton.classList.remove('btn-primary');
   const $out = document.getElementById('backfill-zonas-out');
   let totalProc = 0, totalZonas = 0, totalMatch = 0, totalErr = 0, ronda = 0;
+  let restantesInicial = null; // se fija con la primera respuesta, para calcular el total real
   const llamarLote = async (intentos = 3) => {
     let ultErr = null;
     for (let i = 0; i < intentos; i++) {
       if (_backfillZonasStop) throw new Error('detenido por el usuario');
       try {
-        return await api('/api/admin/backfill-detect-zones?limit=1', { method: 'POST' });
+        // Lote de 4 laminas por llamada: ~4x mas rapido, aun por debajo del timeout de Railway
+        return await api('/api/admin/backfill-detect-zones?limit=4', { method: 'POST' });
       } catch (e) {
         ultErr = e;
         await new Promise(r => setTimeout(r, 3000));
@@ -5447,15 +5449,19 @@ async function backfillZonasIA(boton) {
   try {
     while (ronda < 1000 && !_backfillZonasStop) {
       ronda++;
-      boton.textContent = '🛑 Detener (lote ' + ronda + '…)';
       const r = await llamarLote(3);
       if (!r.success) throw new Error(r.error || 'sin éxito');
       totalProc += r.procesadas || 0;
       totalZonas += r.zonas_creadas || 0;
       totalMatch += r.con_match || 0;
       totalErr += r.errores || 0;
+      // Total real = las que ya procesamos en esta sesion + las que quedaban al empezar
+      if (restantesInicial === null) restantesInicial = (r.restantes || 0) + (r.procesadas || 0);
+      const totalReal = restantesInicial;
+      const hechas = totalReal - (r.restantes || 0);
+      boton.textContent = `🛑 Detener (${hechas}/${totalReal}…)`;
       if ($out) {
-        $out.innerHTML = `Láminas procesadas: <b>${totalProc}</b> · zonas creadas: <b>${totalZonas}</b> · con match Sage: <b>${totalMatch}</b> · errores: ${totalErr} · restantes: ${r.restantes}`;
+        $out.innerHTML = `Progreso: <b>${hechas}/${totalReal}</b> láminas · zonas creadas esta sesión: <b>${totalZonas}</b> · con match Sage: <b>${totalMatch}</b> · errores: ${totalErr} · <b>quedan ${r.restantes}</b>`;
       }
       if ((r.procesadas || 0) === 0 || r.restantes === 0) break;
       await new Promise(r => setTimeout(r, 500));
