@@ -11117,7 +11117,9 @@ function renderListaZonas() {
             <span class="zona-lista-info">
               ${z.product_id
                 ? `<b>${escape(z.producto_codigo || '')}</b> ${escape(z.producto_nombre || '')}`
-                : '<span style="color:#f59e0b">⚠️ Sin producto asignado</span>'}
+                : z.familia_ref
+                  ? `<span style="color:#a855f7">👓 Familia: ${escape(z.familia_ref)}</span>`
+                  : '<span style="color:#f59e0b">⚠️ Sin producto asignado</span>'}
             </span>
           </div>
         `).join('')}
@@ -11132,7 +11134,13 @@ function renderListaZonas() {
       <h4 style="margin:0">Zona ${idx}</h4>
       <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="deseleccionarZona()">← Volver</button>
     </div>
-    ${sel.product_id ? `
+    ${sel.familia_ref ? `
+      <div class="zona-producto-actual" style="background:#faf5ff;border-color:#e9d5ff">
+        <div style="font-size:11px;color:#a855f7;font-weight:600;margin-bottom:4px">👓 Familia con variantes</div>
+        Modelo: <b>${escape(sel.familia_ref)}</b>
+        <div id="fam-preview-${sel.id}" style="font-size:12px;color:#6b7280;margin-top:4px">Cargando variantes…</div>
+      </div>
+    ` : sel.product_id ? `
       <div class="zona-producto-actual">
         <div style="font-size:11px;color:#16a34a;font-weight:600;margin-bottom:4px">✅ Producto asignado</div>
         <b>${escape(sel.producto_codigo || '')}</b> · ${escape(sel.producto_nombre || '')}<br>
@@ -11140,21 +11148,36 @@ function renderListaZonas() {
       </div>
     ` : `
       <div style="background:#fef3c7;border:1px solid #fcd34d;padding:8px;border-radius:6px;font-size:12px;color:#78350f;margin-bottom:10px">
-        ⚠️ Esta zona no tiene producto. Búscalo abajo y asígnalo.
+        ⚠️ Esta zona no tiene producto. Asigna un producto suelto o una familia (abajo).
       </div>
     `}
-    <div class="form-group">
-      <label style="font-size:13px">${sel.product_id ? 'Cambiar producto' : 'Asignar producto'}</label>
-      <div id="zona-ac-contenedor"></div>
+    ${!sel.familia_ref ? `
+      <div class="form-group">
+        <label style="font-size:13px">${sel.product_id ? 'Cambiar producto' : 'Asignar producto suelto'}</label>
+        <div id="zona-ac-contenedor"></div>
+      </div>
+    ` : ''}
+    <div class="form-group" style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:10px">
+      <label style="font-size:13px;font-weight:600">👓 ${sel.familia_ref ? 'Cambiar' : 'Marcar como'} familia (gafas, guantes, tapes…)</label>
+      <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Escribe el modelo; el cliente elegirá color/talla/graduación/formato.</div>
+      <div style="display:flex;gap:6px">
+        <input type="text" id="fam-input-${sel.id}" value="${sel.familia_ref ? escape(sel.familia_ref).replace(/"/g,'&quot;') : ''}" placeholder="ej: Verona, Aspen, Guantes nitrilo azul" style="flex:1;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+        <button class="btn btn-primary" style="padding:7px 12px;font-size:12px" onclick="aplicarFamiliaZona('${String(sel.id).replace(/'/g, "\\'")}')">Aplicar</button>
+      </div>
+      ${sel.familia_ref ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarFamiliaZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar familia (volver a producto suelto)</button>` : ''}
     </div>
     <div style="margin-top:12px;display:flex;gap:8px">
       <button class="btn" style="background:#dc2626;color:#fff;flex:1" onclick="borrarZona('${String(sel.id).replace(/'/g, "\\'")}')">🗑️ Borrar zona</button>
     </div>
   `;
 
+  // Cargar preview de variantes si la zona es familia
+  if (sel.familia_ref) cargarPreviewFamiliaAdmin(sel.id, sel.familia_ref);
+
   // Montar el autocomplete dentro del panel
   if (_zonasEditor.acProducto) { try { _zonasEditor.acProducto.destroy(); } catch {} }
   const cont = document.getElementById('zona-ac-contenedor');
+  if (!cont) return; // zona-familia: no hay buscador de producto suelto
   _zonasEditor.acProducto = montarAutocompleteProducto(cont, {
     placeholder: 'Buscar producto…',
     onSelect: async (producto) => {
@@ -11180,6 +11203,58 @@ function renderListaZonas() {
       abrirModalCrearProductoVuelo(nombreSugerido, alCrear);
     }
   });
+}
+
+// Muestra un resumen de las variantes que resuelve una familia (en el editor admin)
+async function cargarPreviewFamiliaAdmin(zoneId, ref) {
+  const el = document.getElementById('fam-preview-' + zoneId);
+  if (!el) return;
+  try {
+    const r = await api('/api/families/resolve?ref=' + encodeURIComponent(ref));
+    if (r && r.familia) {
+      const ejes = (r.familia.ejes || []).map(e => e.label + ': ' + e.valores.join('/')).join(' · ');
+      el.innerHTML = '<b>' + r.familia.n_variantes + '</b> variantes' + (ejes ? ' — ' + escape(ejes) : ' (sin ejes a elegir)');
+    } else {
+      el.innerHTML = '<span style="color:#dc2626">⚠️ No encuentra variantes para este texto en Sage</span>';
+    }
+  } catch { el.textContent = 'Error cargando variantes'; }
+}
+
+// Marca/actualiza una zona como familia (valida contra Sage antes de guardar)
+async function aplicarFamiliaZona(zoneId) {
+  const inp = document.getElementById('fam-input-' + zoneId);
+  const ref = inp ? inp.value.trim() : '';
+  if (!ref) { alert('Escribe el modelo (ej: Verona, Guantes nitrilo azul).'); return; }
+  try {
+    const r = await api('/api/families/resolve?ref=' + encodeURIComponent(ref));
+    if (!r || !r.familia) {
+      alert('No encontré variantes para "' + ref + '" en Sage. Prueba con otro texto (el nombre como aparece en Sage).');
+      return;
+    }
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { familia_ref: ref } });
+    const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+    if (sel) { sel.familia_ref = ref; sel.product_id = null; sel.producto_codigo = null; sel.producto_nombre = null; sel.producto_pvf = null; }
+    renderZonasEnCapa();
+    renderListaZonas();
+    mostrarNotificacionOnline('✅ Familia asignada: ' + r.familia.modelo + ' (' + r.familia.n_variantes + ' variantes)', '#16a34a');
+  } catch (err) {
+    alert('Error asignando familia: ' + err.message);
+  }
+}
+
+// Quita la familia de una zona (vuelve a ser producto suelto sin asignar)
+async function quitarFamiliaZona(zoneId) {
+  if (!confirm('¿Quitar la familia de esta zona? Volverá a ser una zona sin producto para asignar uno suelto.')) return;
+  try {
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { familia_ref: null } });
+    const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+    if (sel) sel.familia_ref = null;
+    renderZonasEnCapa();
+    renderListaZonas();
+    mostrarNotificacionOnline('Familia quitada', '#6b7280');
+  } catch (err) {
+    alert('Error quitando familia: ' + err.message);
+  }
 }
 
 function seleccionarZona(zoneId) {
