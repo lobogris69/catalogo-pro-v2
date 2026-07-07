@@ -5413,16 +5413,30 @@ async function backfillTagsIA(boton) {
 }
 
 async function backfillZonasIA(boton) {
-  if (!confirm('¿Detectar zonas con IA en todas las láminas pendientes?\n\n• Solo procesa láminas NUEVAS o que aún no han pasado por la IA.\n• Las que ya tienen zonas dibujadas se saltan.\n• Coste: ~$0.02 (2 céntimos) por lámina.\n\nSe procesa en lotes de 10 con pausa entre lotes para no saturar OpenAI.')) return;
+  if (!confirm('¿Detectar zonas con IA en todas las láminas pendientes?\n\n• Solo procesa láminas NUEVAS o que aún no han pasado por la IA.\n• Las que ya tienen zonas dibujadas se saltan.\n• Coste: ~$0.02 (2 céntimos) por lámina.\n\nSe procesa en lotes pequeños con reintento automático.')) return;
   const orig = boton.textContent;
   boton.disabled = true;
   const $out = document.getElementById('backfill-zonas-out');
   let totalProc = 0, totalZonas = 0, totalMatch = 0, totalErr = 0, ronda = 0;
+  // Helper: llamar al endpoint con reintentos si hay error de red
+  const llamarLote = async (intentos = 3) => {
+    let ultErr = null;
+    for (let i = 0; i < intentos; i++) {
+      try {
+        return await api('/api/admin/backfill-detect-zones?limit=3', { method: 'POST' });
+      } catch (e) {
+        ultErr = e;
+        // Esperar 2s antes de reintentar
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    throw ultErr || new Error('sin exito tras varios intentos');
+  };
   try {
-    while (ronda < 100) { // seguridad: max 100 lotes de 10 = 1000 láminas
+    while (ronda < 300) { // seguridad: max 300 lotes de 3 = 900 laminas
       ronda++;
       boton.textContent = '⏳ Lote ' + ronda + '...';
-      const r = await api('/api/admin/backfill-detect-zones?limit=10', { method: 'POST' });
+      const r = await llamarLote(3);
       if (!r.success) throw new Error(r.error || 'sin éxito');
       totalProc += r.procesadas || 0;
       totalZonas += r.zonas_creadas || 0;
@@ -5432,15 +5446,16 @@ async function backfillZonasIA(boton) {
         $out.innerHTML = `Láminas procesadas: <b>${totalProc}</b> · zonas creadas: <b>${totalZonas}</b> · con match Sage: <b>${totalMatch}</b> · errores: ${totalErr} · restantes: ${r.restantes}`;
       }
       if ((r.procesadas || 0) === 0 || r.restantes === 0) break;
-      // Pequeña pausa entre lotes para no saturar la API
+      // Pausa entre lotes
       await new Promise(r => setTimeout(r, 500));
     }
     boton.textContent = '✅ Terminado';
     setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 3000);
   } catch (e) {
     boton.textContent = '❌ Error';
-    alert('Error: ' + e.message);
-    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 2500);
+    if ($out) $out.innerHTML += `<br><span style="color:#dc2626">Error tras ${totalProc} láminas: ${escape(e.message)}. Vuelve a pulsar el botón para continuar donde se paró.</span>`;
+    else alert('Error: ' + e.message);
+    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 3500);
   }
 }
 
