@@ -2993,14 +2993,23 @@ app.get('/api/admin/backfill-detect-zones/stats', verifyToken, requireRealAdmin,
     const glob = await pool.query(
       `SELECT
          (SELECT COUNT(*)::int FROM sheet_zones) AS total_zonas,
-         (SELECT COUNT(*)::int FROM sheet_zones WHERE product_id IS NOT NULL) AS zonas_con_match,
+         (SELECT COUNT(*)::int FROM sheet_zones WHERE product_id IS NOT NULL) AS zonas_con_producto,
+         (SELECT COUNT(*)::int FROM sheet_zones WHERE familia_ref IS NOT NULL) AS zonas_con_familia,
+         (SELECT COUNT(*)::int FROM sheet_zones WHERE product_id IS NULL AND familia_ref IS NULL) AS zonas_sin_nada,
          (SELECT COUNT(*)::int FROM products) AS total_productos`
+    );
+    // Muestra de zonas sin resolver (para entender POR QUE no casan): sus etiquetas
+    const sinNada = await pool.query(
+      `SELECT etiqueta, COUNT(*)::int AS n FROM sheet_zones
+       WHERE product_id IS NULL AND familia_ref IS NULL AND etiqueta IS NOT NULL AND etiqueta <> ''
+       GROUP BY etiqueta ORDER BY n DESC, etiqueta LIMIT 40`
     );
     res.json({
       success: true,
       procesadas_recientes: proc.rows,
       pendientes: pend.rows[0]?.n ?? 0,
-      global: glob.rows[0]
+      global: glob.rows[0],
+      muestra_sin_resolver: sinNada.rows
     });
   } catch (e: any) {
     res.status(500).json({ success: false, error: String(e?.message || e) });
