@@ -76,14 +76,19 @@ export interface ZonaDetectada {
   tamano: string | null;
 }
 
+// Variable global que guarda el ultimo error de la IA (para debug en el endpoint)
+let _ultimoError: string | null = null;
+export function ultimoErrorIA(): string | null { return _ultimoError; }
+
 /**
  * Llama a GPT-4o Vision y extrae los productos de una lamina.
  * Devuelve array vacio si no hay productos, o null si falla la IA.
  */
 export async function detectarZonasIA(rutaImagenAbs: string): Promise<ZonaDetectada[] | null> {
+  _ultimoError = null;
   const client = getClient();
-  if (!client) return null;
-  if (!fs.existsSync(rutaImagenAbs)) return null;
+  if (!client) { _ultimoError = 'OPENAI_API_KEY no configurada'; return null; }
+  if (!fs.existsSync(rutaImagenAbs)) { _ultimoError = 'archivo no existe: ' + rutaImagenAbs; return null; }
 
   try {
     const buf = fs.readFileSync(rutaImagenAbs);
@@ -133,7 +138,8 @@ export async function detectarZonasIA(rutaImagenAbs: string): Promise<ZonaDetect
       }
     }
     if (!resp) {
-      console.warn('[ai-zones] agotados 3 reintentos:', ultimoError?.message || ultimoError);
+      _ultimoError = String(ultimoError?.message || ultimoError || 'sin resp');
+      console.warn('[ai-zones] agotados 3 reintentos:', _ultimoError);
       return null;
     }
 
@@ -142,7 +148,8 @@ export async function detectarZonasIA(rutaImagenAbs: string): Promise<ZonaDetect
     try {
       parsed = JSON.parse(texto);
     } catch (e) {
-      console.warn('[ai-zones] JSON invalido de OpenAI:', texto.substring(0, 200));
+      _ultimoError = 'JSON invalido de OpenAI: ' + texto.substring(0, 200);
+      console.warn('[ai-zones]', _ultimoError);
       return null;
     }
 
@@ -176,7 +183,8 @@ export async function detectarZonasIA(rutaImagenAbs: string): Promise<ZonaDetect
     }
     return zonas;
   } catch (e: any) {
-    console.warn('[ai-zones] error llamando a OpenAI:', e?.message || e);
+    _ultimoError = String(e?.message || e);
+    console.warn('[ai-zones] error llamando a OpenAI:', _ultimoError);
     return null;
   }
 }

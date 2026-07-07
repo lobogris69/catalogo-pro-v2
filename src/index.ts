@@ -28,7 +28,7 @@ import {
   GENERAL_FOLDER
 } from './mega';
 import { generarTagsIA, resolverRutaImagen } from './ai-tags';
-import { detectarZonasIA } from './ai-zones';
+import { detectarZonasIA, ultimoErrorIA } from './ai-zones';
 
 // ============================================================================
 // AI-TAGS - dispara generacion en background y hace UPDATE cuando esta listo.
@@ -2697,6 +2697,43 @@ app.post('/api/sheets/:id/save-zones', verifyToken, requireAdmin, async (req: Au
 // propuestas en sheet_zones (con product_id si hubo match Sage, o null si no).
 // Idempotente: llama en bucle hasta que restantes = 0.
 // ----------------------------------------------------------------------------
+// Diagnostico rapido: prueba la IA con UNA lamina y devuelve el error crudo si lo hay
+app.get('/api/admin/detect-zones-diag', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `SELECT s.id, s.titulo, s.imagen_path FROM sheets s
+       WHERE s.imagen_path IS NOT NULL
+       ORDER BY s.id
+       LIMIT 1`
+    );
+    if (r.rows.length === 0) {
+      res.json({ success: false, error: 'No hay laminas' });
+      return;
+    }
+    const sh = r.rows[0];
+    const abs = resolverRutaImagen(sh.imagen_path, UPLOADS_DIR);
+    if (!abs || !fs.existsSync(abs)) {
+      res.json({ success: false, error: 'archivo no existe: ' + abs });
+      return;
+    }
+    const t0 = Date.now();
+    const zonas = await detectarZonasIA(abs);
+    const dur = Date.now() - t0;
+    const errIA = ultimoErrorIA();
+    res.json({
+      success: zonas !== null,
+      sheet: { id: sh.id, titulo: sh.titulo },
+      zonas_detectadas: zonas?.length ?? 0,
+      duracion_ms: dur,
+      error_ia: errIA,
+      openai_key_configurada: !!(process.env.OPENAI_API_KEY || '').trim(),
+      openai_key_len: (process.env.OPENAI_API_KEY || '').trim().length
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 10));
