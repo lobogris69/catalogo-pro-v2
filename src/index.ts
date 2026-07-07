@@ -28,6 +28,7 @@ import {
   GENERAL_FOLDER
 } from './mega';
 import { generarTagsIA, resolverRutaImagen } from './ai-tags';
+import { detectarZonasIA } from './ai-zones';
 
 // ============================================================================
 // AI-TAGS - dispara generacion en background y hace UPDATE cuando esta listo.
@@ -2546,6 +2547,101 @@ app.post('/api/admin/backfill-tags', verifyToken, requireRealAdmin, async (req: 
       `SELECT COUNT(*)::int AS n FROM sheets WHERE (tags IS NULL OR tags = '') AND imagen_path IS NOT NULL`
     );
     res.json({ success: true, procesadas: pend.rows.length, ok, fallidas: ko, restantes: restantesR.rows[0].n, fallos: fallos.slice(0, 10) });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================================
+// AI-ZONES - Detecta productos en una lamina y devuelve zonas propuestas
+// con product_id sugerido por match con codigo Sage. NO guarda nada en BD:
+// solo devuelve el JSON para que el usuario revise y confirme.
+// ============================================================================
+app.post('/api/sheets/:id/detect-zones-ia', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const s = await pool.query('SELECT id, titulo, imagen_path FROM sheets WHERE id = $1', [id]);
+    if (s.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Lamina no encontrada' });
+      return;
+    }
+    const abs = resolverRutaImagen(s.rows[0].imagen_path, UPLOADS_DIR);
+    if (!abs || !fs.existsSync(abs)) {
+      res.status(400).json({ success: false, error: 'La imagen no existe en disco' });
+      return;
+    }
+    const t0 = Date.now();
+    const zonas = await detectarZonasIA(abs);
+    if (zonas === null) {
+      res.status(500).json({ success: false, error: 'La IA no respondio. Revisa OPENAI_API_KEY o reintenta.' });
+      return;
+    }
+    // Enriquecer con match a Sage por codigo_nacional
+    const enriquecidas = await Promise.all(zonas.map(async (z) => {
+      let productoSugerido: any = null;
+      if (z.codigo_nacional) {
+        // Buscar por codigo exacto o codigo_alt_1 (EAN)
+        const r = await pool.query(
+          `SELECT id, codigo, nombre, precio_pvf_1, precio_pvpr_1, activo
+           FROM products
+           WHERE codigo = $1 OR codigo = $2 OR codigo_alt_1 = $1 OR codigo_alt_1 = $2
+           LIMIT 1`,
+          [z.codigo_nacional, z.codigo_nacional.replace(/^0+/, '')]
+        );
+        if (r.rows.length > 0) productoSugerido = r.rows[0];
+      }
+      return { ...z, producto_sugerido: productoSugerido };
+    }));
+    res.json({
+      success: true,
+      zonas: enriquecidas,
+      total_detectadas: enriquecidas.length,
+      con_match_sage: enriquecidas.filter(z => z.producto_sugerido).length,
+      duracion_ms: Date.now() - t0
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Guarda en lote las zonas confirmadas por el usuario. Body: { zonas: [{ x, y, ancho, alto, product_id, etiqueta }] }
+// Sustituye TODAS las zonas de la lamina (borra las anteriores).
+app.post('/api/sheets/:id/save-zones', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const zonas = Array.isArray(req.body?.zonas) ? req.body.zonas : [];
+    const s = await pool.query('SELECT id FROM sheets WHERE id = $1', [id]);
+    if (s.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Lamina no encontrada' });
+      return;
+    }
+    // Borrar las anteriores en la misma transaccion
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM sheet_zones WHERE sheet_id = $1', [id]);
+      let orden = 0;
+      const insertadas: any[] = [];
+      for (const z of zonas) {
+        const x = Number(z.x), y = Number(z.y), ancho = Number(z.ancho), alto = Number(z.alto);
+        if (!isFinite(x) || !isFinite(y) || !isFinite(ancho) || !isFinite(alto) || ancho < 0.5 || alto < 0.5) continue;
+        const productId = z.product_id != null ? Number(z.product_id) : null;
+        const etiqueta = z.etiqueta ? String(z.etiqueta).trim().substring(0, 150) : null;
+        const r = await client.query(
+          `INSERT INTO sheet_zones (sheet_id, product_id, x, y, ancho, alto, etiqueta, orden)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+          [id, productId, x, y, ancho, alto, etiqueta, orden++]
+        );
+        insertadas.push(r.rows[0]);
+      }
+      await client.query('COMMIT');
+      res.json({ success: true, zonas: insertadas, total: insertadas.length });
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }

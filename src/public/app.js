@@ -10548,6 +10548,72 @@ let _zonasEditor = {
   acProducto: null    // instancia del autocomplete activo
 };
 
+// ============================================================================
+// DETECCION DE ZONAS CON IA
+// Envia la lamina a GPT-4o Vision, recibe zonas propuestas con producto sugerido,
+// las anade al editor actual como propuestas (color naranja) que el usuario
+// puede aceptar (verde) o borrar.
+// ============================================================================
+async function detectarZonasConIA(sheetId, boton) {
+  if (!confirm('¿Detectar productos con IA en esta lámina?\n\n• Añadirá los productos detectados como zonas nuevas al editor.\n• NO borra las zonas que ya tengas.\n• Coste: ~$0.02 (2 céntimos) por lámina.')) return;
+  const orig = boton.textContent;
+  boton.disabled = true;
+  boton.textContent = '⏳ Analizando lámina...';
+  try {
+    const t0 = Date.now();
+    const r = await api('/api/sheets/' + sheetId + '/detect-zones-ia', { method: 'POST' });
+    const dt = Math.round((Date.now() - t0) / 1000);
+    if (!r.success || !Array.isArray(r.zonas)) {
+      throw new Error(r.error || 'La IA no devolvió resultados');
+    }
+    if (r.zonas.length === 0) {
+      alert(`La IA no ha detectado productos en esta lámina (${dt}s).\n\nProbablemente es una portada, separador de sección o no tiene productos individuales identificables.`);
+      boton.textContent = orig;
+      boton.disabled = false;
+      return;
+    }
+    // Anadir cada zona detectada al editor
+    let anadidas = 0;
+    let matcheadas = 0;
+    for (const z of r.zonas) {
+      const producto = z.producto_sugerido;
+      const etiqueta = z.descripcion || (z.codigo_fabricante || z.codigo_nacional || '');
+      const zonaNueva = {
+        id: 'ia-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6), // id temporal
+        x: z.x, y: z.y, ancho: z.width, alto: z.height,
+        product_id: producto ? producto.id : null,
+        product_codigo: producto ? producto.codigo : null,
+        product_nombre: producto ? producto.nombre : null,
+        etiqueta: etiqueta,
+        propuesta_ia: true,   // marca visual (color distinto)
+        ai_meta: {
+          codigo_nacional: z.codigo_nacional,
+          codigo_fabricante: z.codigo_fabricante,
+          descripcion: z.descripcion,
+          pvl: z.pvl, pvpr: z.pvpr,
+          formato: z.formato, tamano: z.tamano
+        }
+      };
+      _zonasEditor.zonas.push(zonaNueva);
+      anadidas++;
+      if (producto) matcheadas++;
+    }
+    // Repintar la capa de zonas + panel lateral
+    if (typeof renderZonasEnCapa === 'function') renderZonasEnCapa();
+    if (typeof renderListaZonas === 'function') renderListaZonas();
+    // Actualizar contador
+    const $c = document.getElementById('zonas-contador');
+    if ($c) $c.textContent = _zonasEditor.zonas.length + ' zonas';
+    alert(`✅ IA lista (${dt}s)\n\n${anadidas} productos detectados\n${matcheadas} con match automático a Sage\n${anadidas - matcheadas} sin match (asigna producto a mano)\n\nRevisa las zonas naranjas: acepta las buenas, borra las malas, ajusta las que necesiten.`);
+    boton.textContent = orig;
+    boton.disabled = false;
+  } catch (e) {
+    alert('Error: ' + e.message);
+    boton.textContent = orig;
+    boton.disabled = false;
+  }
+}
+
 async function abrirEditorZonas(sheetId, catalogId) {
   // Cerrar el modal de editar lámina
   document.querySelectorAll('.modal-bg').forEach(m => m.remove());
@@ -10581,6 +10647,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <span class="zonas-contador" id="zonas-contador">${zonas.length} zonas</span>
+        <button class="btn btn-primary" id="btn-detectar-zonas-ia" onclick="detectarZonasConIA(${sheet.id}, this)" title="La IA detecta los productos de la lámina y propone recuadros">🤖 Detectar productos con IA</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
       </div>
     </div>
@@ -10712,7 +10779,9 @@ function renderZonasEnCapa() {
   _zonasEditor.zonas.forEach((z, idx) => {
     const div = document.createElement('div');
     const asignada = !!z.product_id;
-    div.className = 'zona-rect' + (asignada ? ' zona-rect-asignada' : ' zona-rect-vacia') +
+    const propuestaIA = !!z.propuesta_ia;
+    div.className = 'zona-rect' +
+                    (propuestaIA ? ' zona-rect-ia' : (asignada ? ' zona-rect-asignada' : ' zona-rect-vacia')) +
                     (z.id === _zonasEditor.zonaSeleccionadaId ? ' zona-rect-sel' : '');
     div.style.left = z.x + '%';
     div.style.top = z.y + '%';
