@@ -2723,12 +2723,45 @@ app.get('/api/admin/detect-zones-diag', verifyToken, requireRealAdmin, async (re
     const zonas = await detectarZonasIA(abs);
     const dur = Date.now() - t0;
     const errIA = ultimoErrorIA();
+
+    // Para cada producto detectado, mostrar que lee la IA y contra que casa (debug de match)
+    const detalle: any[] = [];
+    for (const z of (zonas || [])) {
+      const cn = z.codigo_nacional;
+      const fab = z.codigo_fabricante;
+      // Que encontrariamos buscando por codigo/codigo_alt (match actual)
+      const porCodigo = await pool.query(
+        `SELECT id, codigo, nombre FROM products
+         WHERE codigo = $1 OR codigo_alt_1 = $1 OR codigo_alt_2 = $1
+            OR codigo = $2 OR codigo_alt_1 = $2 OR codigo_alt_2 = $2 LIMIT 1`,
+        [cn || '', (fab || '').replace(/\s/g, '')]
+      );
+      // Que encontrariamos buscando el CN en EAN (donde Sage guarda el codigo nacional)
+      const porEan = cn ? await pool.query(
+        `SELECT id, codigo, nombre, ean FROM products WHERE ean = $1 OR ean LIKE $1 || '%' LIMIT 1`,
+        [cn]
+      ) : { rows: [] };
+      // Que encontrariamos buscando la descripcion en el nombre del producto (gafas por modelo)
+      const desc = (z.descripcion || '').trim();
+      const porNombre = desc.length >= 4 ? await pool.query(
+        `SELECT id, codigo, nombre FROM products WHERE LOWER(nombre) LIKE '%' || LOWER($1) || '%' LIMIT 2`,
+        [desc.substring(0, 40)]
+      ) : { rows: [] };
+      detalle.push({
+        lee: { cn, fab, descripcion: desc.substring(0, 50) },
+        match_por_codigo: porCodigo.rows[0] || null,
+        match_por_ean: porEan.rows[0] || null,
+        match_por_nombre: porNombre.rows.map((r: any) => r.nombre)
+      });
+    }
+
     res.json({
       success: zonas !== null,
       sheet: { id: sh.id, titulo: sh.titulo },
       zonas_detectadas: zonas?.length ?? 0,
       duracion_ms: dur,
       error_ia: errIA,
+      detalle,
       openai_key_configurada: !!(process.env.OPENAI_API_KEY || '').trim(),
       openai_key_len: (process.env.OPENAI_API_KEY || '').trim().length
     });
