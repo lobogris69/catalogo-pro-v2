@@ -4053,6 +4053,21 @@ async function renderConfiguracion() {
           <div id="backfill-tags-out" style="font-size:12px;color:var(--gris-texto);margin-top:8px"></div>
         </div>
 
+        <!-- BLOQUE: Detección masiva de zonas con IA -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">🎯 Detección automática de zonas con IA
+            ${ayuda('Procesa TODAS las láminas del catálogo que aún no tienen zonas ni han pasado por la IA. Detecta los productos, dibuja las zonas y asocia el producto de Sage cuando el CN coincide. Las láminas que ya tienen zonas dibujadas se saltan.', 'izq')}
+          </h3>
+          <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">
+            Solo procesa láminas <b>nuevas</b> o <b>que no hayan sido analizadas antes</b>.<br>
+            Coste: ~$0.02 (2 céntimos) por lámina. Se procesa en lotes de 10 en background.
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-primary btn-pequeno" onclick="backfillZonasIA(this)">🎯 Detectar zonas en todas las láminas pendientes</button>
+          </div>
+          <div id="backfill-zonas-out" style="font-size:12px;color:var(--gris-texto);margin-top:8px"></div>
+        </div>
+
         <!-- BLOQUE: Corrección perfil color PNG -->
         <div class="editor-panel" style="margin-top:14px">
           <h3 style="margin-top:0">🎨 Corregir colores oscuros de PNG
@@ -5387,6 +5402,38 @@ async function backfillTagsIA(boton) {
       totalKo += r.fallidas || 0;
       if ($out) $out.innerHTML = `Procesadas: ${totalOk + totalKo} · OK: ${totalOk} · fallidas: ${totalKo} · restantes: ${r.restantes}`;
       if (r.procesadas === 0 || r.restantes === 0) break;
+    }
+    boton.textContent = '✅ Terminado';
+    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 3000);
+  } catch (e) {
+    boton.textContent = '❌ Error';
+    alert('Error: ' + e.message);
+    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 2500);
+  }
+}
+
+async function backfillZonasIA(boton) {
+  if (!confirm('¿Detectar zonas con IA en todas las láminas pendientes?\n\n• Solo procesa láminas NUEVAS o que aún no han pasado por la IA.\n• Las que ya tienen zonas dibujadas se saltan.\n• Coste: ~$0.02 (2 céntimos) por lámina.\n\nSe procesa en lotes de 10 con pausa entre lotes para no saturar OpenAI.')) return;
+  const orig = boton.textContent;
+  boton.disabled = true;
+  const $out = document.getElementById('backfill-zonas-out');
+  let totalProc = 0, totalZonas = 0, totalMatch = 0, totalErr = 0, ronda = 0;
+  try {
+    while (ronda < 100) { // seguridad: max 100 lotes de 10 = 1000 láminas
+      ronda++;
+      boton.textContent = '⏳ Lote ' + ronda + '...';
+      const r = await api('/api/admin/backfill-detect-zones?limit=10', { method: 'POST' });
+      if (!r.success) throw new Error(r.error || 'sin éxito');
+      totalProc += r.procesadas || 0;
+      totalZonas += r.zonas_creadas || 0;
+      totalMatch += r.con_match || 0;
+      totalErr += r.errores || 0;
+      if ($out) {
+        $out.innerHTML = `Láminas procesadas: <b>${totalProc}</b> · zonas creadas: <b>${totalZonas}</b> · con match Sage: <b>${totalMatch}</b> · errores: ${totalErr} · restantes: ${r.restantes}`;
+      }
+      if ((r.procesadas || 0) === 0 || r.restantes === 0) break;
+      // Pequeña pausa entre lotes para no saturar la API
+      await new Promise(r => setTimeout(r, 500));
     }
     boton.textContent = '✅ Terminado';
     setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 3000);

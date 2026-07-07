@@ -509,6 +509,10 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_zones_sheet ON sheet_zones(sheet_id);
       CREATE INDEX IF NOT EXISTS idx_zones_product ON sheet_zones(product_id);
 
+      -- Marca cuando se paso la deteccion de zonas por IA (para no repetir)
+      ALTER TABLE sheets ADD COLUMN IF NOT EXISTS zones_ia_at TIMESTAMP;
+      CREATE INDEX IF NOT EXISTS idx_sheets_zones_ia ON sheets(zones_ia_at);
+
       CREATE TABLE IF NOT EXISTS catalog_versions (
         id SERIAL PRIMARY KEY,
         catalog_id INTEGER REFERENCES catalogs(id) ON DELETE CASCADE,
@@ -2682,6 +2686,114 @@ app.post('/api/sheets/:id/save-zones', verifyToken, requireAdmin, async (req: Au
     } finally {
       client.release();
     }
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// BACKFILL de deteccion de zonas: procesa laminas que aun no han pasado por
+// la IA Y no tienen ninguna zona todavia. Guarda directamente las zonas
+// propuestas en sheet_zones (con product_id si hubo match Sage, o null si no).
+// Idempotente: llama en bucle hasta que restantes = 0.
+// ----------------------------------------------------------------------------
+app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 10));
+    // Laminas sin marca IA y sin zonas
+    const pend = await pool.query(
+      `SELECT s.id, s.titulo, s.imagen_path FROM sheets s
+       WHERE s.zones_ia_at IS NULL
+         AND s.imagen_path IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM sheet_zones z WHERE z.sheet_id = s.id)
+       ORDER BY s.id
+       LIMIT $1`,
+      [limit]
+    );
+
+    // Helper: match Sage por CN con variantes (mismo que detect-zones-ia)
+    const buscarProducto = async (cn: string | null, fab: string | null): Promise<number | null> => {
+      const variantes = new Set<string>();
+      if (cn) {
+        const d = cn.replace(/\D/g, '');
+        if (d.length >= 4) {
+          variantes.add(d);
+          if (d.length === 7) variantes.add(d.substring(0, 6));
+          if (d.length === 6) variantes.add(d + '0');
+          variantes.add(d.replace(/^0+/, ''));
+          variantes.add(d.padStart(6, '0'));
+          variantes.add(d.padStart(7, '0'));
+        }
+      }
+      if (fab) variantes.add(String(fab).replace(/\s/g, ''));
+      const arr = Array.from(variantes).filter(v => v.length >= 3);
+      if (arr.length === 0) return null;
+      const r = await pool.query(
+        `SELECT id FROM products
+         WHERE codigo = ANY($1::text[]) OR codigo_alt_1 = ANY($1::text[]) OR codigo_alt_2 = ANY($1::text[])
+         LIMIT 1`,
+        [arr]
+      );
+      if (r.rows.length > 0) return r.rows[0].id;
+      if (cn) {
+        const d = cn.replace(/\D/g, '');
+        if (d.length >= 5) {
+          const prefijo = d.substring(0, 6);
+          const like = await pool.query(
+            `SELECT id FROM products WHERE codigo LIKE $1 || '%' OR codigo_alt_1 LIKE $1 || '%' LIMIT 1`,
+            [prefijo]
+          );
+          if (like.rows.length > 0) return like.rows[0].id;
+        }
+      }
+      return null;
+    };
+
+    let procesadas = 0, zonas_creadas = 0, con_match = 0, errores = 0;
+    const fallos: any[] = [];
+    for (const row of pend.rows) {
+      procesadas++;
+      const abs = resolverRutaImagen(row.imagen_path, UPLOADS_DIR);
+      if (!abs || !fs.existsSync(abs)) {
+        errores++;
+        fallos.push({ id: row.id, motivo: 'no existe en disco' });
+        continue;
+      }
+      const zonas = await detectarZonasIA(abs);
+      if (zonas === null) {
+        errores++;
+        fallos.push({ id: row.id, motivo: 'IA sin respuesta' });
+        continue;
+      }
+      // Insertar cada zona propuesta con su producto (si hay match) o null
+      let orden = 0;
+      for (const z of zonas) {
+        const productId = await buscarProducto(z.codigo_nacional, z.codigo_fabricante);
+        if (productId) con_match++;
+        const etiqueta = z.descripcion || z.codigo_fabricante || z.codigo_nacional || null;
+        await pool.query(
+          `INSERT INTO sheet_zones (sheet_id, product_id, x, y, ancho, alto, etiqueta, orden)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [row.id, productId, z.x, z.y, z.width, z.height, etiqueta, orden++]
+        );
+        zonas_creadas++;
+      }
+      // Marcar la lamina como procesada por IA (aunque no haya devuelto productos)
+      await pool.query('UPDATE sheets SET zones_ia_at = NOW() WHERE id = $1', [row.id]);
+    }
+    // Cuantas quedan
+    const restR = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM sheets s
+       WHERE s.zones_ia_at IS NULL
+         AND s.imagen_path IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM sheet_zones z WHERE z.sheet_id = s.id)`
+    );
+    res.json({
+      success: true,
+      procesadas, zonas_creadas, con_match, errores,
+      restantes: restR.rows[0].n,
+      fallos: fallos.slice(0, 10)
+    });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
