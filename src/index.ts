@@ -3046,25 +3046,6 @@ app.get('/api/admin/backfill-detect-zones/stats', verifyToken, requireRealAdmin,
   }
 });
 
-// Backfill puntual: corrige el PVF de los productos Sage ya guardados poniendolo = precio_compra
-// (que es donde llega el PVL real). Necesario para no esperar a la proxima sincronizacion.
-app.post('/api/admin/fix-pvf-desde-compra', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
-  try {
-    const r = await pool.query(
-      `UPDATE products
-         SET precio_pvf = precio_compra,
-             precio_pvf_1 = precio_compra,
-             precio_pvf_2 = precio_compra,
-             precio_pvf_3 = precio_compra,
-             updated_at = NOW()
-       WHERE tipo = 'sage' AND precio_compra IS NOT NULL`
-    );
-    res.json({ success: true, corregidos: r.rowCount || 0 });
-  } catch (e: any) {
-    res.status(500).json({ success: false, error: String(e?.message || e) });
-  }
-});
-
 // Re-match de FAMILIAS sobre zonas YA existentes sin producto (gafas procesadas antes
 // de la feature de familias). Usa la etiqueta guardada -> resolverFamilia. SIN coste de IA.
 app.post('/api/admin/rematch-familias', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
@@ -5895,6 +5876,11 @@ app.post('/api/sync/sage/products', async (req: Request, res: Response) => {
       const obsoleto = Boolean(p.obsoleto);
       // Activo = NO obsoleto Y NO baja
       const activo = !esBaja && !obsoleto;
+      // PVL (Articulos.PrecioVenta en Sage) = el precio de lamina del laboratorio, UNICO.
+      // Es el que el comercial ve como "PVF". Llega en el campo precio_pvl (nuevo).
+      // Si no viene, dejamos null (mostrar "—") en vez de un precio erroneo:
+      // precio_venta_1/2/3 son las TARIFAS del distribuidor, NO el PVL (confirmado por Sage).
+      const pvl = p.precio_pvl != null ? Number(p.precio_pvl) : null;
       const r = await pool.query(
         `INSERT INTO products (codigo, nombre, ean, tipo,
            precio_pvf_1, precio_pvf_2, precio_pvf_3,
@@ -5936,10 +5922,11 @@ app.post('/api/sync/sage/products', async (req: Request, res: Response) => {
            synced_from_sage_at = NOW(),
            updated_at = NOW()
          RETURNING (xmax = 0) AS was_insert`,
+        // precio_pvf_1/2/3 y precio_pvf ($4,$5,$6 y precio_pvf=$4 en el SQL) = PVL (unico).
         [codigo, nombre, p.codigo_alt_1 || null,
-         p.precio_venta_1 != null ? Number(p.precio_venta_1) : null,
-         p.precio_venta_2 != null ? Number(p.precio_venta_2) : null,
-         p.precio_venta_3 != null ? Number(p.precio_venta_3) : null,
+         pvl,
+         pvl,
+         pvl,
          p.precio_venta_iva_1 != null ? Number(p.precio_venta_iva_1) : null,
          p.precio_venta_iva_2 != null ? Number(p.precio_venta_iva_2) : null,
          p.precio_venta_iva_3 != null ? Number(p.precio_venta_iva_3) : null,
