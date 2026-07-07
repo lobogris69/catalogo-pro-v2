@@ -660,6 +660,7 @@ async function renderEditorCatalogo(id) {
                   ${esAdmin ? `
                   <div class="lamina-acciones">
                     <button class="btn-guardar-tags" data-id="${s.id}" style="display:none" title="Guardar tags">💾</button>
+                    <button onclick="regenerarTagsIA(${s.id}, this)" title="Generar tags con IA (GPT-4 Vision)">🤖</button>
                     <button onclick="sustituirImagenLamina(${s.id})" title="Sustituir imagen">🔄</button>
                     <button onclick="editarLamina(${s.id})" title="Editar todo">✏️</button>
                     <button class="btn-borrar" onclick="borrarLamina(${s.id}, ${id})" title="Borrar">🗑️</button>
@@ -4037,6 +4038,21 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE: IA Tags -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">🤖 Tags automáticos con IA
+            ${ayuda('Cada lámina que subes recibe automáticamente etiquetas de búsqueda generadas por GPT-4 Vision (analiza la imagen y el título). Aquí puedes generar tags también para las láminas antiguas que no los tengan.', 'izq')}
+          </h3>
+          <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">
+            Al subir una lámina, la IA genera 5-12 palabras clave analizando la imagen (marcas, categorías, ofertas...).<br>
+            En cada lámina existente hay un botón 🤖 para regenerar los tags de esa lámina en concreto.
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-primary btn-pequeno" onclick="backfillTagsIA(this)">🤖 Generar tags de todas las láminas sin tags</button>
+          </div>
+          <div id="backfill-tags-out" style="font-size:12px;color:var(--gris-texto);margin-top:8px"></div>
+        </div>
+
         <!-- BLOQUE: Sincronización Sage -->
         <div class="editor-panel" style="margin-top:14px">
           <h3 style="margin-top:0">🔄 Sincronización con Sage
@@ -5303,6 +5319,66 @@ async function seedCarpetasMega(boton) {
   } finally {
     boton.textContent = t;
     boton.disabled = false;
+  }
+}
+
+// ============================================================================
+// IA TAGS - regenerar de una lamina o backfill masivo
+// ============================================================================
+async function regenerarTagsIA(sheetId, boton) {
+  const orig = boton.textContent;
+  boton.disabled = true;
+  boton.textContent = '⏳';
+  try {
+    const r = await api('/api/sheets/' + sheetId + '/regenerate-tags', { method: 'POST' });
+    if (r.success && r.tags) {
+      // Actualizar el input de tags visible en la fila
+      const fila = document.querySelector('.lamina-fila[data-id="' + sheetId + '"]');
+      const input = fila?.querySelector('.lamina-tags-input');
+      if (input) {
+        input.value = r.tags;
+        input.classList.remove('lamina-tags-dirty');
+      } else {
+        // Vista sin edicion inline: recargar el editor
+        // (nada crítico si no encontramos el input)
+      }
+      boton.textContent = '✅';
+      setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 1500);
+    } else {
+      boton.textContent = '❌';
+      alert('Error: ' + (r.error || 'sin tags'));
+      setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 2500);
+    }
+  } catch (e) {
+    boton.textContent = '❌';
+    alert('Error: ' + e.message);
+    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 2500);
+  }
+}
+
+async function backfillTagsIA(boton) {
+  if (!confirm('¿Generar tags con IA para todas las láminas que no tienen tags?\n\nSe procesa en lotes de 20. Coste estimado: ~$0.0001 por lámina (~4 céntimos para 400 láminas).')) return;
+  const orig = boton.textContent;
+  boton.disabled = true;
+  const $out = document.getElementById('backfill-tags-out');
+  let totalOk = 0, totalKo = 0, ronda = 0;
+  try {
+    while (ronda < 60) { // seguridad: max 60 lotes = 1200 laminas
+      ronda++;
+      boton.textContent = '⏳ Lote ' + ronda + '...';
+      const r = await api('/api/admin/backfill-tags?limit=20', { method: 'POST' });
+      if (!r.success) throw new Error(r.error || 'sin exito');
+      totalOk += r.ok || 0;
+      totalKo += r.fallidas || 0;
+      if ($out) $out.innerHTML = `Procesadas: ${totalOk + totalKo} · OK: ${totalOk} · fallidas: ${totalKo} · restantes: ${r.restantes}`;
+      if (r.procesadas === 0 || r.restantes === 0) break;
+    }
+    boton.textContent = '✅ Terminado';
+    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 3000);
+  } catch (e) {
+    boton.textContent = '❌ Error';
+    alert('Error: ' + e.message);
+    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 2500);
   }
 }
 

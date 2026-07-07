@@ -27,6 +27,28 @@ import {
   COMERCIALES_FOLDER,
   GENERAL_FOLDER
 } from './mega';
+import { generarTagsIA, resolverRutaImagen } from './ai-tags';
+
+// ============================================================================
+// AI-TAGS - dispara generacion en background y hace UPDATE cuando esta listo.
+// No lanza. No bloquea la respuesta HTTP.
+// ============================================================================
+function generarTagsBackground(sheetId: number, imagenPathAbs: string, titulo: string | null): void {
+  setImmediate(async () => {
+    try {
+      const tags = await generarTagsIA(imagenPathAbs, titulo);
+      if (!tags) return;
+      // Solo escribir si la lamina sigue existiendo y no tiene tags puestos a mano
+      await pool.query(
+        `UPDATE sheets SET tags = $1, updated_at = NOW()
+         WHERE id = $2 AND (tags IS NULL OR tags = '')`,
+        [tags, sheetId]
+      );
+    } catch (e: any) {
+      console.warn('[ai-tags-bg] fallo para sheet ' + sheetId + ':', e?.message || e);
+    }
+  });
+}
 
 const execAsync = promisify(exec);
 
@@ -2004,6 +2026,8 @@ app.post('/api/catalogs/:id/sheets', verifyToken, requireAdmin, upload.single('i
     await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
       { orden: r.rows[0].orden, imagen_path: r.rows[0].imagen_path },
       { id: req.user?.id, name: req.user?.name });
+    // Generar tags con IA en background (no bloquea la respuesta)
+    if (!tags) generarTagsBackground(r.rows[0].id, req.file.path, r.rows[0].titulo);
     res.status(201).json({ success: true, sheet: r.rows[0] });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
@@ -2078,6 +2102,8 @@ app.post('/api/catalogs/:id/sheets/bulk', verifyToken, requireAdmin,
         await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
           { orden: r.rows[0].orden, imagen_path: r.rows[0].imagen_path, origen: 'bulk' },
           { id: req.user?.id, name: req.user?.name });
+        // Generar tags con IA en background (no bloquea la respuesta)
+        generarTagsBackground(r.rows[0].id, f.path, r.rows[0].titulo);
         ordenSiguiente++;
       } catch (e: any) {
         errores.push({ archivo: f.originalname, error: e.message });
@@ -2434,6 +2460,68 @@ app.delete('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest
 });
 
 // ============================================================================
+// AI-TAGS - regenerar tags de una lamina concreta y backfill
+// ============================================================================
+
+// Regenera tags de UNA lamina (sincrono; el llamador espera unos segundos).
+// Devuelve los tags generados.
+app.post('/api/sheets/:id/regenerate-tags', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const s = await pool.query('SELECT id, titulo, imagen_path FROM sheets WHERE id = $1', [id]);
+    if (s.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Lamina no encontrada' });
+      return;
+    }
+    const abs = resolverRutaImagen(s.rows[0].imagen_path, UPLOADS_DIR);
+    if (!abs || !fs.existsSync(abs)) {
+      res.status(400).json({ success: false, error: 'La imagen no existe en disco' });
+      return;
+    }
+    const tags = await generarTagsIA(abs, s.rows[0].titulo);
+    if (!tags) {
+      res.status(500).json({ success: false, error: 'La IA no devolvio tags (revisa OPENAI_API_KEY o intenta de nuevo)' });
+      return;
+    }
+    await pool.query('UPDATE sheets SET tags = $1, updated_at = NOW() WHERE id = $2', [tags, id]);
+    res.json({ success: true, tags });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Backfill: genera tags para laminas SIN tags. limit por peticion (default 20).
+// Idempotente y llamable en bucle desde el frontend hasta agotar.
+app.post('/api/admin/backfill-tags', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
+    const pend = await pool.query(
+      `SELECT id, titulo, imagen_path FROM sheets
+       WHERE (tags IS NULL OR tags = '') AND imagen_path IS NOT NULL
+       ORDER BY id
+       LIMIT $1`,
+      [limit]
+    );
+    let ok = 0, ko = 0;
+    const fallos: any[] = [];
+    for (const row of pend.rows) {
+      const abs = resolverRutaImagen(row.imagen_path, UPLOADS_DIR);
+      if (!abs || !fs.existsSync(abs)) { ko++; fallos.push({ id: row.id, motivo: 'no en disco' }); continue; }
+      const tags = await generarTagsIA(abs, row.titulo);
+      if (!tags) { ko++; fallos.push({ id: row.id, motivo: 'IA sin respuesta' }); continue; }
+      await pool.query('UPDATE sheets SET tags = $1, updated_at = NOW() WHERE id = $2 AND (tags IS NULL OR tags = $3)', [tags, row.id, '']);
+      ok++;
+    }
+    const restantesR = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM sheets WHERE (tags IS NULL OR tags = '') AND imagen_path IS NOT NULL`
+    );
+    res.json({ success: true, procesadas: pend.rows.length, ok, fallidas: ko, restantes: restantesR.rows[0].n, fallos: fallos.slice(0, 10) });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================================
 // ASIGNACIONES de catalogos a comerciales
 // ============================================================================
 
@@ -2566,6 +2654,8 @@ app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadP
       await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
         { orden: r.rows[0].orden, imagen_path: r.rows[0].imagen_path, origen: 'from-pdf' },
         { id: req.user?.id, name: req.user?.name });
+      // Generar tags con IA en background
+      generarTagsBackground(r.rows[0].id, rutaAbs, r.rows[0].titulo);
       ordenSiguiente++;
     }
 
