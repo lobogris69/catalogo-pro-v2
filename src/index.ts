@@ -2630,15 +2630,16 @@ function extraerEjesProducto(nombreRaw: string): { ejes: Record<string, string>;
   const g = nombre.match(/\+\s?(\d)(?:[.,](\d))?/);
   if (g) { ejes.graduacion = `+${g[1]}.${g[2] || '0'}`; base = base.replace(/\+\s?\d(?:[.,]\d)?/g, ' '); }
 
-  // TALLA: T/XX, TALLA XX, o rango (35-40)
-  const t1 = nombre.match(/\bT\/\s?([A-ZÑ0-9]+)/);
+  // TALLA: T/XX o T-XX (guantes), TALLA XX, o rango (35-40).
+  // Normalizamos "T/GRD"/"T-G" etc. tal cual aparecen; el separador / o - da igual.
+  const t1 = nombre.match(/\bT[\/\-]\s?([A-ZÑ0-9]+)/);
   const t2 = nombre.match(/\bTALLA\s+([A-Z0-9]+)/);
   const t3 = nombre.match(/\((\d{2,3})\s*-\s*(\d{2,3})\)/);
   if (t1) ejes.talla = t1[1];
   else if (t2) ejes.talla = t2[1];
   else if (t3) ejes.talla = `${t3[1]}-${t3[2]}`;
   if (ejes.talla) {
-    base = base.replace(/\bT\/\s?[A-ZÑ0-9]+/g, ' ')
+    base = base.replace(/\bT[\/\-]\s?[A-ZÑ0-9]+/g, ' ')
                .replace(/\bTALLA\s+[A-Z0-9]+/g, ' ')
                .replace(/\(\d{2,3}\s*-\s*\d{2,3}\)/g, ' ');
   }
