@@ -5413,30 +5413,41 @@ async function backfillTagsIA(boton) {
   }
 }
 
+let _backfillZonasStop = false;
+let _backfillZonasEnCurso = false;
+
 async function backfillZonasIA(boton) {
-  if (!confirm('¿Detectar zonas con IA en todas las láminas pendientes?\n\n• Solo procesa láminas NUEVAS o que aún no han pasado por la IA.\n• Las que ya tienen zonas dibujadas se saltan.\n• Coste: ~$0.02 (2 céntimos) por lámina.\n\nSe procesa en lotes pequeños con reintento automático.')) return;
-  const orig = boton.textContent;
-  boton.disabled = true;
+  // Si YA está corriendo, este mismo botón sirve como "Detener"
+  if (_backfillZonasEnCurso) {
+    _backfillZonasStop = true;
+    boton.textContent = '⏳ Deteniendo...';
+    return;
+  }
+  if (!confirm('¿Detectar zonas con IA en todas las láminas pendientes?\n\n• Solo procesa láminas NUEVAS o que aún no han pasado por la IA.\n• Las que ya tienen zonas dibujadas se saltan.\n• Coste: ~$0.02 (2 céntimos) por lámina.\n\nPuedes detener el proceso en cualquier momento pulsando el mismo botón.')) return;
+  const orig = '🎯 Detectar zonas en todas las láminas pendientes';
+  _backfillZonasStop = false;
+  _backfillZonasEnCurso = true;
+  boton.classList.add('btn-danger');
+  boton.classList.remove('btn-primary');
   const $out = document.getElementById('backfill-zonas-out');
   let totalProc = 0, totalZonas = 0, totalMatch = 0, totalErr = 0, ronda = 0;
-  // Helper: llamar al endpoint con reintentos si hay error de red
   const llamarLote = async (intentos = 3) => {
     let ultErr = null;
     for (let i = 0; i < intentos; i++) {
+      if (_backfillZonasStop) throw new Error('detenido por el usuario');
       try {
         return await api('/api/admin/backfill-detect-zones?limit=1', { method: 'POST' });
       } catch (e) {
         ultErr = e;
-        // Esperar 3s antes de reintentar (Railway 502 puede persistir un poco)
         await new Promise(r => setTimeout(r, 3000));
       }
     }
     throw ultErr || new Error('sin exito tras varios intentos');
   };
   try {
-    while (ronda < 1000) { // seguridad: max 1000 laminas
+    while (ronda < 1000 && !_backfillZonasStop) {
       ronda++;
-      boton.textContent = '⏳ Lote ' + ronda + '...';
+      boton.textContent = '🛑 Detener (lote ' + ronda + '…)';
       const r = await llamarLote(3);
       if (!r.success) throw new Error(r.error || 'sin éxito');
       totalProc += r.procesadas || 0;
@@ -5447,16 +5458,30 @@ async function backfillZonasIA(boton) {
         $out.innerHTML = `Láminas procesadas: <b>${totalProc}</b> · zonas creadas: <b>${totalZonas}</b> · con match Sage: <b>${totalMatch}</b> · errores: ${totalErr} · restantes: ${r.restantes}`;
       }
       if ((r.procesadas || 0) === 0 || r.restantes === 0) break;
-      // Pausa entre lotes
       await new Promise(r => setTimeout(r, 500));
     }
-    boton.textContent = '✅ Terminado';
-    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 3000);
+    if (_backfillZonasStop) {
+      boton.textContent = '🛑 Detenido';
+      if ($out) $out.innerHTML += `<br><span style="color:#ca8a04">Proceso detenido. Puedes reanudar pulsando el botón otra vez — continúa desde donde iba.</span>`;
+    } else {
+      boton.textContent = '✅ Terminado';
+    }
   } catch (e) {
-    boton.textContent = '❌ Error';
-    if ($out) $out.innerHTML += `<br><span style="color:#dc2626">Error tras ${totalProc} láminas: ${escape(e.message)}. Vuelve a pulsar el botón para continuar donde se paró.</span>`;
-    else alert('Error: ' + e.message);
-    setTimeout(() => { boton.textContent = orig; boton.disabled = false; }, 3500);
+    if (String(e.message).includes('detenido por el usuario')) {
+      boton.textContent = '🛑 Detenido';
+      if ($out) $out.innerHTML += `<br><span style="color:#ca8a04">Detenido. Reanuda pulsando otra vez.</span>`;
+    } else {
+      boton.textContent = '❌ Error';
+      if ($out) $out.innerHTML += `<br><span style="color:#dc2626">Error tras ${totalProc} láminas: ${escape(e.message)}. Vuelve a pulsar el botón para continuar donde se paró.</span>`;
+    }
+  } finally {
+    _backfillZonasEnCurso = false;
+    _backfillZonasStop = false;
+    setTimeout(() => {
+      boton.textContent = orig;
+      boton.classList.remove('btn-danger');
+      boton.classList.add('btn-primary');
+    }, 3000);
   }
 }
 
