@@ -513,6 +513,11 @@ async function initDB(): Promise<void> {
       ALTER TABLE sheets ADD COLUMN IF NOT EXISTS zones_ia_at TIMESTAMP;
       CREATE INDEX IF NOT EXISTS idx_sheets_zones_ia ON sheets(zones_ia_at);
 
+      -- Zona-FAMILIA: en vez de apuntar a un unico producto (product_id), una zona
+      -- puede apuntar a una familia con variantes (gafas de presbicia: color x graduacion).
+      -- familia_ref = palabra/modelo con la que resolvemos las variantes en products (ej. "verona").
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS familia_ref VARCHAR(120);
+
       CREATE TABLE IF NOT EXISTS catalog_versions (
         id SERIAL PRIMARY KEY,
         catalog_id INTEGER REFERENCES catalogs(id) ON DELETE CASCADE,
@@ -2588,6 +2593,95 @@ async function matchProductoPorNombre(descripcion: string | null): Promise<{ pro
   );
   if (r.rows.length === 0) return null;
   return { producto: r.rows[0], ambiguo: r.rows.length > 1 };
+}
+
+// ============================================================================
+// FAMILIAS con variantes (gafas de presbicia: color x graduacion).
+// Dado un "ref" (modelo, ej. "verona"), busca todos sus SKUs en products y los
+// descompone en ejes: graduacion (parseada del "+X.X" del nombre) y color
+// (los tokens que VARIAN entre SKUs; si no varia ninguno -> sin eje color).
+// Devuelve la estructura lista para pintar selectores en el visor del cliente.
+// ============================================================================
+const STOPWORDS_FAMILIA = new Set([
+  'gafa', 'gafas', 'modelo', 'mujer', 'hombre', 'unisex', 'presbicia', 'lectura',
+  'vista', 'cansada', 'de', 'para', 'con', 'sin', 'la', 'el', 'los', 'las'
+]);
+function parseGraduacion(nombre: string): string | null {
+  const m = (nombre || '').match(/\+\s?(\d)(?:[.,](\d))?/);
+  if (!m) return null;
+  const entero = m[1];
+  const dec = m[2] || '0';
+  return `+${entero}.${dec}`; // normalizado a +X.X
+}
+function gradNum(g: string): number { return parseFloat(g.replace('+', '')) || 0; }
+
+async function resolverFamilia(ref: string | null): Promise<any | null> {
+  if (!ref) return null;
+  const palabras = ref
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9+\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !STOPWORDS_FAMILIA.has(w) && !/^\+?\d/.test(w));
+  if (palabras.length === 0) return null;
+  const conds = palabras.map((_, i) => `LOWER(nombre) LIKE '%' || $${i + 1} || '%'`).join(' AND ');
+  const r = await pool.query(
+    `SELECT id, codigo, nombre, ean, precio_pvf_1, precio_pvpr_1, precio_pvf, activo
+     FROM products WHERE ${conds} AND activo = TRUE ORDER BY nombre LIMIT 100`,
+    palabras
+  );
+  if (r.rows.length === 0) return null;
+
+  // Tokenizar cada nombre quitando la graduacion, para hallar el "color" (lo que varia)
+  const tokeniza = (nombre: string): string[] =>
+    (nombre || '')
+      .toUpperCase()
+      .replace(/\+\s?\d(?:[.,]\d)?/g, ' ') // quitar graduacion
+      .replace(/[^A-Z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(t => t.length >= 2 && !STOPWORDS_FAMILIA.has(t.toLowerCase()));
+
+  // Tokens comunes a TODOS los SKUs = base del modelo; lo que sobra en cada uno = color
+  let comunes: Set<string> | null = null;
+  const porProducto = r.rows.map((p: any) => {
+    const toks = tokeniza(p.nombre);
+    const set = new Set(toks);
+    if (comunes === null) comunes = new Set(toks);
+    else comunes = new Set([...comunes].filter(t => set.has(t)));
+    return { p, toks };
+  });
+  const variantes = porProducto.map(({ p, toks }: any) => {
+    const color = toks.filter((t: string) => !(comunes as Set<string>).has(t)).join(' ') || null;
+    return {
+      product_id: p.id,
+      codigo: p.codigo,
+      nombre: p.nombre,
+      ean: p.ean,
+      color,                             // ej. "CAREY", "NEGRA" o null (sin eje color)
+      graduacion: parseGraduacion(p.nombre), // ej. "+1.0"
+      pvf: p.precio_pvf_1 ?? p.precio_pvf ?? null,
+      pvpr: p.precio_pvpr_1 ?? null
+    };
+  }).filter((v: any) => v.graduacion); // solo las que tienen graduacion valida
+
+  if (variantes.length === 0) return null;
+
+  const colores = Array.from(new Set(variantes.map((v: any) => v.color).filter((c: any) => c)));
+  const graduaciones = Array.from(new Set(variantes.map((v: any) => v.graduacion)))
+    .sort((a: any, b: any) => gradNum(a) - gradNum(b));
+  // Nombre "modelo" para mostrar: tokens comunes sin GAFA
+  const modelo = Array.from(comunes || new Set())
+    .filter((t: any) => t !== 'GAFA')
+    .join(' ') || ref.toUpperCase();
+
+  return {
+    ref,
+    modelo,
+    tiene_color: colores.length > 0,
+    colores,          // [] si el modelo no tiene variantes de color (ej. Aspen)
+    graduaciones,     // ["+1.0","+1.5",...] solo las que EXISTEN en este modelo
+    variantes         // cada combinacion -> SKU concreto con codigo/precio
+  };
 }
 
 // ============================================================================
@@ -8235,6 +8329,20 @@ app.get('/api/sheets/:sheetId/zones', verifyToken, async (req: AuthRequest, res:
       ORDER BY z.orden, z.id
     `, [sheetId]);
     res.json({ success: true, zones: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Resolver una FAMILIA (color x graduacion -> SKUs). Usado por el visor del cliente
+// para pintar los selectores al pulsar una zona-familia, y por el editor admin.
+app.get('/api/families/resolve', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const ref = String(req.query.ref || '').trim();
+    if (!ref) { res.status(400).json({ success: false, error: 'Falta ref' }); return; }
+    const fam = await resolverFamilia(ref);
+    if (!fam) { res.json({ success: true, familia: null }); return; }
+    res.json({ success: true, familia: fam });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
