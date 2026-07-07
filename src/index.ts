@@ -4948,19 +4948,40 @@ app.get('/api/admin/mega-test', verifyToken, requireRealAdmin, async (_req: Auth
 app.get('/api/admin/limpiar-pruebas/preview', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const counts: any = {};
-    const tablas = [
+    const tablas: [string, string][] = [
       ['catalogs', 'catálogos'],
       ['sheets', 'láminas'],
       ['visits', 'visitas'],
       ['annotations', 'anotaciones'],
-      ['catalog_versions', 'versiones'],
-      ['visit_emails', 'emails registrados']
+      ['catalog_versions', 'versiones cerradas'],
+      ['visit_emails', 'emails de visitas'],
+      ['sheet_audit_log', 'registros de auditoría'],
+      ['mega_backups', 'backups MEGA hechos'],
+      ['office_summary_sent', 'resúmenes enviados'],
+      ['formaciones', 'formaciones (Aula)'],
+      ['formacion_versions', 'versiones de formaciones']
     ];
     for (const [tabla, label] of tablas) {
-      const r = await pool.query(`SELECT COUNT(*)::int AS n FROM ${tabla}`);
-      counts[tabla] = { label, n: r.rows[0].n };
+      try {
+        const r = await pool.query(`SELECT COUNT(*)::int AS n FROM ${tabla}`);
+        counts[tabla] = { label, n: r.rows[0].n };
+      } catch (_) {
+        counts[tabla] = { label, n: 0 };
+      }
     }
-    res.json({ success: true, counts });
+    res.json({
+      success: true,
+      counts,
+      se_mantienen: [
+        'users (admin + comerciales)',
+        'clients (importados de Sage)',
+        'products (importados de Sage)',
+        'categorias / annotation_templates',
+        'mega_folders (las 6 carpetas MEGA)',
+        'office_summary_recipients (los 4 emails de oficina)',
+        'email_config'
+      ]
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
@@ -4989,18 +5010,38 @@ app.post('/api/admin/limpiar-pruebas', verifyToken, requireRealAdmin, async (req
       }
     }
 
+    // 1b) Rutas fisicas de archivos de formaciones (PDFs subidos al Aula)
+    try {
+      const formR = await pool.query(`SELECT archivo_path FROM formaciones`);
+      for (const f of formR.rows) if (f.archivo_path) rutasFisicas.push(f.archivo_path);
+      const formVR = await pool.query(`SELECT archivo_path FROM formacion_versions`);
+      for (const f of formVR.rows) if (f.archivo_path) rutasFisicas.push(f.archivo_path);
+    } catch (_) { /* si las tablas no existen, seguimos */ }
+
     // 2) Borrar en orden seguro (hijos antes que padres).
     //    Muchas tienen ON DELETE CASCADE, pero lo hacemos explícito para contar bien.
     const ordenBorrado = [
+      // Auditoría y logs de operaciones sobre laminas/backups (limpiamos historico de pruebas)
+      'sheet_audit_log',
+      'mega_backups',
+      'office_summary_sent',
+      // Emails de visitas y anotaciones
       'visit_emails',
       'annotations',
       'visits',
+      // Catalogos y sus tablas asociadas
       'express_sheets',
       'catalog_versions',
       'catalog_changes',
       'catalog_assignments',
+      'sheet_categorias',
+      'sheet_zones',
       'sheets',
-      'catalogs'
+      'catalogs',
+      // Aula de formacion (todo era prueba)
+      'formacion_permisos',
+      'formacion_versions',
+      'formaciones'
     ];
     for (const tabla of ordenBorrado) {
       try {
