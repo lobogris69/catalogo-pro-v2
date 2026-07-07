@@ -650,6 +650,13 @@ async function renderEditorCatalogo(id) {
                   <img src="${escape(s.miniatura_path || s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
+                    ${esAdmin ? (
+                      s.zonas_aprobadas_at
+                        ? `<span class="lamina-estado-zonas ok">✅ Revisada (${s.num_zonas || 0} zonas)</span>`
+                        : (s.num_zonas > 0
+                            ? `<span class="lamina-estado-zonas auto">🤖 Auto · sin revisar (${s.num_zonas})</span>`
+                            : `<span class="lamina-estado-zonas none">⚪ Sin zonas</span>`)
+                    ) : ''}
                     ${catsChips ? `<div class="lamina-cats">${catsChips}</div>` : ''}
                     ${esAdmin ? `
                       <input type="text" class="lamina-tags-input" value="${escape(s.tags || '')}"
@@ -10986,6 +10993,8 @@ async function abrirEditorZonas(sheetId, catalogId) {
     return;
   }
   _zonasEditor.zonas = zonas;
+  _zonasEditor.aprobada = !!sheet.zonas_aprobadas_at;
+  _zonasEditor.aprobacionCambiada = false;
 
   const overlay = document.createElement('div');
   overlay.className = 'zonas-editor-overlay';
@@ -10998,6 +11007,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <span class="zonas-contador" id="zonas-contador">${zonas.length} zonas</span>
+        <button class="btn" id="btn-aprobar-zonas" onclick="toggleAprobarZonas(${sheet.id}, this)" style="background:${_zonasEditor.aprobada ? '#16a34a' : '#e5e7eb'};color:${_zonasEditor.aprobada ? '#fff' : '#374151'}" title="Marca esta lámina como revisada y aprobada por ti">${_zonasEditor.aprobada ? '✅ Revisada' : '☐ Marcar revisada'}</button>
         <button class="btn btn-primary" id="btn-detectar-zonas-ia" onclick="detectarZonasConIA(${sheet.id}, this)" title="La IA detecta los productos de la lámina y propone recuadros">🤖 Detectar productos con IA</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
       </div>
@@ -11033,8 +11043,29 @@ function cerrarEditorZonas() {
   if (_zonasEditor.acProducto) { try { _zonasEditor.acProducto.destroy(); } catch {} _zonasEditor.acProducto = null; }
   const ov = document.getElementById('zonas-editor-overlay');
   if (ov) ov.remove();
-  // Reabrir el modal de editar lámina para volver al flujo
-  // (opcional: no lo reabrimos para no molestar)
+  // Si cambió la aprobación, refrescar la rejilla para que el distintivo se actualice
+  if (_zonasEditor.aprobacionCambiada) {
+    _zonasEditor.aprobacionCambiada = false;
+    if (typeof render === 'function') render();
+  }
+}
+
+// Marca/desmarca la lámina como revisada y aprobada por el admin
+async function toggleAprobarZonas(sheetId, boton) {
+  const nuevoEstado = !_zonasEditor.aprobada;
+  try {
+    await api('/api/sheets/' + sheetId + '/aprobar-zonas', { method: 'POST', body: { aprobada: nuevoEstado } });
+    _zonasEditor.aprobada = nuevoEstado;
+    _zonasEditor.aprobacionCambiada = true;
+    if (boton) {
+      boton.style.background = nuevoEstado ? '#16a34a' : '#e5e7eb';
+      boton.style.color = nuevoEstado ? '#fff' : '#374151';
+      boton.textContent = nuevoEstado ? '✅ Revisada' : '☐ Marcar revisada';
+    }
+    mostrarNotificacionOnline(nuevoEstado ? '✅ Lámina marcada como revisada' : 'Marca de revisada quitada', nuevoEstado ? '#16a34a' : '#6b7280');
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
 }
 
 function montarLienzoZonas() {

@@ -513,6 +513,11 @@ async function initDB(): Promise<void> {
       ALTER TABLE sheets ADD COLUMN IF NOT EXISTS zones_ia_at TIMESTAMP;
       CREATE INDEX IF NOT EXISTS idx_sheets_zones_ia ON sheets(zones_ia_at);
 
+      -- Marca cuando el ADMIN ha REVISADO y APROBADO a mano las zonas de la lamina
+      -- (distinto de zones_ia_at, que es solo "la IA paso por aqui"). Para saber en la
+      -- rejilla que laminas estan hechas de verdad y no perder tiempo re-abriendolas.
+      ALTER TABLE sheets ADD COLUMN IF NOT EXISTS zonas_aprobadas_at TIMESTAMP;
+
       -- Zona-FAMILIA: en vez de apuntar a un unico producto (product_id), una zona
       -- puede apuntar a una familia con variantes (gafas de presbicia: color x graduacion).
       -- familia_ref = palabra/modelo con la que resolvemos las variantes en products (ej. "verona").
@@ -1482,6 +1487,16 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
       }
       for (const s of sheetsRows) {
         s.categorias = catsBySheet[s.id] || [];
+      }
+      // Numero de zonas por lamina (para el distintivo de revision en la rejilla)
+      const zR = await pool.query(
+        `SELECT sheet_id, COUNT(*)::int AS n FROM sheet_zones WHERE sheet_id = ANY($1::int[]) GROUP BY sheet_id`,
+        [sheetIds]
+      );
+      const zBySheet: { [key: number]: number } = {};
+      for (const row of zR.rows) zBySheet[row.sheet_id] = row.n;
+      for (const s of sheetsRows) {
+        s.num_zonas = zBySheet[s.id] || 0;
       }
     }
     res.json({ success: true, catalog: cat, sheets: sheetsRows });
@@ -8549,6 +8564,23 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
       return;
     }
     res.json({ success: true, zone: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Marcar/desmarcar una lamina como "zonas revisadas y aprobadas por el admin"
+app.post('/api/sheets/:id/aprobar-zonas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const aprobar = req.body?.aprobada !== false; // por defecto aprobar
+    const r = await pool.query(
+      `UPDATE sheets SET zonas_aprobadas_at = ${aprobar ? 'NOW()' : 'NULL'}, updated_at = NOW()
+       WHERE id = $1 RETURNING id, zonas_aprobadas_at`,
+      [id]
+    );
+    if (r.rows.length === 0) { res.status(404).json({ success: false, error: 'Lamina no encontrada' }); return; }
+    res.json({ success: true, sheet: r.rows[0] });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
