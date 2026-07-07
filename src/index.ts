@@ -8597,6 +8597,18 @@ app.delete('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: Auth
   }
 });
 
+// DELETE TODAS las zonas de una lamina de golpe (ej. expositor grande con muchas
+// zonas auto que en realidad es 1 solo producto) — solo admin real
+app.delete('/api/sheets/:id/zones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.id);
+    const r = await pool.query(`DELETE FROM sheet_zones WHERE sheet_id = $1`, [sheetId]);
+    res.json({ success: true, borradas: r.rowCount || 0 });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
 // ============================================================================
 // AULA DE FORMACIÓN (Bloque 1: backend admin)
 // Almacenamiento: /app/data/uploads/formaciones/

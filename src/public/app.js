@@ -11007,6 +11007,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <span class="zonas-contador" id="zonas-contador">${zonas.length} zonas</span>
+        <button class="btn" id="btn-borrar-todas-zonas" onclick="borrarTodasLasZonas(${sheet.id}, this)" style="background:#fee2e2;color:#b91c1c" title="Borra TODAS las zonas de esta lámina de golpe (ej. expositor grande que es 1 solo producto)">🗑️ Borrar todas</button>
         <button class="btn" id="btn-aprobar-zonas" onclick="toggleAprobarZonas(${sheet.id}, this)" style="background:${_zonasEditor.aprobada ? '#16a34a' : '#e5e7eb'};color:${_zonasEditor.aprobada ? '#fff' : '#374151'}" title="Marca esta lámina como revisada y aprobada por ti">${_zonasEditor.aprobada ? '✅ Revisada' : '☐ Marcar revisada'}</button>
         <button class="btn btn-primary" id="btn-detectar-zonas-ia" onclick="detectarZonasConIA(${sheet.id}, this)" title="La IA detecta los productos de la lámina y propone recuadros">🤖 Detectar productos con IA</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
@@ -11047,6 +11048,28 @@ function cerrarEditorZonas() {
   if (_zonasEditor.aprobacionCambiada) {
     _zonasEditor.aprobacionCambiada = false;
     if (typeof render === 'function') render();
+  }
+}
+
+// Borra TODAS las zonas de la lámina de golpe (expositor grande = 1 producto)
+async function borrarTodasLasZonas(sheetId, boton) {
+  const n = _zonasEditor.zonas.length;
+  if (n === 0) { alert('Esta lámina no tiene zonas.'); return; }
+  if (!confirm('¿Borrar las ' + n + ' zonas de esta lámina de golpe?\n\nÚtil cuando un expositor grande se detectó como muchas zonas pero en realidad es un solo producto. Los productos NO se borran, solo las zonas.')) return;
+  const orig = boton ? boton.textContent : '';
+  if (boton) { boton.disabled = true; boton.textContent = '⏳ Borrando…'; }
+  try {
+    await api('/api/sheets/' + sheetId + '/zones', { method: 'DELETE' });
+    _zonasEditor.zonas = [];
+    _zonasEditor.zonaSeleccionadaId = null;
+    renderZonasEnCapa();
+    renderListaZonas();
+    actualizarContadorZonas();
+    mostrarNotificacionOnline('🗑️ ' + n + ' zonas borradas', '#6b7280');
+  } catch (err) {
+    alert('Error borrando zonas: ' + err.message);
+  } finally {
+    if (boton) { boton.disabled = false; boton.textContent = orig; }
   }
 }
 
