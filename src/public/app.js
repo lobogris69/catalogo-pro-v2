@@ -3142,23 +3142,19 @@ async function pulsarZonaComercial(zona) {
   };
   let pvf = skuSel && skuSel.pvf != null ? skuSel.pvf : null;
 
-  // Selectores de familia (solo si es familia y se resolvieron variantes)
+  // Selectores de familia: un grupo de chips por cada EJE (color, talla, graduacion, formato)
+  const ejesFamilia = (esFamilia && familia && Array.isArray(familia.ejes)) ? familia.ejes : [];
   const familiaHTML = (esFamilia && familia) ? `
     <div class="zona-familia-selector" style="margin-top:14px">
       <div style="font-weight:700;font-size:14px;margin-bottom:8px">👓 ${escape(familia.modelo)} — elige opciones</div>
-      ${familia.tiene_color ? `
+      ${ejesFamilia.map(eje => `
         <div class="form-group" style="margin-bottom:10px">
-          <label>Color</label>
-          <div class="fam-chips" id="fam-colores">
-            ${familia.colores.map(c => `<button type="button" class="fam-chip" data-color="${escape(c).replace(/"/g,'&quot;')}">${escape(c)}</button>`).join('')}
+          <label>${escape(eje.label)}</label>
+          <div class="fam-chips" data-eje="${escape(eje.key).replace(/"/g,'&quot;')}">
+            ${eje.valores.map(v => `<button type="button" class="fam-chip" data-valor="${escape(v).replace(/"/g,'&quot;')}">${escape(v)}</button>`).join('')}
           </div>
-        </div>` : ''}
-      <div class="form-group" style="margin-bottom:6px">
-        <label>Graduación</label>
-        <div class="fam-chips" id="fam-graduaciones">
-          ${familia.graduaciones.map(g => `<button type="button" class="fam-chip" data-grad="${escape(g).replace(/"/g,'&quot;')}">${escape(g)}</button>`).join('')}
         </div>
-      </div>
+      `).join('')}
     </div>
   ` : (esFamilia ? `<div class="error-msg" style="margin-top:12px">No se pudieron cargar las variantes de esta familia.</div>` : '');
 
@@ -3258,22 +3254,20 @@ async function pulsarZonaComercial(zona) {
     });
   });
 
-  // ---- FAMILIA: selectores de color + graduacion que resuelven al SKU ----
+  // ---- FAMILIA: selectores genericos (N ejes) que resuelven al SKU ----
   const $guardar = modal.querySelector('#zona-guardar');
-  if (esFamilia && familia) {
-    let colorSel = familia.tiene_color ? null : '__sin__'; // si no hay color, ya resuelto ese eje
-    let gradSel = null;
+  if (esFamilia && familia && Array.isArray(familia.variantes)) {
+    const seleccion = {};                 // { color:'NEGRA', graduacion:'+2.5', ... }
     const $prodCodigo = modal.querySelector('#zona-prod-codigo');
     const $prodNombre = modal.querySelector('#zona-prod-nombre');
     const $prodPvf = modal.querySelector('#zona-prod-pvf');
-    if ($guardar) { $guardar.disabled = true; $guardar.style.opacity = '0.5'; }
 
     const resolverSku = () => {
-      if ((familia.tiene_color && !colorSel) || !gradSel) { skuSel = null; }
-      else {
-        skuSel = familia.variantes.find(v =>
-          v.graduacion === gradSel && (!familia.tiene_color || v.color === colorSel)
-        ) || null;
+      const faltan = ejesFamilia.filter(e => !seleccion[e.key]);
+      if (faltan.length > 0) {
+        skuSel = ejesFamilia.length === 0 && familia.variantes.length === 1 ? familia.variantes[0] : null;
+      } else {
+        skuSel = familia.variantes.find(v => ejesFamilia.every(e => (v.ejes || {})[e.key] === seleccion[e.key])) || null;
       }
       if (skuSel) {
         pvf = skuSel.pvf != null ? Number(skuSel.pvf) : null;
@@ -3281,33 +3275,28 @@ async function pulsarZonaComercial(zona) {
         if ($prodNombre) $prodNombre.textContent = skuSel.nombre || '';
         if ($prodPvf) $prodPvf.textContent = pvf != null && pvf > 0 ? ('PVF ' + pvf.toFixed(2) + '€') : '';
         if ($guardar) { $guardar.disabled = false; $guardar.style.opacity = '1'; }
-        actualizarSubtotal();
       } else {
         pvf = null;
         if ($prodCodigo) $prodCodigo.textContent = '—';
-        if ($prodNombre) $prodNombre.textContent = 'Elige ' + (familia.tiene_color && !colorSel ? 'color' : '') + (((familia.tiene_color && !colorSel) && !gradSel) ? ' y ' : '') + (!gradSel ? 'graduación' : '');
+        if ($prodNombre) $prodNombre.textContent = 'Elige ' + faltan.map(e => e.label.toLowerCase()).join(' y ');
         if ($prodPvf) $prodPvf.textContent = '';
         if ($guardar) { $guardar.disabled = true; $guardar.style.opacity = '0.5'; }
-        actualizarSubtotal();
       }
+      actualizarSubtotal();
     };
 
-    modal.querySelectorAll('#fam-colores .fam-chip').forEach(ch => {
-      ch.addEventListener('click', () => {
-        colorSel = ch.dataset.color;
-        modal.querySelectorAll('#fam-colores .fam-chip').forEach(x => x.classList.remove('sel'));
-        ch.classList.add('sel');
-        resolverSku();
+    modal.querySelectorAll('.fam-chips').forEach(grp => {
+      const key = grp.dataset.eje;
+      grp.querySelectorAll('.fam-chip').forEach(ch => {
+        ch.addEventListener('click', () => {
+          seleccion[key] = ch.dataset.valor;
+          grp.querySelectorAll('.fam-chip').forEach(x => x.classList.remove('sel'));
+          ch.classList.add('sel');
+          resolverSku();
+        });
       });
     });
-    modal.querySelectorAll('#fam-graduaciones .fam-chip').forEach(ch => {
-      ch.addEventListener('click', () => {
-        gradSel = ch.dataset.grad;
-        modal.querySelectorAll('#fam-graduaciones .fam-chip').forEach(x => x.classList.remove('sel'));
-        ch.classList.add('sel');
-        resolverSku();
-      });
-    });
+    resolverSku(); // estado inicial (deshabilita guardar hasta elegir todo)
   }
 
   // Guardar

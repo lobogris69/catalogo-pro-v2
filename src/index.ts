@@ -2604,16 +2604,72 @@ async function matchProductoPorNombre(descripcion: string | null): Promise<{ pro
 // ============================================================================
 const STOPWORDS_FAMILIA = new Set([
   'gafa', 'gafas', 'modelo', 'mujer', 'hombre', 'unisex', 'presbicia', 'lectura',
-  'vista', 'cansada', 'de', 'para', 'con', 'sin', 'la', 'el', 'los', 'las'
+  'vista', 'cansada', 'de', 'para', 'con', 'sin', 'la', 'el', 'los', 'las', 'und', 'uds'
 ]);
-function parseGraduacion(nombre: string): string | null {
-  const m = (nombre || '').match(/\+\s?(\d)(?:[.,](\d))?/);
-  if (!m) return null;
-  const entero = m[1];
-  const dec = m[2] || '0';
-  return `+${entero}.${dec}`; // normalizado a +X.X
-}
+const COLORES_CONOCIDOS = new Set([
+  'AZUL', 'ROJO', 'ROJA', 'ROSA', 'BEIGE', 'NEGRO', 'NEGRA', 'VERDE', 'NARANJA',
+  'CARNE', 'BLANCO', 'BLANCA', 'AMARILLO', 'MORADO', 'GRIS', 'MARRON', 'CAREY',
+  'TRANSPARENTE', 'LILA', 'CELESTE', 'FUCSIA', 'DORADO', 'PLATA', 'VIOLETA',
+  'TURQUESA', 'NUDE', 'CORAL', 'AZULES', 'GRANATE'
+]);
 function gradNum(g: string): number { return parseFloat(g.replace('+', '')) || 0; }
+
+// Descompone un nombre de producto en sus EJES (formato/graduacion/talla/color)
+// reconocidos por patron, y devuelve la "base" (nombre sin esos ejes) que sirve
+// para agrupar SKUs de una misma familia sin mezclar productos distintos.
+function extraerEjesProducto(nombreRaw: string): { ejes: Record<string, string>; base: string } {
+  const nombre = (nombreRaw || '').toUpperCase();
+  const ejes: Record<string, string> = {};
+  let base = nombre;
+
+  // FORMATO: expositor completo vs unidad suelta (prefijo EXP. / EXPOSITOR)
+  ejes.formato = /\bEXP\.?\b|EXPOSITOR/.test(nombre) ? 'Expositor completo' : 'Suelto';
+  base = base.replace(/\bEXP\.?\b|EXPOSITOR(ES)?/g, ' ');
+
+  // GRADUACION +X.X (gafas de presbicia)
+  const g = nombre.match(/\+\s?(\d)(?:[.,](\d))?/);
+  if (g) { ejes.graduacion = `+${g[1]}.${g[2] || '0'}`; base = base.replace(/\+\s?\d(?:[.,]\d)?/g, ' '); }
+
+  // TALLA: T/XX, TALLA XX, o rango (35-40)
+  const t1 = nombre.match(/\bT\/\s?([A-ZÑ0-9]+)/);
+  const t2 = nombre.match(/\bTALLA\s+([A-Z0-9]+)/);
+  const t3 = nombre.match(/\((\d{2,3})\s*-\s*(\d{2,3})\)/);
+  if (t1) ejes.talla = t1[1];
+  else if (t2) ejes.talla = t2[1];
+  else if (t3) ejes.talla = `${t3[1]}-${t3[2]}`;
+  if (ejes.talla) {
+    base = base.replace(/\bT\/\s?[A-ZÑ0-9]+/g, ' ')
+               .replace(/\bTALLA\s+[A-Z0-9]+/g, ' ')
+               .replace(/\(\d{2,3}\s*-\s*\d{2,3}\)/g, ' ');
+  }
+
+  // COLOR: *XXX* entre asteriscos, o una palabra de color conocida
+  const cAst = nombre.match(/\*([^*]+)\*/);
+  if (cAst) { ejes.color = cAst[1].trim(); base = base.replace(/\*[^*]+\*/g, ' '); }
+  else {
+    const tok = nombre.replace(/[^A-ZÑ\s]/g, ' ').split(/\s+/).find(t => COLORES_CONOCIDOS.has(t));
+    if (tok) { ejes.color = tok; base = base.replace(new RegExp('\\b' + tok + '\\b'), ' '); }
+  }
+
+  // BASE limpia: quitar cantidades entre parentesis, simbolos y stopwords genericas
+  base = base
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[^A-ZÑ0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 2 && !STOPWORDS_FAMILIA.has(t.toLowerCase()))
+    .join(' ')
+    .trim();
+
+  return { ejes, base };
+}
+
+// Ejes en el orden en que se muestran los selectores al cliente
+const EJES_DEF: Array<{ key: string; label: string }> = [
+  { key: 'color', label: 'Color' },
+  { key: 'talla', label: 'Talla' },
+  { key: 'graduacion', label: 'Graduación' },
+  { key: 'formato', label: 'Formato' }
+];
 
 async function resolverFamilia(ref: string | null): Promise<any | null> {
   if (!ref) return null;
@@ -2627,60 +2683,58 @@ async function resolverFamilia(ref: string | null): Promise<any | null> {
   const conds = palabras.map((_, i) => `LOWER(nombre) LIKE '%' || $${i + 1} || '%'`).join(' AND ');
   const r = await pool.query(
     `SELECT id, codigo, nombre, ean, precio_pvf_1, precio_pvpr_1, precio_pvf, activo
-     FROM products WHERE ${conds} AND activo = TRUE ORDER BY nombre LIMIT 100`,
+     FROM products WHERE ${conds} AND activo = TRUE ORDER BY nombre LIMIT 200`,
     palabras
   );
   if (r.rows.length === 0) return null;
 
-  // Tokenizar cada nombre quitando la graduacion, para hallar el "color" (lo que varia)
-  const tokeniza = (nombre: string): string[] =>
-    (nombre || '')
-      .toUpperCase()
-      .replace(/\+\s?\d(?:[.,]\d)?/g, ' ') // quitar graduacion
-      .replace(/[^A-Z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter(t => t.length >= 2 && !STOPWORDS_FAMILIA.has(t.toLowerCase()));
+  // Agrupar por BASE: productos con la misma base son la misma familia.
+  // Asi NO mezclamos productos distintos de una marca (Fixotape tira nasal != venda).
+  const grupos = new Map<string, any[]>();
+  for (const p of r.rows) {
+    const { ejes, base } = extraerEjesProducto(p.nombre);
+    if (!base) continue;
+    if (!grupos.has(base)) grupos.set(base, []);
+    grupos.get(base)!.push({ p, ejes });
+  }
+  if (grupos.size === 0) return null;
 
-  // Tokens comunes a TODOS los SKUs = base del modelo; lo que sobra en cada uno = color
-  let comunes: Set<string> | null = null;
-  const porProducto = r.rows.map((p: any) => {
-    const toks = tokeniza(p.nombre);
-    const set = new Set(toks);
-    if (comunes === null) comunes = new Set(toks);
-    else comunes = new Set([...comunes].filter(t => set.has(t)));
-    return { p, toks };
-  });
-  const variantes = porProducto.map(({ p, toks }: any) => {
-    const color = toks.filter((t: string) => !(comunes as Set<string>).has(t)).join(' ') || null;
-    return {
-      product_id: p.id,
-      codigo: p.codigo,
-      nombre: p.nombre,
-      ean: p.ean,
-      color,                             // ej. "CAREY", "NEGRA" o null (sin eje color)
-      graduacion: parseGraduacion(p.nombre), // ej. "+1.0"
-      pvf: p.precio_pvf_1 ?? p.precio_pvf ?? null,
-      pvpr: p.precio_pvpr_1 ?? null
-    };
-  }).filter((v: any) => v.graduacion); // solo las que tienen graduacion valida
+  // Elegir el grupo que MEJOR casa con lo que leyo la IA (mas palabras del ref en la base),
+  // desempatando por numero de variantes.
+  let mejor: { base: string; items: any[] } | null = null;
+  let mejorScore = -1;
+  for (const [base, items] of grupos) {
+    const bl = base.toLowerCase();
+    const score = palabras.filter(w => bl.includes(w)).length * 1000 + items.length;
+    if (score > mejorScore) { mejorScore = score; mejor = { base, items }; }
+  }
+  if (!mejor) return null;
+  const items = mejor.items;
 
-  if (variantes.length === 0) return null;
+  const variantes = items.map(({ p, ejes }: any) => ({
+    product_id: p.id,
+    codigo: p.codigo,
+    nombre: p.nombre,
+    ean: p.ean,
+    ejes,                                            // { color, talla, graduacion, formato }
+    pvf: p.precio_pvf_1 ?? p.precio_pvf ?? null,
+    pvpr: p.precio_pvpr_1 ?? null
+  }));
 
-  const colores = Array.from(new Set(variantes.map((v: any) => v.color).filter((c: any) => c)));
-  const graduaciones = Array.from(new Set(variantes.map((v: any) => v.graduacion)))
-    .sort((a: any, b: any) => gradNum(a) - gradNum(b));
-  // Nombre "modelo" para mostrar: tokens comunes sin GAFA
-  const modelo = Array.from(comunes || new Set())
-    .filter((t: any) => t !== 'GAFA')
-    .join(' ') || ref.toUpperCase();
+  // Solo son "ejes a elegir" los que tienen MAS DE UN valor distinto
+  const ejes: Array<{ key: string; label: string; valores: string[] }> = [];
+  for (const def of EJES_DEF) {
+    let valores = Array.from(new Set(items.map((it: any) => it.ejes[def.key]).filter(Boolean)));
+    if (def.key === 'graduacion') valores = valores.sort((a, b) => gradNum(a) - gradNum(b));
+    if (valores.length > 1) ejes.push({ key: def.key, label: def.label, valores });
+  }
 
   return {
     ref,
-    modelo,
-    tiene_color: colores.length > 0,
-    colores,          // [] si el modelo no tiene variantes de color (ej. Aspen)
-    graduaciones,     // ["+1.0","+1.5",...] solo las que EXISTEN en este modelo
-    variantes         // cada combinacion -> SKU concreto con codigo/precio
+    modelo: mejor.base,
+    n_variantes: variantes.length,
+    ejes,          // selectores a mostrar (0..N). Si esta vacio, es 1 solo producto.
+    variantes
   };
 }
 
@@ -2776,7 +2830,7 @@ app.post('/api/sheets/:id/detect-zones-ia', verifyToken, requireAdmin, async (re
         const fam = await resolverFamilia(z.descripcion);
         if (fam && fam.variantes.length > 1) {
           familiaRef = z.descripcion;
-          familia = { modelo: fam.modelo, tiene_color: fam.tiene_color, colores: fam.colores, graduaciones: fam.graduaciones, n_variantes: fam.variantes.length };
+          familia = { modelo: fam.modelo, ejes: fam.ejes, n_variantes: fam.n_variantes };
           productoSugerido = null; // la familia manda; no fijamos un SKU
         }
       }
