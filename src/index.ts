@@ -2952,6 +2952,29 @@ app.get('/api/admin/backfill-detect-zones/stats', verifyToken, requireRealAdmin,
   }
 });
 
+// Re-match de FAMILIAS sobre zonas YA existentes sin producto (gafas procesadas antes
+// de la feature de familias). Usa la etiqueta guardada -> resolverFamilia. SIN coste de IA.
+app.post('/api/admin/rematch-familias', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const zonas = await pool.query(
+      `SELECT id, etiqueta FROM sheet_zones
+       WHERE familia_ref IS NULL AND product_id IS NULL AND etiqueta IS NOT NULL AND etiqueta <> ''`
+    );
+    let asignadas = 0, revisadas = 0;
+    for (const z of zonas.rows) {
+      revisadas++;
+      const fam = await resolverFamilia(z.etiqueta);
+      if (fam && fam.variantes.length > 1) {
+        await pool.query('UPDATE sheet_zones SET familia_ref = $1, updated_at = NOW() WHERE id = $2', [z.etiqueta, z.id]);
+        asignadas++;
+      }
+    }
+    res.json({ success: true, revisadas, familias_asignadas: asignadas });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: String(e?.message || e) });
+  }
+});
+
 // Resetea la marca zones_ia_at en laminas que fueron procesadas pero se quedaron sin zonas
 // (afectadas por el bug de max_tokens truncado). Asi el backfill las volvera a intentar.
 app.post('/api/admin/reset-detect-zones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
