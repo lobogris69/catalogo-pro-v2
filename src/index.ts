@@ -2737,6 +2737,29 @@ app.get('/api/admin/detect-zones-diag', verifyToken, requireRealAdmin, async (re
   }
 });
 
+// Debug: lista las N ultimas laminas procesadas por el backfill con su titulo y numero de zonas
+app.get('/api/admin/backfill-detect-zones/stats', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const proc = await pool.query(
+      `SELECT s.id, s.titulo, s.zones_ia_at,
+              (SELECT COUNT(*) FROM sheet_zones z WHERE z.sheet_id = s.id) AS zonas
+       FROM sheets s
+       WHERE s.zones_ia_at IS NOT NULL
+       ORDER BY s.zones_ia_at DESC
+       LIMIT 20`
+    );
+    const pend = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM sheets s
+       WHERE s.zones_ia_at IS NULL
+         AND s.imagen_path IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM sheet_zones z WHERE z.sheet_id = s.id)`
+    );
+    res.json({ success: true, procesadas_recientes: proc.rows, pendientes: pend.rows[0]?.n ?? 0 });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: String(e?.message || e) });
+  }
+});
+
 // Resetea la marca zones_ia_at en laminas que fueron procesadas pero se quedaron sin zonas
 // (afectadas por el bug de max_tokens truncado). Asi el backfill las volvera a intentar.
 app.post('/api/admin/reset-detect-zones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
