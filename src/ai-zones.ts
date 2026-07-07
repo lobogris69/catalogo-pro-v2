@@ -94,24 +94,48 @@ export async function detectarZonasIA(rutaImagenAbs: string): Promise<ZonaDetect
                : 'image/png';
     const dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
 
-    const resp = await client.chat.completions.create({
-      model: 'gpt-4o',
-      max_tokens: 4000, // por si hay muchos productos
-      temperature: 0.1, // determinista
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: PROMPT },
-        {
-          role: 'user',
-          content: [
+    // Reintento interno: OpenAI puede tirar rate-limit o 500 puntual
+    let resp: any = null;
+    let ultimoError: any = null;
+    for (let intento = 0; intento < 3; intento++) {
+      try {
+        resp = await client.chat.completions.create({
+          model: 'gpt-4o',
+          max_tokens: 4000,
+          temperature: 0.1,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: PROMPT },
             {
-              type: 'image_url',
-              image_url: { url: dataUrl, detail: 'high' } // high para coords precisas
+              role: 'user',
+              content: [
+                {
+                  type: 'image_url',
+                  image_url: { url: dataUrl, detail: 'high' }
+                }
+              ]
             }
           ]
+        });
+        break; // exito
+      } catch (e: any) {
+        ultimoError = e;
+        const msg = String(e?.message || e);
+        // No reintentar si es error de auth o modelo mal
+        if (/invalid api key|401|unauthorized|model_not_found|invalid_request/i.test(msg)) {
+          console.warn('[ai-zones] error no reintentable:', msg);
+          return null;
         }
-      ]
-    });
+        // Esperar antes de reintentar (backoff exponencial)
+        const espera = 1500 * Math.pow(2, intento);
+        console.warn(`[ai-zones] intento ${intento + 1} fallo (${msg.substring(0, 100)}), reintento en ${espera}ms`);
+        await new Promise(r => setTimeout(r, espera));
+      }
+    }
+    if (!resp) {
+      console.warn('[ai-zones] agotados 3 reintentos:', ultimoError?.message || ultimoError);
+      return null;
+    }
 
     const texto = resp.choices?.[0]?.message?.content?.trim() || '';
     let parsed: any;
