@@ -2754,7 +2754,19 @@ app.get('/api/admin/backfill-detect-zones/stats', verifyToken, requireRealAdmin,
          AND s.imagen_path IS NOT NULL
          AND NOT EXISTS (SELECT 1 FROM sheet_zones z WHERE z.sheet_id = s.id)`
     );
-    res.json({ success: true, procesadas_recientes: proc.rows, pendientes: pend.rows[0]?.n ?? 0 });
+    // Numeros globales reales (verificar match Sage)
+    const glob = await pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM sheet_zones) AS total_zonas,
+         (SELECT COUNT(*)::int FROM sheet_zones WHERE product_id IS NOT NULL) AS zonas_con_match,
+         (SELECT COUNT(*)::int FROM products) AS total_productos`
+    );
+    res.json({
+      success: true,
+      procesadas_recientes: proc.rows,
+      pendientes: pend.rows[0]?.n ?? 0,
+      global: glob.rows[0]
+    });
   } catch (e: any) {
     res.status(500).json({ success: false, error: String(e?.message || e) });
   }
