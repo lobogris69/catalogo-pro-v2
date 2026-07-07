@@ -11465,6 +11465,7 @@ function renderListaZonas() {
       </div>
     ` : ''}
     <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn" style="background:#0ea5e9;color:#fff;flex:1" onclick="duplicarZona('${String(sel.id).replace(/'/g, "\\'")}')" title="Crea una copia del MISMO tamaño (para rejillas/expositores); luego la mueves a su celda">⧉ Duplicar</button>
       <button class="btn" style="background:#dc2626;color:#fff;flex:1" onclick="borrarZona('${String(sel.id).replace(/'/g, "\\'")}')">🗑️ Borrar zona</button>
     </div>
   `;
@@ -11648,6 +11649,38 @@ async function quitarEnlaceZona(zoneId) {
     mostrarNotificacionOnline('Enlace quitado', '#6b7280');
   } catch (err) {
     alert('Error quitando enlace: ' + err.message);
+  }
+}
+
+// Duplica una zona con el MISMO tamaño (para rejillas/expositores de celdas iguales).
+// La copia se coloca en la celda de al lado (a la derecha, o fila de abajo si no cabe),
+// sin producto asignado, y queda seleccionada para moverla/asignarle su producto.
+async function duplicarZona(zoneId) {
+  const orig = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+  if (!orig) return;
+  const w = Number(orig.ancho), h = Number(orig.alto);
+  let nx = Number(orig.x) + w + 0.5;   // a la derecha, pegada
+  let ny = Number(orig.y);
+  if (nx + w > 100) {                   // no cabe a la derecha → fila de abajo
+    nx = Number(orig.x);
+    ny = Number(orig.y) + h + 0.5;
+  }
+  // Clamp dentro de la lámina
+  nx = Math.max(0, Math.min(100 - w, nx));
+  ny = Math.max(0, Math.min(100 - h, ny));
+  try {
+    const r = await api('/api/sheets/' + _zonasEditor.sheetId + '/zones', {
+      method: 'POST',
+      body: { x: nx, y: ny, ancho: w, alto: h }
+    });
+    _zonasEditor.zonas.push(r.zone);
+    _zonasEditor.zonaSeleccionadaId = r.zone.id;
+    renderZonasEnCapa();
+    renderListaZonas();
+    actualizarContadorZonas();
+    mostrarNotificacionOnline('⧉ Zona duplicada (mismo tamaño) — muévela y asígnale su producto', '#0ea5e9');
+  } catch (err) {
+    alert('Error duplicando zona: ' + err.message);
   }
 }
 
