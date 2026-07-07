@@ -2576,17 +2576,57 @@ app.post('/api/sheets/:id/detect-zones-ia', verifyToken, requireAdmin, async (re
       res.status(500).json({ success: false, error: 'La IA no respondio. Revisa OPENAI_API_KEY o reintenta.' });
       return;
     }
-    // Enriquecer con match a Sage por codigo_nacional
+    // Match Sage con multiples variantes del CN (6 o 7 digitos con o sin ceros)
+    const buscarProductoPorCN = async (cn: string): Promise<any> => {
+      // Variantes a probar en orden de preferencia
+      const variantes = new Set<string>();
+      const digitos = cn.replace(/\D/g, '');
+      if (!digitos) return null;
+      variantes.add(digitos);                                          // 2059856
+      if (digitos.length === 7) variantes.add(digitos.substring(0, 6)); // 205985 (quita digito control)
+      if (digitos.length === 6) variantes.add(digitos + '0');           // 2059850 (por si faltaba control)
+      variantes.add(digitos.replace(/^0+/, ''));                       // sin ceros a la izquierda
+      // Rellenar con 0 a 6 y 7 digitos por si BD usa padding
+      variantes.add(digitos.padStart(6, '0'));
+      variantes.add(digitos.padStart(7, '0'));
+      const arr = Array.from(variantes).filter(v => v.length >= 4);
+      // 1) Match exacto por codigo o codigo_alt_1 con cualquiera de las variantes
+      const exact = await pool.query(
+        `SELECT id, codigo, nombre, precio_pvf_1, precio_pvpr_1, activo
+         FROM products
+         WHERE codigo = ANY($1::text[]) OR codigo_alt_1 = ANY($1::text[]) OR codigo_alt_2 = ANY($1::text[])
+         LIMIT 1`,
+        [arr]
+      );
+      if (exact.rows.length > 0) return exact.rows[0];
+      // 2) Match por prefijo (LIKE) por si el CN varia en el ultimo digito
+      if (digitos.length >= 5) {
+        const prefijo = digitos.substring(0, 6);
+        const like = await pool.query(
+          `SELECT id, codigo, nombre, precio_pvf_1, precio_pvpr_1, activo
+           FROM products
+           WHERE codigo LIKE $1 || '%' OR codigo_alt_1 LIKE $1 || '%'
+           LIMIT 1`,
+          [prefijo]
+        );
+        if (like.rows.length > 0) return like.rows[0];
+      }
+      return null;
+    };
     const enriquecidas = await Promise.all(zonas.map(async (z) => {
       let productoSugerido: any = null;
       if (z.codigo_nacional) {
-        // Buscar por codigo exacto o codigo_alt_1 (EAN)
+        productoSugerido = await buscarProductoPorCN(z.codigo_nacional);
+      }
+      // Si no hubo match por CN, probar con codigo del fabricante como respaldo
+      if (!productoSugerido && z.codigo_fabricante) {
+        const fab = z.codigo_fabricante.replace(/\s/g, '');
         const r = await pool.query(
           `SELECT id, codigo, nombre, precio_pvf_1, precio_pvpr_1, activo
            FROM products
-           WHERE codigo = $1 OR codigo = $2 OR codigo_alt_1 = $1 OR codigo_alt_1 = $2
+           WHERE codigo = $1 OR codigo_alt_1 = $1 OR codigo_alt_2 = $1
            LIMIT 1`,
-          [z.codigo_nacional, z.codigo_nacional.replace(/^0+/, '')]
+          [fab]
         );
         if (r.rows.length > 0) productoSugerido = r.rows[0];
       }
