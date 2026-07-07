@@ -3254,6 +3254,34 @@ body.con-banner-update {
   background: #fdf2f8;
   border-color: var(--rosa-principal, #cc007a);
 }
+/* Controles de zoom del lienzo del editor de zonas */
+.zonas-zoom-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+.zonas-zoom-ctrl button {
+  min-width: 34px;
+  padding: 5px 10px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  border-radius: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  color: #374151;
+}
+.zonas-zoom-ctrl button:hover { background: #f5f3ff; border-color: #a855f7; }
+.zonas-zoom-ctrl #zonas-zoom-label {
+  min-width: 46px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 13px;
+  color: #374151;
+}
+
 /* Distintivo de estado de zonas en la fila de lámina (editor admin) */
 .lamina-estado-zonas {
   display: inline-block;

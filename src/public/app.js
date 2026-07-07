@@ -11018,6 +11018,13 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <div class="zonas-ayuda" id="zonas-ayuda">
           ✏️ <b>Arrastra</b> sobre la lámina para dibujar un rectángulo. Luego asígnale un producto en el panel derecho.
         </div>
+        <div class="zonas-zoom-ctrl">
+          🔍 <button type="button" onclick="zoomLienzo(-0.25)" title="Alejar">−</button>
+          <span id="zonas-zoom-label">100%</span>
+          <button type="button" onclick="zoomLienzo(0.25)" title="Acercar">+</button>
+          <button type="button" onclick="zoomLienzoReset()" title="Ajustar a la ventana">Ajustar</button>
+          <span style="font-size:11px;color:#9ca3af;margin-left:6px">Amplía para zonas pequeñas; arrastra las barras para moverte.</span>
+        </div>
         <div class="zonas-lienzo-wrap" id="zonas-lienzo-wrap">
           <img src="${escape(sheet.imagen_path)}" class="zonas-lienzo-img" id="zonas-lienzo-img" draggable="false" alt="">
           <div class="zonas-capa" id="zonas-capa"></div>
@@ -11049,6 +11056,37 @@ function cerrarEditorZonas() {
     _zonasEditor.aprobacionCambiada = false;
     if (typeof render === 'function') render();
   }
+}
+
+// ----- ZOOM del lienzo del editor de zonas (para dibujar zonas pequeñas) -----
+function aplicarZoomLienzo() {
+  const img = document.getElementById('zonas-lienzo-img');
+  const wrap = document.getElementById('zonas-lienzo-wrap');
+  const lbl = document.getElementById('zonas-zoom-label');
+  if (!img) return;
+  const z = _zonasEditor.zoom || 1;
+  if (z <= 1.001 || !_zonasEditor.baseW) {
+    // Volver al ajuste natural (que la CSS mande)
+    img.style.width = ''; img.style.height = ''; img.style.maxWidth = ''; img.style.maxHeight = '';
+    if (wrap) { wrap.style.maxWidth = ''; wrap.style.width = ''; }
+  } else {
+    // Agrandar: quitamos los topes de img Y del wrap (si no, la capa de zonas se recorta)
+    img.style.maxWidth = 'none';
+    img.style.maxHeight = 'none';
+    img.style.width = Math.round(_zonasEditor.baseW * z) + 'px';
+    img.style.height = 'auto';
+    if (wrap) { wrap.style.maxWidth = 'none'; wrap.style.width = Math.round(_zonasEditor.baseW * z) + 'px'; }
+  }
+  if (lbl) lbl.textContent = Math.round(z * 100) + '%';
+}
+function zoomLienzo(delta) {
+  const z = Math.max(1, Math.min(5, (_zonasEditor.zoom || 1) + delta));
+  _zonasEditor.zoom = z;
+  aplicarZoomLienzo();
+}
+function zoomLienzoReset() {
+  _zonasEditor.zoom = 1;
+  aplicarZoomLienzo();
 }
 
 // Borra TODAS las zonas de la lámina de golpe (expositor grande = 1 producto)
@@ -11095,6 +11133,13 @@ function montarLienzoZonas() {
   const capa = document.getElementById('zonas-capa');
   const wrap = document.getElementById('zonas-lienzo-wrap');
   if (!capa || !wrap) return;
+
+  // Guardar el ancho "ajustado" (zoom 1) para escalar desde ahí
+  const imgBase = document.getElementById('zonas-lienzo-img');
+  _zonasEditor.baseW = imgBase ? imgBase.clientWidth : 0;
+  _zonasEditor.zoom = 1;
+  const lbl = document.getElementById('zonas-zoom-label');
+  if (lbl) lbl.textContent = '100%';
 
   renderZonasEnCapa();
 
