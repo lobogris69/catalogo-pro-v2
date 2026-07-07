@@ -10770,6 +10770,12 @@ function montarLienzoZonas() {
   wrap.addEventListener('touchstart', onDown, { passive: false });
   document.addEventListener('touchmove', onMove, { passive: false });
   document.addEventListener('touchend', onUp);
+
+  // Listeners globales para mover / redimensionar zonas ya existentes
+  document.addEventListener('mousemove', onDragMove);
+  document.addEventListener('mouseup', onDragUp);
+  document.addEventListener('touchmove', onDragMove, { passive: false });
+  document.addEventListener('touchend', onDragUp);
 }
 
 function renderZonasEnCapa() {
@@ -10780,23 +10786,122 @@ function renderZonasEnCapa() {
     const div = document.createElement('div');
     const asignada = !!z.product_id;
     const propuestaIA = !!z.propuesta_ia;
+    const seleccionada = z.id === _zonasEditor.zonaSeleccionadaId;
     div.className = 'zona-rect' +
                     (propuestaIA ? ' zona-rect-ia' : (asignada ? ' zona-rect-asignada' : ' zona-rect-vacia')) +
-                    (z.id === _zonasEditor.zonaSeleccionadaId ? ' zona-rect-sel' : '');
+                    (seleccionada ? ' zona-rect-sel' : '');
     div.style.left = z.x + '%';
     div.style.top = z.y + '%';
     div.style.width = z.ancho + '%';
     div.style.height = z.alto + '%';
     div.dataset.zoneId = z.id;
-    div.innerHTML = `<span class="zona-num">${idx + 1}</span>`;
-    div.addEventListener('click', (e) => {
-      e.stopPropagation();
-      _zonasEditor.zonaSeleccionadaId = z.id;
-      renderZonasEnCapa();
-      renderListaZonas();
-    });
+    // Handles solo en la zona seleccionada (4 esquinas para redimensionar)
+    const handles = seleccionada
+      ? `<div class="zona-handle zona-handle-nw" data-dir="nw"></div>
+         <div class="zona-handle zona-handle-ne" data-dir="ne"></div>
+         <div class="zona-handle zona-handle-se" data-dir="se"></div>
+         <div class="zona-handle zona-handle-sw" data-dir="sw"></div>`
+      : '';
+    div.innerHTML = `<span class="zona-num">${idx + 1}</span>${handles}`;
+    div.addEventListener('mousedown', (e) => onZonaMouseDown(e, z));
+    div.addEventListener('touchstart', (e) => onZonaMouseDown(e, z), { passive: false });
     capa.appendChild(div);
   });
+}
+
+// Estado del arrastre en curso
+const _dragZona = { activo: false, zonaId: null, tipo: null, inicioX: 0, inicioY: 0, origX: 0, origY: 0, origW: 0, origH: 0 };
+
+function onZonaMouseDown(e, zona) {
+  // Click derecho o modificadores: ignorar
+  if (e.button != null && e.button !== 0) return;
+  e.stopPropagation();
+  e.preventDefault();
+  // Seleccionar zona (siempre)
+  _zonasEditor.zonaSeleccionadaId = zona.id;
+  renderZonasEnCapa();
+  renderListaZonas();
+  // Detectar si es click sobre un handle (redimensionar) o sobre el cuerpo (mover)
+  const dir = e.target?.dataset?.dir;
+  _dragZona.activo = true;
+  _dragZona.zonaId = zona.id;
+  _dragZona.tipo = dir || 'move';
+  const pt = getPuntoEvento(e);
+  _dragZona.inicioX = pt.x;
+  _dragZona.inicioY = pt.y;
+  _dragZona.origX = zona.x;
+  _dragZona.origY = zona.y;
+  _dragZona.origW = zona.ancho;
+  _dragZona.origH = zona.alto;
+}
+
+function getPuntoEvento(e) {
+  const wrap = document.getElementById('zonas-lienzo-wrap');
+  const rect = wrap.getBoundingClientRect();
+  const cx = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+  const cy = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+  return {
+    x: (cx / rect.width) * 100,
+    y: (cy / rect.height) * 100
+  };
+}
+
+function onDragMove(e) {
+  if (!_dragZona.activo) return;
+  const zona = _zonasEditor.zonas.find(z => z.id === _dragZona.zonaId);
+  if (!zona) return;
+  e.preventDefault();
+  const p = getPuntoEvento(e);
+  const dx = p.x - _dragZona.inicioX;
+  const dy = p.y - _dragZona.inicioY;
+  const t = _dragZona.tipo;
+  if (t === 'move') {
+    zona.x = Math.max(0, Math.min(100 - _dragZona.origW, _dragZona.origX + dx));
+    zona.y = Math.max(0, Math.min(100 - _dragZona.origH, _dragZona.origY + dy));
+  } else {
+    // Redimensionar según esquina
+    let nx = _dragZona.origX, ny = _dragZona.origY;
+    let nw = _dragZona.origW, nh = _dragZona.origH;
+    if (t.includes('e')) nw = Math.max(1, Math.min(100 - _dragZona.origX, _dragZona.origW + dx));
+    if (t.includes('w')) {
+      nx = Math.max(0, Math.min(_dragZona.origX + _dragZona.origW - 1, _dragZona.origX + dx));
+      nw = _dragZona.origW - (nx - _dragZona.origX);
+    }
+    if (t.includes('s')) nh = Math.max(1, Math.min(100 - _dragZona.origY, _dragZona.origH + dy));
+    if (t.includes('n')) {
+      ny = Math.max(0, Math.min(_dragZona.origY + _dragZona.origH - 1, _dragZona.origY + dy));
+      nh = _dragZona.origH - (ny - _dragZona.origY);
+    }
+    zona.x = nx; zona.y = ny; zona.ancho = nw; zona.alto = nh;
+  }
+  // Repintar solo la posición (sin re-render entero para fluidez)
+  const div = document.querySelector('.zona-rect[data-zone-id="' + CSS.escape(String(zona.id)) + '"]');
+  if (div) {
+    div.style.left = zona.x + '%';
+    div.style.top = zona.y + '%';
+    div.style.width = zona.ancho + '%';
+    div.style.height = zona.alto + '%';
+  }
+}
+
+async function onDragUp() {
+  if (!_dragZona.activo) return;
+  const zonaId = _dragZona.zonaId;
+  _dragZona.activo = false;
+  const zona = _zonasEditor.zonas.find(z => z.id === zonaId);
+  if (!zona) return;
+  // Si es propuesta IA (id string), no persistir todavía
+  const esPropuestaIA = typeof zona.id === 'string' && zona.id.startsWith('ia-');
+  if (esPropuestaIA) return;
+  // Persistir en BD
+  try {
+    await api('/api/zones/' + zona.id, {
+      method: 'PUT',
+      body: { x: zona.x, y: zona.y, ancho: zona.ancho, alto: zona.alto }
+    });
+  } catch (err) {
+    console.warn('Fallo guardando coords zona:', err);
+  }
 }
 
 function actualizarContadorZonas() {

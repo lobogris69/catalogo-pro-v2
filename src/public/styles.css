@@ -3102,7 +3102,23 @@ body.con-banner-update {
 .zona-rect-sel {
   border-width: 3px;
   box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.4);
+  cursor: move;
 }
+/* Handles de las esquinas para redimensionar (solo en zona seleccionada) */
+.zona-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: #0ea5e9;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+  z-index: 10;
+}
+.zona-handle-nw { top: -7px;    left: -7px;   cursor: nwse-resize; }
+.zona-handle-ne { top: -7px;    right: -7px;  cursor: nesw-resize; }
+.zona-handle-se { bottom: -7px; right: -7px;  cursor: nwse-resize; }
+.zona-handle-sw { bottom: -7px; left: -7px;   cursor: nesw-resize; }
 .zona-rect-temp {
   border-color: #0ea5e9;
   background: rgba(14, 165, 233, 0.15);
