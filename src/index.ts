@@ -5936,14 +5936,10 @@ app.post('/api/sync/sage/products', async (req: Request, res: Response) => {
            synced_from_sage_at = NOW(),
            updated_at = NOW()
          RETURNING (xmax = 0) AS was_insert`,
-        // FIX MAPEO PRECIO (8 jul 2026): el PVL/tarifa real del usuario llega en el campo
-        // p.precio_compra del volcado de Sage (verificado cruzando laminas P.V.L. de Beter y BSN).
-        // El PVL es UNICO, asi que las 3 "tarifas" precio_pvf_1/2/3 y precio_pvf = PVL = p.precio_compra.
-        // (p.precio_venta_1/2/3 traia un neto mas bajo y erroneo; se descarta.)
         [codigo, nombre, p.codigo_alt_1 || null,
-         p.precio_compra != null ? Number(p.precio_compra) : null,  // precio_pvf_1 = PVL
-         p.precio_compra != null ? Number(p.precio_compra) : null,  // precio_pvf_2 = PVL (unico)
-         p.precio_compra != null ? Number(p.precio_compra) : null,  // precio_pvf_3 = PVL (unico)
+         p.precio_venta_1 != null ? Number(p.precio_venta_1) : null,
+         p.precio_venta_2 != null ? Number(p.precio_venta_2) : null,
+         p.precio_venta_3 != null ? Number(p.precio_venta_3) : null,
          p.precio_venta_iva_1 != null ? Number(p.precio_venta_iva_1) : null,
          p.precio_venta_iva_2 != null ? Number(p.precio_venta_iva_2) : null,
          p.precio_venta_iva_3 != null ? Number(p.precio_venta_iva_3) : null,
