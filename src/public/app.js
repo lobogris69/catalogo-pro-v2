@@ -10958,7 +10958,7 @@ function renderListaZonas() {
       <div id="zona-ac-contenedor"></div>
     </div>
     <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn" style="background:#dc2626;color:#fff;flex:1" onclick="borrarZona(${sel.id})">🗑️ Borrar zona</button>
+      <button class="btn" style="background:#dc2626;color:#fff;flex:1" onclick="borrarZona('${String(sel.id).replace(/'/g, "\\'")}')">🗑️ Borrar zona</button>
     </div>
   `;
 
@@ -11010,11 +11010,13 @@ async function borrarZona(zoneId) {
     // Las zonas propuestas por IA tienen id temporal string ("ia-XXX-YYY") y no
     // están en BD todavía: solo se eliminan del array local. Las guardadas (id
     // numérico) sí requieren DELETE en backend.
-    const esPropuestaIA = typeof zoneId === 'string' && zoneId.startsWith('ia-');
+    const zoneIdStr = String(zoneId);
+    const esPropuestaIA = zoneIdStr.startsWith('ia-');
     if (!esPropuestaIA) {
-      await api('/api/zones/' + zoneId, { method: 'DELETE' });
+      await api('/api/zones/' + zoneIdStr, { method: 'DELETE' });
     }
-    _zonasEditor.zonas = _zonasEditor.zonas.filter(z => z.id !== zoneId);
+    // Comparar como string para que funcione con id numerico (BD) o string (IA)
+    _zonasEditor.zonas = _zonasEditor.zonas.filter(z => String(z.id) !== zoneIdStr);
     _zonasEditor.zonaSeleccionadaId = null;
     renderZonasEnCapa();
     renderListaZonas();
@@ -11023,6 +11025,21 @@ async function borrarZona(zoneId) {
     alert('Error borrando zona: ' + err.message);
   }
 }
+
+// Tecla Supr/Del: borra la zona seleccionada (si hay editor de zonas abierto)
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== 'Del') return;
+  // Solo si estamos en el editor de zonas y hay una seleccionada
+  const editorAbierto = document.getElementById('zonas-editor-overlay');
+  if (!editorAbierto) return;
+  if (_zonasEditor.zonaSeleccionadaId == null) return;
+  // No disparar si estamos en un input/textarea (para no interferir con escribir)
+  const activo = document.activeElement;
+  const tag = activo?.tagName?.toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || activo?.isContentEditable) return;
+  e.preventDefault();
+  borrarZona(_zonasEditor.zonaSeleccionadaId);
+});
 
 // FASE 2.b': crear producto al vuelo (tipo comercial) desde el editor de zonas.
 // nombreSugerido = lo que el admin tecleó en el buscador. alCrear = callback(producto).
