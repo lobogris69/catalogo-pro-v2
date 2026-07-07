@@ -2557,6 +2557,40 @@ app.post('/api/admin/backfill-tags', verifyToken, requireRealAdmin, async (req: 
 });
 
 // ============================================================================
+// Match por NOMBRE/modelo: fallback cuando la lamina no trae Codigo Nacional
+// (tipico en gafas de presbicia, gafas de sol, accesorios...). La IA lee el
+// modelo ("Gafas Verona") y aqui lo casamos contra products.nombre exigiendo
+// que TODAS las palabras significativas aparezcan (en cualquier orden).
+// Devuelve { producto, ambiguo } — ambiguo=true si el modelo tiene varias
+// variantes en Sage (p.ej. +1.0..+3.0), en cuyo caso enlazamos a la 1a como
+// referencia de familia pero avisamos de que hay que afinar dioptria/color.
+// ============================================================================
+const STOPWORDS_MATCH = new Set([
+  'gafa', 'gafas', 'de', 'del', 'la', 'el', 'los', 'las', 'con', 'sin', 'para',
+  'y', 'o', 'a', 'en', 'por', 'un', 'una', 'modelo', 'pack', 'unidad', 'unidades',
+  'ud', 'uds', 'expositor', 'surtido', 'color', 'colores', 'talla', 'nuevo', 'nueva'
+]);
+async function matchProductoPorNombre(descripcion: string | null): Promise<{ producto: any; ambiguo: boolean } | null> {
+  if (!descripcion) return null;
+  const palabras = descripcion
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // quitar acentos
+    .replace(/[^a-z0-9+\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !STOPWORDS_MATCH.has(w));
+  if (palabras.length === 0) return null;
+  // Construir condicion AND: nombre debe contener cada palabra clave
+  const conds = palabras.map((_, i) => `LOWER(nombre) LIKE '%' || $${i + 1} || '%'`).join(' AND ');
+  const r = await pool.query(
+    `SELECT id, codigo, nombre, precio_pvf_1, precio_pvpr_1, activo
+     FROM products WHERE ${conds} ORDER BY nombre LIMIT 20`,
+    palabras
+  );
+  if (r.rows.length === 0) return null;
+  return { producto: r.rows[0], ambiguo: r.rows.length > 1 };
+}
+
+// ============================================================================
 // AI-ZONES - Detecta productos en una lamina y devuelve zonas propuestas
 // con product_id sugerido por match con codigo Sage. NO guarda nada en BD:
 // solo devuelve el JSON para que el usuario revise y confirme.
@@ -2634,7 +2668,13 @@ app.post('/api/sheets/:id/detect-zones-ia', verifyToken, requireAdmin, async (re
         );
         if (r.rows.length > 0) productoSugerido = r.rows[0];
       }
-      return { ...z, producto_sugerido: productoSugerido };
+      // Ultimo respaldo: match por NOMBRE/modelo (gafas, accesorios sin CN)
+      let matchAmbiguo = false;
+      if (!productoSugerido) {
+        const porNombre = await matchProductoPorNombre(z.descripcion);
+        if (porNombre) { productoSugerido = porNombre.producto; matchAmbiguo = porNombre.ambiguo; }
+      }
+      return { ...z, producto_sugerido: productoSugerido, match_ambiguo: matchAmbiguo };
     }));
     res.json({
       success: true,
@@ -2843,8 +2883,8 @@ app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, asyn
       [limit]
     );
 
-    // Helper: match Sage por CN con variantes (mismo que detect-zones-ia)
-    const buscarProducto = async (cn: string | null, fab: string | null): Promise<number | null> => {
+    // Helper: match Sage por CN con variantes (mismo que detect-zones-ia) + fallback por nombre
+    const buscarProducto = async (cn: string | null, fab: string | null, descripcion: string | null): Promise<number | null> => {
       const variantes = new Set<string>();
       if (cn) {
         const d = cn.replace(/\D/g, '');
@@ -2859,14 +2899,15 @@ app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, asyn
       }
       if (fab) variantes.add(String(fab).replace(/\s/g, ''));
       const arr = Array.from(variantes).filter(v => v.length >= 3);
-      if (arr.length === 0) return null;
-      const r = await pool.query(
-        `SELECT id FROM products
-         WHERE codigo = ANY($1::text[]) OR codigo_alt_1 = ANY($1::text[]) OR codigo_alt_2 = ANY($1::text[])
-         LIMIT 1`,
-        [arr]
-      );
-      if (r.rows.length > 0) return r.rows[0].id;
+      if (arr.length > 0) {
+        const r = await pool.query(
+          `SELECT id FROM products
+           WHERE codigo = ANY($1::text[]) OR codigo_alt_1 = ANY($1::text[]) OR codigo_alt_2 = ANY($1::text[])
+           LIMIT 1`,
+          [arr]
+        );
+        if (r.rows.length > 0) return r.rows[0].id;
+      }
       if (cn) {
         const d = cn.replace(/\D/g, '');
         if (d.length >= 5) {
@@ -2878,6 +2919,9 @@ app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, asyn
           if (like.rows.length > 0) return like.rows[0].id;
         }
       }
+      // Fallback por NOMBRE/modelo (gafas y accesorios sin CN impreso)
+      const porNombre = await matchProductoPorNombre(descripcion);
+      if (porNombre) return porNombre.producto.id;
       return null;
     };
 
@@ -2901,7 +2945,7 @@ app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, asyn
       // Insertar cada zona propuesta con su producto (si hay match) o null
       let orden = 0;
       for (const z of zonas) {
-        const productId = await buscarProducto(z.codigo_nacional, z.codigo_fabricante);
+        const productId = await buscarProducto(z.codigo_nacional, z.codigo_fabricante, z.descripcion);
         if (productId) con_match++;
         const etiqueta = z.descripcion || z.codigo_fabricante || z.codigo_nacional || null;
         await pool.query(
