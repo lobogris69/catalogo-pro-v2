@@ -518,6 +518,17 @@ async function initDB(): Promise<void> {
       -- familia_ref = palabra/modelo con la que resolvemos las variantes en products (ej. "verona").
       ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS familia_ref VARCHAR(120);
 
+      -- Zona-COMISION: productos de laboratorios que Lomhifar NO factura (ej. Lainco).
+      -- No estan en Sage; el pedido se anota con unidades+descuento (por linea) y
+      -- almacen+num_socio (por pedido). El nombre del producto va en etiqueta.
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS es_comision BOOLEAN DEFAULT FALSE;
+
+      -- Campos de comision en las lineas de pedido (anotaciones)
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS es_comision BOOLEAN DEFAULT FALSE;
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS descuento REAL;         -- % descuento por linea
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS almacen VARCHAR(150);   -- almacen de envio (por pedido)
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS num_socio VARCHAR(60);  -- numero de socio del cliente
+
       CREATE TABLE IF NOT EXISTS catalog_versions (
         id SERIAL PRIMARY KEY,
         catalog_id INTEGER REFERENCES catalogs(id) ON DELETE CASCADE,
@@ -6577,10 +6588,16 @@ app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, re
     const cantidad = (req.body.cantidad !== undefined && req.body.cantidad !== null && req.body.cantidad !== '')
       ? Number(req.body.cantidad) : null;
     const zoneId = req.body.zone_id ? Number(req.body.zone_id) : null;
+    // Campos de COMISION (productos que no facturamos, ej. Lainco)
+    const esComision = !!req.body.es_comision;
+    const descuento = (req.body.descuento !== undefined && req.body.descuento !== null && req.body.descuento !== '')
+      ? Number(req.body.descuento) : null;
+    const almacen = req.body.almacen ? String(req.body.almacen).trim().substring(0, 150) : null;
+    const numSocio = req.body.num_socio ? String(req.body.num_socio).trim().substring(0, 60) : null;
     const r = await pool.query(
-      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId]
+      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, descuento, almacen, numSocio]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {
@@ -6618,9 +6635,14 @@ app.put('/api/annotations/:id', verifyToken, async (req: AuthRequest, res: Respo
     // Fase 2.c': permitir actualizar cantidad (D2: re-pulsar zona edita cantidad)
     const cantidad = (req.body.cantidad !== undefined && req.body.cantidad !== null && req.body.cantidad !== '')
       ? Number(req.body.cantidad) : a.rows[0].cantidad;
+    // Comision: actualizar descuento/almacen/num_socio si vienen (si no, conservar)
+    const descuento = (req.body.descuento !== undefined && req.body.descuento !== null && req.body.descuento !== '')
+      ? Number(req.body.descuento) : a.rows[0].descuento;
+    const almacen = req.body.almacen !== undefined ? (req.body.almacen ? String(req.body.almacen).trim().substring(0,150) : null) : a.rows[0].almacen;
+    const numSocio = req.body.num_socio !== undefined ? (req.body.num_socio ? String(req.body.num_socio).trim().substring(0,60) : null) : a.rows[0].num_socio;
     const r = await pool.query(
-      `UPDATE annotations SET texto_libre = $1, tipo = $2, cantidad = $3 WHERE id = $4 RETURNING *`,
-      [String(texto_libre).trim(), tipoFinal, cantidad, id]
+      `UPDATE annotations SET texto_libre = $1, tipo = $2, cantidad = $3, descuento = $4, almacen = $5, num_socio = $6 WHERE id = $7 RETURNING *`,
+      [String(texto_libre).trim(), tipoFinal, cantidad, descuento, almacen, numSocio, id]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {
@@ -8482,7 +8504,7 @@ app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req
 app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const zoneId = Number(req.params.zoneId);
-    const { x, y, ancho, alto, product_id, etiqueta, familia_ref } = req.body;
+    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, es_comision } = req.body;
     // Construir SET dinámico solo con los campos enviados
     const sets: string[] = [];
     const vals: any[] = [];
@@ -8493,11 +8515,16 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
     if (alto !== undefined)     { sets.push(`alto = $${i++}`); vals.push(alto); }
     if (product_id !== undefined) { sets.push(`product_id = $${i++}`); vals.push(product_id || null); }
     if (etiqueta !== undefined) { sets.push(`etiqueta = $${i++}`); vals.push(etiqueta || null); }
-    // familia_ref: si se asigna una familia, limpiamos product_id (y viceversa)
+    // Los tres tipos (producto Sage / familia / comision) son mutuamente excluyentes.
     if (familia_ref !== undefined) {
       const fr = familia_ref ? String(familia_ref).trim().substring(0, 120) : null;
       sets.push(`familia_ref = $${i++}`); vals.push(fr);
-      if (fr && product_id === undefined) { sets.push(`product_id = NULL`); }
+      if (fr) { sets.push(`product_id = NULL`); sets.push(`es_comision = FALSE`); }
+    }
+    if (es_comision !== undefined) {
+      const ec = !!es_comision;
+      sets.push(`es_comision = $${i++}`); vals.push(ec);
+      if (ec) { sets.push(`product_id = NULL`); sets.push(`familia_ref = NULL`); }
     }
     if (sets.length === 0) {
       res.status(400).json({ success: false, error: 'Nada que actualizar' });

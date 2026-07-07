@@ -3108,8 +3108,13 @@ function iluminarZonas() {
   }, 1500);
 }
 
+// Recuerda el ultimo almacen + nº socio tecleados (el pedido de comision va a un mismo almacen)
+let _comisionUltimo = { almacen: '', num_socio: '' };
+
 async function pulsarZonaComercial(zona) {
   if (!appState.visitaActiva) return;
+  // Zona de COMISION: formulario propio (unidades + descuento + almacen + socio)
+  if (zona.es_comision) { return pulsarZonaComision(zona); }
   const $wrapper = document.getElementById('visor-imagen-wrapper');
   const sheetId = $wrapper ? Number($wrapper.dataset.sheetId) : null;
 
@@ -3357,6 +3362,102 @@ async function borrarAnotacionZona(anotId, sheetId) {
   } catch (err) {
     alert('Error: ' + err.message);
   }
+}
+
+// Modal para anotar un producto de COMISION (Lainco…): unidades + descuento + almacen + socio.
+// El almacen y el nº socio se recuerdan durante la visita (el pedido va a un mismo almacen).
+async function pulsarZonaComision(zona) {
+  if (!appState.visitaActiva) return;
+  const $wrapper = document.getElementById('visor-imagen-wrapper');
+  const sheetId = $wrapper ? Number($wrapper.dataset.sheetId) : null;
+  const anotsSheet = _anotacionesVisita[sheetId] || [];
+  const anotExistente = anotsSheet.find(a => a.zone_id === zona.id) || null;
+
+  const nombre = zona.etiqueta || 'Producto de comisión';
+  const uds0 = anotExistente && anotExistente.cantidad ? anotExistente.cantidad : 1;
+  const dto0 = anotExistente && anotExistente.descuento != null ? anotExistente.descuento : '';
+  const alm0 = (anotExistente && anotExistente.almacen) || _comisionUltimo.almacen || '';
+  const soc0 = (anotExistente && anotExistente.num_socio) || _comisionUltimo.num_socio || '';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>${anotExistente ? '✏️ Editar' : '🤝 Anotar'} comisión</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div class="zona-modal-producto" style="background:#fff7ed;border:1px solid #fed7aa">
+        <span style="font-size:11px;color:#ea580c;font-weight:600">🤝 Comisión (no se factura)</span>
+        <div style="font-size:14px;color:#374151;margin-top:2px;font-weight:600">${escape(nombre)}</div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <div class="form-group" style="flex:1;margin:0">
+          <label>Unidades</label>
+          <input type="number" id="com-uds" min="1" value="${uds0}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:16px;box-sizing:border-box">
+        </div>
+        <div class="form-group" style="flex:1;margin:0">
+          <label>Descuento %</label>
+          <input type="number" id="com-dto" min="0" max="100" step="0.5" value="${dto0}" placeholder="ej: 15" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:16px;box-sizing:border-box">
+        </div>
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label>Almacén de envío <small style="color:#9ca3af">lo indica el cliente</small></label>
+        <input type="text" id="com-almacen" value="${escape(alm0).replace(/"/g,'&quot;')}" placeholder="Nombre del almacén" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:15px;box-sizing:border-box">
+      </div>
+      <div class="form-group">
+        <label>Nº de socio</label>
+        <input type="text" id="com-socio" value="${escape(soc0).replace(/"/g,'&quot;')}" placeholder="Número de socio del cliente" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:15px;box-sizing:border-box">
+      </div>
+      <div id="com-msg"></div>
+      <div class="modal-acciones">
+        ${anotExistente ? `<button type="button" class="btn" style="background:#dc2626;color:#fff" onclick="borrarAnotacionZona(${anotExistente.id}, ${sheetId})">🗑️ Quitar</button>` : ''}
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="com-guardar">${anotExistente ? 'Actualizar' : 'Anotar'}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  modal.querySelector('#com-guardar').addEventListener('click', async () => {
+    const $msg = modal.querySelector('#com-msg');
+    const unidades = Number(modal.querySelector('#com-uds').value) || 1;
+    const dtoRaw = modal.querySelector('#com-dto').value;
+    const descuento = dtoRaw === '' ? null : Number(dtoRaw);
+    const almacen = modal.querySelector('#com-almacen').value.trim();
+    const numSocio = modal.querySelector('#com-socio').value.trim();
+    if (!almacen) { $msg.innerHTML = `<div class="error-msg">Indica el almacén de envío.</div>`; return; }
+    // Recordar para las siguientes lineas de comision de esta visita
+    _comisionUltimo = { almacen, num_socio: numSocio };
+    // texto legible: "6 uds · NOMBRE · dto 15% · almacén X · socio Y"
+    let texto = unidades + ' uds · ' + nombre;
+    if (descuento != null) texto += ' · dto ' + descuento + '%';
+    texto += ' · almacén: ' + almacen;
+    if (numSocio) texto += ' · socio: ' + numSocio;
+    try {
+      if (anotExistente) {
+        await api('/api/annotations/' + anotExistente.id, {
+          method: 'PUT',
+          body: { texto_libre: texto, tipo: 'pedido', cantidad: unidades, descuento, almacen, num_socio: numSocio }
+        });
+      } else {
+        await api('/api/visits/' + appState.visitaActiva.id + '/annotations', {
+          method: 'POST',
+          body: {
+            sheet_id: sheetId, texto_libre: texto, tipo: 'pedido',
+            cantidad: unidades, zone_id: zona.id,
+            es_comision: true, descuento, almacen, num_socio: numSocio,
+            pos_x: (zona.x + zona.ancho / 2) / 100, pos_y: (zona.y + zona.alto / 2) / 100
+          }
+        });
+      }
+      modal.remove();
+      refrescarAnotacionesVisor(sheetId);
+      mostrarNotificacionOnline('✅ ' + texto, '#ea580c');
+    } catch (err) {
+      $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
 }
 
 // B7: ----- LONG-PRESS para crear PIN sobre la lámina -----
@@ -8883,8 +8984,9 @@ function renderResumenPreEnvio() {
   document.querySelectorAll('.resumen-preenvio-overlay').forEach(o => o.remove());
   const { anotaciones, cliente } = _resumenPreEnvio;
 
-  const conProducto = anotaciones.filter(a => a.product_id);
-  const sinProducto = anotaciones.filter(a => !a.product_id);
+  const comision = anotaciones.filter(a => a.es_comision);
+  const conProducto = anotaciones.filter(a => a.product_id && !a.es_comision);
+  const sinProducto = anotaciones.filter(a => !a.product_id && !a.es_comision);
   let totalPVF = 0;
   conProducto.forEach(a => {
     const cant = Number(a.cantidad) || 0;
@@ -8956,6 +9058,23 @@ function renderResumenPreEnvio() {
               </tr>
             </tfoot>
           </table>
+        </div>
+      ` : ''}
+
+      ${comision.length > 0 ? `
+        <h4 style="margin-top:18px;margin-bottom:8px">🤝 Comisión — tramitar al laboratorio (no se factura)</h4>
+        <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px">
+          <div style="font-size:13px;color:#374151;margin-bottom:8px">
+            Almacén de envío: <b>${escape(comision[0].almacen || '—')}</b> · Nº socio: <b>${escape(comision[0].num_socio || '—')}</b>
+          </div>
+          <ul class="resumen-otras-lista">
+            ${comision.map(a => `
+              <li>
+                ${escape(a.texto_libre || '')}
+                <button class="resumen-borrar-mini" data-anot-id="${a.id}">×</button>
+              </li>
+            `).join('')}
+          </ul>
         </div>
       ` : ''}
 
@@ -11119,7 +11238,9 @@ function renderListaZonas() {
                 ? `<b>${escape(z.producto_codigo || '')}</b> ${escape(z.producto_nombre || '')}`
                 : z.familia_ref
                   ? `<span style="color:#a855f7">👓 Familia: ${escape(z.familia_ref)}</span>`
-                  : '<span style="color:#f59e0b">⚠️ Sin producto asignado</span>'}
+                  : z.es_comision
+                    ? `<span style="color:#ea580c">🤝 Comisión: ${escape(z.etiqueta || '(sin nombre)')}</span>`
+                    : '<span style="color:#f59e0b">⚠️ Sin producto asignado</span>'}
             </span>
           </div>
         `).join('')}
@@ -11134,7 +11255,13 @@ function renderListaZonas() {
       <h4 style="margin:0">Zona ${idx}</h4>
       <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="deseleccionarZona()">← Volver</button>
     </div>
-    ${sel.familia_ref ? `
+    ${sel.es_comision ? `
+      <div class="zona-producto-actual" style="background:#fff7ed;border-color:#fed7aa">
+        <div style="font-size:11px;color:#ea580c;font-weight:600;margin-bottom:4px">🤝 Producto de comisión (no se factura)</div>
+        Producto: <b>${escape(sel.etiqueta || '(sin nombre)')}</b>
+        <div style="font-size:12px;color:#6b7280;margin-top:4px">El comercial anotará unidades + descuento + almacén + nº socio.</div>
+      </div>
+    ` : sel.familia_ref ? `
       <div class="zona-producto-actual" style="background:#faf5ff;border-color:#e9d5ff">
         <div style="font-size:11px;color:#a855f7;font-weight:600;margin-bottom:4px">👓 Familia con variantes</div>
         Modelo: <b>${escape(sel.familia_ref)}</b>
@@ -11148,24 +11275,35 @@ function renderListaZonas() {
       </div>
     ` : `
       <div style="background:#fef3c7;border:1px solid #fcd34d;padding:8px;border-radius:6px;font-size:12px;color:#78350f;margin-bottom:10px">
-        ⚠️ Esta zona no tiene producto. Asigna un producto suelto o una familia (abajo).
+        ⚠️ Esta zona no tiene producto. Asigna un producto suelto, una familia o márcala de comisión (abajo).
       </div>
     `}
-    ${!sel.familia_ref ? `
+    ${(!sel.familia_ref && !sel.es_comision) ? `
       <div class="form-group">
         <label style="font-size:13px">${sel.product_id ? 'Cambiar producto' : 'Asignar producto suelto'}</label>
         <div id="zona-ac-contenedor"></div>
       </div>
     ` : ''}
-    <div class="form-group" style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:10px">
-      <label style="font-size:13px;font-weight:600">👓 ${sel.familia_ref ? 'Cambiar' : 'Marcar como'} familia (gafas, guantes, tapes…)</label>
-      <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Escribe el modelo; el cliente elegirá color/talla/graduación/formato.</div>
-      <div style="display:flex;gap:6px">
-        <input type="text" id="fam-input-${sel.id}" value="${sel.familia_ref ? escape(sel.familia_ref).replace(/"/g,'&quot;') : ''}" placeholder="ej: Verona, Aspen, Guantes nitrilo azul" style="flex:1;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
-        <button class="btn btn-primary" style="padding:7px 12px;font-size:12px" onclick="aplicarFamiliaZona('${String(sel.id).replace(/'/g, "\\'")}')">Aplicar</button>
+    ${!sel.es_comision ? `
+      <div class="form-group" style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:10px">
+        <label style="font-size:13px;font-weight:600">👓 ${sel.familia_ref ? 'Cambiar' : 'Marcar como'} familia (gafas, guantes, tapes…)</label>
+        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Escribe el modelo; el cliente elegirá color/talla/graduación/formato.</div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="fam-input-${sel.id}" value="${sel.familia_ref ? escape(sel.familia_ref).replace(/"/g,'&quot;') : ''}" placeholder="ej: Verona, Aspen, Guantes nitrilo azul" style="flex:1;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+          <button class="btn btn-primary" style="padding:7px 12px;font-size:12px" onclick="aplicarFamiliaZona('${String(sel.id).replace(/'/g, "\\'")}')">Aplicar</button>
+        </div>
+        ${sel.familia_ref ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarFamiliaZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar familia (volver a producto suelto)</button>` : ''}
       </div>
-      ${sel.familia_ref ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarFamiliaZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar familia (volver a producto suelto)</button>` : ''}
-    </div>
+    ` : ''}
+    ${!sel.familia_ref ? `
+      <div class="form-group" style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px">
+        <label style="font-size:13px;font-weight:600">🤝 ${sel.es_comision ? 'Editar' : 'Marcar como'} producto de comisión (Lainco…)</label>
+        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Productos que NO facturamos. El comercial anota unidades + descuento + almacén + nº socio.</div>
+        <input type="text" id="com-nombre-${sel.id}" value="${escape(sel.etiqueta || '').replace(/"/g,'&quot;')}" placeholder="Nombre del producto (ej: Emulquien Laxante 230 ml)" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
+        <button class="btn" style="background:#ea580c;color:#fff;padding:7px 12px;font-size:12px" onclick="marcarComisionZona('${String(sel.id).replace(/'/g, "\\'")}')">${sel.es_comision ? 'Guardar nombre' : 'Marcar de comisión'}</button>
+        ${sel.es_comision ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarComisionZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar comisión (volver a producto suelto)</button>` : ''}
+      </div>
+    ` : ''}
     <div style="margin-top:12px;display:flex;gap:8px">
       <button class="btn" style="background:#dc2626;color:#fff;flex:1" onclick="borrarZona('${String(sel.id).replace(/'/g, "\\'")}')">🗑️ Borrar zona</button>
     </div>
@@ -11254,6 +11392,38 @@ async function quitarFamiliaZona(zoneId) {
     mostrarNotificacionOnline('Familia quitada', '#6b7280');
   } catch (err) {
     alert('Error quitando familia: ' + err.message);
+  }
+}
+
+// Marca una zona como producto de COMISION (Lainco…) con su nombre editable
+async function marcarComisionZona(zoneId) {
+  const inp = document.getElementById('com-nombre-' + zoneId);
+  const nombre = inp ? inp.value.trim() : '';
+  if (!nombre) { alert('Escribe el nombre del producto de comisión.'); return; }
+  try {
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { es_comision: true, etiqueta: nombre } });
+    const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+    if (sel) { sel.es_comision = true; sel.etiqueta = nombre; sel.product_id = null; sel.familia_ref = null; sel.producto_codigo = null; sel.producto_nombre = null; }
+    renderZonasEnCapa();
+    renderListaZonas();
+    mostrarNotificacionOnline('🤝 Producto de comisión: ' + nombre, '#ea580c');
+  } catch (err) {
+    alert('Error marcando comisión: ' + err.message);
+  }
+}
+
+// Quita el estado de comisión de una zona
+async function quitarComisionZona(zoneId) {
+  if (!confirm('¿Quitar la comisión de esta zona? Volverá a ser una zona sin producto.')) return;
+  try {
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { es_comision: false } });
+    const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+    if (sel) sel.es_comision = false;
+    renderZonasEnCapa();
+    renderListaZonas();
+    mostrarNotificacionOnline('Comisión quitada', '#6b7280');
+  } catch (err) {
+    alert('Error quitando comisión: ' + err.message);
   }
 }
 
