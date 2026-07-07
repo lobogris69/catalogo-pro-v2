@@ -3254,6 +3254,38 @@ body.con-banner-update {
   background: #fdf2f8;
   border-color: var(--rosa-principal, #cc007a);
 }
+/* Selector de familia (color x graduacion) en el modal de anotar */
+.zona-familia-selector {
+  background: #faf5ff;
+  border: 1px solid #e9d5ff;
+  border-radius: 10px;
+  padding: 12px;
+}
+.fam-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.fam-chip {
+  padding: 8px 14px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #374151;
+}
+.fam-chip:hover {
+  background: #f5f3ff;
+  border-color: #a855f7;
+}
+.fam-chip.sel {
+  background: #a855f7;
+  border-color: #a855f7;
+  color: #fff;
+}
 .zona-plantillas {
   display: flex;
   flex-wrap: wrap;

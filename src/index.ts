@@ -2764,11 +2764,23 @@ app.post('/api/sheets/:id/detect-zones-ia', verifyToken, requireAdmin, async (re
       }
       // Ultimo respaldo: match por NOMBRE/modelo (gafas, accesorios sin CN)
       let matchAmbiguo = false;
+      let familiaRef: string | null = null;
+      let familia: any = null;
       if (!productoSugerido) {
         const porNombre = await matchProductoPorNombre(z.descripcion);
         if (porNombre) { productoSugerido = porNombre.producto; matchAmbiguo = porNombre.ambiguo; }
       }
-      return { ...z, producto_sugerido: productoSugerido, match_ambiguo: matchAmbiguo };
+      // Si el modelo tiene VARIAS variantes (color/graduacion), es una FAMILIA:
+      // en vez de fijar un SKU concreto, proponemos la familia para que el cliente elija.
+      if (matchAmbiguo && z.descripcion) {
+        const fam = await resolverFamilia(z.descripcion);
+        if (fam && fam.variantes.length > 1) {
+          familiaRef = z.descripcion;
+          familia = { modelo: fam.modelo, tiene_color: fam.tiene_color, colores: fam.colores, graduaciones: fam.graduaciones, n_variantes: fam.variantes.length };
+          productoSugerido = null; // la familia manda; no fijamos un SKU
+        }
+      }
+      return { ...z, producto_sugerido: productoSugerido, match_ambiguo: matchAmbiguo, familia_ref: familiaRef, familia };
     }));
     res.json({
       success: true,
@@ -2805,10 +2817,11 @@ app.post('/api/sheets/:id/save-zones', verifyToken, requireAdmin, async (req: Au
         if (!isFinite(x) || !isFinite(y) || !isFinite(ancho) || !isFinite(alto) || ancho < 0.5 || alto < 0.5) continue;
         const productId = z.product_id != null ? Number(z.product_id) : null;
         const etiqueta = z.etiqueta ? String(z.etiqueta).trim().substring(0, 150) : null;
+        const familiaRef = z.familia_ref ? String(z.familia_ref).trim().substring(0, 120) : null;
         const r = await client.query(
-          `INSERT INTO sheet_zones (sheet_id, product_id, x, y, ancho, alto, etiqueta, orden)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-          [id, productId, x, y, ancho, alto, etiqueta, orden++]
+          `INSERT INTO sheet_zones (sheet_id, product_id, x, y, ancho, alto, etiqueta, orden, familia_ref)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+          [id, productId, x, y, ancho, alto, etiqueta, orden++, familiaRef]
         );
         insertadas.push(r.rows[0]);
       }
@@ -3039,13 +3052,19 @@ app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, asyn
       // Insertar cada zona propuesta con su producto (si hay match) o null
       let orden = 0;
       for (const z of zonas) {
-        const productId = await buscarProducto(z.codigo_nacional, z.codigo_fabricante, z.descripcion);
-        if (productId) con_match++;
+        let productId = await buscarProducto(z.codigo_nacional, z.codigo_fabricante, z.descripcion);
+        let familiaRef: string | null = null;
+        // Si no hubo match unico por codigo, ver si es una FAMILIA (varias variantes color/graduacion)
+        if (!productId && z.descripcion) {
+          const fam = await resolverFamilia(z.descripcion);
+          if (fam && fam.variantes.length > 1) { familiaRef = z.descripcion; productId = null; }
+        }
+        if (productId || familiaRef) con_match++;
         const etiqueta = z.descripcion || z.codigo_fabricante || z.codigo_nacional || null;
         await pool.query(
-          `INSERT INTO sheet_zones (sheet_id, product_id, x, y, ancho, alto, etiqueta, orden)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [row.id, productId, z.x, z.y, z.width, z.height, etiqueta, orden++]
+          `INSERT INTO sheet_zones (sheet_id, product_id, x, y, ancho, alto, etiqueta, orden, familia_ref)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [row.id, productId, z.x, z.y, z.width, z.height, etiqueta, orden++, familiaRef]
         );
         zonas_creadas++;
       }
@@ -8376,7 +8395,7 @@ app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req
 app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const zoneId = Number(req.params.zoneId);
-    const { x, y, ancho, alto, product_id, etiqueta } = req.body;
+    const { x, y, ancho, alto, product_id, etiqueta, familia_ref } = req.body;
     // Construir SET dinámico solo con los campos enviados
     const sets: string[] = [];
     const vals: any[] = [];
@@ -8387,6 +8406,12 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
     if (alto !== undefined)     { sets.push(`alto = $${i++}`); vals.push(alto); }
     if (product_id !== undefined) { sets.push(`product_id = $${i++}`); vals.push(product_id || null); }
     if (etiqueta !== undefined) { sets.push(`etiqueta = $${i++}`); vals.push(etiqueta || null); }
+    // familia_ref: si se asigna una familia, limpiamos product_id (y viceversa)
+    if (familia_ref !== undefined) {
+      const fr = familia_ref ? String(familia_ref).trim().substring(0, 120) : null;
+      sets.push(`familia_ref = $${i++}`); vals.push(fr);
+      if (fr && product_id === undefined) { sets.push(`product_id = NULL`); }
+    }
     if (sets.length === 0) {
       res.status(400).json({ success: false, error: 'Nada que actualizar' });
       return;

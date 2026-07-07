@@ -3123,7 +3123,44 @@ async function pulsarZonaComercial(zona) {
   const plantillas = _plantillasCache || [];
 
   const cantidadInicial = anotExistente && anotExistente.cantidad ? anotExistente.cantidad : 1;
-  const pvf = zona.producto_pvf ? Number(zona.producto_pvf) : null;
+
+  // ¿Es una zona-FAMILIA (gafas de presbicia: color x graduacion)? Cargamos variantes.
+  const esFamilia = !!zona.familia_ref;
+  let familia = null;
+  if (esFamilia) {
+    try {
+      const rf = await api('/api/families/resolve?ref=' + encodeURIComponent(zona.familia_ref));
+      familia = rf && rf.familia ? rf.familia : null;
+    } catch (_) { familia = null; }
+  }
+  // Estado del SKU seleccionado: para zona simple es fijo; para familia se resuelve al elegir.
+  let skuSel = esFamilia ? null : {
+    product_id: zona.product_id,
+    codigo: zona.producto_codigo || '',
+    nombre: zona.producto_nombre || '',
+    pvf: zona.producto_pvf != null ? Number(zona.producto_pvf) : null
+  };
+  let pvf = skuSel && skuSel.pvf != null ? skuSel.pvf : null;
+
+  // Selectores de familia (solo si es familia y se resolvieron variantes)
+  const familiaHTML = (esFamilia && familia) ? `
+    <div class="zona-familia-selector" style="margin-top:14px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:8px">👓 ${escape(familia.modelo)} — elige opciones</div>
+      ${familia.tiene_color ? `
+        <div class="form-group" style="margin-bottom:10px">
+          <label>Color</label>
+          <div class="fam-chips" id="fam-colores">
+            ${familia.colores.map(c => `<button type="button" class="fam-chip" data-color="${escape(c).replace(/"/g,'&quot;')}">${escape(c)}</button>`).join('')}
+          </div>
+        </div>` : ''}
+      <div class="form-group" style="margin-bottom:6px">
+        <label>Graduación</label>
+        <div class="fam-chips" id="fam-graduaciones">
+          ${familia.graduaciones.map(g => `<button type="button" class="fam-chip" data-grad="${escape(g).replace(/"/g,'&quot;')}">${escape(g)}</button>`).join('')}
+        </div>
+      </div>
+    </div>
+  ` : (esFamilia ? `<div class="error-msg" style="margin-top:12px">No se pudieron cargar las variantes de esta familia.</div>` : '');
 
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
@@ -3133,14 +3170,22 @@ async function pulsarZonaComercial(zona) {
         <h3>${anotExistente ? '✏️ Editar' : '🛒 Anotar'} producto</h3>
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
       </div>
-      <div class="zona-modal-producto">
-        <span class="ac-badge-${zona.producto_tipo === 'comercial' ? 'promo' : 'sage'}">
-          ${zona.producto_tipo === 'comercial' ? '🎁 Promo' : '🏷️ Sage'}
-        </span>
-        <b>${escape(zona.producto_codigo || '')}</b>
-        <div style="font-size:13px;color:#374151;margin-top:2px">${escape(zona.producto_nombre || '')}</div>
-        ${pvf !== null ? `<div style="font-size:12px;color:#6b7280;margin-top:2px">PVF ${pvf.toFixed(2)}€</div>` : ''}
+      <div class="zona-modal-producto" id="zona-modal-producto">
+        ${esFamilia ? `
+          <span class="ac-badge-sage">🏷️ Sage</span>
+          <b id="zona-prod-codigo">—</b>
+          <div id="zona-prod-nombre" style="font-size:13px;color:#374151;margin-top:2px">Elige color y graduación</div>
+          <div id="zona-prod-pvf" style="font-size:12px;color:#6b7280;margin-top:2px"></div>
+        ` : `
+          <span class="ac-badge-${zona.producto_tipo === 'comercial' ? 'promo' : 'sage'}">
+            ${zona.producto_tipo === 'comercial' ? '🎁 Promo' : '🏷️ Sage'}
+          </span>
+          <b>${escape(zona.producto_codigo || '')}</b>
+          <div style="font-size:13px;color:#374151;margin-top:2px">${escape(zona.producto_nombre || '')}</div>
+          ${pvf !== null ? `<div style="font-size:12px;color:#6b7280;margin-top:2px">PVF ${pvf.toFixed(2)}€</div>` : ''}
+        `}
       </div>
+      ${familiaHTML}
 
       <div class="form-group" style="margin-top:14px">
         <label>Cantidad</label>
@@ -3213,14 +3258,75 @@ async function pulsarZonaComercial(zona) {
     });
   });
 
+  // ---- FAMILIA: selectores de color + graduacion que resuelven al SKU ----
+  const $guardar = modal.querySelector('#zona-guardar');
+  if (esFamilia && familia) {
+    let colorSel = familia.tiene_color ? null : '__sin__'; // si no hay color, ya resuelto ese eje
+    let gradSel = null;
+    const $prodCodigo = modal.querySelector('#zona-prod-codigo');
+    const $prodNombre = modal.querySelector('#zona-prod-nombre');
+    const $prodPvf = modal.querySelector('#zona-prod-pvf');
+    if ($guardar) { $guardar.disabled = true; $guardar.style.opacity = '0.5'; }
+
+    const resolverSku = () => {
+      if ((familia.tiene_color && !colorSel) || !gradSel) { skuSel = null; }
+      else {
+        skuSel = familia.variantes.find(v =>
+          v.graduacion === gradSel && (!familia.tiene_color || v.color === colorSel)
+        ) || null;
+      }
+      if (skuSel) {
+        pvf = skuSel.pvf != null ? Number(skuSel.pvf) : null;
+        if ($prodCodigo) $prodCodigo.textContent = skuSel.codigo || '';
+        if ($prodNombre) $prodNombre.textContent = skuSel.nombre || '';
+        if ($prodPvf) $prodPvf.textContent = pvf != null && pvf > 0 ? ('PVF ' + pvf.toFixed(2) + '€') : '';
+        if ($guardar) { $guardar.disabled = false; $guardar.style.opacity = '1'; }
+        actualizarSubtotal();
+      } else {
+        pvf = null;
+        if ($prodCodigo) $prodCodigo.textContent = '—';
+        if ($prodNombre) $prodNombre.textContent = 'Elige ' + (familia.tiene_color && !colorSel ? 'color' : '') + (((familia.tiene_color && !colorSel) && !gradSel) ? ' y ' : '') + (!gradSel ? 'graduación' : '');
+        if ($prodPvf) $prodPvf.textContent = '';
+        if ($guardar) { $guardar.disabled = true; $guardar.style.opacity = '0.5'; }
+        actualizarSubtotal();
+      }
+    };
+
+    modal.querySelectorAll('#fam-colores .fam-chip').forEach(ch => {
+      ch.addEventListener('click', () => {
+        colorSel = ch.dataset.color;
+        modal.querySelectorAll('#fam-colores .fam-chip').forEach(x => x.classList.remove('sel'));
+        ch.classList.add('sel');
+        resolverSku();
+      });
+    });
+    modal.querySelectorAll('#fam-graduaciones .fam-chip').forEach(ch => {
+      ch.addEventListener('click', () => {
+        gradSel = ch.dataset.grad;
+        modal.querySelectorAll('#fam-graduaciones .fam-chip').forEach(x => x.classList.remove('sel'));
+        ch.classList.add('sel');
+        resolverSku();
+      });
+    });
+  }
+
   // Guardar
   modal.querySelector('#zona-guardar').addEventListener('click', async () => {
+    const $msg = modal.querySelector('#zona-modal-msg');
+    // Para familias hay que haber resuelto el SKU (color + graduacion)
+    if (esFamilia && !skuSel) {
+      $msg.innerHTML = `<div class="error-msg">Elige color y graduación antes de anotar.</div>`;
+      return;
+    }
     const cantidad = Number($cant.value) || 1;
     const notaExtra = $nota.value.trim();
+    // Codigo/nombre/product_id del SKU final (familia o zona simple)
+    const codFinal = skuSel ? (skuSel.codigo || '') : (zona.producto_codigo || '');
+    const nomFinal = skuSel ? (skuSel.nombre || '') : (zona.producto_nombre || '');
+    const prodIdFinal = skuSel ? skuSel.product_id : zona.product_id;
     // Montar el texto_libre automático: "6 uds · 1243441 NOMBRE [· nota]"
-    let texto = cantidad + ' uds · ' + (zona.producto_codigo || '') + ' ' + (zona.producto_nombre || '');
+    let texto = cantidad + ' uds · ' + codFinal + ' ' + nomFinal;
     if (notaExtra) texto += ' · ' + notaExtra;
-    const $msg = modal.querySelector('#zona-modal-msg');
     try {
       if (anotExistente) {
         // D2: editar la existente
@@ -3236,7 +3342,7 @@ async function pulsarZonaComercial(zona) {
             sheet_id: sheetId,
             texto_libre: texto,
             tipo: 'pedido',
-            product_id: zona.product_id,
+            product_id: prodIdFinal,
             cantidad,
             zone_id: zona.id,
             pos_x: (zona.x + zona.ancho / 2) / 100,  // centro de la zona como pin
