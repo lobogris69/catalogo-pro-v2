@@ -4037,6 +4037,19 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE: Sincronización Sage -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">🔄 Sincronización con Sage
+            ${ayuda('Un programa en el PC de la oficina lee la base de datos de Sage y empuja los datos a esta app por HTTPS. Aquí ves cuándo llegó el último batch de cada tipo y cuántos registros trajo.', 'izq')}
+          </h3>
+          <div id="sync-sage-resumen" style="font-size:13px;color:var(--gris-texto);padding:12px;background:#f9fafb;border-radius:8px">
+            Cargando…
+          </div>
+          <div style="margin-top:10px">
+            <button class="btn btn-secondary btn-pequeno" onclick="verHistorialSyncSage()">📋 Ver historial completo</button>
+          </div>
+        </div>
+
         <!-- BLOQUE: Resumen a oficina -->
         <div class="editor-panel" style="margin-top:14px">
           <h3 style="margin-top:0">📊 Resumen a oficina
@@ -4074,6 +4087,8 @@ async function renderConfiguracion() {
     cargarCarpetasMega();
     // Cargar destinatarios oficina
     cargarDestinatariosOficina();
+    // Cargar resumen sync Sage
+    cargarResumenSyncSage();
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
   }
@@ -5288,6 +5303,97 @@ async function seedCarpetasMega(boton) {
   } finally {
     boton.textContent = t;
     boton.disabled = false;
+  }
+}
+
+// ============================================================================
+// SINCRONIZACION SAGE (resumen y historial)
+// ============================================================================
+async function cargarResumenSyncSage() {
+  const $r = document.getElementById('sync-sage-resumen');
+  if (!$r) return;
+  try {
+    const d = await api('/api/admin/sync-batches');
+    const ultimos = d.ultimo_por_tipo || [];
+    if (ultimos.length === 0) {
+      $r.innerHTML = 'Todavía no ha llegado ningún batch de sincronización.';
+      return;
+    }
+    const bloque = (tipo, emoji, label) => {
+      const u = ultimos.find(x => x.tipo === tipo);
+      if (!u) return `
+        <div style="padding:10px;border:1px dashed var(--gris-borde);border-radius:8px;background:#fff;flex:1;min-width:170px">
+          <div style="font-size:12px;font-weight:600">${emoji} ${label}</div>
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Sin datos todavía</div>
+        </div>`;
+      const fecha = new Date(u.received_at).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+      const err = u.error ? `<div style="font-size:10px;color:#dc2626;margin-top:2px">❌ ${escape(u.error)}</div>` : '';
+      return `
+        <div style="padding:10px;border:1px solid ${u.error ? '#fecaca' : 'var(--gris-borde)'};border-radius:8px;background:${u.error ? '#fef2f2' : '#fff'};flex:1;min-width:170px">
+          <div style="font-size:12px;font-weight:600">${emoji} ${label}</div>
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Último: ${fecha}</div>
+          <div style="font-size:11px;margin-top:2px">${u.num_recibidos || 0} recibidos</div>
+          <div style="font-size:10px;color:var(--gris-texto)">${u.num_nuevos || 0} nuevos · ${u.num_actualizados || 0} act · ${u.num_marcados_inactivos || 0} inact</div>
+          ${err}
+        </div>`;
+    };
+    $r.innerHTML = `
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        ${bloque('products', '📦', 'Artículos')}
+        ${bloque('clients',  '🏥', 'Clientes')}
+        ${bloque('stock',    '📊', 'Stock')}
+      </div>
+    `;
+  } catch (e) {
+    $r.innerHTML = `<div class="error-msg">Error: ${escape(e.message)}</div>`;
+  }
+}
+
+async function verHistorialSyncSage() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `<div class="modal-card"><div class="modal-header"><h3>📋 Historial sincronización Sage</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div><div id="sync-hist-content">Cargando…</div></div>`;
+  document.body.appendChild(modal);
+  try {
+    const d = await api('/api/admin/sync-batches');
+    const $c = document.getElementById('sync-hist-content');
+    if ((d.batches || []).length === 0) {
+      $c.innerHTML = '<div style="color:var(--gris-texto);font-size:13px;padding:12px;text-align:center">Sin batches todavía.</div>';
+      return;
+    }
+    const emoji = { products: '📦', clients: '🏥', stock: '📊' };
+    $c.innerHTML = `
+      <div style="max-height:500px;overflow-y:auto">
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead><tr style="background:#f9fafb;text-align:left">
+            <th style="padding:6px 8px">Tipo</th>
+            <th style="padding:6px 8px">Recibido</th>
+            <th style="padding:6px 8px">Filas</th>
+            <th style="padding:6px 8px">Nuevos</th>
+            <th style="padding:6px 8px">Act.</th>
+            <th style="padding:6px 8px">Inact.</th>
+            <th style="padding:6px 8px">Duración</th>
+            <th style="padding:6px 8px">Error</th>
+          </tr></thead>
+          <tbody>
+            ${d.batches.map(b => `
+              <tr style="border-bottom:1px solid var(--gris-borde)">
+                <td style="padding:6px 8px">${emoji[b.tipo] || ''} ${b.tipo}</td>
+                <td style="padding:6px 8px">${new Date(b.received_at).toLocaleString('es-ES')}</td>
+                <td style="padding:6px 8px">${b.num_recibidos || 0}</td>
+                <td style="padding:6px 8px">${b.num_nuevos || 0}</td>
+                <td style="padding:6px 8px">${b.num_actualizados || 0}</td>
+                <td style="padding:6px 8px">${b.num_marcados_inactivos || 0}</td>
+                <td style="padding:6px 8px">${b.duracion_ms || 0} ms</td>
+                <td style="padding:6px 8px;color:#dc2626">${b.error ? escape(b.error.substring(0, 60)) : ''}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('sync-hist-content').innerHTML = `<div class="error-msg">Error: ${escape(e.message)}</div>`;
   }
 }
 

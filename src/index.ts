@@ -627,6 +627,68 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_products_tipo ON products(tipo);
       CREATE INDEX IF NOT EXISTS idx_products_activo ON products(activo);
       CREATE INDEX IF NOT EXISTS idx_products_nombre ON products(nombre);
+      -- ===== Sync Sage - campos extra en products (idempotente) =====
+      -- 3 tarifas PVF (sin IVA - lo que paga la farmacia)
+      -- 3 tarifas PVPR (con IVA - lo que la farmacia cobra al publico)
+      -- flags: obsoleto_lc (flag Sage), es_baja (prefijo "BAJA-" en descripcion)
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS precio_pvf_1 DECIMAL(10,2);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS precio_pvf_2 DECIMAL(10,2);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS precio_pvf_3 DECIMAL(10,2);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS precio_pvpr_1 DECIMAL(10,2);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS precio_pvpr_2 DECIMAL(10,2);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS precio_pvpr_3 DECIMAL(10,2);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS precio_compra DECIMAL(10,2);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS obsoleto_lc BOOLEAN DEFAULT FALSE;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS es_baja BOOLEAN DEFAULT FALSE;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS codigo_alt_1 VARCHAR(50);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS codigo_alt_2 VARCHAR(50);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS codigo_familia VARCHAR(50);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS codigo_proveedor VARCHAR(50);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS fecha_alta_sage DATE;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_minimo INTEGER;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_maximo INTEGER;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS synced_from_sage_at TIMESTAMP;
+      CREATE INDEX IF NOT EXISTS idx_products_alt1 ON products(codigo_alt_1);
+      CREATE INDEX IF NOT EXISTS idx_products_es_baja ON products(es_baja);
+
+      -- ===== Sync Sage - campos extra en clients (idempotente) =====
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS tarifa_precio INTEGER;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS nombre_comercial VARCHAR(255);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS codigo_provincia VARCHAR(10);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS lsys_fecha_grabacion TIMESTAMP;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS fecha_alta_sage DATE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS synced_from_sage_at TIMESTAMP;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS es_baja BOOLEAN DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS baja_empresa_lc BOOLEAN DEFAULT FALSE;
+      CREATE INDEX IF NOT EXISTS idx_clients_lsys ON clients(lsys_fecha_grabacion);
+      CREATE INDEX IF NOT EXISTS idx_clients_es_baja ON clients(es_baja);
+
+      -- ===== Stock actual por articulo (viene del sync frecuente) =====
+      CREATE TABLE IF NOT EXISTS product_stock (
+        codigo_sage    VARCHAR(50) PRIMARY KEY,
+        unidades       DECIMAL(12,2) DEFAULT 0,
+        valor_almacen  DECIMAL(12,2) DEFAULT 0,
+        updated_at     TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_stock_updated ON product_stock(updated_at DESC);
+
+      -- ===== Historial de batches de sincronizacion Sage =====
+      CREATE TABLE IF NOT EXISTS sync_batches (
+        id                      SERIAL PRIMARY KEY,
+        tipo                    VARCHAR(20) NOT NULL CHECK (tipo IN ('products','clients','stock')),
+        batch_id                VARCHAR(100),
+        generated_at            TIMESTAMP,
+        received_at             TIMESTAMP DEFAULT NOW(),
+        num_recibidos           INTEGER DEFAULT 0,
+        num_actualizados        INTEGER DEFAULT 0,
+        num_nuevos              INTEGER DEFAULT 0,
+        num_sin_cambios         INTEGER DEFAULT 0,
+        num_marcados_inactivos  INTEGER DEFAULT 0,
+        duracion_ms             INTEGER,
+        error                   TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_sync_batches_recv ON sync_batches(received_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_sync_batches_tipo ON sync_batches(tipo, received_at DESC);
 
       -- Fase 1: histórico de cambios de precio (auditoría)
       CREATE TABLE IF NOT EXISTS product_price_history (
@@ -4911,6 +4973,315 @@ app.get('/api/admin/office-summary/history', verifyToken, requireRealAdmin, asyn
       LEFT JOIN users u ON u.id = s.sent_by
       ORDER BY s.sent_at DESC LIMIT 30`);
     res.json({ success: true, history: r.rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ============================================================================
+// SYNC SAGE - endpoints que reciben datos del worker de la oficina.
+// Autenticacion: header X-API-Key (env var SAGE_SYNC_API_KEY).
+// Formato: batches JSON con UPSERT en BD, marca inactivo los que no vienen.
+// ============================================================================
+function verificarSageApiKey(req: Request, res: Response): boolean {
+  const expected = (process.env.SAGE_SYNC_API_KEY || '').trim();
+  if (!expected) {
+    res.status(500).json({ success: false, error: 'SAGE_SYNC_API_KEY no configurada en el servidor' });
+    return false;
+  }
+  const got = String(req.headers['x-api-key'] || '').trim();
+  if (!got || got !== expected) {
+    res.status(401).json({ success: false, error: 'X-API-Key invalida' });
+    return false;
+  }
+  return true;
+}
+
+// Registra un batch en el historial
+async function registrarBatchSync(
+  tipo: 'products' | 'clients' | 'stock',
+  batchId: string | null,
+  generatedAt: Date | null,
+  contadores: { recibidos: number; actualizados: number; nuevos: number; sin_cambios: number; marcados_inactivos: number },
+  duracionMs: number,
+  error: string | null
+): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO sync_batches (tipo, batch_id, generated_at, num_recibidos, num_actualizados,
+         num_nuevos, num_sin_cambios, num_marcados_inactivos, duracion_ms, error)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [tipo, batchId, generatedAt,
+       contadores.recibidos, contadores.actualizados, contadores.nuevos, contadores.sin_cambios,
+       contadores.marcados_inactivos, duracionMs, error]
+    );
+  } catch (e: any) {
+    console.warn('[sync-batches] insert fallo:', e.message);
+  }
+}
+
+// ----- POST /api/sync/sage/products -----
+app.post('/api/sync/sage/products', async (req: Request, res: Response) => {
+  if (!verificarSageApiKey(req, res)) return;
+  const t0 = Date.now();
+  const batchId = req.body?.batch_id ? String(req.body.batch_id) : null;
+  const generatedAt = req.body?.generated_at ? new Date(req.body.generated_at) : null;
+  const productos = Array.isArray(req.body?.products) ? req.body.products : [];
+  if (productos.length === 0) {
+    res.status(400).json({ success: false, error: 'Body debe incluir products: array' });
+    return;
+  }
+  const contadores = { recibidos: productos.length, actualizados: 0, nuevos: 0, sin_cambios: 0, marcados_inactivos: 0 };
+  const codigosVistos: string[] = [];
+  try {
+    for (const p of productos) {
+      const codigo = String(p.codigo_sage || p.codigo || '').trim();
+      if (!codigo) continue;
+      codigosVistos.push(codigo);
+      const nombre = String(p.nombre || p.descripcion || '').trim();
+      // Detectar BAJA- en la descripcion (regla de negocio del usuario)
+      const esBaja = /^BAJA[-\s]/i.test(nombre);
+      const obsoleto = Boolean(p.obsoleto);
+      // Activo = NO obsoleto Y NO baja
+      const activo = !esBaja && !obsoleto;
+      const r = await pool.query(
+        `INSERT INTO products (codigo, nombre, ean, tipo,
+           precio_pvf_1, precio_pvf_2, precio_pvf_3,
+           precio_pvpr_1, precio_pvpr_2, precio_pvpr_3,
+           precio_pvp, precio_pvf, precio_compra,
+           codigo_familia, codigo_proveedor, codigo_alt_1, codigo_alt_2,
+           obsoleto_lc, es_baja, activo,
+           stock_minimo, stock_maximo, fecha_alta_sage,
+           synced_from_sage_at, updated_at)
+         VALUES ($1,$2,$3,'sage',
+           $4,$5,$6,$7,$8,$9,
+           $8,$4,$10,
+           $11,$12,$13,$14,
+           $15,$16,$17,
+           $18,$19,$20,
+           NOW(), NOW())
+         ON CONFLICT (codigo) DO UPDATE SET
+           nombre = EXCLUDED.nombre,
+           ean = COALESCE(EXCLUDED.ean, products.ean),
+           precio_pvf_1 = EXCLUDED.precio_pvf_1,
+           precio_pvf_2 = EXCLUDED.precio_pvf_2,
+           precio_pvf_3 = EXCLUDED.precio_pvf_3,
+           precio_pvpr_1 = EXCLUDED.precio_pvpr_1,
+           precio_pvpr_2 = EXCLUDED.precio_pvpr_2,
+           precio_pvpr_3 = EXCLUDED.precio_pvpr_3,
+           precio_pvp = EXCLUDED.precio_pvpr_1,
+           precio_pvf = EXCLUDED.precio_pvf_1,
+           precio_compra = EXCLUDED.precio_compra,
+           codigo_familia = EXCLUDED.codigo_familia,
+           codigo_proveedor = EXCLUDED.codigo_proveedor,
+           codigo_alt_1 = EXCLUDED.codigo_alt_1,
+           codigo_alt_2 = EXCLUDED.codigo_alt_2,
+           obsoleto_lc = EXCLUDED.obsoleto_lc,
+           es_baja = EXCLUDED.es_baja,
+           activo = EXCLUDED.activo,
+           stock_minimo = EXCLUDED.stock_minimo,
+           stock_maximo = EXCLUDED.stock_maximo,
+           fecha_alta_sage = COALESCE(EXCLUDED.fecha_alta_sage, products.fecha_alta_sage),
+           synced_from_sage_at = NOW(),
+           updated_at = NOW()
+         RETURNING (xmax = 0) AS was_insert`,
+        [codigo, nombre, p.codigo_alt_1 || null,
+         p.precio_venta_1 != null ? Number(p.precio_venta_1) : null,
+         p.precio_venta_2 != null ? Number(p.precio_venta_2) : null,
+         p.precio_venta_3 != null ? Number(p.precio_venta_3) : null,
+         p.precio_venta_iva_1 != null ? Number(p.precio_venta_iva_1) : null,
+         p.precio_venta_iva_2 != null ? Number(p.precio_venta_iva_2) : null,
+         p.precio_venta_iva_3 != null ? Number(p.precio_venta_iva_3) : null,
+         p.precio_compra != null ? Number(p.precio_compra) : null,
+         p.codigo_familia || null, p.codigo_proveedor || null,
+         p.codigo_alt_1 || null, p.codigo_alt_2 || null,
+         obsoleto, esBaja, activo,
+         p.stock_min != null ? Number(p.stock_min) : null,
+         p.stock_max != null ? Number(p.stock_max) : null,
+         p.fecha_alta || null]
+      );
+      if (r.rows[0]?.was_insert) contadores.nuevos++;
+      else contadores.actualizados++;
+    }
+    // Marcar inactivos los que NO vinieron (solo dentro de tipo='sage')
+    if (codigosVistos.length > 0) {
+      const inact = await pool.query(
+        `UPDATE products SET activo = FALSE, updated_at = NOW()
+         WHERE tipo = 'sage' AND activo = TRUE AND codigo <> ALL($1::text[])
+         RETURNING id`,
+        [codigosVistos]
+      );
+      contadores.marcados_inactivos = inact.rowCount || 0;
+    }
+    const duracion = Date.now() - t0;
+    await registrarBatchSync('products', batchId, generatedAt, contadores, duracion, null);
+    res.json({ success: true, ...contadores, duracion_ms: duracion });
+  } catch (e: any) {
+    const duracion = Date.now() - t0;
+    await registrarBatchSync('products', batchId, generatedAt, contadores, duracion, e.message);
+    res.status(500).json({ success: false, error: e.message, ...contadores });
+  }
+});
+
+// ----- POST /api/sync/sage/clients -----
+app.post('/api/sync/sage/clients', async (req: Request, res: Response) => {
+  if (!verificarSageApiKey(req, res)) return;
+  const t0 = Date.now();
+  const batchId = req.body?.batch_id ? String(req.body.batch_id) : null;
+  const generatedAt = req.body?.generated_at ? new Date(req.body.generated_at) : null;
+  const clientes = Array.isArray(req.body?.clients) ? req.body.clients : [];
+  const esIncremental = Boolean(req.body?.incremental);
+  if (clientes.length === 0 && !esIncremental) {
+    res.status(400).json({ success: false, error: 'Body debe incluir clients: array' });
+    return;
+  }
+  const contadores = { recibidos: clientes.length, actualizados: 0, nuevos: 0, sin_cambios: 0, marcados_inactivos: 0 };
+  const codigosVistos: string[] = [];
+  try {
+    for (const c of clientes) {
+      const codigo = String(c.codigo_sage || c.codigo || '').trim();
+      if (!codigo) continue;
+      codigosVistos.push(codigo);
+      const razonSocial = String(c.razon_social || '').trim();
+      const esBaja = /^BAJA[-\s]/i.test(razonSocial);
+      const bajaEmpresa = Boolean(c.baja_empresa);
+      const isActive = !esBaja && !bajaEmpresa;
+      const r = await pool.query(
+        `INSERT INTO clients (sage_code, razon_social, nombre_comercial, cif,
+           provincia, codigo_provincia, tarifa_precio,
+           email, email_alternativo, fecha_alta_sage, lsys_fecha_grabacion,
+           es_baja, baja_empresa_lc, is_active,
+           synced_from_sage_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, NOW(), NOW())
+         ON CONFLICT (sage_code) DO UPDATE SET
+           razon_social = EXCLUDED.razon_social,
+           nombre_comercial = EXCLUDED.nombre_comercial,
+           cif = COALESCE(EXCLUDED.cif, clients.cif),
+           provincia = COALESCE(EXCLUDED.provincia, clients.provincia),
+           codigo_provincia = COALESCE(EXCLUDED.codigo_provincia, clients.codigo_provincia),
+           tarifa_precio = EXCLUDED.tarifa_precio,
+           email = COALESCE(EXCLUDED.email, clients.email),
+           email_alternativo = COALESCE(EXCLUDED.email_alternativo, clients.email_alternativo),
+           fecha_alta_sage = COALESCE(EXCLUDED.fecha_alta_sage, clients.fecha_alta_sage),
+           lsys_fecha_grabacion = COALESCE(EXCLUDED.lsys_fecha_grabacion, clients.lsys_fecha_grabacion),
+           es_baja = EXCLUDED.es_baja,
+           baja_empresa_lc = EXCLUDED.baja_empresa_lc,
+           is_active = EXCLUDED.is_active,
+           synced_from_sage_at = NOW(),
+           updated_at = NOW()
+         RETURNING (xmax = 0) AS was_insert`,
+        [codigo, razonSocial, c.nombre_comercial || null, c.cif_dni || null,
+         c.provincia || null, c.codigo_provincia || null,
+         c.tarifa_precio != null ? Number(c.tarifa_precio) : null,
+         c.email_1 || null, c.email_2 || null,
+         c.fecha_alta || null,
+         c.lsys_fecha_grabacion ? new Date(c.lsys_fecha_grabacion) : null,
+         esBaja, bajaEmpresa, isActive]
+      );
+      if (r.rows[0]?.was_insert) contadores.nuevos++;
+      else contadores.actualizados++;
+    }
+    // Solo marcar inactivos si NO es incremental (en incremental faltan muchos por diseño)
+    if (!esIncremental && codigosVistos.length > 0) {
+      const inact = await pool.query(
+        `UPDATE clients SET is_active = FALSE, updated_at = NOW()
+         WHERE sage_code IS NOT NULL AND is_active = TRUE AND sage_code <> ALL($1::text[])
+         RETURNING id`,
+        [codigosVistos]
+      );
+      contadores.marcados_inactivos = inact.rowCount || 0;
+    }
+    const duracion = Date.now() - t0;
+    await registrarBatchSync('clients', batchId, generatedAt, contadores, duracion, null);
+    res.json({ success: true, ...contadores, incremental: esIncremental, duracion_ms: duracion });
+  } catch (e: any) {
+    const duracion = Date.now() - t0;
+    await registrarBatchSync('clients', batchId, generatedAt, contadores, duracion, e.message);
+    res.status(500).json({ success: false, error: e.message, ...contadores });
+  }
+});
+
+// ----- POST /api/sync/sage/stock -----
+// Recibe solo los articulos con stock > 0 (~2850 filas). Los que no vengan se ponen a 0.
+app.post('/api/sync/sage/stock', async (req: Request, res: Response) => {
+  if (!verificarSageApiKey(req, res)) return;
+  const t0 = Date.now();
+  const batchId = req.body?.batch_id ? String(req.body.batch_id) : null;
+  const generatedAt = req.body?.generated_at ? new Date(req.body.generated_at) : null;
+  const items = Array.isArray(req.body?.stock) ? req.body.stock : [];
+  const contadores = { recibidos: items.length, actualizados: 0, nuevos: 0, sin_cambios: 0, marcados_inactivos: 0 };
+  const codigosVistos: string[] = [];
+  try {
+    for (const s of items) {
+      const codigo = String(s.codigo_sage || s.codigo || '').trim();
+      if (!codigo) continue;
+      codigosVistos.push(codigo);
+      const r = await pool.query(
+        `INSERT INTO product_stock (codigo_sage, unidades, valor_almacen, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (codigo_sage) DO UPDATE SET
+           unidades = EXCLUDED.unidades,
+           valor_almacen = EXCLUDED.valor_almacen,
+           updated_at = NOW()
+         RETURNING (xmax = 0) AS was_insert`,
+        [codigo, Number(s.unidades) || 0, Number(s.valor_almacen) || 0]
+      );
+      if (r.rows[0]?.was_insert) contadores.nuevos++;
+      else contadores.actualizados++;
+    }
+    // Poner a 0 los que YA no vienen (dejaron de tener stock)
+    const zeroR = await pool.query(
+      `UPDATE product_stock SET unidades = 0, valor_almacen = 0, updated_at = NOW()
+       WHERE unidades > 0 AND codigo_sage <> ALL($1::text[])
+       RETURNING codigo_sage`,
+      [codigosVistos]
+    );
+    contadores.marcados_inactivos = zeroR.rowCount || 0;
+    const duracion = Date.now() - t0;
+    await registrarBatchSync('stock', batchId, generatedAt, contadores, duracion, null);
+    res.json({ success: true, ...contadores, puestos_a_cero: contadores.marcados_inactivos, duracion_ms: duracion });
+  } catch (e: any) {
+    const duracion = Date.now() - t0;
+    await registrarBatchSync('stock', batchId, generatedAt, contadores, duracion, e.message);
+    res.status(500).json({ success: false, error: e.message, ...contadores });
+  }
+});
+
+// Endpoint para consultar stock actual de un articulo desde la app admin/comercial
+app.get('/api/sync/stock/:codigo', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const codigo = String(req.params.codigo || '').trim();
+    if (!codigo) { res.status(400).json({ success: false, error: 'codigo requerido' }); return; }
+    const r = await pool.query(
+      `SELECT codigo_sage, unidades, valor_almacen, updated_at FROM product_stock WHERE codigo_sage = $1`,
+      [codigo]
+    );
+    if (r.rows.length === 0) {
+      res.json({ success: true, stock: null, mensaje: 'sin registro (probablemente stock 0)' });
+      return;
+    }
+    res.json({ success: true, stock: r.rows[0] });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Historial de batches de sincronizacion
+app.get('/api/admin/sync-batches', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, tipo, batch_id, generated_at, received_at,
+              num_recibidos, num_actualizados, num_nuevos, num_sin_cambios,
+              num_marcados_inactivos, duracion_ms, error
+       FROM sync_batches ORDER BY received_at DESC LIMIT 100`
+    );
+    // Ultimo por tipo para tarjetas resumen
+    const ultimoR = await pool.query(
+      `SELECT DISTINCT ON (tipo) tipo, received_at, num_recibidos, num_actualizados,
+              num_nuevos, num_marcados_inactivos, error
+       FROM sync_batches ORDER BY tipo, received_at DESC`
+    );
+    res.json({ success: true, batches: r.rows, ultimo_por_tipo: ultimoR.rows });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
