@@ -10902,7 +10902,13 @@ function deseleccionarZona() {
 async function borrarZona(zoneId) {
   if (!confirm('¿Borrar esta zona? El producto NO se borra, solo la zona sobre la lámina.')) return;
   try {
-    await api('/api/zones/' + zoneId, { method: 'DELETE' });
+    // Las zonas propuestas por IA tienen id temporal string ("ia-XXX-YYY") y no
+    // están en BD todavía: solo se eliminan del array local. Las guardadas (id
+    // numérico) sí requieren DELETE en backend.
+    const esPropuestaIA = typeof zoneId === 'string' && zoneId.startsWith('ia-');
+    if (!esPropuestaIA) {
+      await api('/api/zones/' + zoneId, { method: 'DELETE' });
+    }
     _zonasEditor.zonas = _zonasEditor.zonas.filter(z => z.id !== zoneId);
     _zonasEditor.zonaSeleccionadaId = null;
     renderZonasEnCapa();
