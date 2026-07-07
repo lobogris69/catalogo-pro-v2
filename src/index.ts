@@ -529,6 +529,10 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS almacen VARCHAR(150);   -- almacen de envio (por pedido)
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS num_socio VARCHAR(60);  -- numero de socio del cliente
 
+      -- Zona-ENLACE: en vez de un producto, una zona puede ser un enlace a OTRO catalogo
+      -- (ej. desde el catalogo general saltar al especifico de BSN y volver).
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS link_catalog_id INTEGER REFERENCES catalogs(id) ON DELETE SET NULL;
+
       CREATE TABLE IF NOT EXISTS catalog_versions (
         id SERIAL PRIMARY KEY,
         catalog_id INTEGER REFERENCES catalogs(id) ON DELETE CASCADE,
@@ -8450,9 +8454,11 @@ app.get('/api/sheets/:sheetId/zones', verifyToken, async (req: AuthRequest, res:
              p.ean AS producto_ean,
              p.precio_pvf AS producto_pvf,
              p.tipo AS producto_tipo,
-             p.activo AS producto_activo
+             p.activo AS producto_activo,
+             c.name AS link_catalog_nombre
       FROM sheet_zones z
       LEFT JOIN products p ON p.id = z.product_id
+      LEFT JOIN catalogs c ON c.id = z.link_catalog_id
       WHERE z.sheet_id = $1
       ORDER BY z.orden, z.id
     `, [sheetId]);
@@ -8504,7 +8510,7 @@ app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req
 app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const zoneId = Number(req.params.zoneId);
-    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, es_comision } = req.body;
+    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, es_comision, link_catalog_id } = req.body;
     // Construir SET dinámico solo con los campos enviados
     const sets: string[] = [];
     const vals: any[] = [];
@@ -8515,16 +8521,21 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
     if (alto !== undefined)     { sets.push(`alto = $${i++}`); vals.push(alto); }
     if (product_id !== undefined) { sets.push(`product_id = $${i++}`); vals.push(product_id || null); }
     if (etiqueta !== undefined) { sets.push(`etiqueta = $${i++}`); vals.push(etiqueta || null); }
-    // Los tres tipos (producto Sage / familia / comision) son mutuamente excluyentes.
+    // Los cuatro tipos (producto Sage / familia / comision / enlace) son mutuamente excluyentes.
     if (familia_ref !== undefined) {
       const fr = familia_ref ? String(familia_ref).trim().substring(0, 120) : null;
       sets.push(`familia_ref = $${i++}`); vals.push(fr);
-      if (fr) { sets.push(`product_id = NULL`); sets.push(`es_comision = FALSE`); }
+      if (fr) { sets.push(`product_id = NULL`); sets.push(`es_comision = FALSE`); sets.push(`link_catalog_id = NULL`); }
     }
     if (es_comision !== undefined) {
       const ec = !!es_comision;
       sets.push(`es_comision = $${i++}`); vals.push(ec);
-      if (ec) { sets.push(`product_id = NULL`); sets.push(`familia_ref = NULL`); }
+      if (ec) { sets.push(`product_id = NULL`); sets.push(`familia_ref = NULL`); sets.push(`link_catalog_id = NULL`); }
+    }
+    if (link_catalog_id !== undefined) {
+      const lc = link_catalog_id ? Number(link_catalog_id) : null;
+      sets.push(`link_catalog_id = $${i++}`); vals.push(lc);
+      if (lc) { sets.push(`product_id = NULL`); sets.push(`familia_ref = NULL`); sets.push(`es_comision = FALSE`); }
     }
     if (sets.length === 0) {
       res.status(400).json({ success: false, error: 'Nada que actualizar' });

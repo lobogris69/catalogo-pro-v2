@@ -3254,6 +3254,37 @@ body.con-banner-update {
   background: #fdf2f8;
   border-color: var(--rosa-principal, #cc007a);
 }
+/* Zona-enlace en el visor: borde azul discreto + icono */
+.visor-zona-enlace {
+  border: 2px solid rgba(37, 99, 235, 0.6) !important;
+  background: rgba(37, 99, 235, 0.08);
+}
+.visor-zona-enlace::after {
+  content: "🔗";
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 14px;
+}
+
+/* Botón flotante para volver del catálogo enlazado al de origen */
+.btn-volver-enlace {
+  position: fixed;
+  left: 16px;
+  bottom: 84px;
+  z-index: 1200;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 22px;
+  padding: 11px 18px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
+}
+.btn-volver-enlace:active { transform: scale(0.96); }
+
 /* Selector de familia (color x graduacion) en el modal de anotar */
 .zona-familia-selector {
   background: #faf5ff;

@@ -534,6 +534,8 @@ function abrirCatalogo(id) {
 function volverACatalogos() {
   appState.catalogoActual = null;
   appState.editorPestana = 'laminas';
+  _navStack = [];
+  if (typeof actualizarBotonVolverEnlace === 'function') actualizarBotonVolverEnlace();
   render();
 }
 
@@ -3088,6 +3090,7 @@ function pintarZonasComercial() {
     div.style.width = z.ancho + '%';
     div.style.height = z.alto + '%';
     div.dataset.zoneId = z.id;
+    if (z.link_catalog_id) { div.classList.add('visor-zona-enlace'); div.title = 'Ir a ' + (z.link_catalog_nombre || 'otro catálogo'); }
     div.addEventListener('click', (e) => {
       e.stopPropagation();
       pulsarZonaComercial(z);
@@ -3112,6 +3115,8 @@ function iluminarZonas() {
 let _comisionUltimo = { almacen: '', num_socio: '' };
 
 async function pulsarZonaComercial(zona) {
+  // Zona-ENLACE: saltar a otro catálogo (funciona con o sin visita activa)
+  if (zona.link_catalog_id) { return navegarAEnlaceCatalogo(zona); }
   if (!appState.visitaActiva) return;
   // Zona de COMISION: formulario propio (unidades + descuento + almacen + socio)
   if (zona.es_comision) { return pulsarZonaComision(zona); }
@@ -3361,6 +3366,43 @@ async function borrarAnotacionZona(anotId, sheetId) {
     mostrarNotificacionOnline('Anotación quitada', '#6b7280');
   } catch (err) {
     alert('Error: ' + err.message);
+  }
+}
+
+// ----- ENLACES ENTRE CATALOGOS (pila de navegación ir/volver) -----
+let _navStack = [];
+function navegarAEnlaceCatalogo(zona) {
+  _navStack.push({ catalogoActual: appState.catalogoActual, visorIndice: appState.visorIndice || 0 });
+  appState.vista = 'catalogos';
+  appState.catalogoActual = zona.link_catalog_id;
+  appState.visorIndice = 0;
+  render();
+  actualizarBotonVolverEnlace();
+  mostrarNotificacionOnline('🔗 ' + (zona.link_catalog_nombre || 'Catálogo enlazado'), '#2563eb');
+}
+function volverDeEnlaceCatalogo() {
+  const prev = _navStack.pop();
+  if (prev) {
+    appState.vista = 'catalogos';
+    appState.catalogoActual = prev.catalogoActual;
+    appState.visorIndice = prev.visorIndice || 0;
+    render();
+  }
+  actualizarBotonVolverEnlace();
+}
+function actualizarBotonVolverEnlace() {
+  let btn = document.getElementById('btn-volver-enlace');
+  if (_navStack.length > 0) {
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.id = 'btn-volver-enlace';
+      btn.className = 'btn-volver-enlace';
+      btn.addEventListener('click', volverDeEnlaceCatalogo);
+      document.body.appendChild(btn);
+    }
+    btn.textContent = '← Volver (' + _navStack.length + ')';
+  } else if (btn) {
+    btn.remove();
   }
 }
 
@@ -11240,7 +11282,9 @@ function renderListaZonas() {
                   ? `<span style="color:#a855f7">👓 Familia: ${escape(z.familia_ref)}</span>`
                   : z.es_comision
                     ? `<span style="color:#ea580c">🤝 Comisión: ${escape(z.etiqueta || '(sin nombre)')}</span>`
-                    : '<span style="color:#f59e0b">⚠️ Sin producto asignado</span>'}
+                    : z.link_catalog_id
+                      ? `<span style="color:#2563eb">🔗 Enlace: ${escape(z.link_catalog_nombre || ('catálogo #' + z.link_catalog_id))}</span>`
+                      : '<span style="color:#f59e0b">⚠️ Sin producto asignado</span>'}
             </span>
           </div>
         `).join('')}
@@ -11255,7 +11299,13 @@ function renderListaZonas() {
       <h4 style="margin:0">Zona ${idx}</h4>
       <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="deseleccionarZona()">← Volver</button>
     </div>
-    ${sel.es_comision ? `
+    ${sel.link_catalog_id ? `
+      <div class="zona-producto-actual" style="background:#eff6ff;border-color:#bfdbfe">
+        <div style="font-size:11px;color:#2563eb;font-weight:600;margin-bottom:4px">🔗 Enlace a otro catálogo</div>
+        Destino: <b>${escape(sel.link_catalog_nombre || ('catálogo #' + sel.link_catalog_id))}</b>
+        <div style="font-size:12px;color:#6b7280;margin-top:4px">El comercial pulsa aquí y salta a ese catálogo (con botón para volver).</div>
+      </div>
+    ` : sel.es_comision ? `
       <div class="zona-producto-actual" style="background:#fff7ed;border-color:#fed7aa">
         <div style="font-size:11px;color:#ea580c;font-weight:600;margin-bottom:4px">🤝 Producto de comisión (no se factura)</div>
         Producto: <b>${escape(sel.etiqueta || '(sin nombre)')}</b>
@@ -11278,13 +11328,13 @@ function renderListaZonas() {
         ⚠️ Esta zona no tiene producto. Asigna un producto suelto, una familia o márcala de comisión (abajo).
       </div>
     `}
-    ${(!sel.familia_ref && !sel.es_comision) ? `
+    ${(!sel.familia_ref && !sel.es_comision && !sel.link_catalog_id) ? `
       <div class="form-group">
         <label style="font-size:13px">${sel.product_id ? 'Cambiar producto' : 'Asignar producto suelto'}</label>
         <div id="zona-ac-contenedor"></div>
       </div>
     ` : ''}
-    ${!sel.es_comision ? `
+    ${(!sel.es_comision && !sel.link_catalog_id) ? `
       <div class="form-group" style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:10px">
         <label style="font-size:13px;font-weight:600">👓 ${sel.familia_ref ? 'Cambiar' : 'Marcar como'} familia (gafas, guantes, tapes…)</label>
         <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Escribe el modelo; el cliente elegirá color/talla/graduación/formato.</div>
@@ -11295,13 +11345,24 @@ function renderListaZonas() {
         ${sel.familia_ref ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarFamiliaZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar familia (volver a producto suelto)</button>` : ''}
       </div>
     ` : ''}
-    ${!sel.familia_ref ? `
+    ${(!sel.familia_ref && !sel.link_catalog_id) ? `
       <div class="form-group" style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px">
         <label style="font-size:13px;font-weight:600">🤝 ${sel.es_comision ? 'Editar' : 'Marcar como'} producto de comisión (Lainco…)</label>
         <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Productos que NO facturamos. El comercial anota unidades + descuento + almacén + nº socio.</div>
         <input type="text" id="com-nombre-${sel.id}" value="${escape(sel.etiqueta || '').replace(/"/g,'&quot;')}" placeholder="Nombre del producto (ej: Emulquien Laxante 230 ml)" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
         <button class="btn" style="background:#ea580c;color:#fff;padding:7px 12px;font-size:12px" onclick="marcarComisionZona('${String(sel.id).replace(/'/g, "\\'")}')">${sel.es_comision ? 'Guardar nombre' : 'Marcar de comisión'}</button>
         ${sel.es_comision ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarComisionZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar comisión (volver a producto suelto)</button>` : ''}
+      </div>
+    ` : ''}
+    ${(!sel.familia_ref && !sel.es_comision) ? `
+      <div class="form-group" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px">
+        <label style="font-size:13px;font-weight:600">🔗 ${sel.link_catalog_id ? 'Cambiar' : 'Convertir en'} enlace a otro catálogo</label>
+        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Al pulsar esta zona, el comercial salta a otro catálogo (ej. el específico de BSN) y puede volver.</div>
+        <div style="display:flex;gap:6px">
+          <select id="link-sel-${sel.id}" style="flex:1;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px"><option value="">Cargando catálogos…</option></select>
+          <button class="btn btn-primary" style="padding:7px 12px;font-size:12px" onclick="aplicarEnlaceZona('${String(sel.id).replace(/'/g, "\\'")}')">Aplicar</button>
+        </div>
+        ${sel.link_catalog_id ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarEnlaceZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar enlace (volver a producto suelto)</button>` : ''}
       </div>
     ` : ''}
     <div style="margin-top:12px;display:flex;gap:8px">
@@ -11311,6 +11372,8 @@ function renderListaZonas() {
 
   // Cargar preview de variantes si la zona es familia
   if (sel.familia_ref) cargarPreviewFamiliaAdmin(sel.id, sel.familia_ref);
+  // Cargar catálogos en el desplegable de enlace (si el bloque está visible)
+  if (!sel.familia_ref && !sel.es_comision) cargarCatalogosEnSelectEnlace(sel.id, sel.link_catalog_id);
 
   // Montar el autocomplete dentro del panel
   if (_zonasEditor.acProducto) { try { _zonasEditor.acProducto.destroy(); } catch {} }
@@ -11424,6 +11487,68 @@ async function quitarComisionZona(zoneId) {
     mostrarNotificacionOnline('Comisión quitada', '#6b7280');
   } catch (err) {
     alert('Error quitando comisión: ' + err.message);
+  }
+}
+
+// Rellena el desplegable de "enlace a catálogo" con todos los catálogos (menos el actual)
+let _catalogosCacheEnlace = null;
+async function cargarCatalogosEnSelectEnlace(zoneId, seleccionadoId) {
+  const sel = document.getElementById('link-sel-' + zoneId);
+  if (!sel) return;
+  try {
+    if (_catalogosCacheEnlace === null) {
+      const r = await api('/api/catalogs');
+      _catalogosCacheEnlace = r.catalogs || r.rows || [];
+    }
+    const actual = _zonasEditor.catalogId;
+    const opts = ['<option value="">— Elige catálogo destino —</option>'];
+    _catalogosCacheEnlace
+      .filter(c => Number(c.id) !== Number(actual))
+      .forEach(c => {
+        const nom = c.name || c.nombre || ('Catálogo #' + c.id);
+        opts.push(`<option value="${c.id}" ${Number(c.id) === Number(seleccionadoId) ? 'selected' : ''}>${escape(nom)}</option>`);
+      });
+    sel.innerHTML = opts.join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">Error cargando catálogos</option>';
+  }
+}
+
+// Convierte una zona en enlace a otro catálogo
+async function aplicarEnlaceZona(zoneId) {
+  const selEl = document.getElementById('link-sel-' + zoneId);
+  const destino = selEl ? Number(selEl.value) : 0;
+  if (!destino) { alert('Elige el catálogo destino.'); return; }
+  try {
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { link_catalog_id: destino } });
+    const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+    const cat = (_catalogosCacheEnlace || []).find(c => Number(c.id) === destino);
+    if (sel) {
+      sel.link_catalog_id = destino;
+      sel.link_catalog_nombre = cat ? (cat.name || cat.nombre) : null;
+      sel.product_id = null; sel.familia_ref = null; sel.es_comision = false;
+      sel.producto_codigo = null; sel.producto_nombre = null;
+    }
+    renderZonasEnCapa();
+    renderListaZonas();
+    mostrarNotificacionOnline('🔗 Enlace creado a: ' + (sel.link_catalog_nombre || ('#' + destino)), '#2563eb');
+  } catch (err) {
+    alert('Error creando enlace: ' + err.message);
+  }
+}
+
+// Quita el enlace de una zona
+async function quitarEnlaceZona(zoneId) {
+  if (!confirm('¿Quitar el enlace de esta zona? Volverá a ser una zona sin producto.')) return;
+  try {
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { link_catalog_id: null } });
+    const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+    if (sel) { sel.link_catalog_id = null; sel.link_catalog_nombre = null; }
+    renderZonasEnCapa();
+    renderListaZonas();
+    mostrarNotificacionOnline('Enlace quitado', '#6b7280');
+  } catch (err) {
+    alert('Error quitando enlace: ' + err.message);
   }
 }
 
