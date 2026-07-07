@@ -2698,14 +2698,17 @@ app.post('/api/sheets/:id/save-zones', verifyToken, requireAdmin, async (req: Au
 // Idempotente: llama en bucle hasta que restantes = 0.
 // ----------------------------------------------------------------------------
 // Diagnostico rapido: prueba la IA con UNA lamina y devuelve el error crudo si lo hay
-app.get('/api/admin/detect-zones-diag', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+app.get('/api/admin/detect-zones-diag', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query(
-      `SELECT s.id, s.titulo, s.imagen_path FROM sheets s
-       WHERE s.imagen_path IS NOT NULL
-       ORDER BY s.id
-       LIMIT 1`
-    );
+    const sid = req.query.id ? Number(req.query.id) : null;
+    const r = sid
+      ? await pool.query(`SELECT id, titulo, imagen_path FROM sheets WHERE id = $1`, [sid])
+      : await pool.query(
+          `SELECT s.id, s.titulo, s.imagen_path FROM sheets s
+           WHERE s.imagen_path IS NOT NULL
+           ORDER BY s.id
+           LIMIT 1`
+        );
     if (r.rows.length === 0) {
       res.json({ success: false, error: 'No hay laminas' });
       return;
@@ -2799,7 +2802,8 @@ app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, asyn
       const zonas = await detectarZonasIA(abs);
       if (zonas === null) {
         errores++;
-        fallos.push({ id: row.id, motivo: 'IA sin respuesta' });
+        const errIA = ultimoErrorIA();
+        fallos.push({ id: row.id, titulo: row.titulo?.substring(0, 40), motivo: errIA || 'IA sin respuesta' });
         continue;
       }
       // Insertar cada zona propuesta con su producto (si hay match) o null
