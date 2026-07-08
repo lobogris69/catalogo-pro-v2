@@ -1713,7 +1713,7 @@ function abrirModalEditarLamina(sheet, catalogId) {
     <div class="modal-card">
       <div class="modal-header">
         <h3>Editar lámina</h3>
-        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+        <button class="modal-cerrar" onclick="cerrarEditarLaminaConAviso(this)">×</button>
       </div>
       <div id="modal-edit-error"></div>
       <div style="text-align:center;margin-bottom:1rem">
@@ -1756,7 +1756,7 @@ function abrirModalEditarLamina(sheet, catalogId) {
           </small>
         </div>
         <div class="modal-acciones">
-          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+          <button type="button" class="btn btn-secondary" onclick="cerrarEditarLaminaConAviso(this)">Cancelar</button>
           <button type="submit" class="btn btn-primary">Guardar</button>
         </div>
       </form>
@@ -1823,6 +1823,23 @@ function abrirModalEditarLamina(sheet, catalogId) {
       document.getElementById('modal-edit-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
     }
   });
+}
+
+// Cierra el modal de editar lámina, pero avisa si hay cambios sin guardar
+function cerrarEditarLaminaConAviso(btn) {
+  const modal = btn.closest('.modal-bg');
+  if (!modal) return;
+  let hayCambios = false;
+  // Comparar cada campo con su valor inicial (defaultValue)
+  ['ed-titulo', 'ed-notas', 'ed-tags'].forEach(id => {
+    const el = modal.querySelector('#' + id);
+    if (el && el.value !== el.defaultValue) hayCambios = true;
+  });
+  // ¿Se ha elegido una imagen nueva sin guardar?
+  const file = modal.querySelector('#ed-imagen');
+  if (file && file.files && file.files.length > 0) hayCambios = true;
+  if (hayCambios && !confirm('⚠️ Tienes cambios sin guardar en esta lámina.\n\n¿Cerrar sin guardar? Se perderán esos cambios.')) return;
+  modal.remove();
 }
 
 // ============================================================================
