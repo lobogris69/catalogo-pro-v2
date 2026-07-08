@@ -517,6 +517,14 @@ html {
   border-color: var(--rosa);
   background: white;
 }
+/* Resaltado breve de la lámina a la que volvemos tras editar (para ubicarse) */
+.lamina-fila-vuelta {
+  animation: laminaVuelta 1.5s ease-out 1;
+}
+@keyframes laminaVuelta {
+  0%   { box-shadow: 0 0 0 3px rgba(204, 0, 122, 0.75); border-color: var(--rosa); }
+  100% { box-shadow: 0 0 0 3px rgba(204, 0, 122, 0); }
+}
 .lamina-numero {
   width: 32px;
   font-size: 13px;

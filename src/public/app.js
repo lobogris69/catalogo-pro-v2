@@ -554,6 +554,22 @@ function volverACatalogos() {
   render();
 }
 
+// Tras re-renderizar el editor, vuelve a la lámina que se estaba editando (guardada en
+// appState.editorRestoreSheetId) en vez de dejar la lista arriba del todo. Se consume una vez.
+function _restaurarScrollLamina() {
+  const id = appState.editorRestoreSheetId;
+  if (!id) return;
+  appState.editorRestoreSheetId = null;
+  // Reintentos cortos: las miniaturas cargan lazy y el layout tarda un pelín en asentarse.
+  let intentos = 0;
+  const ir = () => {
+    const el = document.querySelector('.lamina-fila[data-id="' + id + '"], .express-fila[data-id="' + id + '"]');
+    if (el) { el.scrollIntoView({ block: 'center', behavior: 'auto' }); el.classList.add('lamina-fila-vuelta'); setTimeout(() => el.classList.remove('lamina-fila-vuelta'), 1600); return; }
+    if (intentos++ < 10) setTimeout(ir, 80);
+  };
+  setTimeout(ir, 50);
+}
+
 // ===== EDITOR DE CATALOGO =====
 async function renderEditorCatalogo(id) {
   const $v = document.getElementById('vista-contenido');
@@ -701,6 +717,8 @@ async function renderEditorCatalogo(id) {
     // Pintamos el contenido en la pestaña láminas (el contenedor exterior ya está en $v)
     const $pestContenido = document.getElementById('editor-pestana-contenido');
     if ($pestContenido) $pestContenido.innerHTML = htmlContenido;
+    // Si venimos de editar una lámina, volver a ella (no al principio de la lista)
+    _restaurarScrollLamina();
 
     // Listeners para la edición inline de tags
     if (esAdmin) {
@@ -1420,6 +1438,7 @@ async function insertarHojaEnBlanco(afterSheetId, catalogId) {
       method: 'POST',
       body: { after_sheet_id: afterSheetId || null }
     });
+    appState.editorRestoreSheetId = r.sheet.id; // volver a la hoja recién insertada
     await renderEditorCatalogo(catalogId);
     // Ofrecer DESHACER durante unos segundos
     mostrarToastDeshacer('📄 Hoja en blanco insertada', () => deshacerInsertarHoja(r.sheet.id, catalogId));
@@ -1833,6 +1852,7 @@ function abrirModalEditarLamina(sheet, catalogId) {
         await api('/api/sheets/' + sheet.id + '/image', { method: 'PUT', body: fd });
       }
       modal.remove();
+      appState.editorRestoreSheetId = sheet.id; // volver a esta lámina en la lista (no al principio)
       renderEditorCatalogo(catalogId);
     } catch (err) {
       document.getElementById('modal-edit-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
@@ -11360,6 +11380,7 @@ function cerrarEditorZonas() {
   // Si cambió la aprobación, refrescar la rejilla para que el distintivo se actualice
   if (_zonasEditor.aprobacionCambiada) {
     _zonasEditor.aprobacionCambiada = false;
+    appState.editorRestoreSheetId = _zonasEditor.sheetId; // volver a esta lámina, no al principio
     if (typeof render === 'function') render();
   }
 }
