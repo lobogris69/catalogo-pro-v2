@@ -522,6 +522,9 @@ async function initDB(): Promise<void> {
       -- puede apuntar a una familia con variantes (gafas de presbicia: color x graduacion).
       -- familia_ref = palabra/modelo con la que resolvemos las variantes en products (ej. "verona").
       ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS familia_ref VARCHAR(120);
+      -- familia_skus = lista CURADA a mano de product_ids que forman la familia (JSON array).
+      -- Si esta presente, manda sobre familia_ref (el admin elige exactamente que codigos van).
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS familia_skus JSONB;
 
       -- Zona-COMISION: productos de laboratorios que Lomhifar NO factura (ej. Lainco).
       -- No estan en Sage; el pedido se anota con unidades+descuento (por linea) y
@@ -2819,6 +2822,40 @@ async function resolverFamilia(ref: string | null): Promise<any | null> {
     ejes,          // selectores a mostrar (0..N). Si esta vacio, es 1 solo producto.
     variantes
   };
+}
+
+// Igual que resolverFamilia pero a partir de una LISTA CONCRETA de product_ids que el
+// admin ha curado a mano. Reusa la extraccion de ejes; no busca por nombre (cero adivinar).
+async function resolverFamiliaPorIds(ids: number[]): Promise<any | null> {
+  const limpios = Array.from(new Set((ids || []).map(n => Number(n)).filter(n => Number.isInteger(n) && n > 0)));
+  if (limpios.length === 0) return null;
+  const r = await pool.query(
+    `SELECT id, codigo, nombre, ean, precio_pvf_1, precio_pvpr_1, precio_pvf, activo
+     FROM products WHERE id = ANY($1::int[])`,
+    [limpios]
+  );
+  if (r.rows.length === 0) return null;
+  // Mantener el orden en que el admin los guardo
+  const porId = new Map<number, any>(r.rows.map((p: any) => [p.id, p]));
+  const ordenados = limpios.map(id => porId.get(id)).filter(Boolean);
+  const variantes = ordenados.map((p: any) => {
+    const { ejes } = extraerEjesProducto(p.nombre);
+    return {
+      product_id: p.id, codigo: p.codigo, nombre: p.nombre, ean: p.ean,
+      ejes, pvf: p.precio_pvf_1 ?? p.precio_pvf ?? null, pvpr: p.precio_pvpr_1 ?? null,
+      activo: p.activo
+    };
+  });
+  const ejes: Array<{ key: string; label: string; valores: string[] }> = [];
+  for (const def of EJES_DEF) {
+    let valores = Array.from(new Set(variantes.map((v: any) => v.ejes[def.key]).filter(Boolean)));
+    if (def.key === 'graduacion') valores = valores.sort((a, b) => gradNum(a) - gradNum(b));
+    if (valores.length > 1) ejes.push({ key: def.key, label: def.label, valores });
+  }
+  // Modelo = base comun mas frecuente (solo etiqueta informativa)
+  const bases = ordenados.map((p: any) => extraerEjesProducto(p.nombre).base);
+  const modelo = bases.sort((a, b) => bases.filter(x => x === b).length - bases.filter(x => x === a).length)[0] || '';
+  return { ref: null, modelo, n_variantes: variantes.length, ejes, variantes };
 }
 
 // ============================================================================
@@ -8581,11 +8618,19 @@ app.get('/api/sheets/:sheetId/zones', verifyToken, async (req: AuthRequest, res:
 // para pintar los selectores al pulsar una zona-familia, y por el editor admin.
 app.get('/api/families/resolve', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
+    // Opcion A: lista CURADA de product_ids (?ids=1,2,3) -> manda sobre el nombre.
+    const idsRaw = String(req.query.ids || '').trim();
+    if (idsRaw) {
+      const ids = idsRaw.split(',').map(s => Number(s.trim())).filter(n => Number.isInteger(n) && n > 0);
+      const fam = await resolverFamiliaPorIds(ids);
+      res.json({ success: true, familia: fam });
+      return;
+    }
+    // Opcion B: por modelo/nombre (auto-agrupa), usado para SUGERIR variantes al crear.
     const ref = String(req.query.ref || '').trim();
-    if (!ref) { res.status(400).json({ success: false, error: 'Falta ref' }); return; }
+    if (!ref) { res.status(400).json({ success: false, error: 'Falta ref o ids' }); return; }
     const fam = await resolverFamilia(ref);
-    if (!fam) { res.json({ success: true, familia: null }); return; }
-    res.json({ success: true, familia: fam });
+    res.json({ success: true, familia: fam || null });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
@@ -8619,7 +8664,7 @@ app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req
 app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const zoneId = Number(req.params.zoneId);
-    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, es_comision, link_catalog_id, link_sheet_id, link_label, link_back_sheet_id } = req.body;
+    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, familia_skus, es_comision, link_catalog_id, link_sheet_id, link_label, link_back_sheet_id } = req.body;
     // Construir SET dinámico solo con los campos enviados
     const sets: string[] = [];
     const vals: any[] = [];
@@ -8635,6 +8680,19 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
       const fr = familia_ref ? String(familia_ref).trim().substring(0, 120) : null;
       sets.push(`familia_ref = $${i++}`); vals.push(fr);
       if (fr) { sets.push(`product_id = NULL`); sets.push(`es_comision = FALSE`); sets.push(`link_catalog_id = NULL`); }
+      else { sets.push(`familia_skus = NULL`); } // quitar familia -> tambien limpiar la lista curada
+    }
+    // Lista CURADA de product_ids (JSON). Si viene con elementos, es una familia manual.
+    if (familia_skus !== undefined) {
+      const arr = Array.isArray(familia_skus)
+        ? Array.from(new Set(familia_skus.map((n: any) => Number(n)).filter((n: number) => Number.isInteger(n) && n > 0)))
+        : null;
+      if (arr && arr.length > 0) {
+        sets.push(`familia_skus = $${i++}`); vals.push(JSON.stringify(arr));
+        sets.push(`product_id = NULL`); sets.push(`es_comision = FALSE`); sets.push(`link_catalog_id = NULL`);
+      } else {
+        sets.push(`familia_skus = NULL`);
+      }
     }
     if (es_comision !== undefined) {
       const ec = !!es_comision;

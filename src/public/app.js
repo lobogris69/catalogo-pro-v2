@@ -3186,7 +3186,7 @@ async function cargarZonasComercial() {
   try {
     const r = await api('/api/sheets/' + sheetId + '/zones');
     // Zonas "accionables": producto Sage, familia, comisión o enlace a otro catálogo.
-    _zonasComercial = (r.zones || []).filter(z => z.product_id || z.familia_ref || z.es_comision || z.link_catalog_id);
+    _zonasComercial = (r.zones || []).filter(z => z.product_id || z.familia_ref || (z.familia_skus && z.familia_skus.length) || z.es_comision || z.link_catalog_id);
     pintarZonasComercial();
   } catch (e) {
     _zonasComercial = [];
@@ -3259,11 +3259,16 @@ async function pulsarZonaComercial(zona) {
   const cantidadInicial = anotExistente && anotExistente.cantidad ? anotExistente.cantidad : 1;
 
   // ¿Es una zona-FAMILIA (gafas de presbicia: color x graduacion)? Cargamos variantes.
-  const esFamilia = !!zona.familia_ref;
+  // Si hay lista curada de códigos (familia_skus) manda esa; si no, se resuelve por el modelo.
+  const tieneSkus = Array.isArray(zona.familia_skus) && zona.familia_skus.length > 0;
+  const esFamilia = !!zona.familia_ref || tieneSkus;
   let familia = null;
   if (esFamilia) {
     try {
-      const rf = await api('/api/families/resolve?ref=' + encodeURIComponent(zona.familia_ref));
+      const q = tieneSkus
+        ? '/api/families/resolve?ids=' + zona.familia_skus.join(',')
+        : '/api/families/resolve?ref=' + encodeURIComponent(zona.familia_ref);
+      const rf = await api(q);
       familia = rf && rf.familia ? rf.familia : null;
     } catch (_) { familia = null; }
   }
@@ -3280,7 +3285,7 @@ async function pulsarZonaComercial(zona) {
   const ejesFamilia = (esFamilia && familia && Array.isArray(familia.ejes)) ? familia.ejes : [];
   const familiaHTML = (esFamilia && familia) ? `
     <div class="zona-familia-selector" style="margin-top:14px">
-      <div style="font-weight:700;font-size:14px;margin-bottom:8px">👓 ${escape(familia.modelo)} — elige opciones</div>
+      <div style="font-weight:700;font-size:14px;margin-bottom:8px">👓 ${escape(familia.modelo || 'Familia')} — elige opciones</div>
       ${ejesFamilia.map(eje => `
         <div class="form-group" style="margin-bottom:10px">
           <label>${escape(eje.label)}</label>
@@ -3289,6 +3294,15 @@ async function pulsarZonaComercial(zona) {
           </div>
         </div>
       `).join('')}
+      ${ejesFamilia.length === 0 && Array.isArray(familia.variantes) && familia.variantes.length ? `
+        <div class="form-group">
+          <label>Elige la variante</label>
+          <select id="fam-select-directo" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:15px">
+            <option value="">— elige —</option>
+            ${familia.variantes.map((v, i) => `<option value="${i}">${escape(v.codigo || '')} · ${escape(v.nombre || '')}</option>`).join('')}
+          </select>
+        </div>
+      ` : ''}
     </div>
   ` : (esFamilia ? `<div class="error-msg" style="margin-top:12px">No se pudieron cargar las variantes de esta familia.</div>` : '');
 
@@ -3430,7 +3444,29 @@ async function pulsarZonaComercial(zona) {
         });
       });
     });
-    resolverSku(); // estado inicial (deshabilita guardar hasta elegir todo)
+    // Familia SIN ejes legibles → desplegable directo de variantes (elige código exacto)
+    const $selDirecto = modal.querySelector('#fam-select-directo');
+    if ($selDirecto) {
+      if ($guardar) { $guardar.disabled = true; $guardar.style.opacity = '0.5'; }
+      $selDirecto.addEventListener('change', () => {
+        skuSel = $selDirecto.value !== '' ? familia.variantes[Number($selDirecto.value)] : null;
+        if (skuSel) {
+          pvf = skuSel.pvf != null ? Number(skuSel.pvf) : null;
+          if ($prodCodigo) $prodCodigo.textContent = skuSel.codigo || '';
+          if ($prodNombre) $prodNombre.textContent = skuSel.nombre || '';
+          if ($prodPvf) $prodPvf.textContent = pvf != null && pvf > 0 ? ('PVF ' + pvf.toFixed(2) + '€') : '';
+          if ($guardar) { $guardar.disabled = false; $guardar.style.opacity = '1'; }
+        } else {
+          pvf = null;
+          if ($prodCodigo) $prodCodigo.textContent = '—';
+          if ($prodNombre) $prodNombre.textContent = 'Elige la variante';
+          if ($guardar) { $guardar.disabled = true; $guardar.style.opacity = '0.5'; }
+        }
+        actualizarSubtotal();
+      });
+    } else {
+      resolverSku(); // con chips: estado inicial (deshabilita guardar hasta elegir todo)
+    }
   }
 
   // Guardar
@@ -11817,12 +11853,10 @@ function renderListaZonas() {
     ` : ''}
     ${(!sel.es_comision && !sel.link_catalog_id) ? `
       <div class="form-group" style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:10px">
-        <label style="font-size:13px;font-weight:600">👓 ${sel.familia_ref ? 'Cambiar' : 'Marcar como'} familia (gafas, guantes, tapes…)</label>
-        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Escribe el modelo; el cliente elegirá color/talla/graduación/formato.</div>
-        <div style="display:flex;gap:6px">
-          <input type="text" id="fam-input-${sel.id}" value="${sel.familia_ref ? escape(sel.familia_ref).replace(/"/g,'&quot;') : ''}" placeholder="ej: Verona, Aspen, Guantes nitrilo azul" style="flex:1;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
-          <button class="btn btn-primary" style="padding:7px 12px;font-size:12px" onclick="aplicarFamiliaZona('${String(sel.id).replace(/'/g, "\\'")}')">Aplicar</button>
-        </div>
+        <label style="font-size:13px;font-weight:600">👓 ${sel.familia_ref ? 'Editar' : 'Marcar como'} familia (gafas, guantes, tapes…)</label>
+        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Escribe el <b>modelo</b> (ej: Verona) y pulsa Buscar. Te muestro sus variantes (color/graduación) para que <b>elijas cuáles van</b>; también puedes añadir códigos a mano.</div>
+        <input type="text" id="fam-input-${sel.id}" value="${sel.familia_ref ? escape(sel.familia_ref).replace(/"/g,'&quot;') : ''}" placeholder="ej: Verona, Aspen, Guantes nitrilo azul" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
+        <button class="btn btn-primary" style="width:100%;padding:9px;font-size:13px;font-weight:700" onclick="abrirSelectorVariantesFamilia('${String(sel.id).replace(/'/g, "\\'")}')">🔍 Buscar y elegir variantes</button>
         ${sel.familia_ref ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarFamiliaZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar familia (volver a producto suelto)</button>` : ''}
       </div>
     ` : ''}
@@ -11862,7 +11896,7 @@ function renderListaZonas() {
   `;
 
   // Cargar preview de variantes si la zona es familia
-  if (sel.familia_ref) cargarPreviewFamiliaAdmin(sel.id, sel.familia_ref);
+  if (sel.familia_ref || (Array.isArray(sel.familia_skus) && sel.familia_skus.length)) cargarPreviewFamiliaAdmin(sel);
   // Cargar catálogos en el desplegable de enlace (si el bloque está visible)
   if (!sel.familia_ref && !sel.es_comision) {
     cargarCatalogosEnSelectEnlace(sel.id, sel.link_catalog_id, sel.link_sheet_id);
@@ -11901,19 +11935,181 @@ function renderListaZonas() {
   });
 }
 
-// Muestra un resumen de las variantes que resuelve una familia (en el editor admin)
-async function cargarPreviewFamiliaAdmin(zoneId, ref) {
-  const el = document.getElementById('fam-preview-' + zoneId);
+// Muestra un resumen de las variantes que resuelve una familia (en el editor admin).
+// Si la zona tiene lista curada (familia_skus) usa esa; si no, resuelve por el modelo.
+async function cargarPreviewFamiliaAdmin(sel) {
+  const el = document.getElementById('fam-preview-' + sel.id);
   if (!el) return;
   try {
-    const r = await api('/api/families/resolve?ref=' + encodeURIComponent(ref));
+    const curada = Array.isArray(sel.familia_skus) && sel.familia_skus.length;
+    const q = curada
+      ? '/api/families/resolve?ids=' + sel.familia_skus.join(',')
+      : '/api/families/resolve?ref=' + encodeURIComponent(sel.familia_ref || '');
+    const r = await api(q);
     if (r && r.familia) {
       const ejes = (r.familia.ejes || []).map(e => e.label + ': ' + e.valores.join('/')).join(' · ');
-      el.innerHTML = '<b>' + r.familia.n_variantes + '</b> variantes' + (ejes ? ' — ' + escape(ejes) : ' (sin ejes a elegir)');
+      el.innerHTML = '<b>' + r.familia.n_variantes + '</b> variantes' + (curada ? ' (elegidas a mano)' : '') + (ejes ? ' — ' + escape(ejes) : ' (sin ejes a elegir)');
     } else {
-      el.innerHTML = '<span style="color:#dc2626">⚠️ No encuentra variantes para este texto en Sage</span>';
+      el.innerHTML = '<span style="color:#dc2626">⚠️ No encuentra variantes</span>';
     }
   } catch { el.textContent = 'Error cargando variantes'; }
+}
+
+// ============================================================================
+// SELECTOR DE VARIANTES DE FAMILIA (curado a mano) — el admin escribe el modelo,
+// el sistema propone las variantes (por nombre) con casillas, y puede añadir
+// códigos a mano. Se guarda la lista exacta en familia_skus.
+// ============================================================================
+let _famSelector = null; // { zoneId, items: [{product_id, codigo, nombre, color, graduacion, checked}] }
+let _famAddTimer = null;
+
+async function abrirSelectorVariantesFamilia(zoneId) {
+  const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+  if (!sel) return;
+  _famSelector = { zoneId, items: [] };
+  // Si la zona ya tiene lista curada, cargarla (marcada)
+  if (Array.isArray(sel.familia_skus) && sel.familia_skus.length) {
+    try {
+      const r = await api('/api/families/resolve?ids=' + sel.familia_skus.join(','));
+      if (r.familia) _famSelector.items = r.familia.variantes.map(v => ({ product_id: v.product_id, codigo: v.codigo, nombre: v.nombre, color: (v.ejes && v.ejes.color) || '', graduacion: (v.ejes && v.ejes.graduacion) || '', checked: true }));
+    } catch (_) {}
+  }
+  const modeloInicial = ((document.getElementById('fam-input-' + zoneId) || {}).value || sel.familia_ref || '').trim();
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.id = 'fam-selector-modal';
+  modal.innerHTML = `
+    <div class="modal-card modal-card-ancho">
+      <div class="modal-header">
+        <h3>👓 Elegir variantes de la familia</h3>
+        <button class="modal-cerrar" onclick="cerrarSelectorFamilia()">×</button>
+      </div>
+      <div class="form-group">
+        <label style="font-size:13px;font-weight:600">Modelo</label>
+        <div style="font-size:11px;color:#6b7280;margin:2px 0 6px">Escríbelo como aparece en la lámina (ej: Verona) y pulsa Buscar.</div>
+        <div style="display:flex;gap:6px">
+          <input id="fam-modelo-buscar" value="${escape(modeloInicial).replace(/"/g,'&quot;')}" placeholder="ej: Verona, Aspen" style="flex:1;box-sizing:border-box;padding:8px;border:1px solid #d1d5db;border-radius:6px" onkeydown="if(event.key==='Enter'){event.preventDefault();buscarVariantesFamilia();}">
+          <button class="btn btn-primary" style="padding:8px 14px" onclick="buscarVariantesFamilia()">🔍 Buscar</button>
+        </div>
+        <div id="fam-buscar-msg" style="font-size:12px;color:#6b7280;margin-top:4px"></div>
+      </div>
+      <div style="font-size:13px;font-weight:600;margin:8px 0 4px">Variantes (marca las que van):</div>
+      <div id="fam-lista-variantes" style="max-height:36vh;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:6px"></div>
+      <div class="form-group" style="margin-top:12px">
+        <label style="font-size:13px;font-weight:600">➕ Añadir otro producto a mano</label>
+        <div style="font-size:11px;color:#6b7280;margin:2px 0 6px">Por si algún código está escrito raro en Sage. Busca por nombre o código.</div>
+        <input id="fam-add-buscar" placeholder="Buscar producto…" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #d1d5db;border-radius:6px" oninput="buscarProductoParaFamilia(this.value)">
+        <div id="fam-add-resultados" style="max-height:22vh;overflow-y:auto;margin-top:4px"></div>
+      </div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="cerrarSelectorFamilia()">Cancelar</button>
+        <button class="btn btn-primary" onclick="guardarFamiliaCurada()">💾 Guardar familia (<span id="fam-count">0</span>)</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  renderFamSelectorLista();
+  // Si no había lista previa y hay modelo, buscar automáticamente
+  if (_famSelector.items.length === 0 && modeloInicial) buscarVariantesFamilia();
+}
+
+function renderFamSelectorLista() {
+  const cont = document.getElementById('fam-lista-variantes');
+  if (!cont || !_famSelector) return;
+  const items = _famSelector.items;
+  cont.innerHTML = items.length === 0
+    ? '<div style="color:#9ca3af;font-size:13px;padding:10px">Escribe el modelo y pulsa Buscar, o añade productos a mano abajo.</div>'
+    : items.map(it => `
+      <label style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f3f4f6;cursor:pointer">
+        <input type="checkbox" ${it.checked ? 'checked' : ''} onchange="toggleVarFamilia(${it.product_id})">
+        <span style="flex:1;font-size:13px"><b>${escape(it.codigo || '')}</b> · ${escape(it.nombre || '')}${(it.color || it.graduacion) ? `<span style="color:#a855f7"> (${escape([it.color, it.graduacion].filter(Boolean).join(' · '))})</span>` : ''}</span>
+      </label>`).join('');
+  const c = document.getElementById('fam-count');
+  if (c) c.textContent = items.filter(x => x.checked).length;
+}
+
+async function buscarVariantesFamilia() {
+  if (!_famSelector) return;
+  const ref = ((document.getElementById('fam-modelo-buscar') || {}).value || '').trim();
+  const msg = document.getElementById('fam-buscar-msg');
+  if (!ref) { if (msg) msg.textContent = 'Escribe un modelo.'; return; }
+  if (msg) msg.textContent = 'Buscando…';
+  try {
+    const r = await api('/api/families/resolve?ref=' + encodeURIComponent(ref));
+    const fam = r.familia;
+    if (!fam || !fam.variantes || !fam.variantes.length) { if (msg) msg.textContent = 'No encontré variantes para "' + ref + '". Prueba otro texto o añádelas a mano.'; return; }
+    const yaIds = new Set(_famSelector.items.map(x => x.product_id));
+    let nuevas = 0;
+    for (const v of fam.variantes) {
+      if (yaIds.has(v.product_id)) continue;
+      _famSelector.items.push({ product_id: v.product_id, codigo: v.codigo, nombre: v.nombre, color: (v.ejes && v.ejes.color) || '', graduacion: (v.ejes && v.ejes.graduacion) || '', checked: true });
+      nuevas++;
+    }
+    if (msg) msg.textContent = fam.variantes.length + ' variantes (modelo: ' + fam.modelo + '). Desmarca las que no vayan.';
+    renderFamSelectorLista();
+  } catch (e) { if (msg) msg.textContent = 'Error: ' + e.message; }
+}
+
+function toggleVarFamilia(pid) {
+  if (!_famSelector) return;
+  const it = _famSelector.items.find(x => x.product_id === pid);
+  if (it) it.checked = !it.checked;
+  const c = document.getElementById('fam-count');
+  if (c) c.textContent = _famSelector.items.filter(x => x.checked).length;
+}
+
+function buscarProductoParaFamilia(q) {
+  clearTimeout(_famAddTimer);
+  const cont = document.getElementById('fam-add-resultados');
+  if (!q || q.trim().length < 2) { if (cont) cont.innerHTML = ''; return; }
+  _famAddTimer = setTimeout(async () => {
+    try {
+      const r = await api('/api/products?q=' + encodeURIComponent(q.trim()) + '&limit=10');
+      const ps = r.products || [];
+      if (!cont) return;
+      cont.innerHTML = ps.length ? ps.map(p => `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f3f4f6;font-size:13px">
+          <span><b>${escape(p.codigo || '')}</b> · ${escape((p.nombre || '').slice(0, 45))}</span>
+          <button class="btn btn-primary" style="padding:3px 8px;font-size:11px" onclick="anadirVarFamilia(${p.id}, '${String(p.codigo || '').replace(/'/g, "\\'")}', '${String(p.nombre || '').replace(/'/g, "\\'")}')">Añadir</button>
+        </div>`).join('') : '<div style="color:#9ca3af;font-size:12px;padding:6px">Sin resultados</div>';
+    } catch (_) {}
+  }, 300);
+}
+
+function anadirVarFamilia(pid, codigo, nombre) {
+  if (!_famSelector) return;
+  const ya = _famSelector.items.find(x => x.product_id === pid);
+  if (ya) { ya.checked = true; }
+  else _famSelector.items.push({ product_id: pid, codigo, nombre, color: '', graduacion: '', checked: true });
+  renderFamSelectorLista();
+  const q = document.getElementById('fam-add-buscar'); if (q) q.value = '';
+  const cont = document.getElementById('fam-add-resultados'); if (cont) cont.innerHTML = '';
+}
+
+function cerrarSelectorFamilia() {
+  const m = document.getElementById('fam-selector-modal'); if (m) m.remove();
+  _famSelector = null;
+}
+
+async function guardarFamiliaCurada() {
+  if (!_famSelector) return;
+  const ids = _famSelector.items.filter(x => x.checked).map(x => x.product_id);
+  if (ids.length === 0) { alert('Marca al menos una variante (o pulsa Cancelar).'); return; }
+  const zoneId = _famSelector.zoneId;
+  const modelo = (((document.getElementById('fam-modelo-buscar') || {}).value) || ((document.getElementById('fam-input-' + zoneId) || {}).value) || 'familia').trim();
+  try {
+    const realId = await _persistirZonaSiPropuesta(zoneId); // por si es propuesta IA
+    await api('/api/zones/' + realId, { method: 'PUT', body: { familia_ref: modelo, familia_skus: ids } });
+    const sel = _zonasEditor.zonas.find(z => String(z.id) === String(realId));
+    if (sel) {
+      sel.familia_ref = modelo; sel.familia_skus = ids;
+      sel.product_id = null; sel.es_comision = false; sel.link_catalog_id = null;
+      sel.producto_codigo = null; sel.producto_nombre = null; sel.producto_pvf = null;
+    }
+    cerrarSelectorFamilia();
+    renderZonasEnCapa();
+    renderListaZonas();
+    mostrarNotificacionOnline('👓 Familia guardada: ' + ids.length + ' variantes elegidas', '#16a34a');
+  } catch (err) { alert('Error guardando familia: ' + err.message); }
 }
 
 // Marca/actualiza una zona como familia (valida contra Sage antes de guardar)
@@ -12230,6 +12426,7 @@ async function clonarZona(zoneId) {
       const body = {};
       if (orig.familia_ref) {
         body.familia_ref = orig.familia_ref;
+        if (Array.isArray(orig.familia_skus) && orig.familia_skus.length) body.familia_skus = orig.familia_skus;
       } else if (orig.es_comision) {
         body.es_comision = true;
         if (orig.etiqueta) body.etiqueta = orig.etiqueta;
