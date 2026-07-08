@@ -10703,9 +10703,28 @@ async function guardarProducto(id) {
     const $notas = document.getElementById('prod-notas-admin');
     if ($notas) body.notas_admin = $notas.value.trim() || null;
     await api('/api/products/' + id, { method: 'PUT', body });
+    // Si el editor de zonas está abierto, refrescar en el acto los datos de TODAS las
+    // zonas que usan este producto (la panel derecha mostraba datos cacheados antiguos).
+    if (typeof _zonasEditor !== 'undefined' && _zonasEditor && Array.isArray(_zonasEditor.zonas)) {
+      let tocado = false;
+      _zonasEditor.zonas.forEach(z => {
+        if (Number(z.product_id) === Number(id)) {
+          z.producto_codigo = body.codigo;
+          z.producto_nombre = body.nombre;
+          z.producto_ean = body.ean;
+          if (body.precio_pvf != null && body.precio_pvf !== '') z.producto_pvf = body.precio_pvf;
+          tocado = true;
+        }
+      });
+      if (tocado) {
+        if (typeof renderListaZonas === 'function') renderListaZonas();
+        if (typeof renderZonasEnCapa === 'function') renderZonasEnCapa();
+      }
+    }
     // Cerrar modal y recargar
-    document.querySelector('.modal-bg').remove();
-    recargarProductos();
+    const $modal = document.querySelector('.modal-bg');
+    if ($modal) $modal.remove();
+    if (typeof recargarProductos === 'function') recargarProductos();
     mostrarNotificacionOnline('✅ Producto actualizado', '#16a34a');
   } catch (err) {
     $err.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
