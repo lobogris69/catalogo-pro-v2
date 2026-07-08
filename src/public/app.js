@@ -10393,6 +10393,7 @@ async function abrirDetalleProducto(id) {
         <div id="prod-error"></div>
         <div class="modal-acciones">
           <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+          <button class="btn" style="background:#0ea5e9;color:#fff" onclick="duplicarProductoActual(${p.id})" title="Crear un producto nuevo copiando estos datos (para gafas de sol, packs con solo el modelo distinto…)">⧉ Duplicar</button>
           <button class="btn btn-primary" onclick="guardarProducto(${p.id})">💾 Guardar</button>
         </div>
       </div>
@@ -10432,50 +10433,95 @@ async function guardarProducto(id) {
   }
 }
 
-function abrirModalNuevoProducto() {
+// prefill (opcional) rellena los campos al DUPLICAR un producto existente.
+function abrirModalNuevoProducto(prefill) {
+  const p = prefill || {};
+  const esDup = !!prefill;
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
   modal.innerHTML = `
     <div class="modal-card modal-card-ancho">
       <div class="modal-header">
-        <h3>🎁 Nuevo expositor / promo</h3>
+        <h3>${esDup ? '⧉ Duplicar producto' : '🎁 Nuevo expositor / promo'}</h3>
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
       </div>
       <p style="font-size:13px;color:var(--gris-texto);margin-bottom:12px">
-        Crea un producto que <b>no está en Sage</b> (típicamente expositores, packs promocionales, etc.). Define un código interno único.
+        ${esDup
+          ? 'Copia de otro producto. <b>Cambia el código (debe ser único)</b> y lo que varíe (p. ej. el modelo), y crea.'
+          : 'Crea un producto que <b>no está en Sage</b> (expositores, packs, gafas de sol…). Define un código interno único.'}
       </p>
       <div class="form-group">
         <label>Código interno *</label>
-        <input type="text" id="new-prod-codigo" placeholder="Ej: EXPO-GEL-24" required>
-        <small style="color:var(--gris-texto)">Algo único que identifique este producto en la app. Sugerencia: EXPO-XXX o PROMO-XXX.</small>
+        <input type="text" id="new-prod-codigo" value="${escape(p.codigo || '')}" placeholder="Ej: EXPO-GEL-24" required>
+        <small style="color:var(--gris-texto)">${esDup ? '⚠️ Debe ser DISTINTO al original.' : 'Algo único. Sugerencia: EXPO-XXX o PROMO-XXX.'}</small>
       </div>
       <div class="form-group">
         <label>Nombre completo *</label>
-        <input type="text" id="new-prod-nombre" placeholder="Ej: EXPOSITOR PROMO GEL hidratante 24 uds (24+6)" required>
+        <input type="text" id="new-prod-nombre" value="${escape(p.nombre || '')}" placeholder="Ej: GAFA SOL ADULTOS MODELO X" required>
+      </div>
+      <div class="form-group">
+        <label>Descripción <span style="color:var(--gris-texto);font-weight:normal">(opcional)</span></label>
+        <textarea id="new-prod-descripcion" rows="2" placeholder="Descripción del producto">${escape(p.descripcion || '')}</textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="form-group">
+          <label>EAN / Cód. nacional</label>
+          <input type="text" id="new-prod-ean" value="${escape(p.ean || '')}">
+        </div>
+        <div class="form-group">
+          <label>Marca</label>
+          <input type="text" id="new-prod-marca" value="${escape(p.marca || '')}">
+        </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <div class="form-group">
           <label>PVP orientativo (€)</label>
-          <input type="number" step="0.01" id="new-prod-pvp">
+          <input type="number" step="0.01" id="new-prod-pvp" value="${p.precio_pvp || ''}">
         </div>
         <div class="form-group">
           <label>PVF / PVL (€)</label>
-          <input type="number" step="0.01" id="new-prod-pvf">
+          <input type="number" step="0.01" id="new-prod-pvf" value="${p.precio_pvf || ''}">
         </div>
       </div>
       <div class="form-group">
         <label>Notas para administración <span style="color:var(--gris-texto);font-weight:normal">(opcional)</span></label>
-        <textarea id="new-prod-notas-admin" rows="2" placeholder="Ej: Equivale a 24 unidades del código Sage 12345"></textarea>
+        <textarea id="new-prod-notas-admin" rows="2" placeholder="Ej: Equivale a 24 unidades del código Sage 12345">${escape(p.notas_admin || '')}</textarea>
       </div>
       <div id="new-prod-error"></div>
       <div class="modal-acciones">
         <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
-        <button class="btn btn-primary" onclick="crearNuevoProducto()">+ Crear</button>
+        <button class="btn btn-primary" onclick="crearNuevoProducto()">${esDup ? '+ Crear copia' : '+ Crear'}</button>
       </div>
     </div>
   `;
   document.body.appendChild(modal);
-  setTimeout(() => document.getElementById('new-prod-codigo').focus(), 50);
+  // Al duplicar, foco en el código (lo primero que hay que cambiar); si es nuevo, igual
+  setTimeout(() => { const c = document.getElementById('new-prod-codigo'); if (c) { c.focus(); if (esDup) c.select(); } }, 50);
+}
+
+// Desde la ventana de detalle: recarga los datos del producto y abre el duplicar.
+async function duplicarProductoActual(id) {
+  try {
+    const r = await api('/api/products/' + id);
+    document.querySelectorAll('.modal-bg').forEach(m => m.remove()); // cerrar el detalle
+    duplicarProducto(r.product);
+  } catch (e) {
+    alert('Error al duplicar: ' + e.message);
+  }
+}
+
+// Duplica un producto existente: abre el crear-nuevo con sus datos ya rellenos.
+function duplicarProducto(p) {
+  abrirModalNuevoProducto({
+    codigo: (p.codigo || '') + '-2',   // punto de partida; el usuario lo cambia
+    nombre: p.nombre || '',
+    descripcion: p.descripcion || '',
+    ean: p.ean || '',
+    marca: p.marca || '',
+    precio_pvp: p.precio_pvp || '',
+    precio_pvf: p.precio_pvf || '',
+    notas_admin: p.notas_admin || ''
+  });
 }
 
 async function crearNuevoProducto() {
@@ -10488,11 +10534,17 @@ async function crearNuevoProducto() {
     return;
   }
   try {
+    const $d = document.getElementById('new-prod-descripcion');
+    const $e = document.getElementById('new-prod-ean');
+    const $m = document.getElementById('new-prod-marca');
     await api('/api/products', {
       method: 'POST',
       body: {
         codigo,
         nombre,
+        descripcion: $d ? ($d.value.trim() || null) : null,
+        ean: $e ? ($e.value.trim() || null) : null,
+        marca: $m ? ($m.value.trim() || null) : null,
         precio_pvp: document.getElementById('new-prod-pvp').value || null,
         precio_pvf: document.getElementById('new-prod-pvf').value || null,
         notas_admin: document.getElementById('new-prod-notas-admin').value.trim() || null,
