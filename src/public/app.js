@@ -2660,7 +2660,17 @@ function pintarVisor() {
     cuerpo = pintarPresentacion(visibles);
   }
 
-  $v.innerHTML = `<div class="visor-shell">${cabecera}${cuerpo}</div>`;
+  // Botón flotante del CARRITO de la visita (acceso rápido al pedido en curso)
+  let carritoFab = '';
+  if (appState.visitaActiva) {
+    const n = carritoContarLineas();
+    carritoFab = `<button class="carrito-fab" onclick="abrirCarritoVisita()" title="Ver el pedido de esta visita">🛒 Pedido${n > 0 ? ` <span class="carrito-fab-badge">${n}</span>` : ''}</button>`;
+  }
+
+  $v.innerHTML = `<div class="visor-shell">${cabecera}${cuerpo}${carritoFab}</div>`;
+
+  // Si el carrito estaba abierto (p.ej. tras editar una línea), refrescar su contenido
+  if (_carritoAbierto) renderCarritoContenido();
 
   // Listener de búsqueda con debounce
   const $busca = document.getElementById('visor-buscar');
@@ -10002,7 +10012,111 @@ function refrescarAnotacionesVisor(sheetId) {
   // Pide al backend solo si hay visita activa, y vuelve a pintar el visor entero (más simple)
   cargarAnotacionesDeVisita().then(() => {
     if (typeof pintarVisor === 'function') pintarVisor();
+    // pintarVisor ya refresca el carrito si está abierto; por si no se llamó, reforzamos:
+    if (_carritoAbierto) renderCarritoContenido();
   });
+}
+
+// ============================================================================
+// CARRITO DE LA VISITA — acceso rápido al pedido en curso (ver / editar / quitar
+// líneas) sin perder el sitio en el catálogo. Reutiliza las anotaciones de la visita.
+// ============================================================================
+let _carritoAbierto = false;
+
+function carritoContarLineas() {
+  let n = 0;
+  Object.keys(_anotacionesVisita || {}).forEach(sid => { n += (_anotacionesVisita[sid] || []).length; });
+  return n;
+}
+
+function _carritoNumLamina(sheetId) {
+  const i = (_visorSheets || []).findIndex(s => Number(s.id) === Number(sheetId));
+  return i < 0 ? '?' : (i + 1);
+}
+
+function _carritoLineasOrdenadas() {
+  const lineas = [];
+  Object.keys(_anotacionesVisita || {}).forEach(sid => {
+    (_anotacionesVisita[sid] || []).forEach(a => lineas.push(a));
+  });
+  const idxDe = (sheetId) => {
+    const i = (_visorSheets || []).findIndex(s => Number(s.id) === Number(sheetId));
+    return i < 0 ? 99999 : i;
+  };
+  lineas.sort((x, y) => (idxDe(x.sheet_id) - idxDe(y.sheet_id)) || ((x.orden_en_visita || 0) - (y.orden_en_visita || 0)));
+  return lineas;
+}
+
+function abrirCarritoVisita() {
+  if (!appState.visitaActiva) return;
+  _carritoAbierto = true;
+  let ov = document.getElementById('carrito-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'carrito-overlay';
+    ov.className = 'carrito-overlay';
+    document.body.appendChild(ov);
+  }
+  renderCarritoContenido();
+}
+
+function cerrarCarritoVisita() {
+  _carritoAbierto = false;
+  const ov = document.getElementById('carrito-overlay');
+  if (ov) ov.remove();
+}
+
+function renderCarritoContenido() {
+  const ov = document.getElementById('carrito-overlay');
+  if (!ov) return;
+  const lineas = _carritoLineasOrdenadas();
+  const cliente = (appState.visitaActiva && appState.visitaActiva.cliente_nombre) ? appState.visitaActiva.cliente_nombre : 'cliente';
+  const filas = lineas.length === 0
+    ? `<div class="carrito-vacio">Todavía no has añadido nada al pedido.<br>Toca las zonas de las láminas o anota manualmente con ✏️.</div>`
+    : lineas.map(a => {
+        const icon = a.tipo === 'pedido' ? '🛒' : a.tipo === 'devolucion' ? '↩️' : '📝';
+        const num = _carritoNumLamina(a.sheet_id);
+        const textoJs = JSON.stringify(a.texto_libre || '').replace(/"/g, '&quot;');
+        return `
+          <div class="carrito-linea">
+            <button class="carrito-linea-ir" onclick="carritoIrALamina(${a.sheet_id})" title="Ir a la lámina ${num}">
+              <span class="carrito-linea-icon">${icon}</span>
+              <span class="carrito-linea-num">Lám. ${num}</span>
+            </button>
+            <span class="carrito-linea-texto">${escape(a.texto_libre || '')}</span>
+            <span class="carrito-linea-acc">
+              <button class="carrito-btn" onclick="editarAnotacion(${a.id}, ${a.sheet_id}, ${textoJs}, '${a.tipo}')" title="Modificar">✏️</button>
+              <button class="carrito-btn carrito-btn-quitar" onclick="borrarAnotacion(${a.id}, ${a.sheet_id})" title="Quitar del pedido">🗑️</button>
+            </span>
+          </div>`;
+      }).join('');
+  ov.innerHTML = `
+    <div class="carrito-panel" onclick="event.stopPropagation()">
+      <div class="carrito-header">
+        <div class="carrito-titulo">🛒 Pedido de <b>${escape(cliente)}</b></div>
+        <button class="carrito-cerrar" onclick="cerrarCarritoVisita()" title="Cerrar">✕</button>
+      </div>
+      <div class="carrito-sub">${lineas.length} línea${lineas.length === 1 ? '' : 's'}${lineas.length ? ' · pulsa una lámina para ir a ella' : ''}</div>
+      <div class="carrito-lista">${filas}</div>
+      <div class="carrito-footer">
+        <button class="btn btn-secondary carrito-seguir" onclick="cerrarCarritoVisita()">← Seguir en el catálogo</button>
+        <button class="btn btn-primary" onclick="cerrarCarritoVisita(); cerrarVisitaActiva()">Cerrar visita y enviar →</button>
+      </div>
+    </div>`;
+  ov.onclick = () => cerrarCarritoVisita();
+}
+
+function carritoIrALamina(sheetId) {
+  const i = (_visorSheets || []).findIndex(s => Number(s.id) === Number(sheetId));
+  cerrarCarritoVisita();
+  if (i < 0) return;
+  // Limpiar filtros para que visorIndice (que indexa la lista visible) apunte a la lámina exacta
+  appState.visorBusqueda = '';
+  appState.visorFiltroCat = null;
+  appState.visorModo = 'presentacion';
+  appState.visorIndice = i;
+  appState.visorZoom = 1; appState.visorPanX = 0; appState.visorPanY = 0;
+  pintarVisor();
 }
 
 async function borrarAnotacion(anotId, sheetId) {
