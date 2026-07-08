@@ -11297,8 +11297,11 @@ async function detectarZonasConIA(sheetId, boton) {
         id: 'ia-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6), // id temporal
         x: z.x, y: z.y, ancho: z.width, alto: z.height,
         product_id: producto ? producto.id : null,
-        product_codigo: producto ? producto.codigo : null,
-        product_nombre: producto ? producto.nombre : null,
+        // Usar los MISMOS nombres de campo que el resto del editor (producto_*), si no
+        // el panel muestra el nombre vacío ("·") y "PVF —" aunque haya match.
+        producto_codigo: producto ? producto.codigo : null,
+        producto_nombre: producto ? producto.nombre : null,
+        producto_pvf: producto ? (producto.precio_pvf_1 != null ? producto.precio_pvf_1 : (producto.precio_pvf != null ? producto.precio_pvf : null)) : null,
         etiqueta: etiqueta,
         propuesta_ia: true,   // marca visual (color distinto)
         ai_meta: {
