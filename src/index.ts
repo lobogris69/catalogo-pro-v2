@@ -2904,6 +2904,17 @@ app.post('/api/sheets/:id/detect-zones-ia', verifyToken, requireAdmin, async (re
           );
           if (r.rows.length > 0) productoSugerido = r.rows[0];
         }
+        // Si no casó por codigo/alt, buscar la referencia DENTRO DEL NOMBRE: algunos labs
+        // (Beter) imprimen la ref como "REF. 40051" pero el codigo Sage es otro (188109).
+        // Solo la aceptamos si el match es INEQUIVOCO (una sola coincidencia).
+        if (!productoSugerido && fabNorm && fabNorm.length >= 4) {
+          const rn = await pool.query(
+            `SELECT id, codigo, nombre, precio_pvf_1, precio_pvpr_1, activo
+             FROM products WHERE nombre ILIKE '%' || $1 || '%' ORDER BY activo DESC LIMIT 2`,
+            [fabNorm]
+          );
+          if (rn.rows.length === 1) productoSugerido = rn.rows[0];
+        }
       }
       // Ultimo respaldo: match por NOMBRE/modelo (gafas, accesorios sin CN)
       let matchAmbiguo = false;
@@ -3192,6 +3203,16 @@ app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, asyn
           [arr]
         );
         if (r.rows.length > 0) return r.rows[0].id;
+      }
+      // Ref dentro del NOMBRE (Beter imprime "REF. 40051" pero el codigo Sage es otro).
+      // Solo si el match es inequivoco (una sola coincidencia).
+      const fabNorm = fab ? String(fab).replace(/[.\s\-\/]/g, '') : '';
+      if (fabNorm.length >= 4) {
+        const rn = await pool.query(
+          `SELECT id FROM products WHERE nombre ILIKE '%' || $1 || '%' ORDER BY activo DESC LIMIT 2`,
+          [fabNorm]
+        );
+        if (rn.rows.length === 1) return rn.rows[0].id;
       }
       if (cn) {
         const d = cn.replace(/\D/g, '');
