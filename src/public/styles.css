@@ -894,6 +894,10 @@ html {
   display: block;
   border-radius: 8px;
   pointer-events: none;
+  /* Las láminas PNG tienen canal alfa (transparencia). Fondo blanco en la propia
+     imagen para que las zonas transparentes NO se vean negras (sobre todo en
+     pantalla completa, cuyo backdrop es #000). No altera los archivos. */
+  background: #fff;
   /* Mantener nitidez en zoom alto (PNG 150 dpi con textos pequenos) */
   image-rendering: -webkit-optimize-contrast;
   image-rendering: high-quality;
@@ -1587,6 +1591,16 @@ html {
 @media (min-width: 640px) {
   .carrito-overlay { align-items: center; }
   .carrito-panel { border-radius: 16px; max-height: 80vh; }
+}
+
+/* Fondo blanco en TODAS las vistas de lámina: los PNG llevan transparencia y sin
+   esto las zonas transparentes se ven negras (grid, mosaico, lightbox, editor). */
+.lamina-mini,
+.visor-mosaico-img,
+.mosaico-img,
+.zonas-lienzo-img,
+.lightbox-img {
+  background: #fff;
 }
 
 /* Badge de anotaciones en mosaico */
