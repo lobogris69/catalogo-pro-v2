@@ -2887,17 +2887,23 @@ app.post('/api/sheets/:id/detect-zones-ia', verifyToken, requireAdmin, async (re
       if (z.codigo_nacional) {
         productoSugerido = await buscarProductoPorCN(z.codigo_nacional);
       }
-      // Si no hubo match por CN, probar con codigo del fabricante como respaldo
+      // Si no hubo match por CN, probar con codigo del fabricante como respaldo.
+      // Probamos con y SIN separadores (puntos/guiones): p.ej. Beter imprime "14.302"
+      // pero en Sage esta guardado como "14302". Asi mejora el match de ese laboratorio.
       if (!productoSugerido && z.codigo_fabricante) {
-        const fab = z.codigo_fabricante.replace(/\s/g, '');
-        const r = await pool.query(
-          `SELECT id, codigo, nombre, precio_pvf_1, precio_pvpr_1, activo
-           FROM products
-           WHERE codigo = $1 OR codigo_alt_1 = $1 OR codigo_alt_2 = $1
-           LIMIT 1`,
-          [fab]
-        );
-        if (r.rows.length > 0) productoSugerido = r.rows[0];
+        const fabRaw = z.codigo_fabricante.replace(/\s/g, '');
+        const fabNorm = z.codigo_fabricante.replace(/[.\s\-\/]/g, '');
+        const fabVars = Array.from(new Set([fabRaw, fabNorm].filter((v: string) => v && v.length >= 3)));
+        if (fabVars.length > 0) {
+          const r = await pool.query(
+            `SELECT id, codigo, nombre, precio_pvf_1, precio_pvpr_1, activo
+             FROM products
+             WHERE codigo = ANY($1::text[]) OR codigo_alt_1 = ANY($1::text[]) OR codigo_alt_2 = ANY($1::text[])
+             LIMIT 1`,
+            [fabVars]
+          );
+          if (r.rows.length > 0) productoSugerido = r.rows[0];
+        }
       }
       // Ultimo respaldo: match por NOMBRE/modelo (gafas, accesorios sin CN)
       let matchAmbiguo = false;
@@ -3173,7 +3179,10 @@ app.post('/api/admin/backfill-detect-zones', verifyToken, requireRealAdmin, asyn
           variantes.add(d.padStart(7, '0'));
         }
       }
-      if (fab) variantes.add(String(fab).replace(/\s/g, ''));
+      if (fab) {
+        variantes.add(String(fab).replace(/\s/g, ''));
+        variantes.add(String(fab).replace(/[.\s\-\/]/g, '')); // Beter: "14.302" -> "14302"
+      }
       const arr = Array.from(variantes).filter(v => v.length >= 3);
       if (arr.length > 0) {
         const r = await pool.query(
