@@ -3628,7 +3628,7 @@ body.con-banner-update {
   flex: 1 1 auto;
   min-height: 0;
   object-fit: contain;
-  background: #f3f4f6;
+  background: #fff;
   display: block;
 }
 .mosaico-titulo {
