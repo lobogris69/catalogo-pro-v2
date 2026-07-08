@@ -10327,6 +10327,11 @@ async function abrirDetalleProducto(id) {
           <label>Nombre completo</label>
           <input type="text" id="prod-nombre" value="${escape(p.nombre)}">
         </div>
+        <div class="form-group">
+          <label>Descripción <span style="color:var(--gris-texto);font-weight:normal">(opcional, para corregir/ampliar)</span></label>
+          <textarea id="prod-descripcion" rows="2" placeholder="Descripción del producto">${escape(p.descripcion || '')}</textarea>
+          ${!esExpositor ? `<small style="color:#b45309">⚠️ Este producto viene de Sage: si editas su texto, la próxima sincronización lo sobrescribirá. Para textos fijos usa un producto comercial.</small>` : ''}
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div class="form-group">
             <label>EAN / Cód. nacional</label>
@@ -10402,9 +10407,11 @@ async function guardarProducto(id) {
   const $err = document.getElementById('prod-error');
   $err.innerHTML = '';
   try {
+    const $desc = document.getElementById('prod-descripcion');
     const body = {
       codigo: document.getElementById('prod-codigo').value.trim(),
       nombre: document.getElementById('prod-nombre').value.trim(),
+      descripcion: $desc ? ($desc.value.trim() || null) : undefined,
       ean: document.getElementById('prod-ean').value.trim() || null,
       precio_pvp: document.getElementById('prod-pvp').value || null,
       precio_pvf: document.getElementById('prod-pvf').value || null,
