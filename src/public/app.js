@@ -10583,7 +10583,7 @@ async function abrirDetalleProducto(id) {
     modal.innerHTML = `
       <div class="modal-card modal-card-ancho">
         <div class="modal-header">
-          <h3>${esExpositor ? '🎁' : '🏷️'} ${escape(p.nombre)}</h3>
+          <h3>${esExpositor ? '🎁' : '🏷️'} ${escape(p.nombre)} <span style="font-size:11px;color:#9ca3af;font-weight:400">✥ arrastra para mover</span></h3>
           <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
         </div>
         <div class="form-group">
@@ -10666,6 +10666,18 @@ async function abrirDetalleProducto(id) {
       </div>
     `;
     document.body.appendChild(modal);
+    // Ventana FLOTANTE + arrastrable: fondo transparente y sin bloquear, para poder
+    // ver/leer la lámina de debajo mientras se modifican los datos del producto.
+    modal.style.background = 'transparent';
+    modal.style.pointerEvents = 'none';
+    const cardEl = modal.querySelector('.modal-card');
+    const headerEl = modal.querySelector('.modal-header');
+    if (cardEl) {
+      cardEl.style.pointerEvents = 'auto';
+      cardEl.style.boxShadow = '0 12px 45px rgba(0,0,0,0.35)';
+      cardEl.style.border = '1px solid #e5e7eb';
+    }
+    if (typeof hacerVentanaArrastrable === 'function') hacerVentanaArrastrable(cardEl, headerEl);
   } catch (err) {
     alert('Error: ' + err.message);
   }
