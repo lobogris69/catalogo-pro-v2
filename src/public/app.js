@@ -11545,7 +11545,8 @@ function renderZonasEnCapa() {
     const seleccionada = z.id === _zonasEditor.zonaSeleccionadaId;
     div.className = 'zona-rect' +
                     (propuestaIA ? ' zona-rect-ia' : (asignada ? ' zona-rect-asignada' : ' zona-rect-vacia')) +
-                    (seleccionada ? ' zona-rect-sel' : '');
+                    (seleccionada ? ' zona-rect-sel' : '') +
+                    (z.id === _zonaRecienCreadaId ? ' zona-rect-nueva' : '');
     div.style.left = z.x + '%';
     div.style.top = z.y + '%';
     div.style.width = z.ancho + '%';
@@ -12030,22 +12031,51 @@ async function quitarEnlaceZona(zoneId) {
   }
 }
 
+// ¿Se solapan dos rectángulos (en %)?
+function _zonasSolapan(a, b) {
+  return !(a.x + a.ancho <= b.x || b.x + b.ancho <= a.x || a.y + a.alto <= b.y || b.y + b.alto <= a.y);
+}
+// Busca un hueco LIBRE (sin solapar otras zonas) del tamaño w×h cerca de (refX,refY).
+// Prueba derecha/abajo/izquierda/arriba y, si no, barre toda la lámina. Así la copia
+// nunca cae encima de otra caja y se puede coger/editar sin líos.
+function _buscarHuecoZona(w, h, refX, refY) {
+  const gap = 0.6;
+  const zonas = _zonasEditor.zonas || [];
+  const cabe = (x, y) => x >= 0 && y >= 0 && x + w <= 100.001 && y + h <= 100.001;
+  const libre = (x, y) => zonas.every(z => !_zonasSolapan({ x, y, ancho: w, alto: h }, { x: Number(z.x), y: Number(z.y), ancho: Number(z.ancho), alto: Number(z.alto) }));
+  const cand = [
+    { x: refX + w + gap, y: refY },       // derecha
+    { x: refX,           y: refY + h + gap }, // abajo
+    { x: refX - w - gap, y: refY },       // izquierda
+    { x: refX,           y: refY - h - gap }  // arriba
+  ];
+  for (const c of cand) if (cabe(c.x, c.y) && libre(c.x, c.y)) return { x: Math.max(0, Math.min(100 - w, c.x)), y: Math.max(0, Math.min(100 - h, c.y)) };
+  // Barrido en rejilla por toda la lámina
+  const step = Math.max(2, Math.min(w, h) / 2);
+  for (let y = 0; y <= 100 - h; y += step) {
+    for (let x = 0; x <= 100 - w; x += step) {
+      if (libre(x, y)) return { x, y };
+    }
+  }
+  // Sin hueco: offset visible a la derecha/abajo aunque solape (clampeado)
+  return { x: Math.max(0, Math.min(100 - w, refX + Math.min(w, 6) + gap)), y: Math.max(0, Math.min(100 - h, refY + Math.min(h, 6))) };
+}
+// Zona recién creada (duplicar/clonar): se resalta con un parpadeo para localizarla al instante.
+let _zonaRecienCreadaId = null;
+function _resaltarZonaNueva(id) {
+  _zonaRecienCreadaId = id;
+  renderZonasEnCapa();
+  setTimeout(() => { if (_zonaRecienCreadaId === id) { _zonaRecienCreadaId = null; renderZonasEnCapa(); } }, 2600);
+}
+
 // Duplica una zona con el MISMO tamaño (para rejillas/expositores de celdas iguales).
-// La copia se coloca en la celda de al lado (a la derecha, o fila de abajo si no cabe),
-// sin producto asignado, y queda seleccionada para moverla/asignarle su producto.
+// La copia se coloca en un HUECO LIBRE cercano (sin solapar), sin producto asignado, y
+// queda seleccionada y resaltada para moverla/asignarle su producto.
 async function duplicarZona(zoneId) {
   const orig = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
   if (!orig) return;
   const w = Number(orig.ancho), h = Number(orig.alto);
-  let nx = Number(orig.x) + w + 0.5;   // a la derecha, pegada
-  let ny = Number(orig.y);
-  if (nx + w > 100) {                   // no cabe a la derecha → fila de abajo
-    nx = Number(orig.x);
-    ny = Number(orig.y) + h + 0.5;
-  }
-  // Clamp dentro de la lámina
-  nx = Math.max(0, Math.min(100 - w, nx));
-  ny = Math.max(0, Math.min(100 - h, ny));
+  const { x: nx, y: ny } = _buscarHuecoZona(w, h, Number(orig.x), Number(orig.y));
   try {
     const r = await api('/api/sheets/' + _zonasEditor.sheetId + '/zones', {
       method: 'POST',
@@ -12056,6 +12086,7 @@ async function duplicarZona(zoneId) {
     renderZonasEnCapa();
     renderListaZonas();
     actualizarContadorZonas();
+    _resaltarZonaNueva(r.zone.id);
     mostrarNotificacionOnline('⧉ Zona duplicada (mismo tamaño) — muévela y asígnale su producto', '#0ea5e9');
   } catch (err) {
     alert('Error duplicando zona: ' + err.message);
@@ -12069,14 +12100,7 @@ async function clonarZona(zoneId) {
   const orig = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
   if (!orig) return;
   const w = Number(orig.ancho), h = Number(orig.alto);
-  let nx = Number(orig.x) + w + 0.5;   // a la derecha, pegada
-  let ny = Number(orig.y);
-  if (nx + w > 100) {                   // no cabe a la derecha → fila de abajo
-    nx = Number(orig.x);
-    ny = Number(orig.y) + h + 0.5;
-  }
-  nx = Math.max(0, Math.min(100 - w, nx));
-  ny = Math.max(0, Math.min(100 - h, ny));
+  const { x: nx, y: ny } = _buscarHuecoZona(w, h, Number(orig.x), Number(orig.y));
   try {
     // 1) Crear la zona con geometría + producto + etiqueta (lo que acepta el POST)
     const r = await api('/api/sheets/' + _zonasEditor.sheetId + '/zones', {
@@ -12112,6 +12136,7 @@ async function clonarZona(zoneId) {
     renderZonasEnCapa();
     renderListaZonas();
     actualizarContadorZonas();
+    _resaltarZonaNueva(nueva.id);
     mostrarNotificacionOnline('🧬 Zona clonada con todos sus datos — muévela a su sitio', '#7c3aed');
   } catch (err) {
     alert('Error clonando zona: ' + err.message);

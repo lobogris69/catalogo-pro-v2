@@ -3230,6 +3230,15 @@ body.con-banner-update {
   box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.4);
   cursor: move;
 }
+/* Zona recién duplicada/clonada: parpadea unos segundos para localizarla al instante */
+.zona-rect-nueva {
+  animation: zonaNuevaPulse 0.65s ease-in-out 4;
+  z-index: 12;
+}
+@keyframes zonaNuevaPulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.85); }
+  50%      { box-shadow: 0 0 0 10px rgba(124, 58, 237, 0.12); }
+}
 /* Handles de las esquinas para redimensionar (solo en zona seleccionada) */
 .zona-handle {
   position: absolute;
