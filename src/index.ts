@@ -537,6 +537,9 @@ async function initDB(): Promise<void> {
       -- Zona-ENLACE: en vez de un producto, una zona puede ser un enlace a OTRO catalogo
       -- (ej. desde el catalogo general saltar al especifico de BSN y volver).
       ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS link_catalog_id INTEGER REFERENCES catalogs(id) ON DELETE SET NULL;
+      -- Pagina destino opcional (si null, abre el catalogo por la primera pagina) + texto del boton.
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS link_sheet_id INTEGER REFERENCES sheets(id) ON DELETE SET NULL;
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS link_label VARCHAR(80);
 
       CREATE TABLE IF NOT EXISTS catalog_versions (
         id SERIAL PRIMARY KEY,
@@ -8521,10 +8524,13 @@ app.get('/api/sheets/:sheetId/zones', verifyToken, async (req: AuthRequest, res:
              p.precio_pvf AS producto_pvf,
              p.tipo AS producto_tipo,
              p.activo AS producto_activo,
-             c.name AS link_catalog_nombre
+             c.name AS link_catalog_nombre,
+             ls.orden AS link_sheet_orden,
+             ls.titulo AS link_sheet_titulo
       FROM sheet_zones z
       LEFT JOIN products p ON p.id = z.product_id
       LEFT JOIN catalogs c ON c.id = z.link_catalog_id
+      LEFT JOIN sheets ls ON ls.id = z.link_sheet_id
       WHERE z.sheet_id = $1
       ORDER BY z.orden, z.id
     `, [sheetId]);
@@ -8576,7 +8582,7 @@ app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req
 app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const zoneId = Number(req.params.zoneId);
-    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, es_comision, link_catalog_id } = req.body;
+    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, es_comision, link_catalog_id, link_sheet_id, link_label } = req.body;
     // Construir SET dinámico solo con los campos enviados
     const sets: string[] = [];
     const vals: any[] = [];
@@ -8602,6 +8608,15 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
       const lc = link_catalog_id ? Number(link_catalog_id) : null;
       sets.push(`link_catalog_id = $${i++}`); vals.push(lc);
       if (lc) { sets.push(`product_id = NULL`); sets.push(`familia_ref = NULL`); sets.push(`es_comision = FALSE`); }
+      else { sets.push(`link_sheet_id = NULL`); } // sin catalogo destino no tiene sentido pagina destino
+    }
+    if (link_sheet_id !== undefined) {
+      const ls = link_sheet_id ? Number(link_sheet_id) : null;
+      sets.push(`link_sheet_id = $${i++}`); vals.push(ls);
+    }
+    if (link_label !== undefined) {
+      const lbl = link_label ? String(link_label).trim().substring(0, 80) : null;
+      sets.push(`link_label = $${i++}`); vals.push(lbl);
     }
     if (sets.length === 0) {
       res.status(400).json({ success: false, error: 'Nada que actualizar' });
