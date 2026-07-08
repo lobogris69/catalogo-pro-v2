@@ -11733,6 +11733,48 @@ document.addEventListener('keydown', (e) => {
   borrarZona(_zonasEditor.zonaSeleccionadaId);
 });
 
+// Hace una ventana (.modal-card) ARRASTRABLE por su cabecera. Sirve para apartarla
+// a una esquina y poder leer/usar lo que hay debajo mientras se rellena.
+function hacerVentanaArrastrable(card, handle) {
+  if (!card || !handle) return;
+  handle.style.cursor = 'move';
+  handle.style.userSelect = 'none';
+  handle.style.touchAction = 'none';
+  let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+  const posActual = () => {
+    const m = /translate\(\s*(-?[\d.]+)px\s*,\s*(-?[\d.]+)px\s*\)/.exec(card.style.transform || '');
+    return m ? { x: parseFloat(m[1]), y: parseFloat(m[2]) } : { x: 0, y: 0 };
+  };
+  const mover = (e) => {
+    if (!dragging) return;
+    const p = e.touches ? e.touches[0] : e;
+    card.style.transform = `translate(${ox + (p.clientX - sx)}px, ${oy + (p.clientY - sy)}px)`;
+    e.preventDefault();
+  };
+  const soltar = () => {
+    dragging = false;
+    document.removeEventListener('mousemove', mover);
+    document.removeEventListener('mouseup', soltar);
+    document.removeEventListener('touchmove', mover);
+    document.removeEventListener('touchend', soltar);
+  };
+  const bajar = (e) => {
+    // No arrastrar si se pulsa un control dentro de la cabecera (ej. la X de cerrar)
+    if (e.target.closest('button, input, a, select')) return;
+    dragging = true;
+    const p = e.touches ? e.touches[0] : e;
+    sx = p.clientX; sy = p.clientY;
+    const c = posActual(); ox = c.x; oy = c.y;
+    document.addEventListener('mousemove', mover);
+    document.addEventListener('mouseup', soltar);
+    document.addEventListener('touchmove', mover, { passive: false });
+    document.addEventListener('touchend', soltar);
+    e.preventDefault();
+  };
+  handle.addEventListener('mousedown', bajar);
+  handle.addEventListener('touchstart', bajar, { passive: false });
+}
+
 // FASE 2.b': crear producto al vuelo (tipo comercial) desde el editor de zonas.
 // nombreSugerido = lo que el admin tecleó en el buscador. alCrear = callback(producto).
 async function abrirModalCrearProductoVuelo(nombreSugerido, alCrear) {
@@ -11749,11 +11791,11 @@ async function abrirModalCrearProductoVuelo(nombreSugerido, alCrear) {
   modal.innerHTML = `
     <div class="modal-card">
       <div class="modal-header">
-        <h3>➕ Crear producto nuevo</h3>
+        <h3>➕ Crear producto nuevo <span style="font-size:11px;color:#9ca3af;font-weight:400">✥ arrastra para mover</span></h3>
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
       </div>
       <div style="background:#eff6ff;border:1px solid #bfdbfe;padding:8px 12px;border-radius:8px;margin-bottom:14px;font-size:12px;color:#1e40af">
-        Para expositores o promos que no están en Sage. Se marcará como tipo 🎁 comercial.
+        Para expositores o promos que no están en Sage. Se marcará como tipo 🎁 comercial. Puedes <b>arrastrar esta ventana</b> a una esquina para leer lo de debajo.
       </div>
       <div class="form-group">
         <label>Código <small style="color:var(--gris-texto)">(puedes cambiarlo)</small></label>
@@ -11779,6 +11821,20 @@ async function abrirModalCrearProductoVuelo(nombreSugerido, alCrear) {
     </div>
   `;
   document.body.appendChild(modal);
+
+  // Ventana FLOTANTE: fondo transparente y sin bloquear (para ver/leer lo de debajo)
+  // + arrastrable por la cabecera para apartarla a una esquina.
+  modal.style.background = 'transparent';
+  modal.style.pointerEvents = 'none';
+  const cardEl = modal.querySelector('.modal-card');
+  const headerEl = modal.querySelector('.modal-header');
+  if (cardEl) {
+    cardEl.style.pointerEvents = 'auto';
+    cardEl.style.boxShadow = '0 12px 45px rgba(0,0,0,0.35)';
+    cardEl.style.border = '1px solid #e5e7eb';
+  }
+  hacerVentanaArrastrable(cardEl, headerEl);
+
   setTimeout(() => { const n = document.getElementById('cpv-nombre'); if (n) n.focus(); }, 100);
 
   document.getElementById('cpv-guardar').addEventListener('click', async () => {
