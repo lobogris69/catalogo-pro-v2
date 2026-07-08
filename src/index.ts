@@ -540,6 +540,10 @@ async function initDB(): Promise<void> {
       -- Pagina destino opcional (si null, abre el catalogo por la primera pagina) + texto del boton.
       ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS link_sheet_id INTEGER REFERENCES sheets(id) ON DELETE SET NULL;
       ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS link_label VARCHAR(80);
+      -- Pagina de REGRESO opcional (lamina del catalogo de ORIGEN): al pulsar "Volver"
+      -- aterriza aqui en vez de en la pagina desde donde se salto (para saltarse las
+      -- hojas restantes de ese laboratorio). Si null, vuelve a donde estaba.
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS link_back_sheet_id INTEGER REFERENCES sheets(id) ON DELETE SET NULL;
 
       CREATE TABLE IF NOT EXISTS catalog_versions (
         id SERIAL PRIMARY KEY,
@@ -8526,11 +8530,14 @@ app.get('/api/sheets/:sheetId/zones', verifyToken, async (req: AuthRequest, res:
              p.activo AS producto_activo,
              c.name AS link_catalog_nombre,
              ls.orden AS link_sheet_orden,
-             ls.titulo AS link_sheet_titulo
+             ls.titulo AS link_sheet_titulo,
+             lb.orden AS link_back_sheet_orden,
+             lb.titulo AS link_back_sheet_titulo
       FROM sheet_zones z
       LEFT JOIN products p ON p.id = z.product_id
       LEFT JOIN catalogs c ON c.id = z.link_catalog_id
       LEFT JOIN sheets ls ON ls.id = z.link_sheet_id
+      LEFT JOIN sheets lb ON lb.id = z.link_back_sheet_id
       WHERE z.sheet_id = $1
       ORDER BY z.orden, z.id
     `, [sheetId]);
@@ -8582,7 +8589,7 @@ app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req
 app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const zoneId = Number(req.params.zoneId);
-    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, es_comision, link_catalog_id, link_sheet_id, link_label } = req.body;
+    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, es_comision, link_catalog_id, link_sheet_id, link_label, link_back_sheet_id } = req.body;
     // Construir SET dinámico solo con los campos enviados
     const sets: string[] = [];
     const vals: any[] = [];
@@ -8608,11 +8615,15 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
       const lc = link_catalog_id ? Number(link_catalog_id) : null;
       sets.push(`link_catalog_id = $${i++}`); vals.push(lc);
       if (lc) { sets.push(`product_id = NULL`); sets.push(`familia_ref = NULL`); sets.push(`es_comision = FALSE`); }
-      else { sets.push(`link_sheet_id = NULL`); } // sin catalogo destino no tiene sentido pagina destino
+      else { sets.push(`link_sheet_id = NULL`); sets.push(`link_back_sheet_id = NULL`); } // sin catalogo destino no hay pagina destino ni regreso
     }
     if (link_sheet_id !== undefined) {
       const ls = link_sheet_id ? Number(link_sheet_id) : null;
       sets.push(`link_sheet_id = $${i++}`); vals.push(ls);
+    }
+    if (link_back_sheet_id !== undefined) {
+      const lb = link_back_sheet_id ? Number(link_back_sheet_id) : null;
+      sets.push(`link_back_sheet_id = $${i++}`); vals.push(lb);
     }
     if (link_label !== undefined) {
       const lbl = link_label ? String(link_label).trim().substring(0, 80) : null;

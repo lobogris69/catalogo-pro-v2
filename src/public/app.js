@@ -3477,10 +3477,13 @@ async function borrarAnotacionZona(anotId, sheetId) {
 let _navStack = [];
 async function navegarAEnlaceCatalogo(zona) {
   // Guardar de dónde venimos (para la barra "volver a X pág. N")
+  // backSheetId: si el enlace define una página de regreso, al volver iremos ahí
+  // (para saltarse las hojas restantes del laboratorio) en vez de a la página del botón.
   _navStack.push({
     catalogoActual: appState.catalogoActual,
     visorIndice: appState.visorIndice || 0,
-    nombreOrigen: _enlaceCatalogoNombre || null
+    nombreOrigen: _enlaceCatalogoNombre || null,
+    backSheetId: zona.link_back_sheet_id || null
   });
   appState.vista = 'catalogos';
   appState.catalogoActual = zona.link_catalog_id;
@@ -3498,13 +3501,23 @@ async function navegarAEnlaceCatalogo(zona) {
   render();
   actualizarBarraEnlace();
 }
-function volverDeEnlaceCatalogo() {
+async function volverDeEnlaceCatalogo() {
   const prev = _navStack.pop();
   if (prev) {
     appState.vista = 'catalogos';
     appState.catalogoActual = prev.catalogoActual;
-    appState.visorIndice = prev.visorIndice || 0;
     _enlaceCatalogoNombre = prev.nombreOrigen || null;
+    // Si el enlace definió una página de regreso, aterrizar ahí (saltando las hojas
+    // restantes del laboratorio). Si no, volver a la página del botón.
+    let indice = prev.visorIndice || 0;
+    if (prev.backSheetId) {
+      try {
+        const r = await api('/api/catalogs/' + prev.catalogoActual);
+        const idx = (r.sheets || []).findIndex(s => Number(s.id) === Number(prev.backSheetId));
+        if (idx >= 0) indice = idx;
+      } catch (_) { /* si falla, vuelve a donde estaba */ }
+    }
+    appState.visorIndice = indice;
     render();
   }
   actualizarBarraEnlace();
@@ -3523,7 +3536,9 @@ function actualizarBarraEnlace() {
     }
     const prev = _navStack[_navStack.length - 1];
     const volverA = prev && prev.nombreOrigen ? ('a ' + prev.nombreOrigen) : 'atrás';
-    const pag = prev ? (' (pág. ' + ((prev.visorIndice || 0) + 1) + ')') : '';
+    // Solo mostramos el nº de página si volvemos a donde estábamos; si el enlace tiene
+    // página de regreso propia, se resuelve al pulsar (no mostramos un número engañoso).
+    const pag = (prev && !prev.backSheetId) ? (' (pág. ' + ((prev.visorIndice || 0) + 1) + ')') : '';
     bar.innerHTML = '';
     const info = document.createElement('span');
     info.className = 'barra-enlace-info';
@@ -11748,11 +11763,14 @@ function renderListaZonas() {
     ${(!sel.familia_ref && !sel.es_comision) ? `
       <div class="form-group" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px">
         <label style="font-size:13px;font-weight:600">🔗 ${sel.link_catalog_id ? 'Editar' : 'Convertir en'} enlace a otro catálogo</label>
-        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">El comercial verá un <b>botón</b> aquí; solo salta si lo pulsa (no se toca sin querer). Al volver, aterriza donde estaba.</div>
+        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">El comercial verá un <b>botón</b> aquí; solo salta si lo pulsa (no se toca sin querer).</div>
         <label style="font-size:12px;color:#374151">Catálogo destino</label>
         <select id="link-sel-${sel.id}" onchange="cargarPaginasDestino('${String(sel.id).replace(/'/g, "\\'")}')" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px"><option value="">Cargando catálogos…</option></select>
         <label style="font-size:12px;color:#374151">Página destino</label>
         <select id="link-pag-${sel.id}" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px"><option value="">Todo el catálogo (empieza en la pág. 1)</option></select>
+        <label style="font-size:12px;color:#374151">Al volver, ir a…</label>
+        <select id="link-back-${sel.id}" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:2px"><option value="">Donde estaba (la página del botón)</option></select>
+        <div style="font-size:10px;color:#9ca3af;margin-bottom:6px">Útil para <b>saltarte las hojas que quedan</b> de este laboratorio al regresar.</div>
         <label style="font-size:12px;color:#374151">Texto del botón</label>
         <input type="text" id="link-lbl-${sel.id}" value="${escape(sel.link_label || '').replace(/"/g,'&quot;')}" placeholder="ej: Ver Catálogo BSN" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
         <button class="btn btn-primary" style="padding:7px 12px;font-size:12px" onclick="aplicarEnlaceZona('${String(sel.id).replace(/'/g, "\\'")}')">${sel.link_catalog_id ? 'Guardar enlace' : 'Crear enlace'}</button>
@@ -11768,7 +11786,10 @@ function renderListaZonas() {
   // Cargar preview de variantes si la zona es familia
   if (sel.familia_ref) cargarPreviewFamiliaAdmin(sel.id, sel.familia_ref);
   // Cargar catálogos en el desplegable de enlace (si el bloque está visible)
-  if (!sel.familia_ref && !sel.es_comision) cargarCatalogosEnSelectEnlace(sel.id, sel.link_catalog_id, sel.link_sheet_id);
+  if (!sel.familia_ref && !sel.es_comision) {
+    cargarCatalogosEnSelectEnlace(sel.id, sel.link_catalog_id, sel.link_sheet_id);
+    cargarPaginasRegreso(sel.id, sel.link_back_sheet_id);
+  }
 
   // Montar el autocomplete dentro del panel
   if (_zonasEditor.acProducto) { try { _zonasEditor.acProducto.destroy(); } catch {} }
@@ -11887,6 +11908,8 @@ async function quitarComisionZona(zoneId) {
 
 // Rellena el desplegable de "enlace a catálogo" con todos los catálogos (menos el actual)
 let _catalogosCacheEnlace = null;
+// Cache de las láminas del catálogo de ORIGEN (para el selector de "página de regreso")
+let _paginasOrigenCacheEnlace = null;
 async function cargarCatalogosEnSelectEnlace(zoneId, seleccionadoId, sheetIdPreset) {
   const sel = document.getElementById('link-sel-' + zoneId);
   if (!sel) return;
@@ -11933,30 +11956,57 @@ async function cargarPaginasDestino(zoneId, sheetIdPreset) {
   }
 }
 
-// Crea/actualiza el enlace de una zona: catálogo + página opcional + texto del botón
+// Rellena el desplegable de "página de regreso" con las láminas del catálogo de ORIGEN
+// (el que se está editando). Al volver del enlace, se aterriza en esta lámina en vez de
+// en la página del botón (para saltarse las hojas restantes del laboratorio).
+async function cargarPaginasRegreso(zoneId, backSheetIdPreset) {
+  const backSel = document.getElementById('link-back-' + zoneId);
+  if (!backSel) return;
+  const catId = Number(_zonasEditor && _zonasEditor.catalogId);
+  if (!catId) { backSel.innerHTML = '<option value="">Donde estaba (la página del botón)</option>'; return; }
+  try {
+    if (!_paginasOrigenCacheEnlace || _paginasOrigenCacheEnlace.catId !== catId) {
+      const r = await api('/api/catalogs/' + catId);
+      _paginasOrigenCacheEnlace = { catId, sheets: r.sheets || [] };
+    }
+    const opts = ['<option value="">Donde estaba (la página del botón)</option>'];
+    _paginasOrigenCacheEnlace.sheets.forEach((s, idx) => {
+      const t = s.titulo || ('Lámina ' + (idx + 1));
+      opts.push(`<option value="${s.id}" ${Number(s.id) === Number(backSheetIdPreset) ? 'selected' : ''}>Pág. ${idx + 1} · ${escape(t)}</option>`);
+    });
+    backSel.innerHTML = opts.join('');
+  } catch (e) {
+    backSel.innerHTML = '<option value="">Donde estaba (la página del botón)</option>';
+  }
+}
+
+// Crea/actualiza el enlace de una zona: catálogo + página opcional + página de regreso + texto
 async function aplicarEnlaceZona(zoneId) {
   const catSel = document.getElementById('link-sel-' + zoneId);
   const pagSel = document.getElementById('link-pag-' + zoneId);
+  const backSel = document.getElementById('link-back-' + zoneId);
   const lblEl = document.getElementById('link-lbl-' + zoneId);
   const destino = catSel ? Number(catSel.value) : 0;
   if (!destino) { alert('Elige el catálogo destino.'); return; }
   const paginaId = pagSel && pagSel.value ? Number(pagSel.value) : null;
+  const regresoId = backSel && backSel.value ? Number(backSel.value) : null;
   const label = lblEl ? lblEl.value.trim() : '';
   try {
-    await api('/api/zones/' + zoneId, { method: 'PUT', body: { link_catalog_id: destino, link_sheet_id: paginaId, link_label: label || null } });
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { link_catalog_id: destino, link_sheet_id: paginaId, link_back_sheet_id: regresoId, link_label: label || null } });
     const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
     const cat = (_catalogosCacheEnlace || []).find(c => Number(c.id) === destino);
     if (sel) {
       sel.link_catalog_id = destino;
       sel.link_catalog_nombre = cat ? (cat.name || cat.nombre) : null;
       sel.link_sheet_id = paginaId;
+      sel.link_back_sheet_id = regresoId;
       sel.link_label = label || null;
       sel.product_id = null; sel.familia_ref = null; sel.es_comision = false;
       sel.producto_codigo = null; sel.producto_nombre = null;
     }
     renderZonasEnCapa();
     renderListaZonas();
-    mostrarNotificacionOnline('🔗 Enlace guardado' + (paginaId ? ' (a una página concreta)' : ''), '#2563eb');
+    mostrarNotificacionOnline('🔗 Enlace guardado' + (regresoId ? ' (con página de regreso)' : (paginaId ? ' (a una página concreta)' : '')), '#2563eb');
   } catch (err) {
     alert('Error guardando enlace: ' + err.message);
   }
@@ -11966,9 +12016,9 @@ async function aplicarEnlaceZona(zoneId) {
 async function quitarEnlaceZona(zoneId) {
   if (!confirm('¿Quitar el enlace de esta zona? Volverá a ser una zona sin producto.')) return;
   try {
-    await api('/api/zones/' + zoneId, { method: 'PUT', body: { link_catalog_id: null, link_sheet_id: null, link_label: null } });
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { link_catalog_id: null, link_sheet_id: null, link_back_sheet_id: null, link_label: null } });
     const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
-    if (sel) { sel.link_catalog_id = null; sel.link_catalog_nombre = null; sel.link_sheet_id = null; sel.link_label = null; }
+    if (sel) { sel.link_catalog_id = null; sel.link_catalog_nombre = null; sel.link_sheet_id = null; sel.link_back_sheet_id = null; sel.link_label = null; }
     renderZonasEnCapa();
     renderListaZonas();
     mostrarNotificacionOnline('Enlace quitado', '#6b7280');
