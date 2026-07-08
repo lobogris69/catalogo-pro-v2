@@ -8680,7 +8680,7 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
       const fr = familia_ref ? String(familia_ref).trim().substring(0, 120) : null;
       sets.push(`familia_ref = $${i++}`); vals.push(fr);
       if (fr) { sets.push(`product_id = NULL`); sets.push(`es_comision = FALSE`); sets.push(`link_catalog_id = NULL`); }
-      else { sets.push(`familia_skus = NULL`); } // quitar familia -> tambien limpiar la lista curada
+      else if (familia_skus === undefined) { sets.push(`familia_skus = NULL`); } // quitar familia -> limpiar lista (si no lo gestiona el bloque de familia_skus)
     }
     // Lista CURADA de product_ids (JSON). Si viene con elementos, es una familia manual.
     if (familia_skus !== undefined) {
@@ -8689,7 +8689,11 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
         : null;
       if (arr && arr.length > 0) {
         sets.push(`familia_skus = $${i++}`); vals.push(JSON.stringify(arr));
-        sets.push(`product_id = NULL`); sets.push(`es_comision = FALSE`); sets.push(`link_catalog_id = NULL`);
+        // Solo limpiar exclusivos si el bloque de familia_ref NO lo hizo ya (evita
+        // "multiple assignments to same column" cuando llegan familia_ref + familia_skus juntos).
+        if (familia_ref === undefined) {
+          sets.push(`product_id = NULL`); sets.push(`es_comision = FALSE`); sets.push(`link_catalog_id = NULL`);
+        }
       } else {
         sets.push(`familia_skus = NULL`);
       }
