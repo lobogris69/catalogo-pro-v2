@@ -78,6 +78,21 @@ function escape(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
 
+// Helper: versiona una URL de imagen de lámina con ?v=<updated_at> para ROMPER la caché
+// cuando el archivo se reprocesa in-place (mismo nombre) — p.ej. la corrección de color PNG.
+// Las imágenes se sirven con Cache-Control immutable 1 año + el SW las cachea; sin versionar,
+// el navegador seguiría mostrando la versión antigua tras un reproceso. Con blob:/data: no toca.
+function vurl(pathImg, sheet) {
+  if (!pathImg) return pathImg;
+  if (pathImg.startsWith('blob:') || pathImg.startsWith('data:')) return pathImg;
+  if (pathImg.indexOf('/uploads/') === -1) return pathImg;
+  let v = 0;
+  if (sheet && sheet.updated_at) { const t = Date.parse(sheet.updated_at); if (!isNaN(t)) v = t; }
+  if (!v && sheet && sheet.id) return pathImg + (pathImg.indexOf('?') >= 0 ? '&' : '?') + 'v=s' + sheet.id;
+  if (!v) return pathImg;
+  return pathImg + (pathImg.indexOf('?') >= 0 ? '&' : '?') + 'v=' + v;
+}
+
 // Helper: genera tooltip contextual (?). Posición opcional: '', 'abajo', 'izq'
 function ayuda(texto, posicion) {
   const clase = posicion === 'abajo' ? 'ayuda-tip tip-abajo'
@@ -648,7 +663,7 @@ async function renderEditorCatalogo(id) {
                 <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${idx + 1}" ${esAdmin ? 'draggable="true"' : ''}>
                   ${esAdmin ? `<div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>` : ''}
                   <div class="lamina-numero">${idx + 1}</div>
-                  <img src="${escape(s.miniatura_path || s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
+                  <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
                     ${esAdmin ? (
@@ -881,8 +896,8 @@ function pintarEditorExpress() {
                            ${seleccionada ? 'checked' : ''}
                            title="${yaEsta ? 'Ya está en el Express' : 'Seleccionar para añadir'}">
                     <div class="lamina-numero" style="font-size:11px">${s.orden}</div>
-                    <img src="${escape(s.miniatura_path || s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async"
-                         onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${s.orden})">
+                    <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async"
+                         onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${s.orden})">
                     <div class="lamina-info">
                       <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
                       <div class="lamina-notas" style="font-size:11px">${escape(s.tags || '—')}</div>
@@ -911,8 +926,8 @@ function pintarEditorExpress() {
                 <div class="express-fila lamina-fila" data-id="${s.id}" draggable="true">
                   <div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>
                   <div class="lamina-numero">${idx + 1}</div>
-                  <img src="${escape(s.miniatura_path || s.imagen_path)}" class="lamina-mini" alt="" loading="lazy" decoding="async"
-                       onclick="abrirLightbox('${escape(s.imagen_path)}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${idx + 1})">
+                  <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async"
+                       onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
                     <div class="lamina-notas" style="font-size:11px">${escape(s.tags || '—')}</div>
@@ -1717,7 +1732,7 @@ function abrirModalEditarLamina(sheet, catalogId) {
       </div>
       <div id="modal-edit-error"></div>
       <div style="text-align:center;margin-bottom:1rem">
-        <img src="${escape(sheet.imagen_path)}" style="max-width:200px;max-height:260px;border:1px solid var(--gris-borde);border-radius:8px">
+        <img src="${escape(vurl(sheet.imagen_path, sheet))}" style="max-width:200px;max-height:260px;border:1px solid var(--gris-borde);border-radius:8px">
       </div>
       <form id="form-edit-lamina">
         <div class="form-group">
@@ -2554,7 +2569,7 @@ function precargarVecinasVisor(sheets, idx) {
       try {
         const img = new Image();
         img.decoding = 'async';
-        img.src = sheets[i].imagen_path;
+        img.src = vurl(sheets[i].imagen_path, sheets[i]);
       } catch (_) {}
     }
   });
@@ -2731,7 +2746,7 @@ function pintarPresentacion(visibles) {
       <div class="visor-imagen-contenedor" id="visor-img-contenedor">
         <div class="visor-imagen-zoom" id="visor-img-zoom" style="transform: translate(${appState.visorPanX||0}px, ${appState.visorPanY||0}px) scale(${appState.visorZoom})">
           <div class="visor-imagen-wrapper" id="visor-imagen-wrapper" data-sheet-id="${sheet.id}">
-            <img src="${escape(sheet.imagen_path)}" class="visor-imagen" id="visor-imagen" alt="${escape(sheet.titulo || '')}" draggable="false">
+            <img src="${escape(vurl(sheet.imagen_path, sheet))}" class="visor-imagen" id="visor-imagen" alt="${escape(sheet.titulo || '')}" draggable="false">
             ${pins}
             <div class="visor-zonas-capa" id="visor-zonas-capa"></div>
           </div>
@@ -2807,7 +2822,7 @@ function pintarMosaico(visibles) {
         const anots = (appState.visitaActiva && _anotacionesVisita[s.id]) ? _anotacionesVisita[s.id].length : 0;
         return `
           <div class="visor-mosaico-celda" onclick="abrirLaminaDesdeMosaico(${idxOriginal})">
-            <img src="${escape(s.miniatura_path || s.imagen_path)}" class="visor-mosaico-img" alt="" loading="lazy" decoding="async">
+            <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="visor-mosaico-img" alt="" loading="lazy" decoding="async">
             <div class="visor-mosaico-num">${numeroOriginal}</div>
             ${anots > 0 ? `<div class="visor-mosaico-anots" title="${anots} anotaciones">📝 ${anots}</div>` : ''}
             ${s.titulo ? `<div class="visor-mosaico-titulo">${escape(s.titulo)}</div>` : ''}
@@ -3120,10 +3135,9 @@ function engancharGestosPresentacion() {
 
   // B7: Long-press sobre la imagen para crear pin de anotación (solo si hay visita activa)
   engancharLongPressParaPin();
-  // Fase 2.c': cargar y pintar las zonas clicables de productos (solo en visita)
-  if (appState.visitaActiva) {
-    cargarZonasComercial();
-  }
+  // Zonas clicables: en visita se pintan todas (producto/familia/comisión). Los ENLACES
+  // a otros catálogos se pintan SIEMPRE (también al previsualizar): son navegación pura.
+  cargarZonasComercial();
 }
 
 // ============================================================================
@@ -3141,7 +3155,8 @@ async function cargarZonasComercial() {
   // visor del comercial muestra la lámina del maestro vía JOIN, así que el id ya es correcto.
   try {
     const r = await api('/api/sheets/' + sheetId + '/zones');
-    _zonasComercial = (r.zones || []).filter(z => z.product_id); // solo zonas con producto
+    // Zonas "accionables": producto Sage, familia, comisión o enlace a otro catálogo.
+    _zonasComercial = (r.zones || []).filter(z => z.product_id || z.familia_ref || z.es_comision || z.link_catalog_id);
     pintarZonasComercial();
   } catch (e) {
     _zonasComercial = [];
@@ -3152,7 +3167,10 @@ function pintarZonasComercial() {
   const capa = document.getElementById('visor-zonas-capa');
   if (!capa) return;
   capa.innerHTML = '';
+  const enVisita = !!appState.visitaActiva;
   _zonasComercial.forEach((z) => {
+    // Fuera de una visita solo mostramos los ENLACES (el resto requiere visita para anotar)
+    if (!enVisita && !z.link_catalog_id) return;
     const div = document.createElement('div');
     div.className = 'visor-zona';
     div.style.left = z.x + '%';
@@ -11185,7 +11203,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
           <span style="font-size:11px;color:#9ca3af;margin-left:6px">Amplía para zonas pequeñas; arrastra las barras para moverte.</span>
         </div>
         <div class="zonas-lienzo-wrap" id="zonas-lienzo-wrap">
-          <img src="${escape(sheet.imagen_path)}" class="zonas-lienzo-img" id="zonas-lienzo-img" draggable="false" alt="">
+          <img src="${escape(vurl(sheet.imagen_path, sheet))}" class="zonas-lienzo-img" id="zonas-lienzo-img" draggable="false" alt="">
           <div class="zonas-capa" id="zonas-capa"></div>
         </div>
       </div>
@@ -12114,7 +12132,7 @@ function pintarMosaicoReorden() {
     card.innerHTML = `
       <input type="text" class="mosaico-num" value="${idx + 1}" title="Escribe la posición y pulsa Enter"
              inputmode="numeric" draggable="false" data-pos="${idx + 1}">
-      <img src="${escape(s.miniatura_path || s.imagen_path)}" class="mosaico-img" alt="" loading="lazy" decoding="async"
+      <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="mosaico-img" alt="" loading="lazy" decoding="async"
            onerror="this.style.background='#374151'">
       <div class="mosaico-titulo">${escape(s.titulo || 'Sin título')}</div>
     `;
