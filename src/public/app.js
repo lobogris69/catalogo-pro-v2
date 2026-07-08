@@ -11756,10 +11756,11 @@ function renderListaZonas() {
         ⚠️ Esta zona no tiene producto. Asigna un producto suelto, una familia o márcala de comisión (abajo).
       </div>
     `}
-    <button onclick="enfocarEdicionZona()" style="width:100%;margin-bottom:12px;background:#111827;color:#fff;padding:9px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">✏️ Cambiar / editar esta zona</button>
+    <button onclick="enfocarEdicionZona()" style="width:100%;margin-bottom:12px;background:#111827;color:#fff;padding:9px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">${sel.product_id ? '✏️ Editar datos del producto' : '✏️ Editar esta zona'}</button>
     ${(!sel.familia_ref && !sel.es_comision && !sel.link_catalog_id) ? `
       <div class="form-group">
-        <label style="font-size:13px">${sel.product_id ? 'Cambiar producto' : 'Asignar producto suelto'}</label>
+        <label style="font-size:13px">${sel.product_id ? '🔄 Cambiar producto' : '➕ Asignar producto suelto'}</label>
+        <div style="font-size:11px;color:#6b7280;margin:2px 0 6px">Escribe el nombre o código y <b>elígelo de la lista</b> que aparece.</div>
         <div id="zona-ac-contenedor"></div>
       </div>
     ` : ''}
@@ -12169,14 +12170,26 @@ async function clonarZona(zoneId) {
 // campo de familia/comisión/enlace) y lo trae a la vista. Así, al ver los datos de la
 // caja (que son de solo lectura), un toque en "✏️ Cambiar / editar" te deja escribiendo.
 function enfocarEdicionZona() {
+  const sel = _zonasEditor.zonas.find(z => z.id === _zonasEditor.zonaSeleccionadaId);
+  // Si la zona tiene un PRODUCTO asignado, abrir la ventana completa con TODOS sus datos
+  // (código, nombre, precios, EAN, descripción…) para modificar lo que haga falta.
+  if (sel && sel.product_id && typeof abrirDetalleProducto === 'function') {
+    abrirDetalleProducto(sel.product_id);
+    return;
+  }
+  // Zonas sin producto (familia/comisión/enlace/vacía): llevar el foco a su control de edición.
   const panel = document.getElementById('zonas-panel');
   if (!panel) return;
   const cont = document.getElementById('zona-ac-contenedor');
   const target = (cont && cont.querySelector('input, textarea'))
     || panel.querySelector('input, textarea, select');
   if (!target) return;
-  try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) { try { target.scrollIntoView(); } catch (_) {} }
-  setTimeout(() => { try { target.focus({ preventScroll: true }); } catch (_) { try { target.focus(); } catch (_) {} } }, 260);
+  // Resaltar el BLOQUE de edición (para que se vea claramente qué se toca) y traerlo al centro
+  const bloque = target.closest('.form-group') || target.parentElement || target;
+  try { bloque.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) { try { bloque.scrollIntoView(); } catch (_) {} }
+  bloque.classList.add('zona-edit-flash');
+  setTimeout(() => bloque.classList.remove('zona-edit-flash'), 1700);
+  setTimeout(() => { try { target.focus({ preventScroll: true }); } catch (_) { try { target.focus(); } catch (_) {} } }, 320);
 }
 
 function seleccionarZona(zoneId) {

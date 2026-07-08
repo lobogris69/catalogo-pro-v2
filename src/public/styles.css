@@ -3238,6 +3238,15 @@ body.con-banner-update {
   box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.4);
   cursor: move;
 }
+/* Destello del bloque de edición al pulsar "✏️ Cambiar / editar esta zona" */
+.zona-edit-flash {
+  border-radius: 8px;
+  animation: zonaEditFlash 0.6s ease-in-out 2;
+}
+@keyframes zonaEditFlash {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(124, 58, 237, 0); }
+  50%      { box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.55); }
+}
 /* Zona recién duplicada/clonada: parpadea unos segundos para localizarla al instante */
 .zona-rect-nueva {
   animation: zonaNuevaPulse 0.65s ease-in-out 4;
