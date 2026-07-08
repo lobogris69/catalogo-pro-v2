@@ -11735,6 +11735,7 @@ function renderListaZonas() {
         ⚠️ Esta zona no tiene producto. Asigna un producto suelto, una familia o márcala de comisión (abajo).
       </div>
     `}
+    <button onclick="enfocarEdicionZona()" style="width:100%;margin-bottom:12px;background:#111827;color:#fff;padding:9px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">✏️ Cambiar / editar esta zona</button>
     ${(!sel.familia_ref && !sel.es_comision && !sel.link_catalog_id) ? `
       <div class="form-group">
         <label style="font-size:13px">${sel.product_id ? 'Cambiar producto' : 'Asignar producto suelto'}</label>
@@ -12143,10 +12144,26 @@ async function clonarZona(zoneId) {
   }
 }
 
+// Lleva el foco al primer control de EDICIÓN de la zona (buscador de producto, o el
+// campo de familia/comisión/enlace) y lo trae a la vista. Así, al ver los datos de la
+// caja (que son de solo lectura), un toque en "✏️ Cambiar / editar" te deja escribiendo.
+function enfocarEdicionZona() {
+  const panel = document.getElementById('zonas-panel');
+  if (!panel) return;
+  const cont = document.getElementById('zona-ac-contenedor');
+  const target = (cont && cont.querySelector('input, textarea'))
+    || panel.querySelector('input, textarea, select');
+  if (!target) return;
+  try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) { try { target.scrollIntoView(); } catch (_) {} }
+  setTimeout(() => { try { target.focus({ preventScroll: true }); } catch (_) { try { target.focus(); } catch (_) {} } }, 260);
+}
+
 function seleccionarZona(zoneId) {
   _zonasEditor.zonaSeleccionadaId = zoneId;
   renderZonasEnCapa();
   renderListaZonas();
+  const panel = document.getElementById('zonas-panel');
+  if (panel) panel.scrollTop = 0; // empezar arriba, en los datos + botón de editar
 }
 
 function deseleccionarZona() {

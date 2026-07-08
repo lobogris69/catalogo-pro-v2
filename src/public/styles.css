@@ -3315,10 +3315,11 @@ body.con-banner-update {
   .zonas-editor-body { flex-direction: column; }
   .zonas-editor-panel {
     width: auto;
-    max-height: 40vh;
+    max-height: 55vh;
+    -webkit-overflow-scrolling: touch;
     border-top: 2px solid #e5e7eb;
   }
-  .zonas-lienzo-img { max-height: 50vh; }
+  .zonas-lienzo-img { max-height: 42vh; }
 }
 
 /* FASE 2.b': botón crear producto al vuelo en el autocomplete */
