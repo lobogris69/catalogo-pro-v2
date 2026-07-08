@@ -11407,7 +11407,14 @@ async function abrirEditorZonas(sheetId, catalogId) {
   renderListaZonas();
 }
 
-function cerrarEditorZonas() {
+async function cerrarEditorZonas() {
+  // Si hay zonas detectadas por IA SIN GUARDAR (id temporal "ia-..."), avisar para no perderlas.
+  const nProp = (_zonasEditor.zonas || []).filter(z => typeof z.id === 'string' && z.id.startsWith('ia-')).length;
+  if (nProp > 0) {
+    const guardar = confirm('Tienes ' + nProp + ' zona' + (nProp === 1 ? '' : 's') + ' detectada' + (nProp === 1 ? '' : 's') + ' por IA SIN GUARDAR.\n\n• Aceptar = guardarlas ahora y cerrar\n• Cancelar = seguir en el editor (no se cierra)');
+    if (!guardar) return; // no cerrar: el usuario sigue editando
+    await guardarZonasDetectadas();
+  }
   if (_zonasEditor.acProducto) { try { _zonasEditor.acProducto.destroy(); } catch {} _zonasEditor.acProducto = null; }
   const ov = document.getElementById('zonas-editor-overlay');
   if (ov) ov.remove();
@@ -11727,12 +11734,18 @@ function renderListaZonas() {
 
   const sel = _zonasEditor.zonas.find(z => z.id === _zonasEditor.zonaSeleccionadaId);
 
+  // Botón "Guardar detectadas" — visible SIEMPRE que haya zonas propuestas por IA (ia-),
+  // tanto en la lista como en el detalle, para que no se pierdan al cerrar.
+  const nProp = _zonasEditor.zonas.filter(z => typeof z.id === 'string' && z.id.startsWith('ia-')).length;
+  const btnGuardarDet = nProp > 0
+    ? `<button onclick="guardarZonasDetectadas()" style="width:100%;margin-bottom:10px;background:#16a34a;color:#fff;padding:9px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">💾 Guardar ${nProp} zona${nProp === 1 ? '' : 's'} detectada${nProp === 1 ? '' : 's'}</button>`
+    : '';
+
   if (!sel) {
     // Vista de lista general
-    const nProp = _zonasEditor.zonas.filter(z => typeof z.id === 'string' && z.id.startsWith('ia-')).length;
     panel.innerHTML = `
-      ${nProp > 0 ? `<button onclick="guardarZonasDetectadas()" style="width:100%;margin-bottom:10px;background:#16a34a;color:#fff;padding:9px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">💾 Guardar ${nProp} zona${nProp === 1 ? '' : 's'} detectada${nProp === 1 ? '' : 's'}</button>
-      <div style="font-size:11px;color:#6b7280;margin-bottom:10px">Las zonas naranjas son propuestas de la IA. Al asignarles producto o pulsar Guardar se fijan en la lámina.</div>` : ''}
+      ${btnGuardarDet}
+      ${nProp > 0 ? `<div style="font-size:11px;color:#6b7280;margin-bottom:10px">Las zonas naranjas son propuestas de la IA. Al asignarles producto o pulsar Guardar se fijan en la lámina.</div>` : ''}
       <h4 style="margin-top:0">Zonas dibujadas</h4>
       ${_zonasEditor.zonas.length === 0
         ? '<p style="color:#9ca3af;font-size:13px">Aún no hay zonas. Arrastra sobre la lámina para crear la primera.</p>'
@@ -11759,6 +11772,7 @@ function renderListaZonas() {
   // Vista de detalle de zona seleccionada
   const idx = _zonasEditor.zonas.indexOf(sel) + 1;
   panel.innerHTML = `
+    ${btnGuardarDet}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <h4 style="margin:0">Zona ${idx}</h4>
       <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="deseleccionarZona()">← Volver</button>

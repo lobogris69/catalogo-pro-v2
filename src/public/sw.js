@@ -16,7 +16,7 @@
  * El usuario decide cuándo activar el nuevo SW pulsando el banner.
  * ============================================================================ */
 
-const CACHE_VERSION = 'cpv2-shell-v36-08jul';
+const CACHE_VERSION = 'cpv2-shell-v37-08jul';
 const SHELL_CACHE = 'cpv2-shell';
 const IMG_CACHE = 'cpv2-imgs';
 
