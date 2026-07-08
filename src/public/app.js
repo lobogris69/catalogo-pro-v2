@@ -11778,8 +11778,11 @@ function renderListaZonas() {
       </div>
     ` : ''}
     <div style="margin-top:12px;display:flex;gap:8px">
-      <button class="btn" style="background:#0ea5e9;color:#fff;flex:1" onclick="duplicarZona('${String(sel.id).replace(/'/g, "\\'")}')" title="Crea una copia del MISMO tamaño (para rejillas/expositores); luego la mueves a su celda">⧉ Duplicar</button>
-      <button class="btn" style="background:#dc2626;color:#fff;flex:1" onclick="borrarZona('${String(sel.id).replace(/'/g, "\\'")}')">🗑️ Borrar zona</button>
+      <button class="btn" style="background:#0ea5e9;color:#fff;flex:1" onclick="duplicarZona('${String(sel.id).replace(/'/g, "\\'")}')" title="Crea una copia del MISMO tamaño SIN producto (para rejillas/expositores); luego la mueves y le asignas su producto">⧉ Duplicar</button>
+      <button class="btn" style="background:#7c3aed;color:#fff;flex:1" onclick="clonarZona('${String(sel.id).replace(/'/g, "\\'")}')" title="Crea una copia con TODOS los datos (producto/familia/comisión/enlace); luego la mueves a su sitio">🧬 Clonar</button>
+    </div>
+    <div style="margin-top:8px">
+      <button class="btn" style="background:#dc2626;color:#fff;width:100%" onclick="borrarZona('${String(sel.id).replace(/'/g, "\\'")}')">🗑️ Borrar zona</button>
     </div>
   `;
 
@@ -12056,6 +12059,62 @@ async function duplicarZona(zoneId) {
     mostrarNotificacionOnline('⧉ Zona duplicada (mismo tamaño) — muévela y asígnale su producto', '#0ea5e9');
   } catch (err) {
     alert('Error duplicando zona: ' + err.message);
+  }
+}
+
+// Clona una zona con el MISMO tamaño Y todos sus datos (producto / familia / comisión /
+// enlace). La copia se coloca en la celda de al lado y queda seleccionada para moverla.
+// Útil cuando el mismo producto aparece varias veces en el expositor.
+async function clonarZona(zoneId) {
+  const orig = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+  if (!orig) return;
+  const w = Number(orig.ancho), h = Number(orig.alto);
+  let nx = Number(orig.x) + w + 0.5;   // a la derecha, pegada
+  let ny = Number(orig.y);
+  if (nx + w > 100) {                   // no cabe a la derecha → fila de abajo
+    nx = Number(orig.x);
+    ny = Number(orig.y) + h + 0.5;
+  }
+  nx = Math.max(0, Math.min(100 - w, nx));
+  ny = Math.max(0, Math.min(100 - h, ny));
+  try {
+    // 1) Crear la zona con geometría + producto + etiqueta (lo que acepta el POST)
+    const r = await api('/api/sheets/' + _zonasEditor.sheetId + '/zones', {
+      method: 'POST',
+      body: { x: nx, y: ny, ancho: w, alto: h, product_id: orig.product_id || null, etiqueta: orig.etiqueta || null }
+    });
+    let nueva = r.zone;
+    // 2) Si el original es familia / comisión / enlace, aplicarlo con un PUT
+    if (orig.familia_ref || orig.es_comision || orig.link_catalog_id) {
+      const body = {};
+      if (orig.familia_ref) {
+        body.familia_ref = orig.familia_ref;
+      } else if (orig.es_comision) {
+        body.es_comision = true;
+        if (orig.etiqueta) body.etiqueta = orig.etiqueta;
+      } else if (orig.link_catalog_id) {
+        body.link_catalog_id = orig.link_catalog_id;
+        body.link_sheet_id = orig.link_sheet_id || null;
+        body.link_back_sheet_id = orig.link_back_sheet_id || null;
+        body.link_label = orig.link_label || null;
+      }
+      const r2 = await api('/api/zones/' + nueva.id, { method: 'PUT', body });
+      if (r2.zone) nueva = r2.zone;
+    }
+    // Copiar los campos de "display" (que vienen por JOIN y el POST/PUT no devuelve)
+    nueva.producto_codigo = orig.producto_codigo;
+    nueva.producto_nombre = orig.producto_nombre;
+    nueva.producto_ean = orig.producto_ean;
+    nueva.link_catalog_nombre = orig.link_catalog_nombre;
+    nueva.link_back_sheet_orden = orig.link_back_sheet_orden;
+    _zonasEditor.zonas.push(nueva);
+    _zonasEditor.zonaSeleccionadaId = nueva.id;
+    renderZonasEnCapa();
+    renderListaZonas();
+    actualizarContadorZonas();
+    mostrarNotificacionOnline('🧬 Zona clonada con todos sus datos — muévela a su sitio', '#7c3aed');
+  } catch (err) {
+    alert('Error clonando zona: ' + err.message);
   }
 }
 
