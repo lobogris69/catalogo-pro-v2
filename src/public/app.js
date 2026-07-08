@@ -12007,6 +12007,18 @@ async function abrirSelectorVariantesFamilia(zoneId) {
       </div>
     </div>`;
   document.body.appendChild(modal);
+  // Ventana FLOTANTE + arrastrable por la cabecera (para apartarla y ver la lámina)
+  modal.style.background = 'transparent';
+  modal.style.pointerEvents = 'none';
+  const cardEl = modal.querySelector('.modal-card');
+  const headerEl = modal.querySelector('.modal-header');
+  if (cardEl) {
+    cardEl.style.pointerEvents = 'auto';
+    cardEl.style.boxShadow = '0 12px 45px rgba(0,0,0,0.35)';
+    cardEl.style.border = '1px solid #e5e7eb';
+  }
+  if (headerEl) headerEl.insertAdjacentHTML('afterbegin', '<span style="font-size:11px;color:#9ca3af;font-weight:400;margin-right:6px">✥ arrastra</span>');
+  if (typeof hacerVentanaArrastrable === 'function') hacerVentanaArrastrable(cardEl, headerEl);
   renderFamSelectorLista();
   // Si no había lista previa y hay modelo, buscar automáticamente
   if (_famSelector.items.length === 0 && modeloInicial) buscarVariantesFamilia();
