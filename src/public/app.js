@@ -11726,12 +11726,15 @@ function renderListaZonas() {
 
   if (!sel) {
     // Vista de lista general
+    const nProp = _zonasEditor.zonas.filter(z => typeof z.id === 'string' && z.id.startsWith('ia-')).length;
     panel.innerHTML = `
+      ${nProp > 0 ? `<button onclick="guardarZonasDetectadas()" style="width:100%;margin-bottom:10px;background:#16a34a;color:#fff;padding:9px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">💾 Guardar ${nProp} zona${nProp === 1 ? '' : 's'} detectada${nProp === 1 ? '' : 's'}</button>
+      <div style="font-size:11px;color:#6b7280;margin-bottom:10px">Las zonas naranjas son propuestas de la IA. Al asignarles producto o pulsar Guardar se fijan en la lámina.</div>` : ''}
       <h4 style="margin-top:0">Zonas dibujadas</h4>
       ${_zonasEditor.zonas.length === 0
         ? '<p style="color:#9ca3af;font-size:13px">Aún no hay zonas. Arrastra sobre la lámina para crear la primera.</p>'
         : _zonasEditor.zonas.map((z, idx) => `
-          <div class="zona-lista-item" onclick="seleccionarZona(${z.id})">
+          <div class="zona-lista-item" onclick="seleccionarZona('${String(z.id).replace(/'/g, "\\'")}')">
             <span class="zona-lista-num">${idx + 1}</span>
             <span class="zona-lista-info">
               ${z.product_id
@@ -11858,6 +11861,7 @@ function renderListaZonas() {
     onSelect: async (producto) => {
       if (!producto) return;
       try {
+        await _persistirZonaSiPropuesta(sel.id); // si es propuesta IA, crearla en BD primero
         await api('/api/zones/' + sel.id, {
           method: 'PUT',
           body: { product_id: producto.id }
@@ -11896,6 +11900,45 @@ async function cargarPreviewFamiliaAdmin(zoneId, ref) {
 }
 
 // Marca/actualiza una zona como familia (valida contra Sage antes de guardar)
+// Las zonas propuestas por la IA viven solo en memoria con un id temporal "ia-...".
+// Antes de editarlas (asignar producto/familia/comisión/enlace) hay que CREARLAS en BD
+// (POST) para obtener un id real; si no, el PUT /api/zones/ia-... da "zoneId invalido".
+async function _persistirZonaSiPropuesta(zoneId) {
+  const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+  if (!sel) return zoneId;
+  if (typeof sel.id !== 'string' || !sel.id.startsWith('ia-')) return sel.id; // ya es real
+  const r = await api('/api/sheets/' + _zonasEditor.sheetId + '/zones', {
+    method: 'POST',
+    body: { x: sel.x, y: sel.y, ancho: sel.ancho, alto: sel.alto, etiqueta: sel.etiqueta || null }
+  });
+  const viejo = sel.id;
+  sel.id = r.zone.id;
+  sel.propuesta_ia = false;
+  if (_zonasEditor.zonaSeleccionadaId === viejo) _zonasEditor.zonaSeleccionadaId = r.zone.id;
+  return r.zone.id;
+}
+
+// Guarda en BD TODAS las zonas detectadas por IA que sigan pendientes (id "ia-..."),
+// conservando su producto/familia si la IA los sugirió. Convierte cada una en zona real.
+async function guardarZonasDetectadas() {
+  const propuestas = _zonasEditor.zonas.filter(z => typeof z.id === 'string' && z.id.startsWith('ia-'));
+  if (propuestas.length === 0) { mostrarNotificacionOnline('No hay zonas detectadas pendientes de guardar', '#6b7280'); return; }
+  let ok = 0, fallos = 0;
+  for (const z of propuestas) {
+    try {
+      const r = await api('/api/sheets/' + _zonasEditor.sheetId + '/zones', {
+        method: 'POST',
+        body: { x: z.x, y: z.y, ancho: z.ancho, alto: z.alto, product_id: z.product_id || null, etiqueta: z.etiqueta || null }
+      });
+      z.id = r.zone.id; z.propuesta_ia = false;
+      if (z.familia_ref) { try { await api('/api/zones/' + z.id, { method: 'PUT', body: { familia_ref: z.familia_ref } }); } catch (_) {} }
+      ok++;
+    } catch (e) { fallos++; }
+  }
+  renderZonasEnCapa(); renderListaZonas(); actualizarContadorZonas();
+  mostrarNotificacionOnline('💾 ' + ok + ' zonas detectadas guardadas' + (fallos ? ' · ' + fallos + ' con error' : ''), fallos ? '#b45309' : '#16a34a');
+}
+
 async function aplicarFamiliaZona(zoneId) {
   const inp = document.getElementById('fam-input-' + zoneId);
   const ref = inp ? inp.value.trim() : '';
@@ -11906,6 +11949,7 @@ async function aplicarFamiliaZona(zoneId) {
       alert('No encontré variantes para "' + ref + '" en Sage. Prueba con otro texto (el nombre como aparece en Sage).');
       return;
     }
+    zoneId = await _persistirZonaSiPropuesta(zoneId); // si es propuesta IA, crearla en BD primero
     await api('/api/zones/' + zoneId, { method: 'PUT', body: { familia_ref: ref } });
     const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
     if (sel) { sel.familia_ref = ref; sel.product_id = null; sel.producto_codigo = null; sel.producto_nombre = null; sel.producto_pvf = null; }
@@ -11938,6 +11982,7 @@ async function marcarComisionZona(zoneId) {
   const nombre = inp ? inp.value.trim() : '';
   if (!nombre) { alert('Escribe el nombre del producto de comisión.'); return; }
   try {
+    zoneId = await _persistirZonaSiPropuesta(zoneId); // si es propuesta IA, crearla en BD primero
     await api('/api/zones/' + zoneId, { method: 'PUT', body: { es_comision: true, etiqueta: nombre } });
     const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
     if (sel) { sel.es_comision = true; sel.etiqueta = nombre; sel.product_id = null; sel.familia_ref = null; sel.producto_codigo = null; sel.producto_nombre = null; }
@@ -12050,6 +12095,7 @@ async function aplicarEnlaceZona(zoneId) {
   const regresoId = backSel && backSel.value ? Number(backSel.value) : null;
   const label = lblEl ? lblEl.value.trim() : '';
   try {
+    zoneId = await _persistirZonaSiPropuesta(zoneId); // si es propuesta IA, crearla en BD primero
     await api('/api/zones/' + zoneId, { method: 'PUT', body: { link_catalog_id: destino, link_sheet_id: paginaId, link_back_sheet_id: regresoId, link_label: label || null } });
     const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
     const cat = (_catalogosCacheEnlace || []).find(c => Number(c.id) === destino);
@@ -12224,7 +12270,10 @@ function enfocarEdicionZona() {
 }
 
 function seleccionarZona(zoneId) {
-  _zonasEditor.zonaSeleccionadaId = zoneId;
+  // Normalizar: usar el id REAL del objeto (numérico para zonas guardadas, string "ia-…"
+  // para propuestas) para que la comparación z.id === seleccionada funcione en ambos casos.
+  const z = _zonasEditor.zonas.find(zz => String(zz.id) === String(zoneId));
+  _zonasEditor.zonaSeleccionadaId = z ? z.id : zoneId;
   renderZonasEnCapa();
   renderListaZonas();
   const panel = document.getElementById('zonas-panel');
