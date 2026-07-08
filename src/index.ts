@@ -2103,6 +2103,49 @@ app.post('/api/catalogs/:id/sheets', verifyToken, requireAdmin, upload.single('i
 });
 
 // ============================================================================
+// INSERTAR HOJA EN BLANCO en una posicion concreta (para añadir algo olvidado).
+// Genera un PNG blanco + miniatura, desplaza el orden y crea la lamina.
+// body: { after_sheet_id } -> inserta JUSTO DESPUES de esa lamina; null = al principio.
+// ============================================================================
+app.post('/api/catalogs/:id/sheets/insert-blank', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.id);
+    if (!(await assertNotExpress(catalogId, res))) return;
+    const afterSheetId = req.body?.after_sheet_id ? Number(req.body.after_sheet_id) : null;
+
+    // Determinar el orden de la nueva hoja
+    let newOrden = 0;
+    if (afterSheetId) {
+      const s = await pool.query('SELECT orden FROM sheets WHERE id = $1 AND catalog_id = $2', [afterSheetId, catalogId]);
+      if (s.rows.length === 0) { res.status(404).json({ success: false, error: 'Lámina de referencia no encontrada' }); return; }
+      newOrden = Number(s.rows[0].orden) + 1;
+    }
+    // Hacer hueco: desplazar +1 todo lo que va en esa posicion o despues
+    await pool.query('UPDATE sheets SET orden = orden + 1 WHERE catalog_id = $1 AND orden >= $2', [catalogId, newOrden]);
+
+    // Generar imagen blanca (A4 vertical) + miniatura
+    const fname = 'blank-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '.png';
+    const fpath = path.join(UPLOADS_DIR, fname);
+    await sharp({ create: { width: 1240, height: 1754, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+      .png().toFile(fpath);
+    const imagenPath = '/uploads/' + fname;
+    const miniaturaPath = await generarMiniatura(fpath, fname);
+
+    const r = await pool.query(
+      `INSERT INTO sheets (catalog_id, orden, titulo, imagen_path, miniatura_path)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [catalogId, newOrden, '(hoja en blanco)', imagenPath, miniaturaPath]
+    );
+    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
+    await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
+      { orden: r.rows[0].orden, blank: true }, { id: req.user?.id, name: req.user?.name });
+    res.status(201).json({ success: true, sheet: r.rows[0] });
+  } catch (e) {
+    res.status(400).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ============================================================================
 // SUBIDA MASIVA de láminas (multi-upload con orden secuencial por nombre)
 // Acepta hasta 50 archivos por petición (límite seguro Railway).
 // Frontend puede llamar varias veces si tiene >50.

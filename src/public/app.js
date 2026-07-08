@@ -632,6 +632,7 @@ async function renderEditorCatalogo(id) {
             <div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem; flex-wrap:wrap">
               <h3 style="margin-bottom:0">Láminas (${sheets.length})</h3>
               ${esAdmin ? `
+                <button onclick="insertarHojaEnBlanco(null, ${id})" class="btn btn-pequeno btn-secondary" title="Insertar una hoja en blanco al principio del catálogo">📄➕ Hoja al principio</button>
                 <input type="text" id="filtro-laminas" placeholder="🔍 Filtrar (número o palabra)..."
                        style="flex:1; min-width:200px; padding:8px 12px; border:1px solid var(--gris-borde); border-radius:8px; font-size:13px; font-family:inherit; outline:none;">
               ` : ''}
@@ -669,6 +670,7 @@ async function renderEditorCatalogo(id) {
                   ${esAdmin ? `
                   <div class="lamina-acciones">
                     <button class="btn-guardar-tags" data-id="${s.id}" style="display:none" title="Guardar tags">💾</button>
+                    <button onclick="insertarHojaEnBlanco(${s.id}, ${id})" title="Insertar hoja en blanco debajo">➕</button>
                     <button onclick="regenerarTagsIA(${s.id}, this)" title="Generar tags con IA (GPT-4 Vision)">🤖</button>
                     <button onclick="sustituirImagenLamina(${s.id})" title="Sustituir imagen">🔄</button>
                     <button onclick="editarLamina(${s.id})" title="Editar todo">✏️</button>
@@ -1394,6 +1396,50 @@ async function borrarLamina(sheetId, catalogId) {
   } catch (err) {
     alert('Error: ' + err.message);
   }
+}
+
+// Inserta una HOJA EN BLANCO justo debajo de la lámina indicada (o al principio si afterSheetId=null)
+async function insertarHojaEnBlanco(afterSheetId, catalogId) {
+  try {
+    const r = await api('/api/catalogs/' + catalogId + '/sheets/insert-blank', {
+      method: 'POST',
+      body: { after_sheet_id: afterSheetId || null }
+    });
+    await renderEditorCatalogo(catalogId);
+    // Ofrecer DESHACER durante unos segundos
+    mostrarToastDeshacer('📄 Hoja en blanco insertada', () => deshacerInsertarHoja(r.sheet.id, catalogId));
+  } catch (err) {
+    alert('Error al insertar hoja: ' + err.message);
+  }
+}
+
+async function deshacerInsertarHoja(sheetId, catalogId) {
+  try {
+    await api('/api/sheets/' + sheetId, { method: 'DELETE' });
+    await renderEditorCatalogo(catalogId);
+    mostrarNotificacionOnline('↩️ Hoja en blanco deshecha', '#6b7280');
+  } catch (err) {
+    alert('Error al deshacer: ' + err.message);
+  }
+}
+
+// Toast con botón "Deshacer" (se auto-cierra a los 9 s)
+function mostrarToastDeshacer(texto, onDeshacer) {
+  const prev = document.getElementById('toast-deshacer');
+  if (prev) prev.remove();
+  const t = document.createElement('div');
+  t.id = 'toast-deshacer';
+  t.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111827;color:#fff;padding:12px 16px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,0.35);z-index:99500;display:flex;align-items:center;gap:14px;font-size:14px;max-width:92vw';
+  const span = document.createElement('span');
+  span.textContent = texto;
+  const btn = document.createElement('button');
+  btn.textContent = '↩️ Deshacer';
+  btn.style.cssText = 'background:#374151;color:#fff;border:0;border-radius:8px;padding:7px 12px;font-weight:700;cursor:pointer;white-space:nowrap';
+  btn.addEventListener('click', () => { t.remove(); onDeshacer(); });
+  t.appendChild(span);
+  t.appendChild(btn);
+  document.body.appendChild(t);
+  setTimeout(() => { if (t.parentNode) t.remove(); }, 9000);
 }
 
 // ===== GUARDAR TAGS INLINE =====
