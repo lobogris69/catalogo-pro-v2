@@ -3622,6 +3622,7 @@ async function pulsarZonaComision(zona) {
   const anotExistente = anotsSheet.find(a => a.zone_id === zona.id) || null;
 
   const nombre = zona.etiqueta || 'Producto de comisión';
+  const variantes = Array.isArray(zona.comision_variantes) ? zona.comision_variantes.filter(v => String(v).trim()) : [];
   const uds0 = anotExistente && anotExistente.cantidad ? anotExistente.cantidad : 1;
   const dto0 = anotExistente && anotExistente.descuento != null ? anotExistente.descuento : '';
   const alm0 = (anotExistente && anotExistente.almacen) || _comisionUltimo.almacen || '';
@@ -3639,6 +3640,14 @@ async function pulsarZonaComision(zona) {
         <span style="font-size:11px;color:#ea580c;font-weight:600">🤝 Comisión (no se factura)</span>
         <div style="font-size:14px;color:#374151;margin-top:2px;font-weight:600">${escape(nombre)}</div>
       </div>
+      ${variantes.length ? `
+        <div class="form-group" style="margin-top:12px">
+          <label>Variante / referencia</label>
+          <select id="com-variante" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:15px;box-sizing:border-box">
+            ${variantes.map(v => `<option value="${escape(String(v)).replace(/"/g,'&quot;')}">${escape(String(v))}</option>`).join('')}
+          </select>
+        </div>
+      ` : ''}
       <div style="display:flex;gap:10px;margin-top:14px">
         <div class="form-group" style="flex:1;margin:0">
           <label>Unidades</label>
@@ -3677,8 +3686,11 @@ async function pulsarZonaComision(zona) {
     if (!almacen) { $msg.innerHTML = `<div class="error-msg">Indica el almacén de envío.</div>`; return; }
     // Recordar para las siguientes lineas de comision de esta visita
     _comisionUltimo = { almacen, num_socio: numSocio };
+    // Si es una familia de comisión, el nombre es la variante elegida en el desplegable.
+    const selVar = modal.querySelector('#com-variante');
+    const nombreFinal = (selVar && selVar.value) ? selVar.value : nombre;
     // texto legible: "6 uds · NOMBRE · dto 15% · almacén X · socio Y"
-    let texto = unidades + ' uds · ' + nombre;
+    let texto = unidades + ' uds · ' + nombreFinal;
     if (descuento != null) texto += ' · dto ' + descuento + '%';
     texto += ' · almacén: ' + almacen;
     if (numSocio) texto += ' · socio: ' + numSocio;
@@ -11823,8 +11835,8 @@ function renderListaZonas() {
     ` : sel.es_comision ? `
       <div class="zona-producto-actual" style="background:#fff7ed;border-color:#fed7aa">
         <div style="font-size:11px;color:#ea580c;font-weight:600;margin-bottom:4px">🤝 Producto de comisión (no se factura)</div>
-        Producto: <b>${escape(sel.etiqueta || '(sin nombre)')}</b>
-        <div style="font-size:12px;color:#6b7280;margin-top:4px">El comercial anotará unidades + descuento + almacén + nº socio.</div>
+        Producto: <b>${escape(sel.etiqueta || '(sin nombre)')}</b>${(sel.comision_variantes && sel.comision_variantes.length) ? ` · <span style="color:#ea580c">${sel.comision_variantes.length} variante${sel.comision_variantes.length === 1 ? '' : 's'}</span>` : ''}
+        <div style="font-size:12px;color:#6b7280;margin-top:4px">El comercial ${(sel.comision_variantes && sel.comision_variantes.length) ? 'elige variante y ' : ''}anota unidades + descuento + almacén + nº socio.</div>
       </div>
     ` : sel.familia_ref ? `
       <div class="zona-producto-actual" style="background:#faf5ff;border-color:#e9d5ff">
@@ -11866,7 +11878,20 @@ function renderListaZonas() {
         <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Productos que NO facturamos. El comercial anota unidades + descuento + almacén + nº socio.</div>
         <input type="text" id="com-nombre-${sel.id}" value="${escape(sel.etiqueta || '').replace(/"/g,'&quot;')}" placeholder="Nombre del producto (ej: Emulquien Laxante 230 ml)" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
         <button class="btn" style="background:#ea580c;color:#fff;padding:7px 12px;font-size:12px" onclick="marcarComisionZona('${String(sel.id).replace(/'/g, "\\'")}')">${sel.es_comision ? 'Guardar nombre' : 'Marcar de comisión'}</button>
-        ${sel.es_comision ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarComisionZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar comisión (volver a producto suelto)</button>` : ''}
+        ${sel.es_comision ? `
+          <div style="margin-top:10px;border-top:1px dashed #fed7aa;padding-top:8px">
+            <label style="font-size:12px;font-weight:600;color:#ea580c">Variantes / referencias (opcional) · ${(sel.comision_variantes || []).length}</label>
+            <div style="font-size:11px;color:#6b7280;margin:2px 0 6px">Si tiene varias (colores, referencias…), añádelas. El comercial elegirá una en un desplegable durante la visita.</div>
+            <div id="com-var-lista-${sel.id}" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">
+              ${(sel.comision_variantes || []).map((v, idx) => `<span class="fam-chip" style="background:#fff;border:1px solid #fed7aa">${escape(String(v))} <button onclick="quitarVarianteComision('${String(sel.id).replace(/'/g, "\\'")}',${idx})" style="border:none;background:none;color:#dc2626;cursor:pointer;font-weight:700;padding:0 2px">×</button></span>`).join('')}
+            </div>
+            <div style="display:flex;gap:6px">
+              <input type="text" id="com-var-input-${sel.id}" placeholder="ej: Loción roja ref 12" onkeydown="if(event.key==='Enter'){event.preventDefault();anadirVarianteComision('${String(sel.id).replace(/'/g, "\\'")}')}" style="flex:1;box-sizing:border-box;padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">
+              <button class="btn" style="background:#ea580c;color:#fff;padding:6px 10px;font-size:12px" onclick="anadirVarianteComision('${String(sel.id).replace(/'/g, "\\'")}')">+ Añadir</button>
+            </div>
+          </div>
+          <button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:8px" onclick="quitarComisionZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar comisión (volver a producto suelto)</button>
+        ` : ''}
       </div>
     ` : ''}
     ${(!sel.familia_ref && !sel.es_comision) ? `
@@ -12219,13 +12244,48 @@ async function marcarComisionZona(zoneId) {
   }
 }
 
+// Añade una variante (texto libre) a una familia de comisión y la persiste.
+async function anadirVarianteComision(zoneId) {
+  const inp = document.getElementById('com-var-input-' + zoneId);
+  const v = inp ? inp.value.trim() : '';
+  if (!v) return;
+  const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+  if (!sel) return;
+  const lista = Array.isArray(sel.comision_variantes) ? sel.comision_variantes.slice() : [];
+  if (lista.some(x => String(x).toLowerCase() === v.toLowerCase())) { if (inp) inp.value = ''; return; } // no duplicar
+  lista.push(v);
+  try {
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { es_comision: true, comision_variantes: lista } });
+    sel.comision_variantes = lista;
+    renderListaZonas();
+    setTimeout(() => { const i2 = document.getElementById('com-var-input-' + zoneId); if (i2) i2.focus(); }, 50);
+  } catch (err) {
+    alert('Error añadiendo variante: ' + err.message);
+  }
+}
+
+// Quita una variante de la familia de comisión.
+async function quitarVarianteComision(zoneId, idx) {
+  const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+  if (!sel || !Array.isArray(sel.comision_variantes)) return;
+  const lista = sel.comision_variantes.slice();
+  lista.splice(idx, 1);
+  try {
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { es_comision: true, comision_variantes: lista } });
+    sel.comision_variantes = lista;
+    renderListaZonas();
+  } catch (err) {
+    alert('Error quitando variante: ' + err.message);
+  }
+}
+
 // Quita el estado de comisión de una zona
 async function quitarComisionZona(zoneId) {
   if (!confirm('¿Quitar la comisión de esta zona? Volverá a ser una zona sin producto.')) return;
   try {
     await api('/api/zones/' + zoneId, { method: 'PUT', body: { es_comision: false } });
     const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
-    if (sel) sel.es_comision = false;
+    if (sel) { sel.es_comision = false; sel.comision_variantes = null; }
     renderZonasEnCapa();
     renderListaZonas();
     mostrarNotificacionOnline('Comisión quitada', '#6b7280');
@@ -12442,6 +12502,7 @@ async function clonarZona(zoneId) {
       } else if (orig.es_comision) {
         body.es_comision = true;
         if (orig.etiqueta) body.etiqueta = orig.etiqueta;
+        if (Array.isArray(orig.comision_variantes) && orig.comision_variantes.length) body.comision_variantes = orig.comision_variantes;
       } else if (orig.link_catalog_id) {
         body.link_catalog_id = orig.link_catalog_id;
         body.link_sheet_id = orig.link_sheet_id || null;

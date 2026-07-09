@@ -530,6 +530,9 @@ async function initDB(): Promise<void> {
       -- No estan en Sage; el pedido se anota con unidades+descuento (por linea) y
       -- almacen+num_socio (por pedido). El nombre del producto va en etiqueta.
       ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS es_comision BOOLEAN DEFAULT FALSE;
+      -- Comision con VARIANTES (lista a mano de nombres/referencias que NO estan en Sage):
+      -- el comercial elige la variante en un desplegable y anota como comision. JSON array de strings.
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS comision_variantes JSONB;
 
       -- Campos de comision en las lineas de pedido (anotaciones)
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS es_comision BOOLEAN DEFAULT FALSE;
@@ -8664,7 +8667,7 @@ app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req
 app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const zoneId = Number(req.params.zoneId);
-    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, familia_skus, es_comision, link_catalog_id, link_sheet_id, link_label, link_back_sheet_id } = req.body;
+    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, familia_skus, es_comision, comision_variantes, link_catalog_id, link_sheet_id, link_label, link_back_sheet_id } = req.body;
     // Construir SET dinámico solo con los campos enviados
     const sets: string[] = [];
     const vals: any[] = [];
@@ -8701,7 +8704,19 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
     if (es_comision !== undefined) {
       const ec = !!es_comision;
       sets.push(`es_comision = $${i++}`); vals.push(ec);
-      if (ec) { sets.push(`product_id = NULL`); sets.push(`familia_ref = NULL`); sets.push(`link_catalog_id = NULL`); }
+      if (ec) {
+        sets.push(`product_id = NULL`); sets.push(`familia_ref = NULL`); sets.push(`link_catalog_id = NULL`);
+        if (familia_skus === undefined) sets.push(`familia_skus = NULL`);
+      } else if (comision_variantes === undefined) {
+        sets.push(`comision_variantes = NULL`); // quitar comision -> limpiar sus variantes
+      }
+    }
+    // Lista de variantes de comision (nombres a mano, NO estan en Sage). JSON array de strings.
+    if (comision_variantes !== undefined) {
+      const cv = Array.isArray(comision_variantes)
+        ? comision_variantes.map((s: any) => String(s).trim()).filter((s: string) => s.length > 0).slice(0, 100)
+        : null;
+      sets.push(`comision_variantes = $${i++}`); vals.push(cv && cv.length ? JSON.stringify(cv) : null);
     }
     if (link_catalog_id !== undefined) {
       const lc = link_catalog_id ? Number(link_catalog_id) : null;
