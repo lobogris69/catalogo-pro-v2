@@ -11885,9 +11885,9 @@ function renderListaZonas() {
             <div id="com-var-lista-${sel.id}" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">
               ${(sel.comision_variantes || []).map((v, idx) => `<span class="fam-chip" style="background:#fff;border:1px solid #fed7aa">${escape(String(v))} <button onclick="quitarVarianteComision('${String(sel.id).replace(/'/g, "\\'")}',${idx})" style="border:none;background:none;color:#dc2626;cursor:pointer;font-weight:700;padding:0 2px">×</button></span>`).join('')}
             </div>
-            <div style="display:flex;gap:6px">
-              <input type="text" id="com-var-input-${sel.id}" placeholder="ej: Loción roja ref 12" onkeydown="if(event.key==='Enter'){event.preventDefault();anadirVarianteComision('${String(sel.id).replace(/'/g, "\\'")}')}" style="flex:1;box-sizing:border-box;padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">
-              <button class="btn" style="background:#ea580c;color:#fff;padding:6px 10px;font-size:12px" onclick="anadirVarianteComision('${String(sel.id).replace(/'/g, "\\'")}')">+ Añadir</button>
+            <div style="display:flex;gap:6px;align-items:stretch">
+              <input type="text" id="com-var-input-${sel.id}" placeholder="ej: Loción roja ref 12" onkeydown="if(event.key==='Enter'){event.preventDefault();anadirVarianteComision('${String(sel.id).replace(/'/g, "\\'")}')}" style="flex:1 1 auto;min-width:0;box-sizing:border-box;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+              <button class="btn" style="width:auto;flex:0 0 auto;background:#ea580c;color:#fff;padding:8px 14px;font-size:12px;white-space:nowrap" onclick="anadirVarianteComision('${String(sel.id).replace(/'/g, "\\'")}')">+ Añadir</button>
             </div>
           </div>
           <button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:8px" onclick="quitarComisionZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar comisión (volver a producto suelto)</button>
