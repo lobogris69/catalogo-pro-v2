@@ -534,11 +534,17 @@ async function initDB(): Promise<void> {
       -- el comercial elige la variante en un desplegable y anota como comision. JSON array de strings.
       ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS comision_variantes JSONB;
 
+      -- Zona con REFERENCIAS SUELTAS: un expositor (ej. gafas) del que el cliente pide
+      -- unidades sueltas que NO estan en Sage. El comercial anota cada referencia +
+      -- unidades a mano durante la visita, sin dar de alta cada articulo.
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS permite_sueltas BOOLEAN DEFAULT FALSE;
+
       -- Campos de comision en las lineas de pedido (anotaciones)
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS es_comision BOOLEAN DEFAULT FALSE;
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS descuento REAL;         -- % descuento por linea
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS almacen VARCHAR(150);   -- almacen de envio (por pedido)
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS num_socio VARCHAR(60);  -- numero de socio del cliente
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS referencia VARCHAR(120); -- referencia suelta tecleada a mano (expositor, no esta en Sage)
 
       -- Zona-ENLACE: en vez de un producto, una zona puede ser un enlace a OTRO catalogo
       -- (ej. desde el catalogo general saltar al especifico de BSN y volver).
@@ -6741,10 +6747,12 @@ app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, re
       ? Number(req.body.descuento) : null;
     const almacen = req.body.almacen ? String(req.body.almacen).trim().substring(0, 150) : null;
     const numSocio = req.body.num_socio ? String(req.body.num_socio).trim().substring(0, 60) : null;
+    // Referencia suelta tecleada a mano (expositor: gafa que no esta en Sage)
+    const referencia = req.body.referencia ? String(req.body.referencia).trim().substring(0, 120) : null;
     const r = await pool.query(
-      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
-      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, descuento, almacen, numSocio]
+      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio, referencia)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
+      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, descuento, almacen, numSocio, referencia]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {
@@ -8667,7 +8675,7 @@ app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req
 app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const zoneId = Number(req.params.zoneId);
-    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, familia_skus, es_comision, comision_variantes, link_catalog_id, link_sheet_id, link_label, link_back_sheet_id } = req.body;
+    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, familia_skus, es_comision, comision_variantes, link_catalog_id, link_sheet_id, link_label, link_back_sheet_id, permite_sueltas } = req.body;
     // Construir SET dinámico solo con los campos enviados
     const sets: string[] = [];
     const vals: any[] = [];
@@ -8717,6 +8725,10 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
         ? comision_variantes.map((s: any) => String(s).trim()).filter((s: string) => s.length > 0).slice(0, 100)
         : null;
       sets.push(`comision_variantes = $${i++}`); vals.push(cv && cv.length ? JSON.stringify(cv) : null);
+    }
+    // Referencias sueltas del expositor: capacidad ADICIONAL, no excluyente con el tipo de zona.
+    if (permite_sueltas !== undefined) {
+      sets.push(`permite_sueltas = $${i++}`); vals.push(!!permite_sueltas);
     }
     if (link_catalog_id !== undefined) {
       const lc = link_catalog_id ? Number(link_catalog_id) : null;

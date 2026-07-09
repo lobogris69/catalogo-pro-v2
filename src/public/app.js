@@ -3186,7 +3186,7 @@ async function cargarZonasComercial() {
   try {
     const r = await api('/api/sheets/' + sheetId + '/zones');
     // Zonas "accionables": producto Sage, familia, comisión o enlace a otro catálogo.
-    _zonasComercial = (r.zones || []).filter(z => z.product_id || z.familia_ref || (z.familia_skus && z.familia_skus.length) || z.es_comision || z.link_catalog_id);
+    _zonasComercial = (r.zones || []).filter(z => z.product_id || z.familia_ref || (z.familia_skus && z.familia_skus.length) || z.es_comision || z.link_catalog_id || z.permite_sueltas);
     pintarZonasComercial();
   } catch (e) {
     _zonasComercial = [];
@@ -3242,6 +3242,9 @@ async function pulsarZonaComercial(zona) {
   // Zona-ENLACE: saltar a otro catálogo (funciona con o sin visita activa)
   if (zona.link_catalog_id) { return navegarAEnlaceCatalogo(zona); }
   if (!appState.visitaActiva) return;
+  // Zona con REFERENCIAS SUELTAS (expositor de gafas): gestor propio de líneas a mano.
+  // Gana sobre el resto de tipos; desde su modal se puede pedir el expositor completo.
+  if (zona.permite_sueltas && !zona.__forzarNormal) { return pulsarZonaSueltas(zona); }
   // Zona de COMISION: formulario propio (unidades + descuento + almacen + socio)
   if (zona.es_comision) { return pulsarZonaComision(zona); }
   const $wrapper = document.getElementById('visor-imagen-wrapper');
@@ -3718,6 +3721,129 @@ async function pulsarZonaComision(zona) {
       $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
     }
   });
+}
+
+// ============================================================================
+// REFERENCIAS SUELTAS DEL EXPOSITOR
+// Un expositor (ej. de gafas) dado de alta como UNA sola zona; el cliente pide
+// gafas SUELTAS que NO están en Sage. El comercial anota cada referencia +
+// unidades a mano, sin dar de alta cada artículo. Cada línea es una anotación
+// normal (zone_id + referencia) → sale en el carrito y en el resumen.
+// ============================================================================
+function pulsarZonaSueltas(zona) {
+  if (!appState.visitaActiva) return;
+  const $wrapper = document.getElementById('visor-imagen-wrapper');
+  const sheetId = $wrapper ? Number($wrapper.dataset.sheetId) : null;
+  document.querySelectorAll('#sueltas-modal').forEach(m => m.remove());
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.id = 'sueltas-modal';
+  modal.dataset.zoneId = String(zona.id);
+  modal.dataset.sheetId = String(sheetId);
+  document.body.appendChild(modal);
+  renderModalSueltas();
+  setTimeout(() => { const r = document.getElementById('suelta-ref'); if (r) r.focus(); }, 60);
+}
+
+function renderModalSueltas() {
+  const modal = document.getElementById('sueltas-modal');
+  if (!modal) return;
+  const zoneId = modal.dataset.zoneId;
+  const sheetId = Number(modal.dataset.sheetId);
+  const zona = (_zonasComercial || []).find(z => String(z.id) === String(zoneId)) || {};
+  const nombre = zona.producto_nombre || zona.etiqueta || 'Expositor';
+  const anotsSheet = _anotacionesVisita[sheetId] || [];
+  const lineas = anotsSheet.filter(a => String(a.zone_id) === String(zoneId) && a.referencia);
+  const tieneCompleto = !!(zona.product_id || zona.es_comision);
+  const totalUds = lineas.reduce((s, a) => s + (Number(a.cantidad) || 1), 0);
+  const listaHtml = lineas.length === 0
+    ? `<div style="color:#9ca3af;font-size:13px;padding:8px 0">Aún no has anotado ninguna gafa suelta. Escribe la referencia y las unidades abajo.</div>`
+    : lineas.map(a => `
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f1f5f9">
+          <span style="flex:1;font-size:14px;color:#374151"><b>${escape(a.referencia)}</b> · ${Number(a.cantidad) || 1} ud${(Number(a.cantidad) || 1) === 1 ? '' : 's'}</span>
+          <button class="btn" style="width:auto;flex:0 0 auto;background:#fee2e2;color:#b91c1c;padding:4px 10px;font-size:12px" onclick="borrarLineaSuelta(${a.id})">Quitar</button>
+        </div>`).join('');
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🕶️ Referencias sueltas</h3>
+        <button class="modal-cerrar" onclick="document.getElementById('sueltas-modal').remove()">×</button>
+      </div>
+      <div class="zona-modal-producto" style="background:#f0fdfa;border:1px solid #99f6e4">
+        <span style="font-size:11px;color:#0d9488;font-weight:600">🕶️ Expositor — gafas sueltas (no están en Sage)</span>
+        <div style="font-size:14px;color:#374151;margin-top:2px;font-weight:600">${escape(nombre)}</div>
+      </div>
+      <div style="margin-top:12px">${listaHtml}</div>
+      ${lineas.length ? `<div style="text-align:right;font-size:12px;color:#0d9488;font-weight:600;margin-top:4px">${lineas.length} línea${lineas.length === 1 ? '' : 's'} · ${totalUds} ud${totalUds === 1 ? '' : 's'}</div>` : ''}
+      <div style="display:flex;gap:8px;margin-top:14px;align-items:flex-end">
+        <div class="form-group" style="flex:1 1 auto;margin:0">
+          <label style="font-size:12px">Referencia de la gafa</label>
+          <input type="text" id="suelta-ref" placeholder="ej: 14302, mod. Verona negra" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:15px;box-sizing:border-box" onkeydown="if(event.key==='Enter'){event.preventDefault();anadirLineaSuelta()}">
+        </div>
+        <div class="form-group" style="flex:0 0 74px;margin:0">
+          <label style="font-size:12px">Uds</label>
+          <input type="number" id="suelta-uds" min="1" value="1" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:15px;box-sizing:border-box" onkeydown="if(event.key==='Enter'){event.preventDefault();anadirLineaSuelta()}">
+        </div>
+      </div>
+      <div id="suelta-msg"></div>
+      <div class="modal-acciones">
+        ${tieneCompleto ? `<button type="button" class="btn btn-secondary" onclick="pedirExpositorCompleto('${String(zoneId).replace(/'/g, "\\'")}')">Pedir expositor completo</button>` : ''}
+        <button type="button" class="btn btn-secondary" onclick="document.getElementById('sueltas-modal').remove()">Cerrar</button>
+        <button type="button" class="btn btn-primary" onclick="anadirLineaSuelta()">➕ Añadir gafa</button>
+      </div>
+    </div>`;
+}
+
+async function anadirLineaSuelta() {
+  const modal = document.getElementById('sueltas-modal');
+  if (!modal) return;
+  const zoneId = modal.dataset.zoneId;
+  const sheetId = Number(modal.dataset.sheetId);
+  const zona = (_zonasComercial || []).find(z => String(z.id) === String(zoneId)) || {};
+  const nombre = zona.producto_nombre || zona.etiqueta || 'Expositor';
+  const ref = (modal.querySelector('#suelta-ref')?.value || '').trim();
+  const uds = Number(modal.querySelector('#suelta-uds')?.value) || 1;
+  const $msg = modal.querySelector('#suelta-msg');
+  if (!ref) { if ($msg) $msg.innerHTML = `<div class="error-msg">Escribe la referencia de la gafa.</div>`; return; }
+  const texto = uds + ' ud' + (uds === 1 ? '' : 's') + ' · ref ' + ref + ' · expositor ' + nombre;
+  try {
+    await api('/api/visits/' + appState.visitaActiva.id + '/annotations', {
+      method: 'POST',
+      body: {
+        sheet_id: sheetId, texto_libre: texto, tipo: 'pedido',
+        cantidad: uds, zone_id: Number(zoneId), referencia: ref,
+        pos_x: (zona.x + zona.ancho / 2) / 100, pos_y: (zona.y + zona.alto / 2) / 100
+      }
+    });
+    await cargarAnotacionesDeVisita();
+    if (typeof pintarVisor === 'function') pintarVisor();
+    if (_carritoAbierto) renderCarritoContenido();
+    renderModalSueltas();
+    const r2 = document.getElementById('suelta-ref'); if (r2) r2.focus();
+    mostrarNotificacionOnline('✅ ' + texto, '#0d9488');
+  } catch (err) {
+    if ($msg) $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+  }
+}
+
+async function borrarLineaSuelta(anotId) {
+  try {
+    await api('/api/annotations/' + anotId, { method: 'DELETE' });
+    await cargarAnotacionesDeVisita();
+    if (typeof pintarVisor === 'function') pintarVisor();
+    if (_carritoAbierto) renderCarritoContenido();
+    renderModalSueltas();
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+// Desde el modal de sueltas, pedir el expositor entero (producto Sage o comisión).
+function pedirExpositorCompleto(zoneId) {
+  const zona = (_zonasComercial || []).find(z => String(z.id) === String(zoneId));
+  const m = document.getElementById('sueltas-modal'); if (m) m.remove();
+  if (!zona) return;
+  pulsarZonaComercial(Object.assign({}, zona, { __forzarNormal: true }));
 }
 
 // B7: ----- LONG-PRESS para crear PIN sobre la lámina -----
@@ -9245,8 +9371,9 @@ function renderResumenPreEnvio() {
   const { anotaciones, cliente } = _resumenPreEnvio;
 
   const comision = anotaciones.filter(a => a.es_comision);
+  const sueltas = anotaciones.filter(a => a.referencia && !a.es_comision && !a.product_id);
   const conProducto = anotaciones.filter(a => a.product_id && !a.es_comision);
-  const sinProducto = anotaciones.filter(a => !a.product_id && !a.es_comision);
+  const sinProducto = anotaciones.filter(a => !a.product_id && !a.es_comision && !a.referencia);
   let totalPVF = 0;
   conProducto.forEach(a => {
     const cant = Number(a.cantidad) || 0;
@@ -9331,6 +9458,21 @@ function renderResumenPreEnvio() {
             ${comision.map(a => `
               <li>
                 ${escape(a.texto_libre || '')}
+                <button class="resumen-borrar-mini" data-anot-id="${a.id}">×</button>
+              </li>
+            `).join('')}
+          </ul>
+        </div>
+      ` : ''}
+
+      ${sueltas.length > 0 ? `
+        <h4 style="margin-top:18px;margin-bottom:8px">🕶️ Referencias sueltas del expositor (anotar a mano — no están en Sage)</h4>
+        <div style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:10px">
+          <ul class="resumen-otras-lista">
+            ${sueltas.map(a => `
+              <li>
+                <span style="color:#6b7280;font-size:12px">${a.sheet_orden ? 'Lám.' + a.sheet_orden : '—'}</span>
+                <b>${escape(a.referencia || '')}</b> · ${Number(a.cantidad) || 1} ud${(Number(a.cantidad) || 1) === 1 ? '' : 's'}
                 <button class="resumen-borrar-mini" data-anot-id="${a.id}">×</button>
               </li>
             `).join('')}
@@ -11810,6 +11952,7 @@ function renderListaZonas() {
                     : z.link_catalog_id
                       ? `<span style="color:#2563eb">🔗 Enlace: ${escape(z.link_catalog_nombre || ('catálogo #' + z.link_catalog_id))}</span>`
                       : '<span style="color:#f59e0b">⚠️ Sin producto asignado</span>'}
+              ${z.permite_sueltas ? '<span style="color:#0d9488" title="Permite referencias sueltas (expositor)"> · 🕶️ sueltas</span>' : ''}
             </span>
           </div>
         `).join('')}
@@ -11912,6 +12055,13 @@ function renderListaZonas() {
         <input type="text" id="link-lbl-${sel.id}" value="${escape(sel.link_label || '').replace(/"/g,'&quot;')}" placeholder="ej: Ver Catálogo BSN" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
         <button class="btn btn-primary" style="padding:7px 12px;font-size:12px" onclick="aplicarEnlaceZona('${String(sel.id).replace(/'/g, "\\'")}')">${sel.link_catalog_id ? 'Guardar enlace' : 'Crear enlace'}</button>
         ${sel.link_catalog_id ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarEnlaceZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar enlace (volver a producto suelto)</button>` : ''}
+      </div>
+    ` : ''}
+    ${!sel.link_catalog_id ? `
+      <div class="form-group" style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:10px">
+        <label style="font-size:13px;font-weight:600">🕶️ Referencias sueltas (expositor de gafas…)</label>
+        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Si esta zona es un <b>expositor</b> del que el cliente puede pedir <b>unidades sueltas que NO están en Sage</b>, actívalo. En la visita el comercial anotará cada referencia + unidades a mano, sin dar de alta cada artículo. ${(sel.product_id || sel.es_comision) ? 'Se conserva el pedido del expositor completo.' : ''}</div>
+        <button class="btn" style="width:auto;flex:0 0 auto;background:${sel.permite_sueltas ? '#0d9488' : '#6b7280'};color:#fff;padding:7px 12px;font-size:12px" onclick="toggleSueltasZona('${String(sel.id).replace(/'/g, "\\'")}')">${sel.permite_sueltas ? '✓ Activado — desactivar' : 'Activar referencias sueltas'}</button>
       </div>
     ` : ''}
     <div style="margin-top:12px;display:flex;gap:8px">
@@ -12310,6 +12460,23 @@ async function quitarVarianteComision(zoneId, idx) {
   }
 }
 
+// Activa/desactiva las "referencias sueltas" (expositor) en una zona. Es una
+// capacidad ADICIONAL: convive con producto Sage / comisión / familia.
+async function toggleSueltasZona(zoneId) {
+  try {
+    zoneId = await _persistirZonaSiPropuesta(zoneId); // si es propuesta IA, fijarla primero
+    const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+    if (!sel) return;
+    const nuevo = !sel.permite_sueltas;
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { permite_sueltas: nuevo } });
+    sel.permite_sueltas = nuevo;
+    renderListaZonas();
+    mostrarNotificacionOnline(nuevo ? '🕶️ Referencias sueltas activadas' : 'Referencias sueltas desactivadas', '#0d9488');
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
 // Quita el estado de comisión de una zona
 async function quitarComisionZona(zoneId) {
   if (!confirm('¿Quitar la comisión de esta zona? Volverá a ser una zona sin producto.')) return;
@@ -12524,8 +12691,8 @@ async function clonarZona(zoneId) {
       body: { x: nx, y: ny, ancho: w, alto: h, product_id: orig.product_id || null, etiqueta: orig.etiqueta || null }
     });
     let nueva = r.zone;
-    // 2) Si el original es familia / comisión / enlace, aplicarlo con un PUT
-    if (orig.familia_ref || orig.es_comision || orig.link_catalog_id) {
+    // 2) Si el original es familia / comisión / enlace / con sueltas, aplicarlo con un PUT
+    if (orig.familia_ref || orig.es_comision || orig.link_catalog_id || orig.permite_sueltas) {
       const body = {};
       if (orig.familia_ref) {
         body.familia_ref = orig.familia_ref;
@@ -12540,6 +12707,7 @@ async function clonarZona(zoneId) {
         body.link_back_sheet_id = orig.link_back_sheet_id || null;
         body.link_label = orig.link_label || null;
       }
+      if (orig.permite_sueltas) body.permite_sueltas = true; // capacidad adicional, convive con lo anterior
       const r2 = await api('/api/zones/' + nueva.id, { method: 'PUT', body });
       if (r2.zone) nueva = r2.zone;
     }
