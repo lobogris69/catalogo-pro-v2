@@ -11885,6 +11885,9 @@ function renderListaZonas() {
             <div id="com-var-lista-${sel.id}" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">
               ${(sel.comision_variantes || []).map((v, idx) => `<span class="fam-chip" style="background:#fff;border:1px solid #fed7aa">${escape(String(v))} <button onclick="quitarVarianteComision('${String(sel.id).replace(/'/g, "\\'")}',${idx})" style="border:none;background:none;color:#dc2626;cursor:pointer;font-weight:700;padding:0 2px">×</button></span>`).join('')}
             </div>
+            <label style="font-size:11px;color:#374151;font-weight:600">Buscar producto y añadir</label>
+            <div id="com-var-ac-${sel.id}" style="margin:2px 0 8px"></div>
+            <div style="font-size:11px;color:#9ca3af;margin-bottom:2px">…o escribe una variante a mano:</div>
             <div style="display:flex;gap:6px;align-items:stretch">
               <input type="text" id="com-var-input-${sel.id}" placeholder="ej: Loción roja ref 12" onkeydown="if(event.key==='Enter'){event.preventDefault();anadirVarianteComision('${String(sel.id).replace(/'/g, "\\'")}')}" style="flex:1 1 auto;min-width:0;box-sizing:border-box;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
               <button class="btn" style="width:auto;flex:0 0 auto;background:#ea580c;color:#fff;padding:8px 14px;font-size:12px;white-space:nowrap" onclick="anadirVarianteComision('${String(sel.id).replace(/'/g, "\\'")}')">+ Añadir</button>
@@ -11928,10 +11931,23 @@ function renderListaZonas() {
     cargarPaginasRegreso(sel.id, sel.link_back_sheet_id);
   }
 
+  // Buscador de producto para AÑADIR VARIANTES a una familia de comisión.
+  if (sel.es_comision) {
+    if (_zonasEditor.acComisionVar) { try { _zonasEditor.acComisionVar.destroy(); } catch {} _zonasEditor.acComisionVar = null; }
+    const contCV = document.getElementById('com-var-ac-' + sel.id);
+    if (contCV && typeof montarAutocompleteProducto === 'function') {
+      _zonasEditor.acComisionVar = montarAutocompleteProducto(contCV, {
+        placeholder: 'Buscar por código o nombre (ej: emuliquen)…',
+        onSelect: async (p) => { if (!p) return; await _anadirVarianteComisionValor(sel.id, (p.codigo ? p.codigo + ' · ' : '') + (p.nombre || '')); },
+        onCrear: (nom, alCrear) => abrirModalCrearProductoVuelo(nom, alCrear)
+      });
+    }
+  }
+
   // Montar el autocomplete dentro del panel
   if (_zonasEditor.acProducto) { try { _zonasEditor.acProducto.destroy(); } catch {} }
   const cont = document.getElementById('zona-ac-contenedor');
-  if (!cont) return; // zona-familia: no hay buscador de producto suelto
+  if (!cont) return; // zona-familia/comision: no hay buscador de producto suelto
   _zonasEditor.acProducto = montarAutocompleteProducto(cont, {
     placeholder: 'Buscar producto…',
     onSelect: async (producto) => {
@@ -12244,24 +12260,32 @@ async function marcarComisionZona(zoneId) {
   }
 }
 
-// Añade una variante (texto libre) a una familia de comisión y la persiste.
-async function anadirVarianteComision(zoneId) {
-  const inp = document.getElementById('com-var-input-' + zoneId);
-  const v = inp ? inp.value.trim() : '';
+// Añade un VALOR (venga del buscador de producto o del input a mano) a la lista de
+// variantes de comisión y lo persiste. Evita duplicados.
+async function _anadirVarianteComisionValor(zoneId, valor) {
+  const v = String(valor || '').trim();
   if (!v) return;
   const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
   if (!sel) return;
   const lista = Array.isArray(sel.comision_variantes) ? sel.comision_variantes.slice() : [];
-  if (lista.some(x => String(x).toLowerCase() === v.toLowerCase())) { if (inp) inp.value = ''; return; } // no duplicar
+  if (lista.some(x => String(x).toLowerCase() === v.toLowerCase())) return; // no duplicar
   lista.push(v);
   try {
     await api('/api/zones/' + zoneId, { method: 'PUT', body: { es_comision: true, comision_variantes: lista } });
     sel.comision_variantes = lista;
     renderListaZonas();
-    setTimeout(() => { const i2 = document.getElementById('com-var-input-' + zoneId); if (i2) i2.focus(); }, 50);
   } catch (err) {
     alert('Error añadiendo variante: ' + err.message);
   }
+}
+
+// Añade la variante escrita a mano en el input.
+async function anadirVarianteComision(zoneId) {
+  const inp = document.getElementById('com-var-input-' + zoneId);
+  const v = inp ? inp.value.trim() : '';
+  if (!v) return;
+  await _anadirVarianteComisionValor(zoneId, v);
+  setTimeout(() => { const i2 = document.getElementById('com-var-input-' + zoneId); if (i2) { i2.value = ''; i2.focus(); } }, 50);
 }
 
 // Quita una variante de la familia de comisión.
