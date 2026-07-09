@@ -12003,6 +12003,7 @@ async function cargarPreviewFamiliaAdmin(sel) {
 // ============================================================================
 let _famSelector = null; // { zoneId, items: [{product_id, codigo, nombre, color, graduacion, checked}] }
 let _famAddTimer = null;
+let _famAddResultados = []; // últimos resultados del buscador "añadir a mano" (para no meter el nombre en el onclick)
 
 async function abrirSelectorVariantesFamilia(zoneId) {
   const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
@@ -12118,18 +12119,24 @@ function buscarProductoParaFamilia(q) {
     try {
       const r = await api('/api/products?q=' + encodeURIComponent(q.trim()) + '&limit=10');
       const ps = r.products || [];
+      _famAddResultados = ps; // guardar para el lookup (evita meter el nombre en el onclick)
       if (!cont) return;
       cont.innerHTML = ps.length ? ps.map(p => `
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f3f4f6;font-size:13px">
           <span><b>${escape(p.codigo || '')}</b> · ${escape((p.nombre || '').slice(0, 45))}</span>
-          <button class="btn btn-primary" style="padding:3px 8px;font-size:11px" onclick="anadirVarFamilia(${p.id}, '${String(p.codigo || '').replace(/'/g, "\\'")}', '${String(p.nombre || '').replace(/'/g, "\\'")}')">Añadir</button>
+          <button class="btn btn-primary" style="padding:3px 8px;font-size:11px" onclick="anadirVarFamilia(${p.id})">Añadir</button>
         </div>`).join('') : '<div style="color:#9ca3af;font-size:12px;padding:6px">Sin resultados</div>';
     } catch (_) {}
   }, 300);
 }
 
-function anadirVarFamilia(pid, codigo, nombre) {
+function anadirVarFamilia(pid) {
   if (!_famSelector) return;
+  // El nombre/código se buscan en los resultados guardados (no en el onclick), así que
+  // funcionan aunque el nombre tenga comillas dobles (ej. VP NATURA GEL "USO DIARIO").
+  const p = (_famAddResultados || []).find(x => Number(x.id) === Number(pid)) || {};
+  const codigo = p.codigo || '';
+  const nombre = p.nombre || '';
   const ya = _famSelector.items.find(x => x.product_id === pid);
   if (ya) { ya.checked = true; }
   else _famSelector.items.push({ product_id: pid, codigo, nombre, color: '', graduacion: '', checked: true });
