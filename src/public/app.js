@@ -12015,6 +12015,13 @@ function renderListaZonas() {
         ${sel.familia_ref ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarFamiliaZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar familia (volver a producto suelto)</button>` : ''}
       </div>
     ` : ''}
+    ${!sel.link_catalog_id ? `
+      <div class="form-group" style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:10px">
+        <label style="font-size:13px;font-weight:600">🕶️ Referencias sueltas (expositor de gafas…)</label>
+        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Si esta zona es un <b>expositor</b> del que el cliente puede pedir <b>unidades sueltas que NO están en Sage</b>, actívalo. En la visita el comercial anotará cada referencia + unidades a mano, sin dar de alta cada artículo. ${(sel.product_id || sel.es_comision) ? 'Se conserva el pedido del expositor completo.' : ''}</div>
+        <button class="btn" style="width:auto;flex:0 0 auto;background:${sel.permite_sueltas ? '#0d9488' : '#6b7280'};color:#fff;padding:7px 12px;font-size:12px" onclick="toggleSueltasZona('${String(sel.id).replace(/'/g, "\\'")}')">${sel.permite_sueltas ? '✓ Activado — desactivar' : 'Activar referencias sueltas'}</button>
+      </div>
+    ` : ''}
     ${(!sel.familia_ref && !sel.link_catalog_id) ? `
       <div class="form-group" style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px">
         <label style="font-size:13px;font-weight:600">🤝 ${sel.es_comision ? 'Editar' : 'Marcar como'} producto de comisión (Lainco…)</label>
@@ -12055,13 +12062,6 @@ function renderListaZonas() {
         <input type="text" id="link-lbl-${sel.id}" value="${escape(sel.link_label || '').replace(/"/g,'&quot;')}" placeholder="ej: Ver Catálogo BSN" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
         <button class="btn btn-primary" style="padding:7px 12px;font-size:12px" onclick="aplicarEnlaceZona('${String(sel.id).replace(/'/g, "\\'")}')">${sel.link_catalog_id ? 'Guardar enlace' : 'Crear enlace'}</button>
         ${sel.link_catalog_id ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;margin-top:6px" onclick="quitarEnlaceZona('${String(sel.id).replace(/'/g, "\\'")}')">Quitar enlace (volver a producto suelto)</button>` : ''}
-      </div>
-    ` : ''}
-    ${!sel.link_catalog_id ? `
-      <div class="form-group" style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:10px">
-        <label style="font-size:13px;font-weight:600">🕶️ Referencias sueltas (expositor de gafas…)</label>
-        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Si esta zona es un <b>expositor</b> del que el cliente puede pedir <b>unidades sueltas que NO están en Sage</b>, actívalo. En la visita el comercial anotará cada referencia + unidades a mano, sin dar de alta cada artículo. ${(sel.product_id || sel.es_comision) ? 'Se conserva el pedido del expositor completo.' : ''}</div>
-        <button class="btn" style="width:auto;flex:0 0 auto;background:${sel.permite_sueltas ? '#0d9488' : '#6b7280'};color:#fff;padding:7px 12px;font-size:12px" onclick="toggleSueltasZona('${String(sel.id).replace(/'/g, "\\'")}')">${sel.permite_sueltas ? '✓ Activado — desactivar' : 'Activar referencias sueltas'}</button>
       </div>
     ` : ''}
     <div style="margin-top:12px;display:flex;gap:8px">
