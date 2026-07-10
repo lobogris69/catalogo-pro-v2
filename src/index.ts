@@ -2782,7 +2782,9 @@ async function resolverFamilia(ref: string | null): Promise<any | null> {
     .split(/\s+/)
     .filter(w => w.length >= 3 && !STOPWORDS_FAMILIA.has(w) && !/^\+?\d/.test(w));
   if (palabras.length === 0) return null;
-  const conds = palabras.map((_, i) => `LOWER(nombre) LIKE '%' || $${i + 1} || '%'`).join(' AND ');
+  // Cada palabra: subcadena O parecida por trigramas (tolera erratas "ellorca"->"llorca").
+  // Igual criterio que /api/products/search. Orden de palabras ya indiferente (AND).
+  const conds = palabras.map((_, i) => `(LOWER(nombre) LIKE '%' || $${i + 1} || '%' OR word_similarity($${i + 1}, LOWER(nombre)) > 0.45)`).join(' AND ');
   const r = await pool.query(
     `SELECT id, codigo, nombre, ean, precio_pvf_1, precio_pvpr_1, precio_pvf, activo
      FROM products WHERE ${conds} AND activo = TRUE ORDER BY nombre LIMIT 200`,
