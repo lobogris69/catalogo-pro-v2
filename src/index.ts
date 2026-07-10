@@ -410,6 +410,10 @@ async function initDB(): Promise<void> {
   try {
     // Crear todas las tablas (idempotente)
     const schemaSQL = `
+      -- Busqueda difusa (trigramas): tolera erratas ("ellorca"->"llorca") y palabras
+      -- en cualquier orden. pg_trgm es "trusted" en PG13+, cualquier usuario puede crearlo.
+      CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY, email VARCHAR(150) UNIQUE NOT NULL,
         password_hash VARCHAR(255) NOT NULL, name VARCHAR(150) NOT NULL,
@@ -722,6 +726,9 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_products_tipo ON products(tipo);
       CREATE INDEX IF NOT EXISTS idx_products_activo ON products(activo);
       CREATE INDEX IF NOT EXISTS idx_products_nombre ON products(nombre);
+      -- Indice trigram para busqueda difusa por nombre (word_similarity / % ). Acelera
+      -- las erratas y el "contiene" sin ancla. Ver /api/products/search.
+      CREATE INDEX IF NOT EXISTS idx_products_nombre_trgm ON products USING gin (LOWER(nombre) gin_trgm_ops);
       -- ===== Sync Sage - campos extra en products (idempotente) =====
       -- 3 tarifas PVF (sin IVA - lo que paga la farmacia)
       -- 3 tarifas PVPR (con IVA - lo que la farmacia cobra al publico)
@@ -8038,34 +8045,49 @@ app.get('/api/products/search', verifyToken, async (req: AuthRequest, res: Respo
       return;
     }
     const qLower = q.toLowerCase();
-    const pattern = '%' + qLower + '%';
 
-    // ORDER BY relevancia (coincidencias exactas primero, luego "empieza por", luego "contiene")
-    // Esto hace que si el comercial escribe "BETER" salgan primero los productos
-    // cuyo nombre/código empieza por "BETER" antes que los que solo lo contienen.
+    // Texto donde buscamos cada palabra (nombre + codigo + ean + marca), en minúsculas.
+    const searchable = `(LOWER(nombre) || ' ' || LOWER(codigo) || ' ' || LOWER(COALESCE(ean,'')) || ' ' || LOWER(COALESCE(marca,'')))`;
+
+    // Partimos la consulta en PALABRAS. Cada palabra debe aparecer (como subcadena) o
+    // parecerse mucho (trigramas) a alguna palabra del nombre. Esto hace la búsqueda
+    // INDEPENDIENTE DEL ORDEN ("ampollas flash" = "flash ampollas") y TOLERANTE A ERRATAS
+    // ("ellorca" encuentra "llorca"). word_similarity(a,b) = parecido de 'a' con la mejor
+    // porción de 'b' → ideal para una errata dentro de un nombre de varias palabras.
+    const tokens = qLower.split(/\s+/).map(t => t.trim()).filter(t => t.length >= 2);
+    const toks = tokens.length ? tokens : [qLower];
+
+    const params: any[] = [];
+    const conds: string[] = [];
+    for (const t of toks) {
+      params.push('%' + t + '%'); const pLike = params.length;
+      params.push(t);             const pTok  = params.length;
+      // subcadena (rápido, cubre parciales y orden) OR parecido difuso por trigramas
+      conds.push(`(${searchable} LIKE $${pLike} OR word_similarity($${pTok}, LOWER(nombre)) > 0.45)`);
+    }
+    params.push(qLower);          const pQ = params.length;      // consulta entera (exacto / ranking)
+    params.push(qLower + '%');    const pStarts = params.length; // empieza por…
+
     const sql = `
-      SELECT id, codigo, nombre, ean, precio_pvp, precio_pvf, categoria, familia, marca, tipo
+      SELECT id, codigo, nombre, ean, precio_pvp, precio_pvf, categoria, familia, marca, tipo,
+             GREATEST(similarity(LOWER(nombre), $${pQ}), word_similarity($${pQ}, LOWER(nombre))) AS sim
       FROM products
       WHERE activo = TRUE
-        AND (
-          LOWER(nombre) LIKE $1
-          OR LOWER(codigo) LIKE $1
-          OR LOWER(COALESCE(ean,'')) LIKE $1
-        )
+        AND (${conds.join(' AND ')})
       ORDER BY
         CASE
-          WHEN LOWER(codigo) = $2 THEN 0                  -- código exacto = máxima prioridad
-          WHEN LOWER(ean) = $2 THEN 1                     -- EAN exacto
-          WHEN LOWER(nombre) LIKE $3 THEN 2               -- nombre empieza por…
-          WHEN LOWER(codigo) LIKE $3 THEN 3               -- código empieza por…
+          WHEN LOWER(codigo) = $${pQ} THEN 0               -- código exacto = máxima prioridad
+          WHEN LOWER(ean) = $${pQ} THEN 1                  -- EAN exacto
+          WHEN LOWER(nombre) LIKE $${pStarts} THEN 2       -- nombre empieza por…
+          WHEN LOWER(codigo) LIKE $${pStarts} THEN 3       -- código empieza por…
           ELSE 4
         END,
+        sim DESC,                                          -- más parecido primero (erratas)
         LENGTH(nombre),
         nombre
       LIMIT 20
     `;
-    const startsWith = qLower + '%';
-    const r = await pool.query(sql, [pattern, qLower, startsWith]);
+    const r = await pool.query(sql, params);
     res.json({ success: true, products: r.rows, total: r.rows.length });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
@@ -8114,18 +8136,32 @@ app.get('/api/products', verifyToken, async (req: AuthRequest, res: Response) =>
     else if (activo === 'false') where.push(`activo = FALSE`);
 
     if (q) {
-      params.push('%' + q + '%');
-      const pPattern = params.length;
-      where.push(`(LOWER(nombre) LIKE $${pPattern} OR LOWER(codigo) LIKE $${pPattern} OR LOWER(COALESCE(ean,'')) LIKE $${pPattern} OR LOWER(COALESCE(marca,'')) LIKE $${pPattern})`);
+      // Búsqueda por PALABRAS (orden indiferente) + tolerante a erratas (trigramas),
+      // igual que /api/products/search. "ampollas flash" = "flash ampollas"; "ellorca"→"llorca".
+      const searchable = `(LOWER(nombre) || ' ' || LOWER(codigo) || ' ' || LOWER(COALESCE(ean,'')) || ' ' || LOWER(COALESCE(marca,'')))`;
+      const toks = q.split(/\s+/).map(t => t.trim()).filter(t => t.length >= 2);
+      const lista = toks.length ? toks : [q];
+      for (const t of lista) {
+        params.push('%' + t + '%'); const pLike = params.length;
+        params.push(t);             const pTok  = params.length;
+        where.push(`(${searchable} LIKE $${pLike} OR word_similarity($${pTok}, LOWER(nombre)) > 0.45)`);
+      }
     }
 
     const whereSQL = where.length > 0 ? 'WHERE ' + where.join(' AND ') : '';
     const countR = await pool.query(`SELECT COUNT(*)::int AS n FROM products ${whereSQL}`, params);
     const total = countR.rows[0].n;
 
+    // Si hay búsqueda, ordenar por parecido (mejores primero); si no, alfabético.
+    let orderSQL = 'ORDER BY nombre';
+    if (q) {
+      params.push(q); const pQ = params.length;
+      orderSQL = `ORDER BY GREATEST(similarity(LOWER(nombre), $${pQ}), word_similarity($${pQ}, LOWER(nombre))) DESC, LENGTH(nombre), nombre`;
+    }
+
     params.push(limit);
     const r = await pool.query(
-      `SELECT * FROM products ${whereSQL} ORDER BY nombre LIMIT $${params.length}`,
+      `SELECT * FROM products ${whereSQL} ${orderSQL} LIMIT $${params.length}`,
       params
     );
     res.json({ success: true, products: r.rows, total });
