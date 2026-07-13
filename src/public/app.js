@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v50 · 10 jul 2026';
+const APP_VERSION = 'v51 · 10 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -10916,6 +10916,13 @@ async function guardarProducto(id) {
         if (typeof renderListaZonas === 'function') renderListaZonas();
         if (typeof renderZonasEnCapa === 'function') renderZonasEnCapa();
       }
+      // Si hay una zona-FAMILIA seleccionada, refrescar su preview (el producto editado
+      // puede ser un miembro de la familia y su precio/nombre debe verse actualizado).
+      const selZona = _zonasEditor.zonas.find(z => String(z.id) === String(_zonasEditor.zonaSeleccionadaId));
+      if (selZona && (selZona.familia_ref || (Array.isArray(selZona.familia_skus) && selZona.familia_skus.length))
+          && typeof cargarPreviewFamiliaAdmin === 'function') {
+        cargarPreviewFamiliaAdmin(selZona);
+      }
     }
     // Cerrar modal y recargar
     const $modal = document.querySelector('.modal-bg');
@@ -12145,9 +12152,10 @@ async function cargarPreviewFamiliaAdmin(sel) {
     const r = await api(q);
     if (r && r.familia) {
       const ejes = (r.familia.ejes || []).map(e => e.label + ': ' + e.valores.join('/')).join(' · ');
-      const cab = '<b>' + r.familia.n_variantes + '</b> variantes' + (curada ? ' (elegidas a mano)' : '') + (ejes ? ' — ' + escape(ejes) : ' (sin ejes a elegir)');
+      const cab = '<b>' + r.familia.n_variantes + '</b> variantes' + (curada ? ' (elegidas a mano)' : '') + (ejes ? ' — ' + escape(ejes) : ' (sin ejes a elegir)')
+        + '<div style="font-size:11px;color:#9ca3af;margin-top:2px">✏️ Toca una variante para editar sus datos (precio, nombre…).</div>';
       // Lista de variantes CON PRECIO (PVF/PVPR) para poder verificar que son las correctas,
-      // igual que se ve en un producto suelto. Antes solo salía el número de variantes.
+      // igual que se ve en un producto suelto. Cada fila abre el editor de ESE producto.
       const vs = r.familia.variantes || [];
       const filas = vs.map(v => {
         const detalle = (v.ejes && (v.ejes.color || v.ejes.graduacion || v.ejes.talla || v.ejes.formato))
@@ -12155,8 +12163,10 @@ async function cargarPreviewFamiliaAdmin(sel) {
         const pvf = (v.pvf != null && v.pvf !== '') ? Number(v.pvf).toFixed(2) + '€' : '—';
         const pvpr = (v.pvpr != null && v.pvpr !== '') ? Number(v.pvpr).toFixed(2) + '€' : null;
         const precioSospechoso = (v.pvf == null || Number(v.pvf) === 0);
-        return '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #f3e8ff">'
-          + '<span style="flex:1;min-width:0"><b>' + escape(v.codigo || '') + '</b> · ' + escape(v.nombre || '') + detalle + '</span>'
+        return '<div onclick="abrirDetalleProducto(' + Number(v.product_id) + ')" title="Editar datos de este producto" '
+          + 'style="display:flex;justify-content:space-between;gap:8px;padding:6px 4px;border-bottom:1px solid #f3e8ff;cursor:pointer;border-radius:4px" '
+          + 'onmouseover="this.style.background=\'#faf5ff\'" onmouseout="this.style.background=\'\'">'
+          + '<span style="flex:1;min-width:0">✏️ <b>' + escape(v.codigo || '') + '</b> · ' + escape(v.nombre || '') + detalle + '</span>'
           + '<span style="white-space:nowrap;text-align:right;color:' + (precioSospechoso ? '#dc2626' : '#16a34a') + ';font-weight:600">PVF ' + pvf
           + (pvpr ? '<span style="color:#6b7280;font-weight:400"> · PVPR ' + pvpr + '</span>' : '') + '</span>'
           + '</div>';
