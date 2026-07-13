@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v54 · 10 jul 2026';
+const APP_VERSION = 'v55 · 13 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -12167,12 +12167,19 @@ async function cargarPreviewFamiliaAdmin(sel) {
         const pvf = (v.pvf != null && v.pvf !== '') ? Number(v.pvf).toFixed(2) + '€' : '—';
         const pvpr = (v.pvpr != null && v.pvpr !== '') ? Number(v.pvpr).toFixed(2) + '€' : null;
         const precioSospechoso = (v.pvf == null || Number(v.pvf) === 0);
-        return '<div style="display:flex;justify-content:space-between;gap:6px;align-items:center;padding:6px 4px;border-bottom:1px solid #f3e8ff">'
-          + '<span style="flex:1;min-width:0"><b>' + escape(v.codigo || '') + '</b> · ' + escape(v.nombre || '') + detalle + '</span>'
-          + '<span style="white-space:nowrap;text-align:right;color:' + (precioSospechoso ? '#dc2626' : '#16a34a') + ';font-weight:600">PVF ' + pvf
-          + (pvpr ? '<span style="color:#6b7280;font-weight:400"> · PVPR ' + pvpr + '</span>' : '') + '</span>'
-          + '<button class="btn" style="width:auto;flex:0 0 auto;background:#eef2ff;color:#4338ca;padding:2px 6px;font-size:12px" onclick="abrirDetalleProducto(' + Number(v.product_id) + ')" title="Editar datos/precio de este producto">✏️</button>'
-          + '<button class="btn" style="width:auto;flex:0 0 auto;background:#f3e8ff;color:#7c3aed;padding:2px 6px;font-size:12px" onclick="abrirSelectorVariantesFamilia(\'' + zidJs + '\')" title="Cambiar este miembro por otro de la base de datos">🔄</button>'
+        // Layout en DOS LÍNEAS: nombre (a lo ancho, puede envolver) y debajo precio +
+        // botones. Antes iban en un flex de una línea y con nombres largos el precio se
+        // montaba encima del nombre.
+        return '<div style="padding:6px 4px;border-bottom:1px solid #f3e8ff">'
+          + '<div style="word-break:break-word"><b>' + escape(v.codigo || '') + '</b> · ' + escape(v.nombre || '') + detalle + '</div>'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:4px">'
+          +   '<span style="white-space:nowrap;color:' + (precioSospechoso ? '#dc2626' : '#16a34a') + ';font-weight:600">PVF ' + pvf
+          +     (pvpr ? '<span style="color:#6b7280;font-weight:400"> · PVPR ' + pvpr + '</span>' : '') + '</span>'
+          +   '<span style="display:flex;gap:6px;flex:0 0 auto">'
+          +     '<button class="btn" style="width:auto;flex:0 0 auto;background:#eef2ff;color:#4338ca;padding:2px 8px;font-size:12px" onclick="abrirDetalleProducto(' + Number(v.product_id) + ')" title="Editar datos/precio de este producto">✏️</button>'
+          +     '<button class="btn" style="width:auto;flex:0 0 auto;background:#f3e8ff;color:#7c3aed;padding:2px 8px;font-size:12px" onclick="abrirSelectorVariantesFamilia(\'' + zidJs + '\')" title="Cambiar este miembro por otro de la base de datos">🔄</button>'
+          +   '</span>'
+          + '</div>'
           + '</div>';
       }).join('');
       el.innerHTML = cab
