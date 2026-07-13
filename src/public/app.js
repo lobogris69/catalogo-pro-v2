@@ -12139,7 +12139,26 @@ async function cargarPreviewFamiliaAdmin(sel) {
     const r = await api(q);
     if (r && r.familia) {
       const ejes = (r.familia.ejes || []).map(e => e.label + ': ' + e.valores.join('/')).join(' · ');
-      el.innerHTML = '<b>' + r.familia.n_variantes + '</b> variantes' + (curada ? ' (elegidas a mano)' : '') + (ejes ? ' — ' + escape(ejes) : ' (sin ejes a elegir)');
+      const cab = '<b>' + r.familia.n_variantes + '</b> variantes' + (curada ? ' (elegidas a mano)' : '') + (ejes ? ' — ' + escape(ejes) : ' (sin ejes a elegir)');
+      // Lista de variantes CON PRECIO (PVF/PVPR) para poder verificar que son las correctas,
+      // igual que se ve en un producto suelto. Antes solo salía el número de variantes.
+      const vs = r.familia.variantes || [];
+      const filas = vs.map(v => {
+        const detalle = (v.ejes && (v.ejes.color || v.ejes.graduacion || v.ejes.talla || v.ejes.formato))
+          ? ' <span style="color:#a855f7">(' + escape([v.ejes.color, v.ejes.graduacion, v.ejes.talla, v.ejes.formato].filter(Boolean).join(' · ')) + ')</span>' : '';
+        const pvf = (v.pvf != null && v.pvf !== '') ? Number(v.pvf).toFixed(2) + '€' : '—';
+        const pvpr = (v.pvpr != null && v.pvpr !== '') ? Number(v.pvpr).toFixed(2) + '€' : null;
+        const precioSospechoso = (v.pvf == null || Number(v.pvf) === 0);
+        return '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #f3e8ff">'
+          + '<span style="flex:1;min-width:0"><b>' + escape(v.codigo || '') + '</b> · ' + escape(v.nombre || '') + detalle + '</span>'
+          + '<span style="white-space:nowrap;text-align:right;color:' + (precioSospechoso ? '#dc2626' : '#16a34a') + ';font-weight:600">PVF ' + pvf
+          + (pvpr ? '<span style="color:#6b7280;font-weight:400"> · PVPR ' + pvpr + '</span>' : '') + '</span>'
+          + '</div>';
+      }).join('');
+      el.innerHTML = cab
+        + '<div style="max-height:34vh;overflow-y:auto;margin-top:6px;background:#fff;border:1px solid #e9d5ff;border-radius:6px;padding:6px;font-size:12px">'
+        + (filas || '<span style="color:#9ca3af">Sin variantes que mostrar</span>')
+        + '</div>';
     } else {
       el.innerHTML = '<span style="color:#dc2626">⚠️ No encuentra variantes</span>';
     }
