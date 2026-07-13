@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v51 · 10 jul 2026';
+const APP_VERSION = 'v52 · 10 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -11999,6 +11999,7 @@ function renderListaZonas() {
         <div style="font-size:11px;color:#a855f7;font-weight:600;margin-bottom:4px">👓 Familia con variantes</div>
         Modelo: <b>${escape(sel.familia_ref)}</b>
         <div id="fam-preview-${sel.id}" style="font-size:12px;color:#6b7280;margin-top:4px">Cargando variantes…</div>
+        <button class="btn" style="width:auto;flex:0 0 auto;background:#a855f7;color:#fff;padding:5px 10px;font-size:12px;margin-top:8px" onclick="copiarFamiliaPortapapeles('${String(sel.id).replace(/'/g, "\\'")}')" title="Copiar esta familia para pegarla en una zona de OTRA lámina">📋 Copiar familia (para otra lámina)</button>
       </div>
     ` : sel.product_id ? `
       <div class="zona-producto-actual">
@@ -12022,6 +12023,7 @@ function renderListaZonas() {
     ${(!sel.es_comision && !sel.link_catalog_id) ? `
       <div class="form-group" style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:10px">
         <label style="font-size:13px;font-weight:600">👓 ${sel.familia_ref ? 'Editar' : 'Marcar como'} familia (gafas, guantes, tapes…)</label>
+        ${_familiaPortapapeles ? `<button class="btn" style="width:100%;background:#7c3aed;color:#fff;padding:8px;font-size:12px;font-weight:700;margin:2px 0 8px" onclick="pegarFamiliaPortapapeles('${String(sel.id).replace(/'/g, "\\'")}')" title="Aplicar aquí la familia que copiaste en otra lámina">📋 Pegar familia copiada: ${escape(_familiaPortapapeles.familia_ref || '(sin nombre)')}${_familiaPortapapeles.n ? ' · ' + _familiaPortapapeles.n + ' variantes' : ''}</button>` : ''}
         <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Escribe el <b>modelo</b> (ej: Verona) y pulsa Buscar. Te muestro sus variantes (color/graduación) para que <b>elijas cuáles van</b>; también puedes añadir códigos a mano.</div>
         <input type="text" id="fam-input-${sel.id}" value="${sel.familia_ref ? escape(sel.familia_ref).replace(/"/g,'&quot;') : ''}" placeholder="ej: Verona, Aspen, Guantes nitrilo azul" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
         <button class="btn btn-primary" style="width:100%;padding:9px;font-size:13px;font-weight:700" onclick="abrirSelectorVariantesFamilia('${String(sel.id).replace(/'/g, "\\'")}')">🔍 Buscar y elegir variantes</button>
@@ -12478,6 +12480,52 @@ async function quitarFamiliaZona(zoneId) {
     mostrarNotificacionOnline('Familia quitada', '#6b7280');
   } catch (err) {
     alert('Error quitando familia: ' + err.message);
+  }
+}
+
+// ============================================================================
+// PORTAPAPELES DE FAMILIA — copiar una familia (modelo + variantes curadas) de
+// una zona para PEGARLA en una zona de OTRA lámina, sin volver a curarla.
+// Se guarda en localStorage → sobrevive al cambiar de lámina/catálogo.
+// ============================================================================
+let _familiaPortapapeles = (() => { try { return JSON.parse(localStorage.getItem('cpv2_fam_clip') || 'null'); } catch { return null; } })();
+
+function copiarFamiliaPortapapeles(zoneId) {
+  const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+  if (!sel || !sel.familia_ref) return;
+  const skus = Array.isArray(sel.familia_skus) ? sel.familia_skus.slice() : null;
+  _familiaPortapapeles = {
+    familia_ref: sel.familia_ref,
+    familia_skus: skus,
+    n: skus ? skus.length : null
+  };
+  try { localStorage.setItem('cpv2_fam_clip', JSON.stringify(_familiaPortapapeles)); } catch {}
+  renderListaZonas(); // para que aparezca el botón "Pegar" en el bloque de familia
+  mostrarNotificacionOnline('📋 Familia copiada: ' + sel.familia_ref + (skus ? ' (' + skus.length + ' variantes)' : '') + '. Ve a otra lámina, abre una zona y pulsa "Pegar familia".', '#a855f7');
+}
+
+// Aplica la familia copiada a esta zona (en cualquier lámina).
+async function pegarFamiliaPortapapeles(zoneId) {
+  if (!_familiaPortapapeles || !_familiaPortapapeles.familia_ref) return;
+  try {
+    zoneId = await _persistirZonaSiPropuesta(zoneId); // si es propuesta IA, fijarla primero
+    const body = { familia_ref: _familiaPortapapeles.familia_ref };
+    if (Array.isArray(_familiaPortapapeles.familia_skus) && _familiaPortapapeles.familia_skus.length) {
+      body.familia_skus = _familiaPortapapeles.familia_skus;
+    }
+    const r = await api('/api/zones/' + zoneId, { method: 'PUT', body });
+    const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+    if (sel) {
+      sel.familia_ref = _familiaPortapapeles.familia_ref;
+      sel.familia_skus = body.familia_skus || null;
+      sel.product_id = null; sel.es_comision = false; sel.link_catalog_id = null;
+      sel.producto_codigo = null; sel.producto_nombre = null;
+    }
+    renderZonasEnCapa();
+    renderListaZonas();
+    mostrarNotificacionOnline('✅ Familia pegada: ' + _familiaPortapapeles.familia_ref, '#16a34a');
+  } catch (err) {
+    alert('Error pegando familia: ' + err.message);
   }
 }
 
