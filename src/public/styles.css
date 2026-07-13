@@ -630,17 +630,20 @@ html {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.lamina-acciones { display: flex; gap: 4px; }
+.lamina-acciones { display: flex; gap: 5px; }
 .lamina-acciones button {
-  background: white;
-  border: 1px solid var(--gris-borde);
-  padding: 4px 8px;
-  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--gris-borde-2);
+  padding: 5px 9px;
+  border-radius: 9px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
+  color: var(--texto);
+  box-shadow: var(--shadow-sm);
+  transition: background 0.13s, border-color 0.13s, color 0.13s, transform 0.1s;
 }
-.lamina-acciones button:hover { border-color: var(--rosa); color: var(--rosa); }
-.lamina-acciones button.btn-borrar:hover { border-color: var(--rojo); color: var(--rojo); }
+.lamina-acciones button:hover { background: color-mix(in srgb, var(--brand) 9%, var(--surface)); border-color: color-mix(in srgb, var(--brand) 40%, var(--gris-borde-2)); color: var(--brand); transform: translateY(-1px); }
+.lamina-acciones button.btn-borrar:hover { background: #fef2f2; border-color: color-mix(in srgb, var(--rojo) 45%, var(--gris-borde-2)); color: var(--rojo); }
 
 /* Spinner para subidas */
 .spinner {
@@ -2653,19 +2656,23 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
   border-bottom: 3px solid transparent;
   padding: 10px 16px;
   font-size: 14px;
+  font-weight: 600;
   font-family: inherit;
   cursor: pointer;
-  color: #666;
+  color: var(--gris-texto);
   margin-bottom: -2px;
-  transition: all 0.15s;
+  border-radius: 10px 10px 0 0;
+  transition: color 0.15s, background 0.15s;
 }
 .editor-pestana:hover {
-  color: var(--rosa);
+  color: var(--brand);
+  background: var(--surface-3);
 }
 .editor-pestana-activa {
-  color: var(--rosa);
-  font-weight: 600;
-  border-bottom-color: var(--rosa);
+  color: var(--brand);
+  font-weight: 700;
+  border-bottom-color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 8%, transparent);
 }
 
 .versiones-lista {
@@ -3354,26 +3361,32 @@ body.con-banner-update {
   line-height: 1.4;
 }
 .zonas-editor-panel {
-  width: 320px;
+  width: 340px;
   flex-shrink: 0;
-  background: #fff;
-  padding: 16px;
+  background: var(--surface);
+  padding: 18px;
   overflow-y: auto;
 }
 .zona-lista-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  padding: 11px;
+  border: 1px solid var(--gris-borde);
+  border-radius: var(--r-sm);
   margin-bottom: 8px;
   cursor: pointer;
   font-size: 13px;
+  background: var(--surface);
+  transition: border-color 0.13s, background 0.13s, box-shadow 0.13s;
 }
-.zona-lista-item:hover { background: #f9fafb; }
+.zona-lista-item:hover {
+  background: color-mix(in srgb, var(--brand) 6%, var(--surface));
+  border-color: color-mix(in srgb, var(--brand) 32%, var(--gris-borde));
+  box-shadow: var(--shadow-sm);
+}
 .zona-lista-num {
-  background: #111827;
+  background: var(--grad);
   color: #fff;
   width: 24px;
   height: 24px;
@@ -3382,15 +3395,15 @@ body.con-banner-update {
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 800;
   flex-shrink: 0;
 }
 .zona-lista-info { flex: 1; }
 .zona-producto-actual {
-  background: #f0fdf4;
-  border: 1px solid #86efac;
-  border-radius: 8px;
-  padding: 10px;
+  background: color-mix(in srgb, var(--verde) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--verde) 35%, var(--gris-borde));
+  border-radius: var(--r-sm);
+  padding: 11px;
   margin-bottom: 10px;
   font-size: 13px;
 }
@@ -4262,8 +4275,8 @@ body.con-banner-update {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: #e5e7eb;
-  color: #4b5563;
+  background: var(--surface-3);
+  color: var(--gris-texto);
   font-size: 11px;
   font-weight: 700;
   font-family: Arial, sans-serif;
@@ -4282,7 +4295,7 @@ body.con-banner-update {
 }
 .ayuda-tip:hover,
 .ayuda-tip:focus {
-  background: #cc007a;
+  background: var(--brand);
   color: #fff;
 }
 
