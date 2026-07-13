@@ -1,6 +1,10 @@
 // ============================================================================
 // CatalogPRO v2 - Frontend
 // ============================================================================
+// Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
+// sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
+// constante refleja la versión REALMENTE cargada, no la última del servidor).
+const APP_VERSION = 'v50 · 10 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -134,6 +138,7 @@ function renderLogin() {
           <p>LOMHIFAR S.L.</p>
         </div>
         <div id="login-error"></div>
+        <div style="text-align:center;font-size:12px;color:#9ca3af;margin:-4px 0 10px">Versión ${APP_VERSION}</div>
         <form id="login-form">
           <div class="form-group">
             <label>Email</label>
@@ -236,6 +241,7 @@ async function renderApp() {
         <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')">⚙️ Mi cuenta</button>
       </div>
       <div id="vista-contenido"></div>
+      <div style="text-align:center;font-size:11px;color:#9ca3af;padding:14px 0 8px">CatalogPRO ${APP_VERSION}</div>
     </div>
   `;
   routerVista();
