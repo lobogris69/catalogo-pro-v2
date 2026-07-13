@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v52 · 10 jul 2026';
+const APP_VERSION = 'v53 · 10 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -12222,7 +12222,7 @@ async function abrirSelectorVariantesFamilia(zoneId) {
         </div>
         <div id="fam-buscar-msg" style="font-size:12px;color:#6b7280;margin-top:4px"></div>
       </div>
-      <div style="font-size:13px;font-weight:600;margin:8px 0 4px">Variantes (marca las que van): <span style="font-size:10px;color:#9ca3af;font-weight:400">↕ arrastra el borde inferior para agrandar</span></div>
+      <div style="font-size:13px;font-weight:600;margin:8px 0 4px">Variantes (marca las que van): <span style="font-size:10px;color:#9ca3af;font-weight:400">🔄 Cambiar = sustituir por otro · ✕ = quitar · ↕ arrastra el borde para agrandar</span></div>
       <div id="fam-lista-variantes" style="min-height:90px;max-height:70vh;overflow:auto;resize:vertical;border:1px solid #eee;border-radius:8px;padding:6px"></div>
       <div class="form-group" style="margin-top:12px">
         <label style="font-size:13px;font-weight:600">➕ Añadir otro producto a mano</label>
@@ -12260,12 +12260,27 @@ function renderFamSelectorLista() {
   cont.innerHTML = items.length === 0
     ? '<div style="color:#9ca3af;font-size:13px;padding:10px">Escribe el modelo y pulsa Buscar, o añade productos a mano abajo.</div>'
     : items.map(it => `
-      <label style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f3f4f6;cursor:pointer">
-        <input type="checkbox" ${it.checked ? 'checked' : ''} onchange="toggleVarFamilia(${it.product_id})">
-        <span style="flex:1;font-size:13px"><b>${escape(it.codigo || '')}</b> · ${escape(it.nombre || '')}${(it.color || it.graduacion) ? `<span style="color:#a855f7"> (${escape([it.color, it.graduacion].filter(Boolean).join(' · '))})</span>` : ''}</span>
-      </label>`).join('');
+      <div style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f3f4f6">
+        <input type="checkbox" ${it.checked ? 'checked' : ''} onchange="toggleVarFamilia(${it.product_id})" title="Marca = forma parte de la familia">
+        <span style="flex:1;min-width:0;font-size:13px"><b>${escape(it.codigo || '')}</b> · ${escape(it.nombre || '')}${(it.color || it.graduacion) ? `<span style="color:#a855f7"> (${escape([it.color, it.graduacion].filter(Boolean).join(' · '))})</span>` : ''}</span>
+        <button class="btn" style="width:auto;flex:0 0 auto;background:#7c3aed;color:#fff;padding:3px 8px;font-size:11px;white-space:nowrap" onclick="cambiarVarFamilia(${it.product_id})" title="Sustituir este miembro por otro producto de la base de datos">🔄 Cambiar</button>
+        <button class="btn" style="width:auto;flex:0 0 auto;background:#fee2e2;color:#b91c1c;padding:3px 8px;font-size:11px" onclick="cambiarVarFamilia(${it.product_id}, true)" title="Quitar este miembro de la familia">✕</button>
+      </div>`).join('');
   const c = document.getElementById('fam-count');
   if (c) c.textContent = items.filter(x => x.checked).length;
+}
+
+// Quita un miembro de la familia (para sustituirlo). Si soloQuitar=false, además lleva
+// el foco al buscador de "Añadir a mano" para poner el producto correcto en su lugar.
+function cambiarVarFamilia(pid, soloQuitar) {
+  if (!_famSelector) return;
+  _famSelector.items = _famSelector.items.filter(x => Number(x.product_id) !== Number(pid));
+  renderFamSelectorLista();
+  if (!soloQuitar) {
+    const b = document.getElementById('fam-add-buscar');
+    if (b) { if (b.scrollIntoView) b.scrollIntoView({ block: 'center' }); b.focus(); }
+    mostrarNotificacionOnline('Miembro quitado. Busca abajo el producto correcto, márcalo y pulsa "Añadir marcados".', '#7c3aed');
+  }
 }
 
 async function buscarVariantesFamilia() {
