@@ -42,6 +42,11 @@
             // Guardamos referencia global para que app.js pueda llamar a updates
             window._swRegistration = reg;
 
+            // Forzar una comprobación de actualización EN CADA carga (no solo cada 10 min).
+            // Evita quedarse "atascado" en una versión vieja si el navegador no re-chequea
+            // el sw.js por su cuenta al refrescar.
+            reg.update().catch(() => {});
+
             // Si ya hay un SW "esperando" al cargar la página, hay update disponible
             if (reg.waiting) {
               console.log('[PWA] Update disponible: SW ya esperando al cargar');
