@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v55 · 13 jul 2026';
+const APP_VERSION = 'v56 · 13 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -12345,10 +12345,14 @@ function buscarProductoParaFamilia(q) {
         </div>
         ` + ps.map(p => {
           const dentro = yaIds.has(Number(p.id));
+          const pvfNum = (p.precio_pvf != null && p.precio_pvf !== '') ? Number(p.precio_pvf) : null;
+          const pvf = pvfNum != null ? pvfNum.toFixed(2) + '€' : '—';
+          const pvfCol = (pvfNum == null || pvfNum === 0) ? '#dc2626' : '#16a34a';
           return `
           <label style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f3f4f6;font-size:13px;cursor:${dentro ? 'default' : 'pointer'};opacity:${dentro ? '0.5' : '1'}">
             <input type="checkbox" class="fam-add-chk" value="${p.id}" ${dentro ? 'checked disabled' : ''} onchange="famAddActualizarContador()">
-            <span><b>${escape(p.codigo || '')}</b> · ${escape((p.nombre || '').slice(0, 55))}${dentro ? ' <span style="color:#16a34a;font-size:11px">✓ ya está</span>' : ''}</span>
+            <span style="flex:1;min-width:0"><b>${escape(p.codigo || '')}</b> · ${escape((p.nombre || '').slice(0, 55))}${dentro ? ' <span style="color:#16a34a;font-size:11px">✓ ya está</span>' : ''}</span>
+            <span style="white-space:nowrap;color:${pvfCol};font-weight:600;font-size:12px">PVF ${pvf}</span>
           </label>`;
         }).join('');
       famAddActualizarContador();
