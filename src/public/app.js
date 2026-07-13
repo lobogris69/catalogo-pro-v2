@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v66 · 13 jul 2026';
+const APP_VERSION = 'v67 · 13 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -222,6 +222,7 @@ async function renderApp() {
         <div style="display:flex; gap:8px; align-items:center;">
           <div id="indicador-online" class="indicador-online" title="Estado de conexión"></div>
           ${adminReal && !impersonando ? `<button class="topbar-action" onclick="abrirSelectorImpersonacion()" title="Ver como un comercial">👁 Ver como…</button>` : ''}
+          <button class="topbar-action" id="btn-tema" onclick="alternarTema()" title="Cambiar tema claro / oscuro">${document.documentElement.dataset.theme === 'dark' ? '☀️' : '🌙'}</button>
           <button class="topbar-logout" onclick="logout()">Salir</button>
         </div>
       </div>
@@ -247,6 +248,17 @@ async function renderApp() {
   routerVista();
   // I: re-aplicar estado del indicador online tras cada render
   if (typeof actualizarIndicadorOnline === 'function') actualizarIndicadorOnline();
+}
+
+// Alterna tema claro/oscuro y lo recuerda. El tema se aplica en <head> (index.html)
+// antes del CSS para no parpadear; aquí solo lo cambia el usuario con el botón 🌙/☀️.
+function alternarTema() {
+  const esOscuroAhora = document.documentElement.dataset.theme === 'dark';
+  const nuevo = esOscuroAhora ? 'light' : 'dark';
+  document.documentElement.dataset.theme = nuevo;
+  try { localStorage.setItem('cpv2_theme', nuevo); } catch (e) {}
+  const b = document.getElementById('btn-tema');
+  if (b) b.textContent = nuevo === 'dark' ? '☀️' : '🌙';
 }
 
 function routerVista() {

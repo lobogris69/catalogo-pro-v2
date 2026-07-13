@@ -36,6 +36,36 @@
   --r-lg: 22px;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
 }
+
+/* ===== MODO OSCURO (opt-in por interruptor; NO se fuerza por el sistema para no
+   romper las zonas con estilos "inline" que aún asumen tema claro) ===== */
+:root[data-theme="dark"] {
+  --brand: #f0348a;
+  --brand-2: #b21c6b;
+  --grad: linear-gradient(135deg, #f0348a 0%, #b21c6b 100%);
+  --rosa: #f0348a;
+  --rosa-claro: #2a1220;
+  --rosa-borde: #3a2233;
+  --rosa-oscuro: #b21c6b;
+  --gris-bg: #100c15;
+  --gris-borde: #2a2137;
+  --gris-borde-2: #352a45;
+  --gris-texto: #9c90ac;
+  --texto: #f4eff8;
+  --surface: #191320;
+  --surface-2: #1f1729;
+  --surface-3: #261c33;
+  --violet: #a78bfa;
+  --teal: #2dd4bf;
+  --amber: #fbbf24;
+  --verde: #34d399;
+  --naranja: #fbbf24;
+  --rojo: #f87171;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.5);
+  --shadow: 0 1px 2px rgba(0,0,0,.5), 0 14px 34px -16px rgba(0,0,0,.7);
+  --shadow-lg: 0 2px 8px rgba(0,0,0,.5), 0 30px 70px -24px rgba(0,0,0,.8);
+  color-scheme: dark;
+}
 body {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   background:
@@ -495,13 +525,16 @@ html {
   z-index: 99000; /* Más alto que el visor fullscreen para que el modal de anotar pedido salga por delante */
 }
 .modal-card {
-  background: white;
-  border-radius: 16px;
+  background: var(--surface);
+  color: var(--texto);
+  border: 1px solid var(--gris-borde);
+  border-radius: var(--r);
   padding: 1.5rem;
   width: 100%;
   max-width: 480px;
   max-height: 90vh;
   overflow-y: auto;
+  box-shadow: var(--shadow-lg);
 }
 .modal-header {
   display: flex;
