@@ -114,6 +114,13 @@ html {
   background: var(--surface);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 16%, transparent);
 }
+/* Las casillas y radios NUNCA deben estirarse al 100% (la regla de arriba los pillaba):
+   rompía las filas con checkbox en flex (el nombre se colapsaba y el precio se montaba). */
+.form-group input[type="checkbox"], .form-group input[type="radio"] {
+  width: auto;
+  padding: 0;
+  flex: 0 0 auto;
+}
 .btn {
   width: 100%;
   padding: 11px 16px;

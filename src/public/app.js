@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v59 · 13 jul 2026';
+const APP_VERSION = 'v60 · 13 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -12349,10 +12349,12 @@ function buscarProductoParaFamilia(q) {
           const pvf = pvfNum != null ? pvfNum.toFixed(2) + '€' : '—';
           const pvfCol = (pvfNum == null || pvfNum === 0) ? '#dc2626' : '#16a34a';
           return `
-          <label style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f3f4f6;font-size:13px;cursor:${dentro ? 'default' : 'pointer'};opacity:${dentro ? '0.5' : '1'}">
-            <input type="checkbox" class="fam-add-chk" value="${p.id}" ${dentro ? 'checked disabled' : ''} onchange="famAddActualizarContador()">
-            <span style="flex:1;min-width:0"><b>${escape(p.codigo || '')}</b> · ${escape((p.nombre || '').slice(0, 55))}${dentro ? ' <span style="color:#16a34a;font-size:11px">✓ ya está</span>' : ''}</span>
-            <span style="white-space:nowrap;color:${pvfCol};font-weight:600;font-size:12px">PVF ${pvf}</span>
+          <label style="display:flex;align-items:flex-start;gap:8px;padding:7px 6px;border-bottom:1px solid #f3f4f6;font-size:13px;cursor:${dentro ? 'default' : 'pointer'};opacity:${dentro ? '0.5' : '1'}">
+            <input type="checkbox" class="fam-add-chk" value="${p.id}" ${dentro ? 'checked disabled' : ''} onchange="famAddActualizarContador()" style="width:auto;flex:0 0 auto;margin-top:2px">
+            <span style="flex:1;min-width:0">
+              <span style="display:block;word-break:break-word"><b>${escape(p.codigo || '')}</b> · ${escape((p.nombre || '').slice(0, 60))}${dentro ? ' <span style="color:#16a34a;font-size:11px">✓ ya está</span>' : ''}</span>
+              <span style="display:inline-block;margin-top:2px;white-space:nowrap;color:${pvfCol};font-weight:600;font-size:12px">PVF ${pvf}</span>
+            </span>
           </label>`;
         }).join('');
       famAddActualizarContador();
