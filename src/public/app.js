@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v65 · 13 jul 2026';
+const APP_VERSION = 'v66 · 13 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -12209,7 +12209,7 @@ async function abrirSelectorVariantesFamilia(zoneId) {
   if (Array.isArray(sel.familia_skus) && sel.familia_skus.length) {
     try {
       const r = await api('/api/families/resolve?ids=' + sel.familia_skus.join(','));
-      if (r.familia) _famSelector.items = r.familia.variantes.map(v => ({ product_id: v.product_id, codigo: v.codigo, nombre: v.nombre, color: (v.ejes && v.ejes.color) || '', graduacion: (v.ejes && v.ejes.graduacion) || '', checked: true }));
+      if (r.familia) _famSelector.items = r.familia.variantes.map(v => ({ product_id: v.product_id, codigo: v.codigo, nombre: v.nombre, color: (v.ejes && v.ejes.color) || '', graduacion: (v.ejes && v.ejes.graduacion) || '', pvf: (v.pvf != null ? v.pvf : null), checked: true }));
     } catch (_) {}
   }
   const modeloInicial = ((document.getElementById('fam-input-' + zoneId) || {}).value || sel.familia_ref || '').trim();
@@ -12272,6 +12272,7 @@ function renderFamSelectorLista() {
       <div style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f3f4f6">
         <input type="checkbox" ${it.checked ? 'checked' : ''} onchange="toggleVarFamilia(${it.product_id})" title="Marca = forma parte de la familia">
         <span style="flex:1;min-width:0;font-size:13px"><b>${escape(it.codigo || '')}</b> · ${escape(it.nombre || '')}${(it.color || it.graduacion) ? `<span style="color:#a855f7"> (${escape([it.color, it.graduacion].filter(Boolean).join(' · '))})</span>` : ''}</span>
+        <span style="flex:0 0 auto;white-space:nowrap;font-size:11.5px;font-weight:600;color:${(it.pvf == null || Number(it.pvf) === 0) ? '#dc2626' : '#16a34a'}">${(it.pvf != null && it.pvf !== '') ? ('PVF ' + Number(it.pvf).toFixed(2) + '€') : '—'}</span>
         <button class="btn" style="width:auto;flex:0 0 auto;background:#7c3aed;color:#fff;padding:3px 8px;font-size:11px;white-space:nowrap" onclick="cambiarVarFamilia(${it.product_id})" title="Sustituir este miembro por otro producto de la base de datos">🔄 Cambiar</button>
         <button class="btn" style="width:auto;flex:0 0 auto;background:#fee2e2;color:#b91c1c;padding:3px 8px;font-size:11px" onclick="cambiarVarFamilia(${it.product_id}, true)" title="Quitar este miembro de la familia">✕</button>
       </div>`).join('');
@@ -12306,7 +12307,7 @@ async function buscarVariantesFamilia() {
     let nuevas = 0;
     for (const v of fam.variantes) {
       if (yaIds.has(v.product_id)) continue;
-      _famSelector.items.push({ product_id: v.product_id, codigo: v.codigo, nombre: v.nombre, color: (v.ejes && v.ejes.color) || '', graduacion: (v.ejes && v.ejes.graduacion) || '', checked: true });
+      _famSelector.items.push({ product_id: v.product_id, codigo: v.codigo, nombre: v.nombre, color: (v.ejes && v.ejes.color) || '', graduacion: (v.ejes && v.ejes.graduacion) || '', pvf: (v.pvf != null ? v.pvf : null), checked: true });
       nuevas++;
     }
     if (msg) msg.textContent = fam.variantes.length + ' variantes (modelo: ' + fam.modelo + '). Desmarca las que no vayan.';
@@ -12389,7 +12390,7 @@ function anadirVarFamiliaMarcados() {
     const p = (_famAddResultados || []).find(x => Number(x.id) === Number(pid)) || {};
     const ya = _famSelector.items.find(x => Number(x.product_id) === pid);
     if (ya) { ya.checked = true; }
-    else { _famSelector.items.push({ product_id: pid, codigo: p.codigo || '', nombre: p.nombre || '', color: '', graduacion: '', checked: true }); anadidos++; }
+    else { _famSelector.items.push({ product_id: pid, codigo: p.codigo || '', nombre: p.nombre || '', color: '', graduacion: '', pvf: (p.precio_pvf != null ? p.precio_pvf : null), checked: true }); anadidos++; }
   }
   renderFamSelectorLista();
   const q = document.getElementById('fam-add-buscar'); if (q) q.value = '';
@@ -12403,7 +12404,7 @@ function anadirVarFamilia(pid) {
   const p = (_famAddResultados || []).find(x => Number(x.id) === Number(pid)) || {};
   const ya = _famSelector.items.find(x => x.product_id === pid);
   if (ya) { ya.checked = true; }
-  else _famSelector.items.push({ product_id: pid, codigo: p.codigo || '', nombre: p.nombre || '', color: '', graduacion: '', checked: true });
+  else _famSelector.items.push({ product_id: pid, codigo: p.codigo || '', nombre: p.nombre || '', color: '', graduacion: '', pvf: (p.precio_pvf != null ? p.precio_pvf : null), checked: true });
   renderFamSelectorLista();
   const q = document.getElementById('fam-add-buscar'); if (q) q.value = '';
   const cont = document.getElementById('fam-add-resultados'); if (cont) cont.innerHTML = '';
