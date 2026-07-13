@@ -1,23 +1,51 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
-  --rosa: #cc007a;
-  --rosa-claro: #fff5f9;
-  --rosa-borde: #fde0ec;
-  --rosa-oscuro: #9d005d;
-  --gris-bg: #f7f7f8;
-  --gris-borde: #e5e7eb;
-  --gris-texto: #6b7280;
-  --texto: #1f2937;
-  --verde: #10b981;
-  --naranja: #f59e0b;
-  --rojo: #ef4444;
+  /* ===== Sistema de diseño CatalogPro (rediseño jul 2026) ===== */
+  /* Marca: magenta refinado -> ciruela, usado como degradado en acciones primarias */
+  --brand: #d80a6b;
+  --brand-2: #9a1259;
+  --grad: linear-gradient(135deg, #d80a6b 0%, #9a1259 100%);
+  /* Alias antiguos (se mantienen para no romper usos existentes) */
+  --rosa: #d80a6b;
+  --rosa-claro: #fdf2f8;
+  --rosa-borde: #f6d9e8;
+  --rosa-oscuro: #9a1259;
+  /* Neutros con sesgo ciruela (elegido, no gris plano) */
+  --gris-bg: #f6f3f9;
+  --gris-borde: #ece6f1;
+  --gris-borde-2: #e1d9e9;
+  --gris-texto: #877e93;
+  --texto: #1b1420;
+  --surface: #ffffff;
+  --surface-2: #fbf9fd;
+  --surface-3: #f3eef7;
+  /* Categorías (color = dato real) */
+  --violet: #7c3aed;
+  --teal: #0e9488;
+  --amber: #d97706;
+  /* Semánticos */
+  --verde: #15a34a;
+  --naranja: #d97706;
+  --rojo: #dc2626;
+  /* Elevación y radios */
+  --shadow-sm: 0 1px 2px rgba(27,20,32,.06);
+  --shadow: 0 1px 2px rgba(27,20,32,.05), 0 10px 30px -14px rgba(27,20,32,.20);
+  --shadow-lg: 0 2px 6px rgba(27,20,32,.06), 0 26px 60px -22px rgba(27,20,32,.30);
+  --r: 16px;
+  --r-sm: 11px;
+  --r-lg: 22px;
 }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  background: var(--gris-bg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background:
+    radial-gradient(1100px 560px at 92% -6%, rgba(216,10,107,.06), transparent 60%),
+    radial-gradient(900px 480px at -6% 2%, rgba(124,58,237,.05), transparent 55%),
+    var(--gris-bg);
   color: var(--texto);
-  line-height: 1.5;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
   overflow-x: hidden;
 }
 html {
@@ -35,23 +63,26 @@ html {
   padding: 1rem;
 }
 .login-card {
-  background: white;
-  border-radius: 20px;
-  padding: 2.5rem 2rem;
-  box-shadow: 0 4px 24px rgba(204, 0, 122, 0.08);
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  padding: 2.6rem 2.1rem;
+  box-shadow: var(--shadow-lg);
   width: 100%;
-  max-width: 380px;
-  border: 1px solid var(--rosa-borde);
+  max-width: 390px;
+  border: 1px solid var(--gris-borde);
 }
 .login-logo {
   text-align: center;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.6rem;
 }
 .login-logo h1 {
-  color: var(--rosa);
-  font-size: 28px;
-  font-weight: 600;
-  letter-spacing: -0.5px;
+  background: var(--grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
 }
 .login-logo p {
   color: var(--gris-texto);
@@ -69,44 +100,54 @@ html {
 .form-group input, .form-group textarea, .form-group select {
   width: 100%;
   padding: 11px 14px;
-  border: 1.5px solid var(--gris-borde);
-  border-radius: 10px;
+  border: 1px solid var(--gris-borde-2);
+  border-radius: var(--r-sm);
   font-size: 14px;
   font-family: inherit;
   outline: none;
-  transition: border-color 0.15s;
-  background: white;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  background: var(--surface-2);
+  color: var(--texto);
 }
-.form-group input:focus, .form-group textarea:focus {
-  border-color: var(--rosa);
+.form-group input:focus, .form-group textarea:focus, .form-group select:focus {
+  border-color: var(--brand);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 16%, transparent);
 }
 .btn {
   width: 100%;
-  padding: 12px;
-  border: 0;
-  border-radius: 10px;
+  padding: 11px 16px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   cursor: pointer;
   font-family: inherit;
-  transition: opacity 0.15s, transform 0.05s;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.15s ease, border-color 0.15s ease;
 }
-.btn:active { transform: scale(0.98); }
+.btn:active { transform: scale(0.985); }
+.btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--brand) 55%, transparent); outline-offset: 2px; }
 .btn-primary {
-  background: var(--rosa);
+  background: var(--grad);
   color: white;
+  box-shadow: 0 8px 20px -8px color-mix(in srgb, var(--brand) 65%, transparent);
 }
-.btn-primary:hover { background: var(--rosa-oscuro); }
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 14px 26px -8px color-mix(in srgb, var(--brand) 65%, transparent); }
 .btn-secondary {
-  background: white;
-  color: var(--rosa);
-  border: 1.5px solid var(--rosa);
+  background: var(--surface);
+  color: var(--brand);
+  border: 1px solid var(--gris-borde-2);
+  box-shadow: var(--shadow-sm);
 }
+.btn-secondary:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--brand) 40%, var(--gris-borde-2)); }
 .btn-danger {
-  background: white;
+  background: var(--surface);
   color: var(--rojo);
-  border: 1.5px solid var(--rojo);
+  border: 1px solid color-mix(in srgb, var(--rojo) 45%, var(--gris-borde-2));
+  box-shadow: var(--shadow-sm);
 }
+.btn-danger:hover { transform: translateY(-1px); background: #fef2f2; }
 .btn-pequeno {
   padding: 6px 12px;
   font-size: 12px;
@@ -132,16 +173,18 @@ html {
 /* ===== LAYOUT PRINCIPAL ===== */
 .app-shell { min-height: 100vh; }
 .topbar {
-  background: var(--rosa);
+  background: var(--grad);
   color: white;
-  padding: 14px 20px;
+  padding: 14px 22px;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  box-shadow: 0 8px 24px -16px rgba(154,18,89,.7);
 }
 .topbar-titulo {
   font-size: 18px;
-  font-weight: 500;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 .topbar-usuario {
   font-size: 12px;
@@ -164,33 +207,36 @@ html {
 
 /* ===== NAVTABS ===== */
 .navtabs {
-  background: white;
+  background: var(--surface);
   border-bottom: 1px solid var(--gris-borde);
   display: flex;
   flex-wrap: wrap;            /* que envuelva en varias filas → se ven TODAS las pestañas */
-  padding: 0 1rem;
+  padding: 6px 1rem 0;
+  gap: 2px;
   max-width: 1200px;
   margin: 0 auto;
 }
 .navtab {
   background: transparent;
   border: 0;
-  padding: 14px 18px;
+  padding: 11px 15px;
   font-size: 13px;
   font-family: inherit;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--gris-texto);
   cursor: pointer;
+  border-radius: 10px 10px 0 0;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
-  transition: color 0.15s;
+  transition: color 0.15s, background 0.15s;
   white-space: nowrap;
   flex-shrink: 0;
 }
-.navtab:hover { color: var(--rosa); }
+.navtab:hover { color: var(--brand); background: var(--surface-3); }
 .navtab.navtab-activa {
-  color: var(--rosa);
-  border-bottom-color: var(--rosa);
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 8%, transparent);
 }
 
 /* En tablet/móvil: padding más compacto en los tabs para que entren más */
