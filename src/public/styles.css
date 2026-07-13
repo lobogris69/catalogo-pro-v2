@@ -531,54 +531,57 @@ html {
   .editor-grid { grid-template-columns: 1fr; }
 }
 .editor-panel {
-  background: white;
-  border-radius: 14px;
+  background: var(--surface);
+  border-radius: var(--r);
   border: 1px solid var(--gris-borde);
-  padding: 1.2rem;
+  padding: 1.35rem;
+  box-shadow: var(--shadow-sm);
 }
 .editor-panel h3 {
-  font-size: 14px;
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   margin-bottom: 1rem;
   color: var(--texto);
 }
 .upload-zona {
-  border: 2px dashed var(--rosa);
+  border: 1.5px dashed color-mix(in srgb, var(--brand) 55%, var(--gris-borde-2));
   background: var(--rosa-claro);
-  border-radius: 12px;
-  padding: 1.5rem;
+  border-radius: var(--r-sm);
+  padding: 1.6rem;
   text-align: center;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
-.upload-zona:hover { background: #fef0f6; }
+.upload-zona:hover { background: color-mix(in srgb, var(--brand) 7%, var(--surface)); border-color: var(--brand); }
 .upload-zona.upload-zona-pdf {
-  border-color: #7c3aed;
-  background: #f5f3ff;
+  border-color: color-mix(in srgb, var(--violet) 55%, var(--gris-borde-2));
+  background: color-mix(in srgb, var(--violet) 6%, var(--surface));
 }
 .upload-zona.upload-zona-pdf .upload-zona-icono,
 .upload-zona.upload-zona-pdf .upload-zona-texto {
-  color: #7c3aed;
+  color: var(--violet);
 }
-.upload-zona.upload-zona-pdf:hover { background: #ede9fe; }
-.upload-zona-icono { font-size: 28px; color: var(--rosa); margin-bottom: 6px; }
-.upload-zona-texto { color: var(--rosa); font-size: 13px; font-weight: 500; }
+.upload-zona.upload-zona-pdf:hover { background: color-mix(in srgb, var(--violet) 10%, var(--surface)); }
+.upload-zona-icono { font-size: 30px; color: var(--brand); margin-bottom: 6px; }
+.upload-zona-texto { color: var(--brand); font-size: 13.5px; font-weight: 600; }
 .upload-zona-sub { color: var(--gris-texto); font-size: 11px; margin-top: 4px; }
 
 .lamina-fila {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
-  background: var(--gris-bg);
+  padding: 11px 13px;
+  background: var(--surface-2);
   border: 1px solid var(--gris-borde);
-  border-radius: 10px;
-  margin-bottom: 6px;
-  transition: border-color 0.15s;
+  border-radius: var(--r-sm);
+  margin-bottom: 8px;
+  transition: border-color 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
 }
 .lamina-fila:hover {
-  border-color: var(--rosa);
-  background: white;
+  border-color: color-mix(in srgb, var(--brand) 32%, var(--gris-borde));
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 /* Resaltado breve de la lámina a la que volvemos tras editar (para ubicarse) */
 .lamina-fila-vuelta {
