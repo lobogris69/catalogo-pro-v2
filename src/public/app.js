@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v53 · 10 jul 2026';
+const APP_VERSION = 'v54 · 10 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -12154,10 +12154,12 @@ async function cargarPreviewFamiliaAdmin(sel) {
     const r = await api(q);
     if (r && r.familia) {
       const ejes = (r.familia.ejes || []).map(e => e.label + ': ' + e.valores.join('/')).join(' · ');
+      const zidJs = String(sel.id).replace(/'/g, "\\'");
       const cab = '<b>' + r.familia.n_variantes + '</b> variantes' + (curada ? ' (elegidas a mano)' : '') + (ejes ? ' — ' + escape(ejes) : ' (sin ejes a elegir)')
-        + '<div style="font-size:11px;color:#9ca3af;margin-top:2px">✏️ Toca una variante para editar sus datos (precio, nombre…).</div>';
-      // Lista de variantes CON PRECIO (PVF/PVPR) para poder verificar que son las correctas,
-      // igual que se ve en un producto suelto. Cada fila abre el editor de ESE producto.
+        + '<div style="font-size:11px;color:#9ca3af;margin-top:2px">✏️ = editar datos/precio de ese producto · 🔄 = cambiarlo por otro de la base de datos.</div>'
+        + '<button class="btn" style="width:100%;background:#7c3aed;color:#fff;padding:7px;font-size:12px;font-weight:700;margin-top:6px" onclick="abrirSelectorVariantesFamilia(\'' + zidJs + '\')">🔄 Cambiar / quitar / añadir miembros</button>';
+      // Lista de variantes CON PRECIO (PVF/PVPR). ✏️ edita ese producto; 🔄 abre el
+      // selector para SUSTITUIR ese miembro por otro de la BD (sin crear referencia nueva).
       const vs = r.familia.variantes || [];
       const filas = vs.map(v => {
         const detalle = (v.ejes && (v.ejes.color || v.ejes.graduacion || v.ejes.talla || v.ejes.formato))
@@ -12165,12 +12167,12 @@ async function cargarPreviewFamiliaAdmin(sel) {
         const pvf = (v.pvf != null && v.pvf !== '') ? Number(v.pvf).toFixed(2) + '€' : '—';
         const pvpr = (v.pvpr != null && v.pvpr !== '') ? Number(v.pvpr).toFixed(2) + '€' : null;
         const precioSospechoso = (v.pvf == null || Number(v.pvf) === 0);
-        return '<div onclick="abrirDetalleProducto(' + Number(v.product_id) + ')" title="Editar datos de este producto" '
-          + 'style="display:flex;justify-content:space-between;gap:8px;padding:6px 4px;border-bottom:1px solid #f3e8ff;cursor:pointer;border-radius:4px" '
-          + 'onmouseover="this.style.background=\'#faf5ff\'" onmouseout="this.style.background=\'\'">'
-          + '<span style="flex:1;min-width:0">✏️ <b>' + escape(v.codigo || '') + '</b> · ' + escape(v.nombre || '') + detalle + '</span>'
+        return '<div style="display:flex;justify-content:space-between;gap:6px;align-items:center;padding:6px 4px;border-bottom:1px solid #f3e8ff">'
+          + '<span style="flex:1;min-width:0"><b>' + escape(v.codigo || '') + '</b> · ' + escape(v.nombre || '') + detalle + '</span>'
           + '<span style="white-space:nowrap;text-align:right;color:' + (precioSospechoso ? '#dc2626' : '#16a34a') + ';font-weight:600">PVF ' + pvf
           + (pvpr ? '<span style="color:#6b7280;font-weight:400"> · PVPR ' + pvpr + '</span>' : '') + '</span>'
+          + '<button class="btn" style="width:auto;flex:0 0 auto;background:#eef2ff;color:#4338ca;padding:2px 6px;font-size:12px" onclick="abrirDetalleProducto(' + Number(v.product_id) + ')" title="Editar datos/precio de este producto">✏️</button>'
+          + '<button class="btn" style="width:auto;flex:0 0 auto;background:#f3e8ff;color:#7c3aed;padding:2px 6px;font-size:12px" onclick="abrirSelectorVariantesFamilia(\'' + zidJs + '\')" title="Cambiar este miembro por otro de la base de datos">🔄</button>'
           + '</div>';
       }).join('');
       el.innerHTML = cab
