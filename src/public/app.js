@@ -12267,29 +12267,76 @@ function buscarProductoParaFamilia(q) {
   if (!q || q.trim().length < 2) { if (cont) cont.innerHTML = ''; return; }
   _famAddTimer = setTimeout(async () => {
     try {
-      const r = await api('/api/products?q=' + encodeURIComponent(q.trim()) + '&limit=10');
+      const r = await api('/api/products?q=' + encodeURIComponent(q.trim()) + '&limit=40');
       const ps = r.products || [];
       _famAddResultados = ps; // guardar para el lookup (evita meter el nombre en el onclick)
       if (!cont) return;
-      cont.innerHTML = ps.length ? ps.map(p => `
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f3f4f6;font-size:13px">
-          <span><b>${escape(p.codigo || '')}</b> · ${escape((p.nombre || '').slice(0, 45))}</span>
-          <button class="btn btn-primary" style="padding:3px 8px;font-size:11px" onclick="anadirVarFamilia(${p.id})">Añadir</button>
-        </div>`).join('') : '<div style="color:#9ca3af;font-size:12px;padding:6px">Sin resultados</div>';
+      if (!ps.length) { cont.innerHTML = '<div style="color:#9ca3af;font-size:12px;padding:6px">Sin resultados</div>'; return; }
+      // Resultados con CASILLAS: marca varios y añádelos de golpe (evita ir uno a uno).
+      // Los ya presentes en la familia se marcan y deshabilitan.
+      const yaIds = new Set((_famSelector ? _famSelector.items : []).map(x => Number(x.product_id)));
+      cont.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px;position:sticky;top:0;background:#fff;border-bottom:1px solid #e5e7eb;z-index:1">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#374151;cursor:pointer">
+            <input type="checkbox" id="fam-add-todos" onchange="famAddMarcarTodos(this.checked)"> Marcar todos
+          </label>
+          <button class="btn btn-primary" style="width:auto;flex:0 0 auto;padding:5px 12px;font-size:12px" onclick="anadirVarFamiliaMarcados()">➕ Añadir marcados (<span id="fam-add-nsel">0</span>)</button>
+        </div>
+        ` + ps.map(p => {
+          const dentro = yaIds.has(Number(p.id));
+          return `
+          <label style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #f3f4f6;font-size:13px;cursor:${dentro ? 'default' : 'pointer'};opacity:${dentro ? '0.5' : '1'}">
+            <input type="checkbox" class="fam-add-chk" value="${p.id}" ${dentro ? 'checked disabled' : ''} onchange="famAddActualizarContador()">
+            <span><b>${escape(p.codigo || '')}</b> · ${escape((p.nombre || '').slice(0, 55))}${dentro ? ' <span style="color:#16a34a;font-size:11px">✓ ya está</span>' : ''}</span>
+          </label>`;
+        }).join('');
+      famAddActualizarContador();
     } catch (_) {}
   }, 300);
 }
 
+// Cuenta las casillas marcadas (no deshabilitadas) y actualiza el botón + "marcar todos".
+function famAddActualizarContador() {
+  const chks = Array.from(document.querySelectorAll('.fam-add-chk')).filter(c => !c.disabled);
+  const marcadas = chks.filter(c => c.checked);
+  const nsel = document.getElementById('fam-add-nsel');
+  if (nsel) nsel.textContent = marcadas.length;
+  const todos = document.getElementById('fam-add-todos');
+  if (todos) todos.checked = chks.length > 0 && marcadas.length === chks.length;
+}
+
+function famAddMarcarTodos(on) {
+  document.querySelectorAll('.fam-add-chk').forEach(c => { if (!c.disabled) c.checked = on; });
+  famAddActualizarContador();
+}
+
+// Añade de GOLPE todos los productos marcados en el buscador a mano.
+function anadirVarFamiliaMarcados() {
+  if (!_famSelector) return;
+  const ids = Array.from(document.querySelectorAll('.fam-add-chk'))
+    .filter(c => c.checked && !c.disabled)
+    .map(c => Number(c.value));
+  if (!ids.length) return;
+  let anadidos = 0;
+  for (const pid of ids) {
+    const p = (_famAddResultados || []).find(x => Number(x.id) === Number(pid)) || {};
+    const ya = _famSelector.items.find(x => Number(x.product_id) === pid);
+    if (ya) { ya.checked = true; }
+    else { _famSelector.items.push({ product_id: pid, codigo: p.codigo || '', nombre: p.nombre || '', color: '', graduacion: '', checked: true }); anadidos++; }
+  }
+  renderFamSelectorLista();
+  const q = document.getElementById('fam-add-buscar'); if (q) q.value = '';
+  const cont = document.getElementById('fam-add-resultados'); if (cont) cont.innerHTML = '';
+  mostrarNotificacionOnline('➕ ' + anadidos + ' producto' + (anadidos === 1 ? '' : 's') + ' añadido' + (anadidos === 1 ? '' : 's') + ' a la familia', '#a855f7');
+}
+
+// (compat) añadir uno solo — ya no se usa desde la UI, pero lo dejamos por si acaso.
 function anadirVarFamilia(pid) {
   if (!_famSelector) return;
-  // El nombre/código se buscan en los resultados guardados (no en el onclick), así que
-  // funcionan aunque el nombre tenga comillas dobles (ej. VP NATURA GEL "USO DIARIO").
   const p = (_famAddResultados || []).find(x => Number(x.id) === Number(pid)) || {};
-  const codigo = p.codigo || '';
-  const nombre = p.nombre || '';
   const ya = _famSelector.items.find(x => x.product_id === pid);
   if (ya) { ya.checked = true; }
-  else _famSelector.items.push({ product_id: pid, codigo, nombre, color: '', graduacion: '', checked: true });
+  else _famSelector.items.push({ product_id: pid, codigo: p.codigo || '', nombre: p.nombre || '', color: '', graduacion: '', checked: true });
   renderFamSelectorLista();
   const q = document.getElementById('fam-add-buscar'); if (q) q.value = '';
   const cont = document.getElementById('fam-add-resultados'); if (cont) cont.innerHTML = '';
