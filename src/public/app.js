@@ -12204,13 +12204,13 @@ async function abrirSelectorVariantesFamilia(zoneId) {
         </div>
         <div id="fam-buscar-msg" style="font-size:12px;color:#6b7280;margin-top:4px"></div>
       </div>
-      <div style="font-size:13px;font-weight:600;margin:8px 0 4px">Variantes (marca las que van):</div>
-      <div id="fam-lista-variantes" style="max-height:36vh;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:6px"></div>
+      <div style="font-size:13px;font-weight:600;margin:8px 0 4px">Variantes (marca las que van): <span style="font-size:10px;color:#9ca3af;font-weight:400">↕ arrastra el borde inferior para agrandar</span></div>
+      <div id="fam-lista-variantes" style="min-height:90px;max-height:70vh;overflow:auto;resize:vertical;border:1px solid #eee;border-radius:8px;padding:6px"></div>
       <div class="form-group" style="margin-top:12px">
         <label style="font-size:13px;font-weight:600">➕ Añadir otro producto a mano</label>
-        <div style="font-size:11px;color:#6b7280;margin:2px 0 6px">Por si algún código está escrito raro en Sage. Busca por nombre o código.</div>
+        <div style="font-size:11px;color:#6b7280;margin:2px 0 6px">Por si algún código está escrito raro en Sage. Busca por nombre o código. <span style="color:#9ca3af">↕ arrastra el borde inferior de la lista para ver más.</span></div>
         <input id="fam-add-buscar" placeholder="Buscar producto…" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #d1d5db;border-radius:6px" oninput="buscarProductoParaFamilia(this.value)">
-        <div id="fam-add-resultados" style="max-height:22vh;overflow-y:auto;margin-top:4px"></div>
+        <div id="fam-add-resultados" style="max-height:70vh;overflow:auto;resize:vertical;margin-top:4px"></div>
       </div>
       <div class="modal-acciones">
         <button class="btn btn-secondary" onclick="cerrarSelectorFamilia()">Cancelar</button>
