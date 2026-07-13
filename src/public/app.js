@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v67 · 13 jul 2026';
+const APP_VERSION = 'v68 · 13 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -658,7 +658,7 @@ async function renderEditorCatalogo(id) {
 
             <div style="text-align:center; margin:14px 0 10px; color:var(--gris-texto); font-size:11px;">— o —</div>
 
-            <div class="upload-zona" id="upload-zona-multi" onclick="abrirModalSubidaMasiva(${id})" style="background:#fef3f9;border-color:#f9a8d4">
+            <div class="upload-zona upload-zona-multi" id="upload-zona-multi" onclick="abrirModalSubidaMasiva(${id})">
               <div class="upload-zona-icono">📚</div>
               <div class="upload-zona-texto">Subida masiva</div>
               <div class="upload-zona-sub">varias láminas a la vez (ordenadas por nombre)</div>
@@ -1195,7 +1195,7 @@ function abrirModalSubidaMasiva(catalogId) {
         <button class="modal-cerrar" onclick="cerrarModalBulk()">×</button>
       </div>
 
-      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:14px;font-size:13px;color:#4b5563">
+      <div style="background:var(--surface-2);border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:14px;font-size:13px;color:#4b5563">
         <b>📋 Cómo funciona:</b>
         <ol style="margin:6px 0 0 18px;padding:0">
           <li>Selecciona varias imágenes (PNG, JPG) — hasta 50 a la vez</li>
@@ -1786,7 +1786,7 @@ function abrirModalEditarLamina(sheet, catalogId) {
         </div>
         <div class="form-group">
           <label>🏷️ Categorías</label>
-          <div id="ed-cats-cont" style="border:1px solid #d1d5db;border-radius:6px;padding:8px;min-height:42px;max-height:200px;overflow-y:auto;background:#fff">
+          <div id="ed-cats-cont" style="border:1px solid #d1d5db;border-radius:6px;padding:8px;min-height:42px;max-height:200px;overflow-y:auto;background:var(--surface)">
             <div style="font-size:12px;color:#9ca3af">Cargando categorías…</div>
           </div>
           <small style="color:var(--gris-texto);display:block;margin-top:4px">Gestiona las categorías en ⚙️ Configuración.</small>
@@ -1916,7 +1916,7 @@ async function renderListaClientes() {
         ${esAdmin ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalImportarSage()">📊 Importar Excel Sage</button>` : ''}
       </div>
 
-      <div style="background:white;border:1px solid var(--gris-borde);border-radius:12px;padding:1rem;margin-bottom:1rem;position:relative">
+      <div style="background:var(--surface);border:1px solid var(--gris-borde);border-radius:12px;padding:1rem;margin-bottom:1rem;position:relative">
         <input type="text" id="clientes-buscar" placeholder="🔍 Buscar por nombre, CIF, código Sage o municipio (min. 2 letras)..."
                value="${escape(appState.clientesBusqueda)}"
                style="width:100%;padding:10px 14px;border:1px solid var(--gris-borde);border-radius:10px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">
@@ -4567,7 +4567,7 @@ async function renderConfiguracion() {
             <b>⚠️ Importante:</b> el proceso tarda aproximadamente <b>1 segundo por cliente</b> (límite del servicio gratuito de OpenStreetMap).
             Para 2949 clientes son ~50 minutos. Puedes dejarlo corriendo en segundo plano mientras haces otras cosas.
           </p>
-          <div id="geocoding-stats" style="background:#f9fafb;padding:12px;border-radius:8px;margin:12px 0;font-size:13px">
+          <div id="geocoding-stats" style="background:var(--surface-2);padding:12px;border-radius:8px;margin:12px 0;font-size:13px">
             Cargando estado…
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -4589,7 +4589,7 @@ async function renderConfiguracion() {
             <br>
             <b>⚠️ Esta acción es irreversible.</b> Asegúrate de tener descargada cualquier versión que quieras conservar.
           </p>
-          <div id="limpiar-pruebas-stats" style="background:#fff;padding:12px;border-radius:8px;margin:12px 0;font-size:13px;border:1px solid #fecaca">
+          <div id="limpiar-pruebas-stats" style="background:var(--surface);padding:12px;border-radius:8px;margin:12px 0;font-size:13px;border:1px solid #fecaca">
             Cargando recuento…
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -4689,7 +4689,7 @@ async function renderConfiguracion() {
           <h3 style="margin-top:0">🔄 Sincronización con Sage
             ${ayuda('Un programa en el PC de la oficina lee la base de datos de Sage y empuja los datos a esta app por HTTPS. Aquí ves cuándo llegó el último batch de cada tipo y cuántos registros trajo.', 'izq')}
           </h3>
-          <div id="sync-sage-resumen" style="font-size:13px;color:var(--gris-texto);padding:12px;background:#f9fafb;border-radius:8px">
+          <div id="sync-sage-resumen" style="font-size:13px;color:var(--gris-texto);padding:12px;background:var(--surface-2);border-radius:8px">
             Cargando…
           </div>
           <div style="margin-top:10px">
@@ -4751,7 +4751,7 @@ async function cargarListaCategorias() {
     const r = await api('/api/categorias');
     _categoriasCache = r.categorias || [];
     if (_categoriasCache.length === 0) {
-      $lista.innerHTML = `<div style="padding:1rem;background:#f9fafb;border-radius:8px;color:#6b7280;font-size:13px;text-align:center">
+      $lista.innerHTML = `<div style="padding:1rem;background:var(--surface-2);border-radius:8px;color:#6b7280;font-size:13px;text-align:center">
         Aún no hay categorías. Crea la primera abajo (ej: "Verano", "Promo", "Vista", "Presbicia").
       </div>`;
       return;
@@ -5813,7 +5813,7 @@ async function cargarCarpetasMega() {
     _megaComerciales = (ru.users || []).filter(u => u.role === 'sales' && u.is_active);
     const folders = r.folders || [];
     if (folders.length === 0) {
-      $lista.innerHTML = `<div style="color:var(--gris-texto);font-size:13px;padding:12px;text-align:center;background:#f9fafb;border-radius:8px">
+      $lista.innerHTML = `<div style="color:var(--gris-texto);font-size:13px;padding:12px;text-align:center;background:var(--surface-2);border-radius:8px">
         Todavía no hay carpetas configuradas. Pulsa "🌱 Crear las 6 carpetas iniciales" para empezar.
       </div>`;
       return;
@@ -5822,7 +5822,7 @@ async function cargarCarpetasMega() {
       <div style="overflow-x:auto">
       <table style="width:100%;font-size:13px;border-collapse:collapse">
         <thead>
-          <tr style="background:#f9fafb;text-align:left">
+          <tr style="background:var(--surface-2);text-align:left">
             <th style="padding:8px;border-bottom:1px solid var(--gris-borde)">Nombre carpeta MEGA</th>
             <th style="padding:8px;border-bottom:1px solid var(--gris-borde)">Enlace público</th>
             <th style="padding:8px;border-bottom:1px solid var(--gris-borde)">Email a</th>
@@ -6136,7 +6136,7 @@ async function cargarResumenSyncSage() {
     const bloque = (tipo, emoji, label) => {
       const u = ultimos.find(x => x.tipo === tipo);
       if (!u) return `
-        <div style="padding:10px;border:1px dashed var(--gris-borde);border-radius:8px;background:#fff;flex:1;min-width:170px">
+        <div style="padding:10px;border:1px dashed var(--gris-borde);border-radius:8px;background:var(--surface);flex:1;min-width:170px">
           <div style="font-size:12px;font-weight:600">${emoji} ${label}</div>
           <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Sin datos todavía</div>
         </div>`;
@@ -6179,7 +6179,7 @@ async function verHistorialSyncSage() {
     $c.innerHTML = `
       <div style="max-height:500px;overflow-y:auto">
         <table style="width:100%;font-size:12px;border-collapse:collapse">
-          <thead><tr style="background:#f9fafb;text-align:left">
+          <thead><tr style="background:var(--surface-2);text-align:left">
             <th style="padding:6px 8px">Tipo</th>
             <th style="padding:6px 8px">Recibido</th>
             <th style="padding:6px 8px">Filas</th>
@@ -6221,7 +6221,7 @@ async function cargarDestinatariosOficina() {
     const r = await api('/api/admin/office-recipients');
     const recs = r.recipients || [];
     if (recs.length === 0) {
-      $lista.innerHTML = `<div style="color:var(--gris-texto);font-size:12px;padding:8px;background:#f9fafb;border-radius:6px">
+      $lista.innerHTML = `<div style="color:var(--gris-texto);font-size:12px;padding:8px;background:var(--surface-2);border-radius:6px">
         No hay destinatarios. Pulsa "🌱 Añadir los 4 iniciales" para configurar los emails de oficina.
       </div>`;
       return;
@@ -6324,7 +6324,7 @@ async function abrirEnviarResumenOficina() {
     $c.style.display = 'block';
     const total = p.resumen.nuevas + p.resumen.modificadas + p.resumen.eliminadas;
     $c.innerHTML = `
-      <div style="background:#f9fafb;padding:12px;border-radius:8px;margin-bottom:14px">
+      <div style="background:var(--surface-2);padding:12px;border-radius:8px;margin-bottom:14px">
         <div style="font-size:12px;color:var(--gris-texto)">Periodo: ${new Date(p.desde).toLocaleDateString('es-ES')} → hoy</div>
         <div style="font-size:14px;font-weight:600;margin-top:4px">
           ${total === 0 ? '✅ Sin cambios' : `${total} cambio${total > 1 ? 's' : ''} en láminas`}
@@ -6361,7 +6361,7 @@ async function abrirEnviarResumenOficina() {
       </div>
 
       <div style="font-size:12px;font-weight:600;margin:14px 0 4px 0">📧 Destinatarios (${p.destinatarios.length})</div>
-      <div style="font-size:11px;background:#f9fafb;padding:8px;border-radius:6px">
+      <div style="font-size:11px;background:var(--surface-2);padding:8px;border-radius:6px">
         ${p.destinatarios.map(d => escape(d.email)).join(' · ') || '<span style="color:#dc2626">⚠️ Sin destinatarios configurados</span>'}
       </div>
 
@@ -6599,7 +6599,7 @@ function pintarResultadosBackupMega(job) {
           El nuevo backup está en la subcarpeta 📂 <b>${escape(rutaInterna)}</b>
         </div>
         <input type="text" value="${escape(d.mega_url)}" readonly onclick="this.select()"
-               style="width:100%;padding:6px 10px;border:1px solid var(--gris-borde);border-radius:6px;font-size:12px;font-family:monospace;background:#f9fafb">
+               style="width:100%;padding:6px 10px;border:1px solid var(--gris-borde);border-radius:6px;font-size:12px;font-family:monospace;background:var(--surface-2)">
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-secondary btn-pequeno" onclick="copiarAlPortapapeles('${escape(d.mega_url)}', this)">📋 Copiar link</button>
           <a href="${escape(d.mega_url)}" target="_blank" class="btn btn-secondary btn-pequeno" style="text-decoration:none">🔗 Abrir en MEGA</a>
@@ -6631,7 +6631,7 @@ async function reintentarLinkMega(backupId, boton) {
         bloque.innerHTML = `
           <b>✅ Link generado</b>
           <input type="text" value="${escape(megaUrl)}" readonly onclick="this.select()"
-                 style="width:100%;padding:6px 10px;margin-top:8px;border:1px solid var(--gris-borde);border-radius:6px;font-size:12px;font-family:monospace;background:#fff">
+                 style="width:100%;padding:6px 10px;margin-top:8px;border:1px solid var(--gris-borde);border-radius:6px;font-size:12px;font-family:monospace;background:var(--surface)">
           <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn-secondary btn-pequeno" onclick="copiarAlPortapapeles('${escape(megaUrl)}', this)">📋 Copiar link</button>
             <a href="${escape(megaUrl)}" target="_blank" class="btn btn-secondary btn-pequeno" style="text-decoration:none">🔗 Abrir en MEGA</a>
@@ -8310,7 +8310,7 @@ function pintarAula() {
 
   if (filtradas.length === 0) {
     $c.innerHTML = `
-      <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:32px;text-align:center;color:#6b7280">
+      <div style="background:var(--surface);border:1px solid #e5e7eb;border-radius:8px;padding:32px;text-align:center;color:#6b7280">
         ${_aulaCache.length === 0
           ? (esAdmin
               ? '🎓 Aún no hay formaciones subidas. Pulsa <b>"+ Nueva formación"</b> para empezar.'
@@ -8428,7 +8428,7 @@ function abrirModalSubirFormacion() {
         </div>
 
         <!-- Bloque 3 HH1: Visibilidad / Permisos -->
-        <div class="form-group" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px">
+        <div class="form-group" style="background:var(--surface-2);border:1px solid #e5e7eb;border-radius:8px;padding:12px">
           <label style="font-weight:600;margin-bottom:8px;display:block">Visibilidad ${ayuda('Pública = todos los comerciales pueden ver y descargar la formación. Restringida = solo los comerciales que marques abajo podrán verla. Útil para material confidencial de un laboratorio concreto.')}</label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;margin-bottom:6px">
             <input type="radio" name="nf-visibilidad" value="publico" checked onchange="cambiarVisibilidadNF()">
@@ -8438,7 +8438,7 @@ function abrirModalSubirFormacion() {
             <input type="radio" name="nf-visibilidad" value="restringido" onchange="cambiarVisibilidadNF()">
             <span>🔒 <b>Restringida</b> — solo comerciales seleccionados</span>
           </label>
-          <div id="nf-comerciales" style="display:none;margin-top:10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:10px;max-height:200px;overflow-y:auto">
+          <div id="nf-comerciales" style="display:none;margin-top:10px;background:var(--surface);border:1px solid #e5e7eb;border-radius:6px;padding:10px;max-height:200px;overflow-y:auto">
             <p style="font-size:12px;color:#6b7280;margin:0 0 6px 0">Cargando comerciales…</p>
           </div>
         </div>
@@ -8594,7 +8594,7 @@ async function abrirModalEditarFormacion(id) {
         </div>
 
         <!-- Bloque 3 HH1: Visibilidad / Permisos -->
-        <div class="form-group" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px">
+        <div class="form-group" style="background:var(--surface-2);border:1px solid #e5e7eb;border-radius:8px;padding:12px">
           <label style="font-weight:600;margin-bottom:8px;display:block">Visibilidad</label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;margin-bottom:6px">
             <input type="radio" name="ef-visibilidad" value="publico" ${f.publico ? 'checked' : ''} onchange="cambiarVisibilidadEF()">
@@ -8604,7 +8604,7 @@ async function abrirModalEditarFormacion(id) {
             <input type="radio" name="ef-visibilidad" value="restringido" ${!f.publico ? 'checked' : ''} onchange="cambiarVisibilidadEF()">
             <span>🔒 <b>Restringida</b> — solo comerciales seleccionados</span>
           </label>
-          <div id="ef-comerciales" style="display:${f.publico ? 'none' : 'block'};margin-top:10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:10px;max-height:200px;overflow-y:auto">
+          <div id="ef-comerciales" style="display:${f.publico ? 'none' : 'block'};margin-top:10px;background:var(--surface);border:1px solid #e5e7eb;border-radius:6px;padding:10px;max-height:200px;overflow-y:auto">
             <p style="font-size:12px;color:#6b7280;margin:0 0 6px 0">Cargando comerciales…</p>
           </div>
         </div>
@@ -8618,8 +8618,8 @@ async function abrirModalEditarFormacion(id) {
           <label style="font-size:13px;font-weight:normal;margin-bottom:4px;display:block">Reemplazar (opcional)</label>
           <input type="file" id="ef-archivo-nuevo"
                  accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.ppt,.pptx,.mp4,.webm,.mov"
-                 style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;background:#fff">
-          <input type="text" id="ef-notas-version" placeholder="Notas (opcional): qué cambia respecto a la anterior" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:13px;margin-top:6px;background:#fff">
+                 style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;background:var(--surface)">
+          <input type="text" id="ef-notas-version" placeholder="Notas (opcional): qué cambia respecto a la anterior" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:13px;margin-top:6px;background:var(--surface)">
           <small style="color:#6b7280">Si subes un nuevo archivo, el actual pasa al historial de versiones.</small>
         </div>
 
@@ -8797,7 +8797,7 @@ async function abrirModalVersionesFormacion(id) {
       const fecha = new Date(v.archivado_at).toLocaleString('es-ES', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const icono = iconoFormacion(v.archivo_mime);
       return `
-        <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px;background:#f9fafb">
+        <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px;background:var(--surface-2)">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
             <div style="flex:1">
               <div style="font-size:14px;font-weight:600;color:#111827">${icono} ${escape(v.archivo_nombre)}</div>
@@ -11163,7 +11163,7 @@ function mostrarPreviewImportProductos(preview) {
         </div>
       </div>
 
-      <div style="background:#f9fafb;padding:14px;border-radius:8px;margin-bottom:14px;font-size:13px">
+      <div style="background:var(--surface-2);padding:14px;border-radius:8px;margin-bottom:14px;font-size:13px">
         <div style="font-weight:600;margin-bottom:8px">📋 Resumen</div>
         <div>📄 Total productos válidos en el Excel: <b>${preview.total_excel}</b></div>
         ${preview.descartados_basura > 0 ? `
@@ -12060,7 +12060,7 @@ function renderListaZonas() {
             <label style="font-size:12px;font-weight:600;color:#ea580c">Variantes / referencias (opcional) · ${(sel.comision_variantes || []).length}</label>
             <div style="font-size:11px;color:#6b7280;margin:2px 0 6px">Si tiene varias (colores, referencias…), añádelas. El comercial elegirá una en un desplegable durante la visita.</div>
             <div id="com-var-lista-${sel.id}" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">
-              ${(sel.comision_variantes || []).map((v, idx) => `<span class="fam-chip" style="background:#fff;border:1px solid #fed7aa">${escape(String(v))} <button onclick="quitarVarianteComision('${String(sel.id).replace(/'/g, "\\'")}',${idx})" style="border:none;background:none;color:#dc2626;cursor:pointer;font-weight:700;padding:0 2px">×</button></span>`).join('')}
+              ${(sel.comision_variantes || []).map((v, idx) => `<span class="fam-chip" style="background:var(--surface);border:1px solid #fed7aa">${escape(String(v))} <button onclick="quitarVarianteComision('${String(sel.id).replace(/'/g, "\\'")}',${idx})" style="border:none;background:none;color:#dc2626;cursor:pointer;font-weight:700;padding:0 2px">×</button></span>`).join('')}
             </div>
             <label style="font-size:11px;color:#374151;font-weight:600">Buscar producto y añadir</label>
             <div id="com-var-ac-${sel.id}" style="margin:2px 0 8px"></div>
@@ -12195,7 +12195,7 @@ async function cargarPreviewFamiliaAdmin(sel) {
           + '</div>';
       }).join('');
       el.innerHTML = cab
-        + '<div style="max-height:34vh;overflow-y:auto;margin-top:6px;background:#fff;border:1px solid #e9d5ff;border-radius:6px;padding:6px;font-size:12px">'
+        + '<div style="max-height:34vh;overflow-y:auto;margin-top:6px;background:var(--surface);border:1px solid #e9d5ff;border-radius:6px;padding:6px;font-size:12px">'
         + (filas || '<span style="color:#9ca3af">Sin variantes que mostrar</span>')
         + '</div>';
     } else {
@@ -12350,7 +12350,7 @@ function buscarProductoParaFamilia(q) {
       // Los ya presentes en la familia se marcan y deshabilitan.
       const yaIds = new Set((_famSelector ? _famSelector.items : []).map(x => Number(x.product_id)));
       cont.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px;position:sticky;top:0;background:#fff;border-bottom:1px solid #e5e7eb;z-index:1">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px;position:sticky;top:0;background:var(--surface);border-bottom:1px solid #e5e7eb;z-index:1">
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#374151;cursor:pointer">
             <input type="checkbox" id="fam-add-todos" onchange="famAddMarcarTodos(this.checked)"> Marcar todos
           </label>
