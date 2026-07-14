@@ -4,8 +4,31 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v72 · 13 jul 2026';
+const APP_VERSION = 'v73 · 14 jul 2026';
 const API = '';
+
+// ============================================================================
+// AVISO DE NUEVA VERSIÓN — fiable e INDEPENDIENTE del ciclo del Service Worker.
+// Compara la versión del sw.js del SERVIDOR con la que está corriendo (APP_VERSION);
+// si difiere, muestra el banner "Actualizar". Se comprueba al abrir, al volver a la
+// pestaña y cada 5 min. Antes dependíamos solo del evento updatefound del SW, que a
+// veces no dispara en algunos navegadores → el usuario no se enteraba de la versión nueva.
+const _APP_VER_NUM = (APP_VERSION.match(/v\d+/) || [''])[0]; // 'v72'
+async function comprobarNuevaVersionServidor() {
+  try {
+    const r = await fetch('/sw.js', { cache: 'no-store' });
+    if (!r.ok) return;
+    const t = await r.text();
+    const m = t.match(/cpv2-shell-(v\d+)/);
+    const servidor = m ? m[1] : '';
+    if (servidor && _APP_VER_NUM && servidor !== _APP_VER_NUM && typeof mostrarBannerActualizacion === 'function') {
+      mostrarBannerActualizacion();
+    }
+  } catch (e) { /* sin red: se reintenta luego */ }
+}
+window.addEventListener('load', () => setTimeout(comprobarNuevaVersionServidor, 2500));
+document.addEventListener('visibilitychange', () => { if (!document.hidden) comprobarNuevaVersionServidor(); });
+setInterval(comprobarNuevaVersionServidor, 5 * 60 * 1000);
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
 let impersonating = JSON.parse(localStorage.getItem('cpv2_impersonate') || 'null');
