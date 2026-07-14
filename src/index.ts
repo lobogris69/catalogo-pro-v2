@@ -828,6 +828,35 @@ async function initDB(): Promise<void> {
       ALTER TABLE lamina_recuadro ADD COLUMN IF NOT EXISTS nota VARCHAR(200);
       ALTER TABLE lamina_recuadro ADD COLUMN IF NOT EXISTS valor_impreso DECIMAL(10,2);
 
+      -- ===== F4 precios dinamicos: OFERTAS / CAMPANAS (ventana inicio-fin) =====
+      -- La empresa define ofertas EN LA APP (no vienen de Sage). A diferencia del precio
+      -- (escalon con fecha de entrada), la oferta tiene inicio+fin y CADUCA sola. Ambito:
+      -- un producto, o un GRUPO (todos los de una marca/laboratorio o de una familia), o todos.
+      -- tipo: descuento (% ), bonificacion (genero, texto "3+1"...), o texto libre (promo).
+      CREATE TABLE IF NOT EXISTS oferta (
+        id SERIAL PRIMARY KEY,
+        nombre VARCHAR(120),                            -- nombre interno de la campana
+        ambito VARCHAR(12) NOT NULL DEFAULT 'producto', -- producto | familia | marca | todos
+        product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+        familia VARCHAR(120),
+        marca VARCHAR(120),
+        tipo VARCHAR(14) NOT NULL DEFAULT 'descuento',  -- descuento | bonificacion | texto
+        valor DECIMAL(10,2),                            -- % si tipo=descuento
+        texto VARCHAR(120),                             -- etiqueta a mostrar (bonificacion/texto)
+        fecha_inicio DATE NOT NULL,
+        fecha_fin DATE NOT NULL,
+        prioridad SMALLINT NOT NULL DEFAULT 0,          -- desempate: mayor gana
+        color VARCHAR(24) NOT NULL DEFAULT '#dc2626',   -- color de la etiqueta
+        activo BOOLEAN NOT NULL DEFAULT TRUE,
+        creado_por INTEGER REFERENCES users(id),
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_oferta_vig ON oferta(activo, fecha_inicio, fecha_fin);
+      CREATE INDEX IF NOT EXISTS idx_oferta_prod ON oferta(product_id);
+      CREATE INDEX IF NOT EXISTS idx_oferta_marca ON oferta(marca);
+      CREATE INDEX IF NOT EXISTS idx_oferta_familia ON oferta(familia);
+
       -- ===== Sync Sage - campos extra en clients (idempotente) =====
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS tarifa_precio INTEGER;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS nombre_comercial VARCHAR(255);
@@ -6766,6 +6795,154 @@ app.post('/api/sheets/:sheetId/detect-precios-ia', verifyToken, requireAdmin, as
     }
     res.json({ success: true, creados, con_revisar, total_detectados: detec.length, descartados_fuera, zonas_producto: zonas.length, detalle });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// ============================================================================
+// F4 OFERTAS / CAMPANAS (ventana inicio-fin) — CRUD + resolucion vigente
+// ============================================================================
+
+// Etiqueta a mostrar en el visor segun el tipo de oferta.
+function labelOferta(o: any): string {
+  if (o.texto) return String(o.texto);
+  if (o.tipo === 'descuento' && o.valor != null) {
+    const v = Number(o.valor);
+    return '-' + (Number.isInteger(v) ? v : v.toFixed(2).replace('.', ',')) + '%';
+  }
+  if (o.tipo === 'bonificacion') return 'Bonificación';
+  return 'Oferta';
+}
+
+// Especificidad del ambito (producto manda sobre familia/marca/todos en conflicto).
+function especificidad(ambito: string): number {
+  return ambito === 'producto' ? 3 : ambito === 'familia' ? 2 : ambito === 'marca' ? 1 : 0;
+}
+
+// Resuelve la oferta VIGENTE hoy para varios productos. Devuelve mapa product_id -> oferta.
+async function ofertasVigentesLote(productIds: number[]): Promise<Record<number, any>> {
+  const out: Record<number, any> = {};
+  if (!productIds.length) return out;
+  // Datos de los productos (familia/marca) para casar ofertas de grupo.
+  const pr = await pool.query(`SELECT id, familia, marca FROM products WHERE id = ANY($1::int[])`, [productIds]);
+  const prod: Record<number, any> = {}; pr.rows.forEach((p: any) => { prod[p.id] = p; });
+  const marcas = Array.from(new Set(pr.rows.map((p: any) => p.marca).filter(Boolean)));
+  const familias = Array.from(new Set(pr.rows.map((p: any) => p.familia).filter(Boolean)));
+  // Ofertas activas y vigentes HOY que puedan aplicar a este conjunto.
+  const ofs = await pool.query(
+    `SELECT * FROM oferta
+      WHERE activo = TRUE AND fecha_inicio <= CURRENT_DATE AND fecha_fin >= CURRENT_DATE
+        AND (
+          ambito = 'todos'
+          OR (ambito = 'producto' AND product_id = ANY($1::int[]))
+          OR (ambito = 'marca'    AND marca   = ANY($2::text[]))
+          OR (ambito = 'familia'  AND familia = ANY($3::text[]))
+        )`,
+    [productIds, marcas.length ? marcas : [''], familias.length ? familias : ['']]);
+  // Elegir la MEJOR por producto: especificidad -> prioridad -> mas reciente.
+  const mejor = (a: any, b: any) => {
+    const ea = especificidad(a.ambito), eb = especificidad(b.ambito);
+    if (ea !== eb) return ea > eb ? a : b;
+    if (a.prioridad !== b.prioridad) return a.prioridad > b.prioridad ? a : b;
+    return new Date(a.fecha_inicio) >= new Date(b.fecha_inicio) ? a : b;
+  };
+  for (const id of productIds) {
+    const p = prod[id]; if (!p) continue;
+    let win: any = null;
+    for (const o of ofs.rows) {
+      const aplica = o.ambito === 'todos'
+        || (o.ambito === 'producto' && o.product_id === id)
+        || (o.ambito === 'marca' && o.marca && o.marca === p.marca)
+        || (o.ambito === 'familia' && o.familia && o.familia === p.familia);
+      if (!aplica) continue;
+      win = win ? mejor(win, o) : o;
+    }
+    if (win) out[id] = { id: win.id, tipo: win.tipo, valor: win.valor, texto: win.texto, label: labelOferta(win), color: win.color, fecha_fin: win.fecha_fin };
+  }
+  return out;
+}
+
+// POST ofertas vigentes HOY de varios productos (para el visor comercial).
+app.post('/api/ofertas/vigentes', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const ids = Array.from(new Set<number>(
+      (Array.isArray(req.body.product_ids) ? req.body.product_ids : [])
+        .map((n: any) => Number(n)).filter((n: number) => Number.isInteger(n) && n > 0)
+    )).slice(0, 400);
+    res.json({ success: true, ofertas: await ofertasVigentesLote(ids) });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// GET lista de ofertas (admin real). ?vigentes=true solo las de hoy.
+app.get('/api/ofertas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const cond: string[] = []; const vals: any[] = []; let i = 1;
+    if (req.query.vigentes === 'true') cond.push(`activo=TRUE AND fecha_inicio<=CURRENT_DATE AND fecha_fin>=CURRENT_DATE`);
+    if (req.query.product_id) { cond.push(`product_id=$${i++}`); vals.push(Number(req.query.product_id)); }
+    const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
+    const r = await pool.query(
+      `SELECT o.*, p.codigo AS producto_codigo, p.nombre AS producto_nombre
+         FROM oferta o LEFT JOIN products p ON p.id = o.product_id
+         ${where} ORDER BY o.fecha_fin DESC, o.id DESC LIMIT 500`, vals);
+    res.json({ success: true, ofertas: r.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Campos editables de una oferta (whitelist) — create/update.
+function _ofertaCampos(body: any): { cols: string[]; vals: any[] } {
+  const cols: string[] = []; const vals: any[] = [];
+  const push = (c: string, v: any) => { cols.push(c); vals.push(v); };
+  const fecha = (v: any) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '').slice(0, 10)) ? String(v).slice(0, 10) : null;
+  if (body.nombre !== undefined) push('nombre', body.nombre ? String(body.nombre).slice(0, 120) : null);
+  if (body.ambito !== undefined) push('ambito', ['producto', 'familia', 'marca', 'todos'].includes(String(body.ambito)) ? String(body.ambito) : 'producto');
+  if (body.product_id !== undefined) push('product_id', body.product_id ? Number(body.product_id) : null);
+  if (body.familia !== undefined) push('familia', body.familia ? String(body.familia).slice(0, 120) : null);
+  if (body.marca !== undefined) push('marca', body.marca ? String(body.marca).slice(0, 120) : null);
+  if (body.tipo !== undefined) push('tipo', ['descuento', 'bonificacion', 'texto'].includes(String(body.tipo)) ? String(body.tipo) : 'descuento');
+  if (body.valor !== undefined) push('valor', (body.valor === '' || body.valor == null) ? null : Number(body.valor));
+  if (body.texto !== undefined) push('texto', body.texto ? String(body.texto).slice(0, 120) : null);
+  if (body.fecha_inicio !== undefined) push('fecha_inicio', fecha(body.fecha_inicio));
+  if (body.fecha_fin !== undefined) push('fecha_fin', fecha(body.fecha_fin));
+  if (body.prioridad !== undefined) push('prioridad', parseInt(String(body.prioridad), 10) || 0);
+  if (body.color !== undefined) push('color', String(body.color).slice(0, 24));
+  if (body.activo !== undefined) push('activo', !!body.activo);
+  return { cols, vals };
+}
+
+// POST crear oferta (admin real).
+app.post('/api/ofertas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const b = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.fecha_inicio || '').slice(0, 10)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(b.fecha_fin || '').slice(0, 10))) {
+      res.status(400).json({ success: false, error: 'fecha_inicio y fecha_fin (YYYY-MM-DD) obligatorias' }); return;
+    }
+    if (String(b.fecha_fin).slice(0, 10) < String(b.fecha_inicio).slice(0, 10)) { res.status(400).json({ success: false, error: 'fecha_fin anterior a fecha_inicio' }); return; }
+    const { cols, vals } = _ofertaCampos(b);
+    cols.push('creado_por'); vals.push(req.user?.id || null);
+    const ph = vals.map((_, i) => '$' + (i + 1)).join(',');
+    const r = await pool.query(`INSERT INTO oferta (${cols.join(',')}) VALUES (${ph}) RETURNING *`, vals);
+    res.json({ success: true, oferta: r.rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// PUT actualizar oferta (admin real).
+app.put('/api/ofertas/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { cols, vals } = _ofertaCampos(req.body || {});
+    if (!cols.length) { res.status(400).json({ success: false, error: 'nada que actualizar' }); return; }
+    const sets = cols.map((c, i) => `${c} = $${i + 1}`); sets.push('updated_at = NOW()');
+    vals.push(Number(req.params.id));
+    const r = await pool.query(`UPDATE oferta SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`, vals);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    res.json({ success: true, oferta: r.rows[0] });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// DELETE oferta (admin real).
+app.delete('/api/ofertas/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`DELETE FROM oferta WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    res.json({ success: true });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
 });
 
 app.get('/api/admin/limpiar-pruebas/preview', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {

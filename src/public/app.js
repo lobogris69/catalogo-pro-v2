@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v77 · 14 jul 2026';
+const APP_VERSION = 'v78 · 14 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3233,6 +3233,7 @@ async function cargarZonasComercial() {
     pintarZonasComercial();
     cargarRecuadrosLamina(sheetId);   // F3: recuadros tapar-reescribir
     cargarPreciosVigentesLamina(); // en segundo plano; repinta al llegar
+    cargarOfertasLamina();         // F4: etiqueta de oferta vigente
   } catch (e) {
     _zonasComercial = [];
   }
@@ -3319,6 +3320,18 @@ async function cargarPreciosVigentesLamina() {
   } catch (e) { /* si falla, el visor sigue funcionando sin la etiqueta */ }
 }
 
+// F4 (ofertas/campañas): trae la oferta vigente HOY de los productos de la lámina.
+let _ofertasVigentes = {};
+async function cargarOfertasLamina() {
+  const ids = _zonasComercial.filter(z => z.product_id).map(z => Number(z.product_id));
+  if (!ids.length) { _ofertasVigentes = {}; return; }
+  try {
+    const r = await api('/api/ofertas/vigentes', { method: 'POST', body: { product_ids: ids } });
+    _ofertasVigentes = r.ofertas || {};
+    pintarZonasComercial();
+  } catch (e) { /* el visor sigue sin la etiqueta de oferta */ }
+}
+
 function pintarZonasComercial() {
   const capa = document.getElementById('visor-zonas-capa');
   if (!capa) return;
@@ -3358,6 +3371,16 @@ function pintarZonasComercial() {
         }
         div.appendChild(chip);
       }
+    }
+    // F4 ofertas: etiqueta de campaña vigente HOY sobre la zona (independiente del precio).
+    if (z.product_id && _ofertasVigentes[z.product_id]) {
+      const of = _ofertasVigentes[z.product_id];
+      const chipO = document.createElement('span');
+      chipO.className = 'visor-zona-oferta';
+      chipO.textContent = of.label || 'Oferta';
+      chipO.style.background = of.color || '#dc2626';
+      if (of.fecha_fin) chipO.title = 'Oferta hasta ' + String(of.fecha_fin).slice(0, 10).split('-').reverse().join('/');
+      div.appendChild(chipO);
     }
     div.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -4798,6 +4821,22 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE: Ofertas / Campañas (F4 precios dinámicos) -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">🎯 Ofertas y campañas
+            ${ayuda('Ofertas con fecha de inicio y fin que se muestran sobre los productos en el visor comercial. Caducan solas. Pueden aplicar a un producto, a todos los de una marca/laboratorio o familia, o a todo el catálogo.', 'izq')}
+          </h3>
+          <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">
+            Descuento %, bonificación en género (ej. "3+1") o texto libre. Se pintan como etiqueta sobre la zona del producto durante la vigencia.
+          </div>
+          <div id="ofertas-lista">
+            <div style="color:var(--gris-texto);font-size:13px;padding:12px;text-align:center">Cargando ofertas…</div>
+          </div>
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--gris-borde)">
+            <button class="btn btn-primary btn-pequeno" onclick="abrirNuevaOferta()">+ Nueva oferta</button>
+          </div>
+        </div>
+
         <!-- BLOQUE: IA Tags -->
         <div class="editor-panel" style="margin-top:14px">
           <h3 style="margin-top:0">🤖 Tags automáticos con IA
@@ -4896,9 +4935,158 @@ async function renderConfiguracion() {
     cargarDestinatariosOficina();
     // Cargar resumen sync Sage
     cargarResumenSyncSage();
+    // Cargar ofertas / campañas (F4)
+    cargarOfertasAdmin();
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
   }
+}
+
+// ===== F4 OFERTAS / CAMPAÑAS (gestión admin) =====
+function _ofertaResumen(o) {
+  const amb = o.ambito === 'producto' ? ('Producto ' + (o.producto_codigo || o.product_id || ''))
+    : o.ambito === 'marca' ? ('Marca: ' + (o.marca || '—'))
+    : o.ambito === 'familia' ? ('Familia: ' + (o.familia || '—'))
+    : 'Todo el catálogo';
+  const et = o.texto ? o.texto : (o.tipo === 'descuento' && o.valor != null ? '-' + o.valor + '%' : (o.tipo === 'bonificacion' ? 'Bonificación' : 'Oferta'));
+  const f = s => String(s || '').slice(0, 10).split('-').reverse().join('/');
+  const hoy = new Date().toISOString().slice(0, 10);
+  const vig = o.activo && String(o.fecha_inicio).slice(0, 10) <= hoy && String(o.fecha_fin).slice(0, 10) >= hoy;
+  return { amb, et, fechas: f(o.fecha_inicio) + ' → ' + f(o.fecha_fin), vig };
+}
+
+async function cargarOfertasAdmin() {
+  const $l = document.getElementById('ofertas-lista');
+  if (!$l) return;
+  try {
+    const r = await api('/api/ofertas');
+    const ofertas = r.ofertas || [];
+    if (!ofertas.length) {
+      $l.innerHTML = `<div style="padding:1rem;background:var(--surface-2);border-radius:8px;color:#6b7280;font-size:13px;text-align:center">Aún no hay ofertas. Crea la primera abajo.</div>`;
+      return;
+    }
+    $l.innerHTML = ofertas.map(o => {
+      const s = _ofertaResumen(o);
+      return `<div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--gris-borde);border-radius:8px;margin-bottom:8px">
+        <span style="background:${escape(o.color || '#dc2626')};color:#fff;font-weight:800;font-size:12px;padding:2px 8px;border-radius:6px;white-space:nowrap">${escape(s.et)}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px">${escape(o.nombre || s.amb)}</div>
+          <div style="font-size:12px;color:var(--gris-texto)">${escape(s.amb)} · ${escape(s.fechas)} ${s.vig ? '· <b style="color:#16a34a">VIGENTE</b>' : '· <span style="color:#9ca3af">no vigente hoy</span>'}</div>
+        </div>
+        <button class="btn-borrar" onclick="borrarOferta(${o.id})" title="Eliminar oferta">✖</button>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    $l.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`;
+  }
+}
+
+function abrirNuevaOferta() {
+  const hoy = new Date().toISOString().slice(0, 10);
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:520px">
+      <h3 style="margin-top:0">🎯 Nueva oferta / campaña</h3>
+      <div class="form-group"><label>Nombre (interno)</label>
+        <input type="text" id="of-nombre" placeholder="Ej: Campaña verano BETER" maxlength="120"></div>
+      <div class="form-group"><label>Ámbito</label>
+        <select id="of-ambito" onchange="_ofToggleAmbito()">
+          <option value="producto">Un producto (por código)</option>
+          <option value="marca">Marca / laboratorio</option>
+          <option value="familia">Familia</option>
+          <option value="todos">Todo el catálogo</option>
+        </select></div>
+      <div class="form-group" id="of-g-producto"><label>Código de producto</label>
+        <input type="text" id="of-producto" placeholder="Código Sage / CN"></div>
+      <div class="form-group" id="of-g-marca" style="display:none"><label>Marca / laboratorio</label>
+        <input type="text" id="of-marca" placeholder="Ej: BETER"></div>
+      <div class="form-group" id="of-g-familia" style="display:none"><label>Familia</label>
+        <input type="text" id="of-familia" placeholder="Ej: Manicura"></div>
+      <div class="form-group"><label>Tipo</label>
+        <select id="of-tipo" onchange="_ofToggleTipo()">
+          <option value="descuento">Descuento (%)</option>
+          <option value="bonificacion">Bonificación en género</option>
+          <option value="texto">Texto libre</option>
+        </select></div>
+      <div class="form-group" id="of-g-valor"><label>Descuento %</label>
+        <input type="number" id="of-valor" min="0" max="100" step="0.5" placeholder="Ej: 15"></div>
+      <div class="form-group" id="of-g-texto" style="display:none"><label>Texto de la etiqueta</label>
+        <input type="text" id="of-texto" placeholder='Ej: "3+1" o "2ª unidad -50%"' maxlength="120"></div>
+      <div style="display:flex;gap:10px">
+        <div class="form-group" style="flex:1"><label>Inicio</label>
+          <input type="date" id="of-inicio" value="${hoy}"></div>
+        <div class="form-group" style="flex:1"><label>Fin</label>
+          <input type="date" id="of-fin" value="${hoy}"></div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <div class="form-group" style="flex:1"><label>Color etiqueta</label>
+          <input type="color" id="of-color" value="#dc2626" style="width:60px;height:36px"></div>
+        <div class="form-group" style="flex:1"><label>Prioridad (desempate)</label>
+          <input type="number" id="of-prioridad" value="0" step="1"></div>
+      </div>
+      <div id="of-msg"></div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="guardarOferta(this)">Crear oferta</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function _ofToggleAmbito() {
+  const a = document.getElementById('of-ambito').value;
+  document.getElementById('of-g-producto').style.display = a === 'producto' ? '' : 'none';
+  document.getElementById('of-g-marca').style.display = a === 'marca' ? '' : 'none';
+  document.getElementById('of-g-familia').style.display = a === 'familia' ? '' : 'none';
+}
+function _ofToggleTipo() {
+  const t = document.getElementById('of-tipo').value;
+  document.getElementById('of-g-valor').style.display = t === 'descuento' ? '' : 'none';
+  document.getElementById('of-g-texto').style.display = t === 'descuento' ? 'none' : '';
+}
+
+async function guardarOferta(btn) {
+  const $msg = document.getElementById('of-msg');
+  const ambito = document.getElementById('of-ambito').value;
+  const tipo = document.getElementById('of-tipo').value;
+  const body = {
+    nombre: document.getElementById('of-nombre').value.trim() || null,
+    ambito, tipo,
+    fecha_inicio: document.getElementById('of-inicio').value,
+    fecha_fin: document.getElementById('of-fin').value,
+    color: document.getElementById('of-color').value,
+    prioridad: document.getElementById('of-prioridad').value,
+  };
+  if (tipo === 'descuento') body.valor = document.getElementById('of-valor').value;
+  else body.texto = document.getElementById('of-texto').value.trim();
+  if (ambito === 'marca') body.marca = document.getElementById('of-marca').value.trim();
+  if (ambito === 'familia') body.familia = document.getElementById('of-familia').value.trim();
+  // Ámbito producto: resolver el código → product_id
+  if (ambito === 'producto') {
+    const cod = document.getElementById('of-producto').value.trim();
+    if (!cod) { $msg.innerHTML = `<div class="error-msg">Escribe el código del producto</div>`; return; }
+    try {
+      const r = await api('/api/products/search?q=' + encodeURIComponent(cod));
+      const prods = r.products || r.results || [];
+      const exacto = prods.find(p => String(p.codigo) === cod) || prods[0];
+      if (!exacto) { $msg.innerHTML = `<div class="error-msg">No se encontró ese producto</div>`; return; }
+      body.product_id = exacto.id;
+    } catch (e) { $msg.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`; return; }
+  }
+  if (!body.fecha_inicio || !body.fecha_fin) { $msg.innerHTML = `<div class="error-msg">Pon fecha de inicio y fin</div>`; return; }
+  btn.disabled = true;
+  try {
+    await api('/api/ofertas', { method: 'POST', body });
+    btn.closest('.modal-bg').remove();
+    cargarOfertasAdmin();
+  } catch (e) { $msg.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`; btn.disabled = false; }
+}
+
+async function borrarOferta(id) {
+  if (!confirm('¿Eliminar esta oferta?')) return;
+  try { await api('/api/ofertas/' + id, { method: 'DELETE' }); cargarOfertasAdmin(); }
+  catch (e) { alert(e.message); }
 }
 
 // ===== CATEGORÍAS / TAGS =====

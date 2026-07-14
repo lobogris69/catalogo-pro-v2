@@ -3581,6 +3581,20 @@ body.con-banner-update {
   box-shadow: 0 1px 3px rgba(0,0,0,.35);
 }
 .visor-zona-precio.tiene-pendiente { background: rgba(217,119,6,.96); } /* ámbar si hay cambio programado a futuro */
+/* F4 ofertas: etiqueta de campaña vigente (arriba-derecha de la zona). */
+.visor-zona-oferta {
+  position: absolute;
+  right: 3px; top: 3px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 10px; font-weight: 800;
+  padding: 1px 6px; border-radius: 6px;
+  pointer-events: none;
+  white-space: nowrap;
+  line-height: 1.5;
+  box-shadow: 0 1px 3px rgba(0,0,0,.35);
+  letter-spacing: .02em;
+}
 /* E3: cuando se ilumina la capa (al tocar la lámina), las zonas se hacen visibles */
 .visor-zonas-iluminadas .visor-zona {
   border-color: rgba(14, 165, 233, 0.9);
