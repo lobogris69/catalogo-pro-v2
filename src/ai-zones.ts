@@ -288,7 +288,7 @@ export async function refinarRecuadroPrecio(
     const bandH = banda.y1 - banda.y0 + 1;
     const colDark = new Array(cw).fill(0);
     for (let px = 0; px < cw; px++) { let c = 0; for (let py = banda.y0; py <= banda.y1; py++) if (lum(px, py) < 110) c++; colDark[px] = c; }
-    const gapMax = Math.max(3, Math.round(bandH * 0.6)); // huecos entre digitos se fusionan; el de la etiqueta separa
+    const gapMax = Math.max(2, Math.round(bandH * 0.35)); // huecos entre digitos se fusionan; el de la etiqueta (mas ancho) separa
     const clusters: { x0: number; x1: number; peso: number }[] = [];
     let cx0 = -1, chueco = 0, cpeso = 0;
     for (let px = 0; px < cw; px++) {
