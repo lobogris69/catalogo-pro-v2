@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v68 · 13 jul 2026';
+const APP_VERSION = 'v69 · 13 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -12997,7 +12997,23 @@ function hacerVentanaArrastrable(card, handle) {
   const mover = (e) => {
     if (!dragging) return;
     const p = e.touches ? e.touches[0] : e;
-    card.style.transform = `translate(${ox + (p.clientX - sx)}px, ${oy + (p.clientY - sy)}px)`;
+    let nx = ox + (p.clientX - sx);
+    let ny = oy + (p.clientY - sy);
+    // LIMITAR el arrastre para que la ventana no se salga de la pantalla: la cabecera
+    // siempre queda visible arriba (top >= 0) y deja un margen por los otros lados, así
+    // NUNCA se pierde y siempre se puede volver a coger para recentrar.
+    const cur = posActual();
+    const rect = card.getBoundingClientRect();
+    const baseTop = rect.top - cur.y;   // posición SIN trasladar
+    const baseLeft = rect.left - cur.x;
+    const margen = 56;                   // px que deben quedar siempre a la vista
+    const minY = -baseTop;                                   // top de la card = 0 (cabecera visible)
+    const maxY = window.innerHeight - baseTop - margen;      // deja 56px por abajo
+    const minX = -baseLeft - (rect.width - margen);          // deja 56px por la izquierda
+    const maxX = window.innerWidth - baseLeft - margen;      // deja 56px por la derecha
+    ny = Math.max(minY, Math.min(maxY, ny));
+    nx = Math.max(minX, Math.min(maxX, nx));
+    card.style.transform = `translate(${nx}px, ${ny}px)`;
     e.preventDefault();
   };
   const soltar = () => {
