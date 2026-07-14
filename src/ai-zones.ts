@@ -237,22 +237,55 @@ export async function refinarRecuadroPrecio(
       const i = (py * cw + px) * C;
       return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
     };
-    // 1) Bounding box del texto oscuro (numero) + color de tinta (media de lo mas oscuro)
-    let minX = 1e9, minY = 1e9, maxX = 0, maxY = 0, dark = 0;
-    let tr = 0, tg = 0, tb = 0, tn = 0;
-    // 2) Color de fondo = media de lo claro (lum>225)
+    // Color de fondo = media de lo claro (lum>225) de TODO el crop
     let br = 0, bg = 0, bb = 0, bn = 0;
+    // Cuenta de pixeles oscuros por FILA -> para segmentar en LINEAS de texto y
+    // no fundir dos precios contiguos (P.V.L. y P.V.P.R.) en un unico recuadro gigante.
+    const rowDark = new Array(ch).fill(0);
     for (let py = 0; py < ch; py++) for (let px = 0; px < cw; px++) {
+      const i = (py * cw + px) * C;
+      const l = lum(px, py);
+      if (l < 110) rowDark[py]++;
+      else if (l > 225) { br += data[i]; bg += data[i + 1]; bb += data[i + 2]; bn++; }
+    }
+    // Umbral de fila "con tinta": al menos 2px o 2% del ancho del crop
+    const rowMin = Math.max(2, Math.floor(cw * 0.02));
+    // Bandas = tramos consecutivos de filas con tinta (permitiendo huecos de 1px)
+    const bandas: { y0: number; y1: number; peso: number }[] = [];
+    let by0 = -1, hueco = 0, peso = 0;
+    for (let py = 0; py < ch; py++) {
+      if (rowDark[py] >= rowMin) {
+        if (by0 < 0) { by0 = py; peso = 0; }
+        peso += rowDark[py]; hueco = 0;
+      } else if (by0 >= 0) {
+        if (++hueco > 1) { bandas.push({ y0: by0, y1: py - hueco, peso }); by0 = -1; }
+      }
+    }
+    if (by0 >= 0) bandas.push({ y0: by0, y1: ch - 1, peso });
+    if (!bandas.length) return null;
+    // Elegir la banda cuyo centro este mas cerca del centro de la caja que dio la IA;
+    // si no hay pista fiable, la de mas tinta.
+    const hintCy = (cajaPct.y + cajaPct.alto / 2) * H / 100 - cy;
+    let banda = bandas[0];
+    if (Number.isFinite(hintCy) && hintCy >= 0 && hintCy <= ch) {
+      let bestD = 1e9;
+      for (const b of bandas) { const c = (b.y0 + b.y1) / 2; const d = Math.abs(c - hintCy); if (d < bestD) { bestD = d; banda = b; } }
+    } else {
+      for (const b of bandas) if (b.peso > banda.peso) banda = b;
+    }
+    // Dentro de la banda elegida: bbox horizontal ajustado + color de tinta
+    let minX = 1e9, minY = banda.y0, maxX = 0, maxY = banda.y1, dark = 0;
+    let tr = 0, tg = 0, tb = 0, tn = 0;
+    for (let py = banda.y0; py <= banda.y1; py++) for (let px = 0; px < cw; px++) {
       const i = (py * cw + px) * C;
       const l = lum(px, py);
       if (l < 110) {
         if (px < minX) minX = px; if (px > maxX) maxX = px;
-        if (py < minY) minY = py; if (py > maxY) maxY = py;
         dark++;
         if (l < 90) { tr += data[i]; tg += data[i + 1]; tb += data[i + 2]; tn++; }
-      } else if (l > 225) { br += data[i]; bg += data[i + 1]; bb += data[i + 2]; bn++; }
+      }
     }
-    if (dark < 4) return null; // no encontramos texto: mejor no crear recuadro
+    if (dark < 4 || minX > maxX) return null; // no encontramos texto: mejor no crear recuadro
     // Ajuste fino: pequeno padding alrededor del texto detectado (2px) sin salir del crop
     const pad2 = 2;
     minX = Math.max(0, minX - pad2); minY = Math.max(0, minY - pad2);
