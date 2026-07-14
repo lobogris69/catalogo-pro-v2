@@ -814,11 +814,19 @@ async function initDB(): Promise<void> {
         sep_decimal CHAR(1) NOT NULL DEFAULT ',',      -- ',' estandar ES; '.' si la lamina lo usa
         activo BOOLEAN NOT NULL DEFAULT TRUE,
         origen VARCHAR(12) NOT NULL DEFAULT 'manual',  -- manual | ia
+        confianza SMALLINT NOT NULL DEFAULT 100,        -- 0..100 cruce de señales reales
+        revisar BOOLEAN NOT NULL DEFAULT FALSE,         -- alguna señal no cuadra: revisar a mano
+        nota VARCHAR(200),                              -- motivo de la revision (para el admin)
+        valor_impreso DECIMAL(10,2),                    -- numero que leyo la IA en la imagen (comparar con BD)
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_recuadro_sheet ON lamina_recuadro(sheet_id);
       CREATE INDEX IF NOT EXISTS idx_recuadro_zone ON lamina_recuadro(zone_id);
+      ALTER TABLE lamina_recuadro ADD COLUMN IF NOT EXISTS confianza SMALLINT NOT NULL DEFAULT 100;
+      ALTER TABLE lamina_recuadro ADD COLUMN IF NOT EXISTS revisar BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE lamina_recuadro ADD COLUMN IF NOT EXISTS nota VARCHAR(200);
+      ALTER TABLE lamina_recuadro ADD COLUMN IF NOT EXISTS valor_impreso DECIMAL(10,2);
 
       -- ===== Sync Sage - campos extra en clients (idempotente) =====
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS tarifa_precio INTEGER;
@@ -6554,6 +6562,7 @@ function _recuadroCampos(body: any): { cols: string[]; vals: any[] } {
   if (body.decimales !== undefined) push('decimales', Math.max(0, Math.min(3, parseInt(String(body.decimales), 10) || 2)));
   if (body.sep_decimal !== undefined) push('sep_decimal', body.sep_decimal === '.' ? '.' : ',');
   if (body.activo !== undefined) push('activo', !!body.activo);
+  if (body.revisar !== undefined) push('revisar', !!body.revisar);
   return { cols, vals };
 }
 
@@ -6628,90 +6637,122 @@ app.post('/api/sheets/:sheetId/detect-precios-ia', verifyToken, requireAdmin, as
     const abs = resolverRutaImagen(s.rows[0].imagen_path, UPLOADS_DIR);
     if (!abs || !fs.existsSync(abs)) { res.status(400).json({ success: false, error: 'Imagen no existe en disco' }); return; }
 
-    // Zonas de producto ya definidas en la lamina (para casar precio -> product_id/zone_id)
+    // Zonas de producto YA verificadas (product_id correcto y aprobado a mano) + precios BD.
+    // ANCLAMOS TODO A ELLAS: el precio se busca DENTRO de su zona -> el product_id sale de
+    // la zona (garantia), nunca de un CN que la IA pudiera leer mal.
     const zr = await pool.query(
       `SELECT z.id AS zone_id, z.product_id, z.x, z.y, z.ancho, z.alto,
-              p.codigo AS producto_codigo
-         FROM sheet_zones z LEFT JOIN products p ON p.id = z.product_id
+              p.codigo AS producto_codigo,
+              COALESCE(p.precio_pvf_1, p.precio_pvf)  AS bd_pvf,
+              COALESCE(p.precio_pvpr_1, p.precio_pvp) AS bd_pvpr
+         FROM sheet_zones z JOIN products p ON p.id = z.product_id
         WHERE z.sheet_id = $1 AND z.product_id IS NOT NULL`, [sheetId]);
     const zonas = zr.rows;
-    const casarZona = (pr: { codigo_nacional: string | null; codigo_fabricante: string | null; box: { x: number; y: number; width: number; height: number } }) => {
-      // 1) por CN/codigo del producto
-      const cnDig = (pr.codigo_nacional || '').replace(/\D/g, '');
-      if (cnDig) {
-        const z = zonas.find((z: any) => {
-          const c = String(z.producto_codigo || '').replace(/\D/g, '');
-          return c && (c === cnDig || c === cnDig.slice(0, 6) || cnDig === c.slice(0, 6));
-        });
-        if (z) return z;
-      }
-      // 2) por cercania geometrica: la zona cuyo centro esté mas cerca del centro del precio
-      const px = pr.box.x + pr.box.width / 2, py = pr.box.y + pr.box.height / 2;
-      let best: any = null, bestD = 1e9;
-      for (const z of zonas) {
-        // el precio suele caer DENTRO de la zona de producto o justo debajo
-        const zx = z.x + z.ancho / 2, zy = z.y + z.alto / 2;
-        const d = (zx - px) ** 2 + (zy - py) ** 2;
-        if (d < bestD) { bestD = d; best = z; }
-      }
-      return best;
-    };
+    const soloDig = (s: any) => String(s || '').replace(/\D/g, '');
 
     const detec = await detectarPreciosIA(abs);
     if (detec === null) { res.status(500).json({ success: false, error: 'La IA no respondio: ' + (ultimoErrorIA() || '') }); return; }
 
-    // 1) Refinar cada deteccion con sharp + casar con producto (candidatos)
-    const cand: any[] = [];
-    for (const d of detec) {
-      const ref = await refinarRecuadroPrecio(abs, { x: d.box.x, y: d.box.y, ancho: d.box.width, alto: d.box.height });
-      if (!ref) continue;
-      const z = casarZona(d);
-      cand.push({ ref, campo: d.tipo === 'pvpr' ? 'pvpr' : 'pvf', sep: d.sep_decimal, zone_id: z?.zone_id || null, product_id: z?.product_id || null });
-    }
-    // 2) Filtrar tamaños atípicos (mis-detecciones: un "cm", un icono...). Referencia =
-    //    mediana del tam_rel del lote; se descartan los muy pequeños o muy grandes.
-    let descartados_tam = 0;
-    if (cand.length >= 4) {
-      const tams = cand.map(c => c.ref.tam_rel).sort((a, b) => a - b);
-      const med = tams[Math.floor(tams.length / 2)];
-      const antes = cand.length;
-      for (let i = cand.length - 1; i >= 0; i--) {
-        if (cand[i].ref.tam_rel < med * 0.55 || cand[i].ref.tam_rel > med * 2.2) cand.splice(i, 1);
-      }
-      descartados_tam = antes - cand.length;
-    }
-    // 3) Deduplicar por (product_id, campo): si la IA vio dos veces el mismo precio,
-    //    quedarse con el recuadro cuyo centro cae DENTRO/ mas cerca de su zona de producto.
-    const zonaById: any = {}; zonas.forEach((z: any) => { zonaById[z.zone_id] = z; });
-    const distZona = (c: any) => {
-      const z = c.zone_id ? zonaById[c.zone_id] : null; if (!z) return 1e9;
-      const cxp = c.ref.x + c.ref.ancho / 2, cyp = c.ref.y + c.ref.alto / 2;
-      const zx = z.x + z.ancho / 2, zy = z.y + z.alto / 2;
-      return (zx - cxp) ** 2 + (zy - cyp) ** 2;
-    };
-    const mejorPorClave: any = {};
-    let descartados_dup = 0;
-    for (const c of cand) {
-      const k = (c.product_id || 'x') + '|' + c.campo;
-      if (!mejorPorClave[k]) { mejorPorClave[k] = c; }
-      else { descartados_dup++; if (distZona(c) < distZona(mejorPorClave[k])) mejorPorClave[k] = c; }
-    }
-    const finales = Object.values(mejorPorClave) as any[];
+    // Separador decimal de la lamina por MAYORIA de lo que leyo la IA (consistencia).
+    const nComa = detec.filter(d => d.sep_decimal === ',').length;
+    const sepLamina = nComa > detec.length / 2 ? ',' : '.';
 
-    // Borra los recuadros IA previos de esta lamina (re-detectar = empezar limpio; respeta los manuales)
-    await pool.query(`DELETE FROM lamina_recuadro WHERE sheet_id=$1 AND origen='ia'`, [sheetId]);
-    let creados = 0; const detalle: any[] = [];
-    for (const c of finales) {
-      const ins = await pool.query(
-        `INSERT INTO lamina_recuadro
-          (sheet_id, zone_id, product_id, campo, x, y, ancho, alto, color_fondo, color_texto, tam_rel, alinear, sep_decimal, origen)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'ia') RETURNING id`,
-        [sheetId, c.zone_id, c.product_id, c.campo,
-         c.ref.x, c.ref.y, c.ref.ancho, c.ref.alto, c.ref.color_fondo, c.ref.color_texto, c.ref.tam_rel, c.ref.alinear, c.sep]);
-      creados++;
-      detalle.push({ campo: c.campo, product_id: c.product_id, casado: !!c.product_id, recuadro_id: ins.rows[0].id });
+    // Agrupar detecciones por la zona que CONTIENE su centro. Las que no caen en ninguna
+    // zona verificada se DESCARTAN (mejor no pintar que pintar mal).
+    const porZona = new Map<number, any[]>();
+    let descartados_fuera = 0;
+    for (const d of detec) {
+      const cxp = d.box.x + d.box.width / 2, cyp = d.box.y + d.box.height / 2;
+      const z = zonas.find((z: any) => cxp >= z.x && cxp <= z.x + z.ancho && cyp >= z.y && cyp <= z.y + z.alto);
+      if (!z) { descartados_fuera++; continue; }
+      if (!porZona.has(z.zone_id)) porZona.set(z.zone_id, []);
+      porZona.get(z.zone_id)!.push(d);
     }
-    res.json({ success: true, creados, total_detectados: detec.length, descartados_tam, descartados_dup, detalle });
+
+    // Borra los recuadros IA previos de esta lamina (respeta los manuales)
+    await pool.query(`DELETE FROM lamina_recuadro WHERE sheet_id=$1 AND origen='ia'`, [sheetId]);
+
+    let creados = 0, con_revisar = 0; const detalle: any[] = [];
+    for (const z of zonas) {
+      const dets = porZona.get(z.zone_id) || [];
+      if (!dets.length) continue;
+      // Refinar cada precio de esta zona, RECORTANDO al bbox de la zona (no invade vecinos).
+      const clip = { x: z.x, y: z.y, ancho: z.ancho, alto: z.alto };
+      const refs: any[] = [];
+      for (const d of dets) {
+        const ref = await refinarRecuadroPrecio(abs, { x: d.box.x, y: d.box.y, ancho: d.box.width, alto: d.box.height }, clip);
+        if (ref) refs.push({ ref, valorIA: (typeof d.valor === 'number' ? d.valor : null), tipoIA: d.tipo, cnIA: soloDig(d.codigo_nacional) });
+      }
+      if (!refs.length) continue;
+      // Nos quedamos como mucho con 2 (P.V.L. y P.V.P.R.): los 2 de mayor tam_rel (los precios
+      // principales; descarta restos pequeños dentro de la zona).
+      refs.sort((a, b) => b.ref.tam_rel - a.ref.tam_rel);
+      const usar = refs.slice(0, 2);
+
+      // CRUCE de señales para asignar pvf/pvpr y medir confianza.
+      const cnMismatch = usar.some(u => u.cnIA && u.cnIA.length >= 5 && soloDig(z.producto_codigo) &&
+        !(u.cnIA === soloDig(z.producto_codigo) || u.cnIA.slice(0, 6) === soloDig(z.producto_codigo).slice(0, 6)));
+
+      let asign: { u: any; campo: string; conf: number; nota: string[]; revisar: boolean }[] = [];
+      if (usar.length >= 2) {
+        // Orden VERTICAL (arriba = pvf) y orden de VALOR (menor = pvf, invariante: PVL<PVPR).
+        const porY = [...usar].sort((a, b) => a.ref.y - b.ref.y);
+        const conValor = usar.every(u => u.valorIA != null);
+        const porVal = [...usar].sort((a, b) => (a.valorIA ?? 0) - (b.valorIA ?? 0));
+        // pvf = el de arriba; comprobamos si coincide con el de menor valor y con la etiqueta IA.
+        const pvfBox = porY[0], pvprBox = porY[1];
+        const valorOK = !conValor || (porVal[0] === pvfBox && porVal[1] === pvprBox);
+        for (const [box, campo] of [[pvfBox, 'pvf'], [pvprBox, 'pvpr']] as [any, string][]) {
+          const nota: string[] = []; let conf = 100;
+          if (!valorOK) { conf -= 45; nota.push('orden vertical/valor no coincide'); }
+          const tipoEsperado = campo === 'pvpr' ? 'pvpr' : 'pvl';
+          if (box.tipoIA && box.tipoIA !== tipoEsperado && box.tipoIA !== (campo === 'pvf' ? 'pvl' : 'pvpr')) { conf -= 15; nota.push('etiqueta IA distinta'); }
+          asign.push({ u: box, campo, conf, nota, revisar: false });
+        }
+      } else {
+        const u = usar[0];
+        // 1 solo precio: decidir campo por la etiqueta IA; si no, por cercania de valor a BD.
+        let campo = u.tipoIA === 'pvpr' ? 'pvpr' : 'pvf';
+        const nota: string[] = []; let conf = 85;
+        if (u.valorIA != null && z.bd_pvf != null && z.bd_pvpr != null) {
+          const dF = Math.abs(u.valorIA - Number(z.bd_pvf)), dP = Math.abs(u.valorIA - Number(z.bd_pvpr));
+          const campoValor = dF <= dP ? 'pvf' : 'pvpr';
+          if (campoValor !== campo) { conf -= 20; nota.push('etiqueta y valor no coinciden'); campo = campoValor; }
+        }
+        nota.push('solo se detecto 1 de los 2 precios');
+        asign.push({ u, campo, conf, nota, revisar: false });
+      }
+
+      // Cruces finales por caja: CN, valor impreso vs BD, y coherencia de datos BD.
+      for (const a of asign) {
+        const bd = a.campo === 'pvpr' ? (z.bd_pvpr != null ? Number(z.bd_pvpr) : null) : (z.bd_pvf != null ? Number(z.bd_pvf) : null);
+        if (cnMismatch) { a.conf -= 20; a.nota.push('CN leido ≠ codigo del producto'); }
+        if (a.u.valorIA != null && bd != null && bd > 0) {
+          const r = a.u.valorIA / bd;
+          if (r < 0.5 || r > 2) { a.conf -= 20; a.nota.push('valor impreso (' + a.u.valorIA + ') lejos del BD (' + bd + ')'); }
+        }
+        // Dato BD dudoso: PVPR deberia ser > PVF (IVA). Si no, avisar para validar el dato.
+        if (a.campo === 'pvpr' && z.bd_pvf != null && z.bd_pvpr != null && Number(z.bd_pvpr) <= Number(z.bd_pvf) * 1.03) {
+          a.conf -= 15; a.nota.push('BD: PVPR≈PVF (dato dudoso)');
+        }
+        if (bd == null) { a.conf -= 15; a.nota.push('sin precio en BD'); }
+        a.revisar = a.conf < 75;
+      }
+
+      for (const a of asign) {
+        const ref = a.u.ref;
+        const ins = await pool.query(
+          `INSERT INTO lamina_recuadro
+            (sheet_id, zone_id, product_id, campo, x, y, ancho, alto, color_fondo, color_texto, tam_rel, alinear, sep_decimal, origen, confianza, revisar, nota, valor_impreso)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'ia',$14,$15,$16,$17) RETURNING id`,
+          [sheetId, z.zone_id, z.product_id, a.campo,
+           ref.x, ref.y, ref.ancho, ref.alto, ref.color_fondo, ref.color_texto, ref.tam_rel, ref.alinear, sepLamina,
+           Math.max(0, a.conf), a.revisar, a.nota.join('; ').slice(0, 200) || null, a.u.valorIA]);
+        creados++; if (a.revisar) con_revisar++;
+        detalle.push({ product_id: z.product_id, codigo: z.producto_codigo, campo: a.campo, confianza: Math.max(0, a.conf), revisar: a.revisar, nota: a.nota.join('; '), recuadro_id: ins.rows[0].id });
+      }
+    }
+    res.json({ success: true, creados, con_revisar, total_detectados: detec.length, descartados_fuera, zonas_producto: zonas.length, detalle });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

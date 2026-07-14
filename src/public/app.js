@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v75 · 14 jul 2026';
+const APP_VERSION = 'v76 · 14 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3243,7 +3243,10 @@ let _recuadrosLamina = []; // recuadros activos de la lámina actual
 async function cargarRecuadrosLamina(sheetId) {
   try {
     const r = await api('/api/sheets/' + sheetId + '/recuadros');
-    _recuadrosLamina = (r.recuadros || []).filter(x => x.activo);
+    // SEGURIDAD: solo se reescribe un precio si el recuadro está activo Y NO marcado para
+    // revisar. Los dudosos (confianza baja) se dejan con el precio impreso hasta que el
+    // admin los apruebe → nunca se muestra un precio mal a un cliente.
+    _recuadrosLamina = (r.recuadros || []).filter(x => x.activo && !x.revisar);
     pintarRecuadrosPrecio();
   } catch (e) { _recuadrosLamina = []; }
 }
@@ -11734,8 +11737,8 @@ async function detectarPreciosConIA(sheetId, boton) {
     const dt = Math.round((Date.now() - t0) / 1000);
     if (!r.success) throw new Error(r.error || 'La IA no respondió');
     await renderRecuadrosEnLienzo(sheetId);
-    const casados = (r.detalle || []).filter(d => d.casado).length;
-    alert(`✅ Precios detectados (${dt}s)\n\n${r.creados} recuadros creados de ${r.total_detectados} precios vistos\n${casados} casados con un producto (se reescriben con el precio de BD)\n${r.creados - casados} sin producto (no se pintan hasta asignarlo)\n\nLos morados sobre la lámina son los recuadros. ✕ para borrar uno. Compruébalos en el visor comercial.`);
+    const ok = r.creados - (r.con_revisar || 0);
+    alert(`✅ Precios detectados (${dt}s)\n\n${r.creados} recuadros sobre ${r.zonas_producto} productos (de ${r.total_detectados} precios vistos)\n✔️ ${ok} de confianza alta (se reescriben ya)\n⚠️ ${r.con_revisar || 0} para revisar (NO se muestran al cliente hasta que los apruebes)\n${r.descartados_fuera ? '🗑️ ' + r.descartados_fuera + ' fuera de zona descartados\\n' : ''}\nEn el lienzo: morado = OK, ámbar = revisar (pasa el ratón para ver el motivo). ✓ aprobar · ✕ borrar.`);
   } catch (e) {
     alert('Error: ' + e.message);
   }
@@ -11752,10 +11755,22 @@ async function renderRecuadrosEnLienzo(sheetId) {
   capa.innerHTML = '';
   (_zonasEditor.recuadros || []).forEach(rec => {
     const d = document.createElement('div');
-    d.className = 'zona-recuadro-ov' + (rec.product_id ? '' : ' sin-producto');
+    d.className = 'zona-recuadro-ov' + (rec.revisar ? ' revisar' : '') + (rec.product_id ? '' : ' sin-producto');
     d.style.left = rec.x + '%'; d.style.top = rec.y + '%';
     d.style.width = rec.ancho + '%'; d.style.height = rec.alto + '%';
-    d.title = (rec.campo === 'pvpr' ? 'P.V.P.R.' : 'P.V.F.') + ' · ' + (rec.producto_codigo || 'SIN producto asignado');
+    const et = (rec.campo === 'pvpr' ? 'P.V.P.R.' : 'P.V.F.') + ' · ' + (rec.producto_codigo || 'SIN producto');
+    d.title = et + ' · confianza ' + rec.confianza + '%' + (rec.valor_impreso != null ? ' · impreso ' + rec.valor_impreso : '') + (rec.nota ? '\n⚠️ ' + rec.nota : '');
+    if (rec.revisar) {
+      const ap = document.createElement('button');
+      ap.type = 'button'; ap.textContent = '✓'; ap.className = 'zona-recuadro-ap';
+      ap.title = 'Aprobar: se mostrará al cliente';
+      ap.onclick = async (ev) => {
+        ev.stopPropagation();
+        try { await api('/api/recuadros/' + rec.id, { method: 'PUT', body: { revisar: false } }); await renderRecuadrosEnLienzo(sheetId); }
+        catch (e) { alert(e.message); }
+      };
+      d.appendChild(ap);
+    }
     const x = document.createElement('button');
     x.type = 'button'; x.textContent = '✕'; x.className = 'zona-recuadro-del';
     x.onclick = async (ev) => {

@@ -210,7 +210,8 @@ export interface RecuadroRefinado {
  */
 export async function refinarRecuadroPrecio(
   rutaImagenAbs: string,
-  cajaPct: { x: number; y: number; ancho: number; alto: number }
+  cajaPct: { x: number; y: number; ancho: number; alto: number },
+  clipPct?: { x: number; y: number; ancho: number; alto: number } // limite (zona del producto): el crop NUNCA lo excede
 ): Promise<RecuadroRefinado | null> {
   try {
     if (!fs.existsSync(rutaImagenAbs)) return null;
@@ -226,6 +227,14 @@ export async function refinarRecuadroPrecio(
     let cy = Math.round(cajaPct.y * H / 100 - padY);
     let cw = Math.round(cajaPct.ancho * W / 100 + padX * 2);
     let ch = Math.round(cajaPct.alto * H / 100 + padY * 2);
+    // Recortar el crop al CLIP (zona del producto) para no muestrear texto de vecinos.
+    if (clipPct) {
+      const lx0 = Math.floor(clipPct.x * W / 100), ly0 = Math.floor(clipPct.y * H / 100);
+      const lx1 = Math.ceil((clipPct.x + clipPct.ancho) * W / 100), ly1 = Math.ceil((clipPct.y + clipPct.alto) * H / 100);
+      const nx0 = Math.max(cx, lx0), ny0 = Math.max(cy, ly0);
+      const nx1 = Math.min(cx + cw, lx1), ny1 = Math.min(cy + ch, ly1);
+      cx = nx0; cy = ny0; cw = nx1 - nx0; ch = ny1 - ny0;
+    }
     cx = Math.max(0, cx); cy = Math.max(0, cy);
     cw = Math.min(W - cx, Math.max(4, cw)); ch = Math.min(H - cy, Math.max(4, ch));
     if (cw < 4 || ch < 4) return null;
@@ -288,21 +297,11 @@ export async function refinarRecuadroPrecio(
     }
     if (cx0 >= 0) clusters.push({ x0: cx0, x1: cw - 1, peso: cpeso });
     if (!clusters.length) return null;
-    // Elegir el cluster del NUMERO: el que mas SOLAPA con la caja de la IA (que apunta
-    // al numero, no a la etiqueta). Empate -> el mas a la derecha (el numero va tras la
-    // etiqueta "P.V.L."). Si ningun cluster solapa, el mas cercano al centro de la caja.
-    const aiX0 = cajaPct.x * W / 100 - cx;
-    const aiX1 = (cajaPct.x + cajaPct.ancho) * W / 100 - cx;
-    const solape = (cc: { x0: number; x1: number }) => Math.max(0, Math.min(cc.x1, aiX1) - Math.max(cc.x0, aiX0));
-    let clus = clusters[0], mejor = -1;
-    for (const cc of clusters) {
-      const s = solape(cc);
-      if (s > mejor || (s === mejor && cc.x0 > clus.x0)) { mejor = s; clus = cc; }
-    }
-    if (mejor <= 0) {
-      const hintCx = (aiX0 + aiX1) / 2; let bestD = 1e9;
-      for (const cc of clusters) { const c = (cc.x0 + cc.x1) / 2; const d = Math.abs(c - hintCx); if (d < bestD) { bestD = d; clus = cc; } }
-    }
+    // En "P.V.L.  5,96EUR" el NUMERO es SIEMPRE el ultimo bloque de la linea (tras la
+    // etiqueta). Elegimos el cluster MAS A LA DERECHA -> nunca tapamos la etiqueta.
+    // (padX limitado ya evita que el crop se extienda mas alla del numero por la derecha.)
+    let clus = clusters[0];
+    for (const cc of clusters) if (cc.x1 > clus.x1) clus = cc;
     // bbox final: cluster elegido (x) x banda (y), + color de tinta dentro de esa caja
     let minX = clus.x0, maxX = clus.x1, minY = banda.y1, maxY = banda.y0, dark = 0;
     let tr = 0, tg = 0, tb = 0, tn = 0;
