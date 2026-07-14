@@ -757,6 +757,38 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_products_alt1 ON products(codigo_alt_1);
       CREATE INDEX IF NOT EXISTS idx_products_es_baja ON products(es_baja);
 
+      -- ============================================================================
+      -- PRECIOS DINÁMICOS — FASE 0 (base de datos + config). Ver documento de diseño.
+      -- ============================================================================
+      -- Config global clave-valor (nº de tarifas, etc.). Multi-tarifa configurable.
+      CREATE TABLE IF NOT EXISTS app_config (
+        clave   VARCHAR(60) PRIMARY KEY,
+        valor   TEXT,
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      INSERT INTO app_config (clave, valor) VALUES ('num_tarifas', '1') ON CONFLICT (clave) DO NOTHING;
+
+      -- Cambios de precio PROGRAMADOS con fecha de entrada en vigor. El "precio de hoy"
+      -- de un producto+tarifa = la fila con fecha_vigencia <= hoy más reciente; si no hay,
+      -- se usa el precio base de products (precio_pvf_N / precio_pvpr_N). Los PVF y PVPR van
+      -- juntos (cambian a la vez). 'grupo'/'lote' permiten agrupar una subida (por laboratorio/
+      -- familia) para gestionarla y ponerle la misma fecha. NO se muestra hasta su día.
+      CREATE TABLE IF NOT EXISTS precio_programado (
+        id SERIAL PRIMARY KEY,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        tarifa SMALLINT NOT NULL DEFAULT 1,
+        pvf DECIMAL(10,2),
+        pvpr DECIMAL(10,2),
+        fecha_vigencia DATE NOT NULL,
+        grupo VARCHAR(80),                 -- etiqueta del grupo (ej. laboratorio/familia)
+        lote VARCHAR(80),                  -- referencia de la subida/lote (para gestionarla junta)
+        creado_por INTEGER REFERENCES users(id),
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_precprog_lookup ON precio_programado(product_id, tarifa, fecha_vigencia DESC);
+      CREATE INDEX IF NOT EXISTS idx_precprog_lote ON precio_programado(lote);
+      CREATE INDEX IF NOT EXISTS idx_precprog_fecha ON precio_programado(fecha_vigencia);
+
       -- ===== Sync Sage - campos extra en clients (idempotente) =====
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS tarifa_precio INTEGER;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS nombre_comercial VARCHAR(255);
@@ -6293,6 +6325,123 @@ app.get('/api/admin/mega-test', verifyToken, requireRealAdmin, async (_req: Auth
       hint: 'Verifica MEGA_EMAIL y MEGA_PASSWORD en Railway env vars'
     });
   }
+});
+
+// ============================================================================
+// PRECIOS DINÁMICOS — FASE 0: config (nº tarifas) + resolución "precio de hoy" +
+// gestión de cambios programados. Sin UI todavía; base para las fases siguientes.
+// ============================================================================
+async function numTarifasConfig(): Promise<number> {
+  try {
+    const r = await pool.query(`SELECT valor FROM app_config WHERE clave='num_tarifas'`);
+    const n = parseInt(r.rows[0]?.valor || '1', 10);
+    return (Number.isInteger(n) && n >= 1 && n <= 3) ? n : 1; // por ahora máx 3 (columnas _1/2/3)
+  } catch { return 1; }
+}
+
+// Precio VIGENTE HOY de un producto para una tarifa: primero un cambio programado con
+// fecha <= hoy (el más reciente); si no hay, el precio base de products (columna _N).
+async function precioVigenteHoy(productId: number, tarifa: number): Promise<{ pvf: number | null; pvpr: number | null; fuente: string; fecha: string | null }> {
+  const prog = await pool.query(
+    `SELECT pvf, pvpr, fecha_vigencia FROM precio_programado
+      WHERE product_id=$1 AND tarifa=$2 AND fecha_vigencia <= CURRENT_DATE
+      ORDER BY fecha_vigencia DESC, id DESC LIMIT 1`, [productId, tarifa]);
+  if (prog.rows.length) {
+    return { pvf: prog.rows[0].pvf, pvpr: prog.rows[0].pvpr, fuente: 'programado', fecha: prog.rows[0].fecha_vigencia };
+  }
+  const col = (tarifa >= 1 && tarifa <= 3) ? tarifa : 1;
+  const base = await pool.query(
+    `SELECT precio_pvf_${col} AS pvf, precio_pvpr_${col} AS pvpr, precio_pvf, precio_pvpr FROM products WHERE id=$1`, [productId]);
+  if (!base.rows.length) return { pvf: null, pvpr: null, fuente: 'no-existe', fecha: null };
+  const b = base.rows[0];
+  return { pvf: b.pvf ?? b.precio_pvf ?? null, pvpr: b.pvpr ?? b.precio_pvpr ?? null, fuente: 'base', fecha: null };
+}
+
+// GET config global (num_tarifas)
+app.get('/api/config', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`SELECT clave, valor FROM app_config`);
+    const cfg: any = {}; r.rows.forEach((x: any) => { cfg[x.clave] = x.valor; });
+    res.json({ success: true, config: cfg, num_tarifas: await numTarifasConfig() });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// PUT config (admin real) — por ahora num_tarifas (1..3)
+app.put('/api/config', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.body.num_tarifas !== undefined) {
+      const n = parseInt(String(req.body.num_tarifas), 10);
+      if (!Number.isInteger(n) || n < 1 || n > 3) { res.status(400).json({ success: false, error: 'num_tarifas debe ser 1..3 por ahora' }); return; }
+      await pool.query(`INSERT INTO app_config (clave, valor, updated_at) VALUES ('num_tarifas',$1,NOW())
+        ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`, [String(n)]);
+    }
+    res.json({ success: true, num_tarifas: await numTarifasConfig() });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// GET precio vigente hoy de un producto (+ si hay un cambio pendiente futuro)
+app.get('/api/precios/vigente', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const productId = Number(req.query.product_id);
+    const tarifa = Number(req.query.tarifa) || 1;
+    if (!Number.isInteger(productId) || productId <= 0) { res.status(400).json({ success: false, error: 'product_id inválido' }); return; }
+    const hoy = await precioVigenteHoy(productId, tarifa);
+    const pend = await pool.query(
+      `SELECT pvf, pvpr, fecha_vigencia FROM precio_programado
+        WHERE product_id=$1 AND tarifa=$2 AND fecha_vigencia > CURRENT_DATE
+        ORDER BY fecha_vigencia ASC, id ASC LIMIT 1`, [productId, tarifa]);
+    res.json({ success: true, tarifa, hoy, pendiente: pend.rows[0] || null });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// GET lista de cambios programados (admin real)
+app.get('/api/precios/programados', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const cond: string[] = []; const vals: any[] = []; let i = 1;
+    if (req.query.lote) { cond.push(`pp.lote=$${i++}`); vals.push(String(req.query.lote)); }
+    if (req.query.product_id) { cond.push(`pp.product_id=$${i++}`); vals.push(Number(req.query.product_id)); }
+    if (req.query.pendientes === 'true') cond.push(`pp.fecha_vigencia > CURRENT_DATE`);
+    const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
+    const r = await pool.query(
+      `SELECT pp.*, p.codigo, p.nombre FROM precio_programado pp JOIN products p ON p.id=pp.product_id
+       ${where} ORDER BY pp.fecha_vigencia DESC, pp.id DESC LIMIT 500`, vals);
+    res.json({ success: true, programados: r.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// POST programar cambio(s) de precio (admin real). Body: {fecha_vigencia, grupo?, lote?, items:[{product_id,tarifa,pvf,pvpr}]} o un item suelto.
+app.post('/api/precios/programar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const items = Array.isArray(req.body.items) ? req.body.items : [req.body];
+    const fechaBase = String(req.body.fecha_vigencia || (items[0] && items[0].fecha_vigencia) || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaBase)) { res.status(400).json({ success: false, error: 'fecha_vigencia (YYYY-MM-DD) obligatoria' }); return; }
+    const grupo = req.body.grupo ? String(req.body.grupo).slice(0, 80) : null;
+    const lote = req.body.lote ? String(req.body.lote).slice(0, 80) : null;
+    const uid = req.user?.id || null;
+    const creados: number[] = [];
+    for (const it of items) {
+      const pid = Number(it.product_id); const tarifa = Number(it.tarifa) || 1;
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      const pvf = (it.pvf != null && it.pvf !== '') ? Number(it.pvf) : null;
+      const pvpr = (it.pvpr != null && it.pvpr !== '') ? Number(it.pvpr) : null;
+      const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(it.fecha_vigencia || '').slice(0, 10)) ? String(it.fecha_vigencia).slice(0, 10) : fechaBase;
+      const r = await pool.query(
+        `INSERT INTO precio_programado (product_id, tarifa, pvf, pvpr, fecha_vigencia, grupo, lote, creado_por)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+        [pid, tarifa, pvf, pvpr, fecha, grupo, lote, uid]);
+      creados.push(r.rows[0].id);
+    }
+    res.status(201).json({ success: true, creados });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// DELETE un cambio programado (admin real)
+app.delete('/api/precios/programado/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`DELETE FROM precio_programado WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrado' }); return; }
+    res.json({ success: true });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
 });
 
 app.get('/api/admin/limpiar-pruebas/preview', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
