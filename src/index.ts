@@ -6350,11 +6350,13 @@ async function precioVigenteHoy(productId: number, tarifa: number): Promise<{ pv
     return { pvf: prog.rows[0].pvf, pvpr: prog.rows[0].pvpr, fuente: 'programado', fecha: prog.rows[0].fecha_vigencia };
   }
   const col = (tarifa >= 1 && tarifa <= 3) ? tarifa : 1;
+  // Fallback legacy: precio_pvf (farmacia) y precio_pvp (público). OJO: NO existe columna
+  // 'precio_pvpr' sin sufijo; la pública histórica es precio_pvp.
   const base = await pool.query(
-    `SELECT precio_pvf_${col} AS pvf, precio_pvpr_${col} AS pvpr, precio_pvf, precio_pvpr FROM products WHERE id=$1`, [productId]);
+    `SELECT precio_pvf_${col} AS pvf, precio_pvpr_${col} AS pvpr, precio_pvf AS pvf_legacy, precio_pvp AS pvpr_legacy FROM products WHERE id=$1`, [productId]);
   if (!base.rows.length) return { pvf: null, pvpr: null, fuente: 'no-existe', fecha: null };
   const b = base.rows[0];
-  return { pvf: b.pvf ?? b.precio_pvf ?? null, pvpr: b.pvpr ?? b.precio_pvpr ?? null, fuente: 'base', fecha: null };
+  return { pvf: b.pvf ?? b.pvf_legacy ?? null, pvpr: b.pvpr ?? b.pvpr_legacy ?? null, fuente: 'base', fecha: null };
 }
 
 // GET config global (num_tarifas)
