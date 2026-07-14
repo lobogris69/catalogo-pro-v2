@@ -273,19 +273,40 @@ export async function refinarRecuadroPrecio(
     } else {
       for (const b of bandas) if (b.peso > banda.peso) banda = b;
     }
-    // Dentro de la banda elegida: bbox horizontal ajustado + color de tinta
-    let minX = 1e9, minY = banda.y0, maxX = 0, maxY = banda.y1, dark = 0;
+    // Dentro de la banda: segmentar en CLUSTERS por columna (hueco grande = separacion
+    // entre la ETIQUETA "P.V.L." y el NUMERO). Elegimos el cluster mas cercano al centro-x
+    // de la caja de la IA para tapar SOLO el numero y NO pisar la etiqueta.
+    const bandH = banda.y1 - banda.y0 + 1;
+    const colDark = new Array(cw).fill(0);
+    for (let px = 0; px < cw; px++) { let c = 0; for (let py = banda.y0; py <= banda.y1; py++) if (lum(px, py) < 110) c++; colDark[px] = c; }
+    const gapMax = Math.max(3, Math.round(bandH * 0.6)); // huecos entre digitos se fusionan; el de la etiqueta separa
+    const clusters: { x0: number; x1: number; peso: number }[] = [];
+    let cx0 = -1, chueco = 0, cpeso = 0;
+    for (let px = 0; px < cw; px++) {
+      if (colDark[px] > 0) { if (cx0 < 0) { cx0 = px; cpeso = 0; } cpeso += colDark[px]; chueco = 0; }
+      else if (cx0 >= 0) { if (++chueco > gapMax) { clusters.push({ x0: cx0, x1: px - chueco, peso: cpeso }); cx0 = -1; } }
+    }
+    if (cx0 >= 0) clusters.push({ x0: cx0, x1: cw - 1, peso: cpeso });
+    if (!clusters.length) return null;
+    const hintCx = (cajaPct.x + cajaPct.ancho / 2) * W / 100 - cx;
+    let clus = clusters[0];
+    if (Number.isFinite(hintCx)) {
+      let bestD = 1e9;
+      for (const cc of clusters) { const c = (cc.x0 + cc.x1) / 2; const d = Math.abs(c - hintCx); if (d < bestD) { bestD = d; clus = cc; } }
+    } else { for (const cc of clusters) if (cc.peso > clus.peso) clus = cc; }
+    // bbox final: cluster elegido (x) x banda (y), + color de tinta dentro de esa caja
+    let minX = clus.x0, maxX = clus.x1, minY = banda.y1, maxY = banda.y0, dark = 0;
     let tr = 0, tg = 0, tb = 0, tn = 0;
-    for (let py = banda.y0; py <= banda.y1; py++) for (let px = 0; px < cw; px++) {
+    for (let py = banda.y0; py <= banda.y1; py++) for (let px = clus.x0; px <= clus.x1; px++) {
       const i = (py * cw + px) * C;
       const l = lum(px, py);
       if (l < 110) {
-        if (px < minX) minX = px; if (px > maxX) maxX = px;
+        if (py < minY) minY = py; if (py > maxY) maxY = py;
         dark++;
         if (l < 90) { tr += data[i]; tg += data[i + 1]; tb += data[i + 2]; tn++; }
       }
     }
-    if (dark < 4 || minX > maxX) return null; // no encontramos texto: mejor no crear recuadro
+    if (dark < 4 || minX > maxX || minY > maxY) return null; // no encontramos texto
     // Ajuste fino: pequeno padding alrededor del texto detectado (2px) sin salir del crop
     const pad2 = 2;
     minX = Math.max(0, minX - pad2); minY = Math.max(0, minY - pad2);
