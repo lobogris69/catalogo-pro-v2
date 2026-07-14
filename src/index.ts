@@ -6989,7 +6989,7 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
     const anchor = rec.alinear === 'right' ? 'end' : (rec.alinear === 'center' ? 'middle' : 'start');
     const tx = rec.alinear === 'right' ? x + w : (rec.alinear === 'center' ? x + w / 2 : x);
     els += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${rec.color_fondo || '#fff'}"/>`;
-    els += `<text x="${tx}" y="${by}" font-family="${rec.fuente || 'Arial, Helvetica, sans-serif'}" font-weight="${rec.negrita === false ? '400' : '700'}" font-size="${fs2}" fill="${rec.color_texto || '#2b2a29'}" text-anchor="${anchor}">${esc(txt)}</text>`;
+    els += `<text x="${tx}" y="${by}" font-family="${rec.fuente || 'Liberation Sans, Arial, DejaVu Sans, sans-serif'}" font-weight="${rec.negrita === false ? '400' : '700'}" font-size="${fs2}" fill="${rec.color_texto || '#2b2a29'}" text-anchor="${anchor}">${esc(txt)}</text>`;
   }
   // Ofertas: badge arriba-derecha de la zona
   for (const z of zonas) {
@@ -7001,7 +7001,7 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
     const zx = z.x / 100 * W, zy = z.y / 100 * H, zw = z.ancho / 100 * W;
     const bx = Math.max(0, zx + zw - bw), by0 = zy;
     els += `<rect x="${bx}" y="${by0}" width="${bw}" height="${bh}" rx="${bh * 0.3}" fill="${of.color || '#dc2626'}"/>`;
-    els += `<text x="${bx + bw / 2}" y="${by0 + bh / 2 + fs2 * 0.35}" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="${fs2}" fill="#ffffff" text-anchor="middle">${esc(label)}</text>`;
+    els += `<text x="${bx + bw / 2}" y="${by0 + bh / 2 + fs2 * 0.35}" font-family="Liberation Sans, Arial, DejaVu Sans, sans-serif" font-weight="800" font-size="${fs2}" fill="#ffffff" text-anchor="middle">${esc(label)}</text>`;
   }
   if (!els) return await sharp(abs).png().toBuffer(); // nada que recomponer: imagen tal cual
   const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">${els}</svg>`;

@@ -1,5 +1,9 @@
 [phases.setup]
 nixPkgs = ["nodejs_20", "poppler_utils"]
+# Fuentes para render de texto server-side (sharp/librsvg): Liberation Sans es
+# metricamente identica a Arial -> los precios/ofertas reescritos en la lamina
+# (F3/F5) casan con la tipografia impresa. fontconfig las descubre en /usr/share/fonts.
+aptPkgs = ["fontconfig", "fonts-liberation"]
 
 [phases.install]
 cmds = ["npm install"]
