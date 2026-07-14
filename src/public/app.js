@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v71 · 13 jul 2026';
+const APP_VERSION = 'v72 · 13 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -4886,11 +4886,21 @@ function abrirModalLimpiarPruebas() {
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
       </div>
       <div style="background:#fef2f2;border:1px solid #fecaca;padding:12px;border-radius:8px;margin-bottom:14px;font-size:13px;color:#7f1d1d">
-        Vas a borrar <b>todos los catálogos, láminas, visitas, anotaciones y versiones</b>.
-        <br><br>
-        Esto <b>NO</b> afecta a productos, clientes, usuarios, plantillas ni configuración.
-        <br><br>
-        <b>Esta acción no se puede deshacer.</b>
+        Elige <b>qué borrar</b>. Esto <b>NO</b> afecta a productos, clientes, usuarios, plantillas ni configuración. <b>No se puede deshacer.</b>
+      </div>
+      <div class="form-group" style="display:flex;flex-direction:column;gap:10px">
+        <label style="display:flex;align-items:flex-start;gap:9px;font-weight:500;cursor:pointer">
+          <input type="checkbox" class="limpiar-grupo" value="visitas" checked style="margin-top:2px">
+          <span>🛒 <b>Visitas y pedidos</b> (anotaciones)<br><small style="color:var(--gris-texto)">Borra las visitas de prueba y sus pedidos/notas. Deja los catálogos intactos.</small></span>
+        </label>
+        <label style="display:flex;align-items:flex-start;gap:9px;font-weight:500;cursor:pointer">
+          <input type="checkbox" class="limpiar-grupo" value="catalogos" style="margin-top:2px">
+          <span>📚 <b>Catálogos, láminas y versiones</b><br><small style="color:var(--gris-texto)">Borra catálogos, láminas, zonas y versiones. <b>Al marcarlo se borran también las visitas/pedidos</b> (sus pedidos apuntan a esas láminas).</small></span>
+        </label>
+        <label style="display:flex;align-items:flex-start;gap:9px;font-weight:500;cursor:pointer">
+          <input type="checkbox" class="limpiar-grupo" value="aula" style="margin-top:2px">
+          <span>🎓 <b>Aula (formaciones)</b><br><small style="color:var(--gris-texto)">Borra las formaciones subidas y sus versiones.</small></span>
+        </label>
       </div>
       <div class="form-group">
         <label>Para confirmar, escribe <b>BORRAR</b> en mayúsculas:</label>
@@ -4912,22 +4922,31 @@ async function confirmarLimpiarPruebas() {
   const $input = document.getElementById('limpiar-confirm-input');
   const $msg = document.getElementById('limpiar-modal-msg');
   const confirmacion = ($input.value || '').trim();
+  const grupos = Array.from(document.querySelectorAll('.limpiar-grupo:checked')).map(c => c.value);
+  if (grupos.length === 0) {
+    $msg.innerHTML = `<div class="error-msg">Marca al menos una cosa que borrar.</div>`;
+    return;
+  }
   if (confirmacion !== 'BORRAR') {
     $msg.innerHTML = `<div class="error-msg">Debes escribir exactamente BORRAR (en mayúsculas).</div>`;
     return;
   }
-  $msg.innerHTML = `<div style="color:#6b7280;font-size:13px">Borrando datos de prueba…</div>`;
+  $msg.innerHTML = `<div style="color:#6b7280;font-size:13px">Borrando lo seleccionado…</div>`;
   try {
     const r = await api('/api/admin/limpiar-pruebas', {
       method: 'POST',
-      body: { confirmacion: 'BORRAR' }
+      body: { confirmacion: 'BORRAR', grupos }
     });
     document.querySelector('.modal-bg').remove();
-    const b = r.borrados;
-    mostrarNotificacionOnline(
-      `✅ Limpiado: ${b.catalogs} catálogos · ${b.sheets} láminas · ${b.visits} visitas · ${r.archivos_fisicos_borrados} archivos`,
-      '#16a34a'
-    );
+    const b = r.borrados || {};
+    const partes = [];
+    if (typeof b.catalogs === 'number') partes.push(b.catalogs + ' catálogos');
+    if (typeof b.sheets === 'number') partes.push(b.sheets + ' láminas');
+    if (typeof b.visits === 'number') partes.push(b.visits + ' visitas');
+    if (typeof b.annotations === 'number') partes.push(b.annotations + ' anotaciones');
+    if (typeof b.formaciones === 'number') partes.push(b.formaciones + ' formaciones');
+    if (r.archivos_fisicos_borrados) partes.push(r.archivos_fisicos_borrados + ' archivos');
+    mostrarNotificacionOnline('✅ Limpiado: ' + (partes.join(' · ') || 'nada'), '#16a34a');
     cargarStatsLimpiarPruebas();
   } catch (err) {
     $msg.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;

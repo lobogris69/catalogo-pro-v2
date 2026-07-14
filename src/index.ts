@@ -6347,52 +6347,68 @@ app.post('/api/admin/limpiar-pruebas', verifyToken, requireRealAdmin, async (req
 
     const borrados: any = {};
 
-    // 1) Recoger rutas físicas de láminas ANTES de borrar (para limpiar disco)
-    const sheetsR = await pool.query(`SELECT imagen_path, miniatura_path FROM sheets`);
+    // Selección de grupos a borrar (por defecto TODO, para compatibilidad).
+    // 'catalogos' IMPLICA 'visitas': no tiene sentido conservar pedidos de catálogos borrados
+    // (además evita errores de clave foránea al borrar las láminas que referencian).
+    const gruposRaw = Array.isArray(req.body.grupos) ? req.body.grupos.map((g: any) => String(g)) : ['visitas', 'catalogos', 'aula'];
+    const wantCatalogos = gruposRaw.includes('catalogos');
+    const wantAula = gruposRaw.includes('aula');
+    const wantVisitas = gruposRaw.includes('visitas') || wantCatalogos;
+    if (!wantVisitas && !wantCatalogos && !wantAula) {
+      res.status(400).json({ success: false, error: 'No has seleccionado nada que borrar.' });
+      return;
+    }
+
+    // 1) Recoger rutas físicas de láminas ANTES de borrar (solo si se borran catálogos)
     const rutasFisicas: string[] = [];
-    for (const s of sheetsR.rows) {
-      for (const p of [s.imagen_path, s.miniatura_path]) {
-        if (!p) continue;
-        let rel = String(p);
-        if (rel.startsWith('/uploads/')) rel = rel.substring('/uploads/'.length);
-        else if (rel.startsWith('uploads/')) rel = rel.substring('uploads/'.length);
-        rutasFisicas.push(path.join(UPLOADS_DIR, rel));
+    if (wantCatalogos) {
+      const sheetsR = await pool.query(`SELECT imagen_path, miniatura_path FROM sheets`);
+      for (const s of sheetsR.rows) {
+        for (const p of [s.imagen_path, s.miniatura_path]) {
+          if (!p) continue;
+          let rel = String(p);
+          if (rel.startsWith('/uploads/')) rel = rel.substring('/uploads/'.length);
+          else if (rel.startsWith('uploads/')) rel = rel.substring('uploads/'.length);
+          rutasFisicas.push(path.join(UPLOADS_DIR, rel));
+        }
       }
     }
 
-    // 1b) Rutas fisicas de archivos de formaciones (PDFs subidos al Aula)
-    try {
-      const formR = await pool.query(`SELECT archivo_path FROM formaciones`);
-      for (const f of formR.rows) if (f.archivo_path) rutasFisicas.push(f.archivo_path);
-      const formVR = await pool.query(`SELECT archivo_path FROM formacion_versions`);
-      for (const f of formVR.rows) if (f.archivo_path) rutasFisicas.push(f.archivo_path);
-    } catch (_) { /* si las tablas no existen, seguimos */ }
+    // 1b) Rutas fisicas de archivos de formaciones (solo si se borra el Aula)
+    if (wantAula) {
+      try {
+        const formR = await pool.query(`SELECT archivo_path FROM formaciones`);
+        for (const f of formR.rows) if (f.archivo_path) rutasFisicas.push(f.archivo_path);
+        const formVR = await pool.query(`SELECT archivo_path FROM formacion_versions`);
+        for (const f of formVR.rows) if (f.archivo_path) rutasFisicas.push(f.archivo_path);
+      } catch (_) { /* si las tablas no existen, seguimos */ }
+    }
 
     // 2) Borrar en orden seguro (hijos antes que padres).
     //    Muchas tienen ON DELETE CASCADE, pero lo hacemos explícito para contar bien.
-    const ordenBorrado = [
-      // Auditoría y logs de operaciones sobre laminas/backups (limpiamos historico de pruebas)
-      'sheet_audit_log',
-      'mega_backups',
-      'office_summary_sent',
-      // Emails de visitas y anotaciones
-      'visit_emails',
-      'annotations',
-      'visits',
-      // Catalogos y sus tablas asociadas
-      'express_sheets',
-      'catalog_versions',
-      'catalog_changes',
-      'catalog_assignments',
-      'sheet_categorias',
-      'sheet_zones',
-      'sheets',
-      'catalogs',
-      // Aula de formacion (todo era prueba)
-      'formacion_permisos',
-      'formacion_versions',
-      'formaciones'
+    // Orden canónico seguro (hijos antes que padres) con el GRUPO de cada tabla.
+    // Solo se borran las de los grupos seleccionados.
+    const canonico: Array<{ t: string; g: 'visitas' | 'catalogos' | 'aula' }> = [
+      { t: 'sheet_audit_log', g: 'catalogos' },
+      { t: 'mega_backups', g: 'catalogos' },
+      { t: 'office_summary_sent', g: 'catalogos' },
+      { t: 'visit_emails', g: 'visitas' },
+      { t: 'annotations', g: 'visitas' },
+      { t: 'visits', g: 'visitas' },
+      { t: 'express_sheets', g: 'catalogos' },
+      { t: 'catalog_versions', g: 'catalogos' },
+      { t: 'catalog_changes', g: 'catalogos' },
+      { t: 'catalog_assignments', g: 'catalogos' },
+      { t: 'sheet_categorias', g: 'catalogos' },
+      { t: 'sheet_zones', g: 'catalogos' },
+      { t: 'sheets', g: 'catalogos' },
+      { t: 'catalogs', g: 'catalogos' },
+      { t: 'formacion_permisos', g: 'aula' },
+      { t: 'formacion_versions', g: 'aula' },
+      { t: 'formaciones', g: 'aula' }
     ];
+    const grupoActivo = (g: string) => (g === 'visitas' ? wantVisitas : g === 'catalogos' ? wantCatalogos : wantAula);
+    const ordenBorrado = canonico.filter(x => grupoActivo(x.g)).map(x => x.t);
     for (const tabla of ordenBorrado) {
       try {
         const r = await pool.query(`DELETE FROM ${tabla}`);
@@ -6417,15 +6433,17 @@ app.post('/api/admin/limpiar-pruebas', verifyToken, requireRealAdmin, async (req
       }
     }
 
-    // 4) Borrar carpeta de versiones (PDFs/ZIPs generados) si existe
-    try {
-      const versionsDir = path.join(UPLOADS_DIR, 'versions');
-      if (fsMod.existsSync(versionsDir)) {
-        for (const f of fsMod.readdirSync(versionsDir)) {
-          try { fsMod.unlinkSync(path.join(versionsDir, f)); archivosFisicosBorrados++; } catch {}
+    // 4) Borrar carpeta de versiones (PDFs/ZIPs generados) solo si se borran catálogos
+    if (wantCatalogos) {
+      try {
+        const versionsDir = path.join(UPLOADS_DIR, 'versions');
+        if (fsMod.existsSync(versionsDir)) {
+          for (const f of fsMod.readdirSync(versionsDir)) {
+            try { fsMod.unlinkSync(path.join(versionsDir, f)); archivosFisicosBorrados++; } catch {}
+          }
         }
-      }
-    } catch (e) { /* ignorar */ }
+      } catch (e) { /* ignorar */ }
+    }
 
     res.json({
       success: true,
