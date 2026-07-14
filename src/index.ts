@@ -28,7 +28,7 @@ import {
   GENERAL_FOLDER
 } from './mega';
 import { generarTagsIA, resolverRutaImagen } from './ai-tags';
-import { detectarZonasIA, ultimoErrorIA } from './ai-zones';
+import { detectarZonasIA, ultimoErrorIA, refinarRecuadroPrecio, detectarPreciosIA } from './ai-zones';
 
 // ============================================================================
 // AI-TAGS - dispara generacion en background y hace UPDATE cuando esta listo.
@@ -788,6 +788,37 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_precprog_lookup ON precio_programado(product_id, tarifa, fecha_vigencia DESC);
       CREATE INDEX IF NOT EXISTS idx_precprog_lote ON precio_programado(lote);
       CREATE INDEX IF NOT EXISTS idx_precprog_fecha ON precio_programado(fecha_vigencia);
+
+      -- ===== F3 precios dinamicos: RECUADROS sobre la lamina (tapar y reescribir) =====
+      -- Cada fila = un recuadro que TAPA un precio impreso en la imagen y lo REESCRIBE
+      -- con el precio de HOY (de la BD). x/y/ancho/alto en % del ancho/alto de la imagen
+      -- (igual que sheet_zones). color_fondo se muestrea del propio PNG (el rectangulo
+      -- tapa queda invisible); tam_rel = tamano de fuente como % del ANCHO de la imagen
+      -- (asi escala con el visor responsive/zoom). campo = que precio pinta.
+      CREATE TABLE IF NOT EXISTS lamina_recuadro (
+        id SERIAL PRIMARY KEY,
+        sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+        zone_id INTEGER REFERENCES sheet_zones(id) ON DELETE CASCADE,
+        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        campo VARCHAR(12) NOT NULL DEFAULT 'pvf',      -- pvf | pvpr | oferta
+        x REAL NOT NULL, y REAL NOT NULL, ancho REAL NOT NULL, alto REAL NOT NULL,
+        color_fondo VARCHAR(24) NOT NULL DEFAULT '#ffffff',
+        color_texto VARCHAR(24) NOT NULL DEFAULT '#2b2a29',
+        tam_rel REAL NOT NULL DEFAULT 1.8,             -- font-size como % del ancho de imagen
+        alinear VARCHAR(8) NOT NULL DEFAULT 'left',    -- left | center | right
+        fuente VARCHAR(80),                             -- font-family; null = default de la app
+        negrita BOOLEAN NOT NULL DEFAULT TRUE,
+        prefijo VARCHAR(24) DEFAULT '',
+        sufijo VARCHAR(8) DEFAULT '€',
+        decimales SMALLINT NOT NULL DEFAULT 2,
+        sep_decimal CHAR(1) NOT NULL DEFAULT ',',      -- ',' estandar ES; '.' si la lamina lo usa
+        activo BOOLEAN NOT NULL DEFAULT TRUE,
+        origen VARCHAR(12) NOT NULL DEFAULT 'manual',  -- manual | ia
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_recuadro_sheet ON lamina_recuadro(sheet_id);
+      CREATE INDEX IF NOT EXISTS idx_recuadro_zone ON lamina_recuadro(zone_id);
 
       -- ===== Sync Sage - campos extra en clients (idempotente) =====
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS tarifa_precio INTEGER;
@@ -6486,6 +6517,169 @@ app.delete('/api/precios/programado/:id', verifyToken, requireRealAdmin, async (
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrado' }); return; }
     res.json({ success: true });
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// ============================================================================
+// F3 RECUADROS DE PRECIO (tapar y reescribir) — CRUD + muestreo + deteccion IA
+// ============================================================================
+
+// GET recuadros de una lamina (los ve el visor comercial y el editor admin).
+app.get('/api/sheets/:sheetId/recuadros', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.sheetId);
+    const r = await pool.query(
+      `SELECT r.*, p.codigo AS producto_codigo, p.nombre AS producto_nombre
+         FROM lamina_recuadro r LEFT JOIN products p ON p.id = r.product_id
+        WHERE r.sheet_id = $1 ORDER BY r.id`, [sheetId]);
+    res.json({ success: true, recuadros: r.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Campos editables de un recuadro (whitelist) — helper compartido create/update.
+function _recuadroCampos(body: any): { cols: string[]; vals: any[] } {
+  const cols: string[] = []; const vals: any[] = [];
+  const num = (v: any) => (v == null || v === '') ? null : Number(v);
+  const push = (c: string, v: any) => { if (v !== undefined) { cols.push(c); vals.push(v); } };
+  push('zone_id', body.zone_id === undefined ? undefined : (body.zone_id ? Number(body.zone_id) : null));
+  push('product_id', body.product_id === undefined ? undefined : (body.product_id ? Number(body.product_id) : null));
+  if (body.campo !== undefined) push('campo', ['pvf', 'pvpr', 'oferta'].includes(String(body.campo)) ? String(body.campo) : 'pvf');
+  ['x', 'y', 'ancho', 'alto', 'tam_rel'].forEach(k => { if (body[k] !== undefined) push(k, num(body[k])); });
+  if (body.color_fondo !== undefined) push('color_fondo', String(body.color_fondo).slice(0, 24));
+  if (body.color_texto !== undefined) push('color_texto', String(body.color_texto).slice(0, 24));
+  if (body.alinear !== undefined) push('alinear', ['left', 'center', 'right'].includes(String(body.alinear)) ? String(body.alinear) : 'left');
+  if (body.fuente !== undefined) push('fuente', body.fuente ? String(body.fuente).slice(0, 80) : null);
+  if (body.negrita !== undefined) push('negrita', !!body.negrita);
+  if (body.prefijo !== undefined) push('prefijo', String(body.prefijo).slice(0, 24));
+  if (body.sufijo !== undefined) push('sufijo', String(body.sufijo).slice(0, 8));
+  if (body.decimales !== undefined) push('decimales', Math.max(0, Math.min(3, parseInt(String(body.decimales), 10) || 2)));
+  if (body.sep_decimal !== undefined) push('sep_decimal', body.sep_decimal === '.' ? '.' : ',');
+  if (body.activo !== undefined) push('activo', !!body.activo);
+  return { cols, vals };
+}
+
+// POST crear recuadro (admin real).
+app.post('/api/sheets/:sheetId/recuadros', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.sheetId);
+    const b = req.body || {};
+    if ([b.x, b.y, b.ancho, b.alto].some((v: any) => typeof Number(v) !== 'number' || !Number.isFinite(Number(v)))) {
+      res.status(400).json({ success: false, error: 'x/y/ancho/alto obligatorios (%)' }); return;
+    }
+    const { cols, vals } = _recuadroCampos({ ...b, origen: undefined });
+    const allCols = ['sheet_id', 'origen', ...cols];
+    const allVals = [sheetId, b.origen === 'ia' ? 'ia' : 'manual', ...vals];
+    const ph = allVals.map((_, i) => '$' + (i + 1)).join(',');
+    const r = await pool.query(
+      `INSERT INTO lamina_recuadro (${allCols.join(',')}) VALUES (${ph}) RETURNING *`, allVals);
+    res.json({ success: true, recuadro: r.rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// PUT actualizar recuadro (admin real).
+app.put('/api/recuadros/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { cols, vals } = _recuadroCampos(req.body || {});
+    if (!cols.length) { res.status(400).json({ success: false, error: 'nada que actualizar' }); return; }
+    const sets = cols.map((c, i) => `${c} = $${i + 1}`);
+    sets.push('updated_at = NOW()');
+    vals.push(id);
+    const r = await pool.query(
+      `UPDATE lamina_recuadro SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`, vals);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrado' }); return; }
+    res.json({ success: true, recuadro: r.rows[0] });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// DELETE recuadro (admin real).
+app.delete('/api/recuadros/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`DELETE FROM lamina_recuadro WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrado' }); return; }
+    res.json({ success: true });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// POST muestrear: dada una caja aproximada (%), afina caja + colores + tamano de fuente
+// leyendo el PNG real. No guarda nada; solo devuelve la sugerencia para el editor.
+app.post('/api/sheets/:sheetId/recuadros/muestrear', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.sheetId);
+    const s = await pool.query('SELECT imagen_path FROM sheets WHERE id=$1', [sheetId]);
+    if (!s.rows.length) { res.status(404).json({ success: false, error: 'Lamina no encontrada' }); return; }
+    const abs = resolverRutaImagen(s.rows[0].imagen_path, UPLOADS_DIR);
+    if (!abs || !fs.existsSync(abs)) { res.status(400).json({ success: false, error: 'Imagen no existe en disco' }); return; }
+    const b = req.body || {};
+    const caja = { x: Number(b.x), y: Number(b.y), ancho: Number(b.ancho), alto: Number(b.alto) };
+    if ([caja.x, caja.y, caja.ancho, caja.alto].some(v => !Number.isFinite(v))) { res.status(400).json({ success: false, error: 'caja invalida' }); return; }
+    const ref = await refinarRecuadroPrecio(abs, caja);
+    if (!ref) { res.status(422).json({ success: false, error: 'No se detecto texto en esa zona (ajusta la caja sobre el numero)' }); return; }
+    res.json({ success: true, sugerencia: ref });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// POST detectar precios con IA: localiza cada numero de precio, lo afina con sharp,
+// lo casa con un producto de la lamina y crea los recuadros (origen=ia) para revisar.
+app.post('/api/sheets/:sheetId/detect-precios-ia', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.sheetId);
+    const s = await pool.query('SELECT imagen_path FROM sheets WHERE id=$1', [sheetId]);
+    if (!s.rows.length) { res.status(404).json({ success: false, error: 'Lamina no encontrada' }); return; }
+    const abs = resolverRutaImagen(s.rows[0].imagen_path, UPLOADS_DIR);
+    if (!abs || !fs.existsSync(abs)) { res.status(400).json({ success: false, error: 'Imagen no existe en disco' }); return; }
+
+    // Zonas de producto ya definidas en la lamina (para casar precio -> product_id/zone_id)
+    const zr = await pool.query(
+      `SELECT z.id AS zone_id, z.product_id, z.x, z.y, z.ancho, z.alto,
+              p.codigo AS producto_codigo
+         FROM sheet_zones z LEFT JOIN products p ON p.id = z.product_id
+        WHERE z.sheet_id = $1 AND z.product_id IS NOT NULL`, [sheetId]);
+    const zonas = zr.rows;
+    const casarZona = (pr: { codigo_nacional: string | null; codigo_fabricante: string | null; box: { x: number; y: number; width: number; height: number } }) => {
+      // 1) por CN/codigo del producto
+      const cnDig = (pr.codigo_nacional || '').replace(/\D/g, '');
+      if (cnDig) {
+        const z = zonas.find((z: any) => {
+          const c = String(z.producto_codigo || '').replace(/\D/g, '');
+          return c && (c === cnDig || c === cnDig.slice(0, 6) || cnDig === c.slice(0, 6));
+        });
+        if (z) return z;
+      }
+      // 2) por cercania geometrica: la zona cuyo centro esté mas cerca del centro del precio
+      const px = pr.box.x + pr.box.width / 2, py = pr.box.y + pr.box.height / 2;
+      let best: any = null, bestD = 1e9;
+      for (const z of zonas) {
+        // el precio suele caer DENTRO de la zona de producto o justo debajo
+        const zx = z.x + z.ancho / 2, zy = z.y + z.alto / 2;
+        const d = (zx - px) ** 2 + (zy - py) ** 2;
+        if (d < bestD) { bestD = d; best = z; }
+      }
+      return best;
+    };
+
+    const detec = await detectarPreciosIA(abs);
+    if (detec === null) { res.status(500).json({ success: false, error: 'La IA no respondio: ' + (ultimoErrorIA() || '') }); return; }
+
+    // Borra los recuadros IA previos de esta lamina (re-detectar = empezar limpio; respeta los manuales)
+    await pool.query(`DELETE FROM lamina_recuadro WHERE sheet_id=$1 AND origen='ia'`, [sheetId]);
+
+    let creados = 0; const detalle: any[] = [];
+    for (const d of detec) {
+      const ref = await refinarRecuadroPrecio(abs, { x: d.box.x, y: d.box.y, ancho: d.box.width, alto: d.box.height });
+      if (!ref) { detalle.push({ tipo: d.tipo, casado: false, motivo: 'sin texto' }); continue; }
+      const z = casarZona(d);
+      const campo = d.tipo === 'pvpr' ? 'pvpr' : 'pvf';
+      const ins = await pool.query(
+        `INSERT INTO lamina_recuadro
+          (sheet_id, zone_id, product_id, campo, x, y, ancho, alto, color_fondo, color_texto, tam_rel, alinear, sep_decimal, origen)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'ia') RETURNING id`,
+        [sheetId, z?.zone_id || null, z?.product_id || null, campo,
+         ref.x, ref.y, ref.ancho, ref.alto, ref.color_fondo, ref.color_texto, ref.tam_rel, ref.alinear, d.sep_decimal]);
+      creados++;
+      detalle.push({ tipo: d.tipo, campo, product_id: z?.product_id || null, casado: !!z?.product_id, recuadro_id: ins.rows[0].id });
+    }
+    res.json({ success: true, creados, total_detectados: detec.length, detalle });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 app.get('/api/admin/limpiar-pruebas/preview', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {

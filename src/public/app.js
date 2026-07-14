@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v74 · 14 jul 2026';
+const APP_VERSION = 'v75 · 14 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -2817,8 +2817,9 @@ function pintarPresentacion(visibles) {
       <div class="visor-imagen-contenedor" id="visor-img-contenedor">
         <div class="visor-imagen-zoom" id="visor-img-zoom" style="transform: translate(${appState.visorPanX||0}px, ${appState.visorPanY||0}px) scale(${appState.visorZoom})">
           <div class="visor-imagen-wrapper" id="visor-imagen-wrapper" data-sheet-id="${sheet.id}">
-            <img src="${escape(vurl(sheet.imagen_path, sheet))}" class="visor-imagen" id="visor-imagen" alt="${escape(sheet.titulo || '')}" draggable="false">
+            <img src="${escape(vurl(sheet.imagen_path, sheet))}" class="visor-imagen" id="visor-imagen" alt="${escape(sheet.titulo || '')}" draggable="false" onload="pintarRecuadrosPrecio()">
             ${pins}
+            <div class="visor-recuadros-capa" id="visor-recuadros-capa"></div>
             <div class="visor-zonas-capa" id="visor-zonas-capa"></div>
           </div>
         </div>
@@ -3230,11 +3231,72 @@ async function cargarZonasComercial() {
     // Zonas "accionables": producto Sage, familia, comisión o enlace a otro catálogo.
     _zonasComercial = (r.zones || []).filter(z => z.product_id || z.familia_ref || (z.familia_skus && z.familia_skus.length) || z.es_comision || z.link_catalog_id || z.permite_sueltas);
     pintarZonasComercial();
+    cargarRecuadrosLamina(sheetId);   // F3: recuadros tapar-reescribir
     cargarPreciosVigentesLamina(); // en segundo plano; repinta al llegar
   } catch (e) {
     _zonasComercial = [];
   }
 }
+
+// F3 (precios dinámicos): recuadros que TAPAN el precio impreso y lo REESCRIBEN.
+let _recuadrosLamina = []; // recuadros activos de la lámina actual
+async function cargarRecuadrosLamina(sheetId) {
+  try {
+    const r = await api('/api/sheets/' + sheetId + '/recuadros');
+    _recuadrosLamina = (r.recuadros || []).filter(x => x.activo);
+    pintarRecuadrosPrecio();
+  } catch (e) { _recuadrosLamina = []; }
+}
+
+// Fuente por defecto para reescribir precios (config una vez; la real de BETER es tipo Helvetica).
+const RECUADRO_FUENTE_DEFECTO = 'Arial, Helvetica, sans-serif';
+
+function _formatearPrecioRecuadro(rec, pr) {
+  if (!pr) return null;
+  let val = null;
+  if (rec.campo === 'pvf') val = pr.pvf;
+  else if (rec.campo === 'pvpr') val = pr.pvpr;
+  if (val == null || val === '') return null;
+  const dec = (rec.decimales == null) ? 2 : rec.decimales;
+  let s = Number(val).toFixed(dec);
+  if (rec.sep_decimal === ',' || rec.sep_decimal == null) s = s.replace('.', ',');
+  return (rec.prefijo || '') + s + (rec.sufijo == null ? '€' : rec.sufijo);
+}
+
+// Pinta los recuadros sobre la imagen. font-size en px = tam_rel% del ancho RENDERIZADO
+// de la imagen (así casa con la lámina y escala con el zoom, que es un transform del ancestro).
+function pintarRecuadrosPrecio() {
+  const capa = document.getElementById('visor-recuadros-capa');
+  if (!capa) return;
+  const wrapper = document.getElementById('visor-imagen-wrapper');
+  const anchoPx = wrapper ? wrapper.clientWidth : 0;
+  capa.innerHTML = '';
+  if (!anchoPx || !_recuadrosLamina.length) return;
+  _recuadrosLamina.forEach(rec => {
+    const pr = rec.product_id ? _preciosVigentes[rec.product_id] : null;
+    const texto = _formatearPrecioRecuadro(rec, pr);
+    if (!texto) return; // sin precio de BD todavía: no tapamos (mejor dejar el impreso)
+    const div = document.createElement('div');
+    div.className = 'visor-recuadro-precio';
+    div.style.left = rec.x + '%';
+    div.style.top = rec.y + '%';
+    div.style.width = rec.ancho + '%';
+    div.style.height = rec.alto + '%';
+    div.style.background = rec.color_fondo || '#fff';
+    const span = document.createElement('span');
+    span.className = 'visor-recuadro-txt';
+    span.textContent = texto;
+    span.style.color = rec.color_texto || '#2b2a29';
+    span.style.fontFamily = rec.fuente || RECUADRO_FUENTE_DEFECTO;
+    span.style.fontWeight = rec.negrita === false ? '400' : '700';
+    span.style.fontSize = (rec.tam_rel * anchoPx / 100).toFixed(1) + 'px';
+    span.style.justifyContent = rec.alinear === 'right' ? 'flex-end' : (rec.alinear === 'center' ? 'center' : 'flex-start');
+    div.appendChild(span);
+    capa.appendChild(div);
+  });
+}
+// Repintar al rotar/redimensionar (el px de la fuente depende del ancho renderizado).
+window.addEventListener('resize', () => { clearTimeout(window._recuadroResizeT); window._recuadroResizeT = setTimeout(pintarRecuadrosPrecio, 120); });
 
 // FASE 1 (precios dinámicos): trae el precio de HOY de los productos de la lámina y repinta.
 async function cargarPreciosVigentesLamina() {
@@ -3246,6 +3308,7 @@ async function cargarPreciosVigentesLamina() {
     const r = await api('/api/precios/vigentes', { method: 'POST', body: { product_ids: ids, tarifa } });
     _preciosVigentes = r.precios || {};
     pintarZonasComercial();
+    pintarRecuadrosPrecio(); // F3: ya tenemos precios de BD → tapar y reescribir
   } catch (e) { /* si falla, el visor sigue funcionando sin la etiqueta */ }
 }
 
@@ -11656,6 +11719,56 @@ async function detectarZonasConIA(sheetId, boton) {
   }
 }
 
+// ============================================================================
+// F3 precios dinámicos — detección de PRECIOS por IA + revisión en el lienzo.
+// La IA localiza cada precio impreso, sharp lo afina (color de fondo/tinta + caja),
+// se casa con un producto y se crea un recuadro que TAPA y REESCRIBE con el precio BD.
+// ============================================================================
+async function detectarPreciosConIA(sheetId, boton) {
+  if (!confirm('¿Detectar los PRECIOS de esta lámina con IA?\n\n• Localiza cada precio impreso y crea un recuadro que lo TAPA y lo REESCRIBE con el precio actual de la base de datos.\n• Reemplaza los recuadros que la IA creó antes en esta lámina (respeta los que hayas hecho a mano).\n• Coste: ~$0.02 (2 céntimos) por lámina.')) return;
+  const orig = boton.textContent;
+  boton.disabled = true; boton.textContent = '⏳ Analizando precios...';
+  try {
+    const t0 = Date.now();
+    const r = await api('/api/sheets/' + sheetId + '/detect-precios-ia', { method: 'POST' });
+    const dt = Math.round((Date.now() - t0) / 1000);
+    if (!r.success) throw new Error(r.error || 'La IA no respondió');
+    await renderRecuadrosEnLienzo(sheetId);
+    const casados = (r.detalle || []).filter(d => d.casado).length;
+    alert(`✅ Precios detectados (${dt}s)\n\n${r.creados} recuadros creados de ${r.total_detectados} precios vistos\n${casados} casados con un producto (se reescriben con el precio de BD)\n${r.creados - casados} sin producto (no se pintan hasta asignarlo)\n\nLos morados sobre la lámina son los recuadros. ✕ para borrar uno. Compruébalos en el visor comercial.`);
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+  boton.textContent = orig; boton.disabled = false;
+}
+
+async function renderRecuadrosEnLienzo(sheetId) {
+  try {
+    const r = await api('/api/sheets/' + sheetId + '/recuadros');
+    _zonasEditor.recuadros = r.recuadros || [];
+  } catch { _zonasEditor.recuadros = []; }
+  const capa = document.getElementById('zonas-recuadros-capa');
+  if (!capa) return;
+  capa.innerHTML = '';
+  (_zonasEditor.recuadros || []).forEach(rec => {
+    const d = document.createElement('div');
+    d.className = 'zona-recuadro-ov' + (rec.product_id ? '' : ' sin-producto');
+    d.style.left = rec.x + '%'; d.style.top = rec.y + '%';
+    d.style.width = rec.ancho + '%'; d.style.height = rec.alto + '%';
+    d.title = (rec.campo === 'pvpr' ? 'P.V.P.R.' : 'P.V.F.') + ' · ' + (rec.producto_codigo || 'SIN producto asignado');
+    const x = document.createElement('button');
+    x.type = 'button'; x.textContent = '✕'; x.className = 'zona-recuadro-del';
+    x.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm('¿Borrar este recuadro de precio?')) return;
+      try { await api('/api/recuadros/' + rec.id, { method: 'DELETE' }); await renderRecuadrosEnLienzo(sheetId); }
+      catch (e) { alert(e.message); }
+    };
+    d.appendChild(x);
+    capa.appendChild(d);
+  });
+}
+
 async function abrirEditorZonas(sheetId, catalogId) {
   // Cerrar el modal de editar lámina
   document.querySelectorAll('.modal-bg').forEach(m => m.remove());
@@ -11694,6 +11807,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <button class="btn" id="btn-borrar-todas-zonas" onclick="borrarTodasLasZonas(${sheet.id}, this)" style="background:#fee2e2;color:#b91c1c" title="Borra TODAS las zonas de esta lámina de golpe (ej. expositor grande que es 1 solo producto)">🗑️ Borrar todas</button>
         <button class="btn" id="btn-aprobar-zonas" onclick="toggleAprobarZonas(${sheet.id}, this)" style="background:${_zonasEditor.aprobada ? '#16a34a' : '#e5e7eb'};color:${_zonasEditor.aprobada ? '#fff' : '#374151'}" title="Marca esta lámina como revisada y aprobada por ti">${_zonasEditor.aprobada ? '✅ Revisada' : '☐ Marcar revisada'}</button>
         <button class="btn btn-primary" id="btn-detectar-zonas-ia" onclick="detectarZonasConIA(${sheet.id}, this)" title="La IA detecta los productos de la lámina y propone recuadros">🤖 Detectar productos con IA</button>
+        <button class="btn" id="btn-detectar-precios-ia" onclick="detectarPreciosConIA(${sheet.id}, this)" style="background:#ede9fe;color:#6d28d9" title="La IA localiza los precios impresos y crea recuadros que los tapan y reescriben con el precio de la BD">🏷️ Detectar precios (IA)</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
       </div>
     </div>
@@ -11711,6 +11825,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         </div>
         <div class="zonas-lienzo-wrap" id="zonas-lienzo-wrap">
           <img src="${escape(vurl(sheet.imagen_path, sheet))}" class="zonas-lienzo-img" id="zonas-lienzo-img" draggable="false" alt="">
+          <div class="zonas-recuadros-capa" id="zonas-recuadros-capa"></div>
           <div class="zonas-capa" id="zonas-capa"></div>
         </div>
       </div>
@@ -11729,6 +11844,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
     img.onload = () => montarLienzoZonas();
   }
   renderListaZonas();
+  renderRecuadrosEnLienzo(sheetId); // F3: pintar recuadros de precio existentes
 }
 
 async function cerrarEditorZonas() {

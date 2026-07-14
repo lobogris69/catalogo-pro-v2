@@ -14,6 +14,7 @@
 import OpenAI from 'openai';
 import fs from 'fs';
 import path from 'path';
+import sharp from 'sharp';
 
 let _client: OpenAI | null = null;
 function getClient(): OpenAI | null {
@@ -185,6 +186,185 @@ export async function detectarZonasIA(rutaImagenAbs: string): Promise<ZonaDetect
   } catch (e: any) {
     _ultimoError = String(e?.message || e);
     console.warn('[ai-zones] error llamando a OpenAI:', _ultimoError);
+    return null;
+  }
+}
+
+// ============================================================================
+// F3 PRECIOS DINAMICOS - fidelidad "tapar y reescribir"
+// ============================================================================
+
+export interface RecuadroRefinado {
+  x: number; y: number; ancho: number; alto: number; // % del ancho/alto de la imagen (caja tapa)
+  color_fondo: string;   // rgb(...) muestreado -> el rectangulo tapa queda invisible
+  color_texto: string;   // rgb(...) de la tinta del numero
+  tam_rel: number;       // font-size como % del ANCHO de la imagen
+  alinear: 'left' | 'center' | 'right';
+}
+
+/**
+ * Dada una caja APROXIMADA (en %) donde hay un precio impreso, muestrea el PNG real
+ * y devuelve la caja AJUSTADA + color de fondo + color de tinta + tamano de fuente,
+ * para tapar el numero viejo y reescribir el actual de forma indistinguible.
+ * Es la generalizacion del prototipo validado sobre la lamina 47.
+ */
+export async function refinarRecuadroPrecio(
+  rutaImagenAbs: string,
+  cajaPct: { x: number; y: number; ancho: number; alto: number }
+): Promise<RecuadroRefinado | null> {
+  try {
+    if (!fs.existsSync(rutaImagenAbs)) return null;
+    const img = sharp(rutaImagenAbs).ensureAlpha();
+    const meta = await img.metadata();
+    const W = meta.width || 0, H = meta.height || 0;
+    if (!W || !H) return null;
+
+    // Caja aproximada -> px, con un margen para no perder digitos si la IA se queda corta
+    const padX = Math.max(6, cajaPct.ancho * W / 100 * 0.35);
+    const padY = Math.max(6, cajaPct.alto * H / 100 * 0.45);
+    let cx = Math.round(cajaPct.x * W / 100 - padX);
+    let cy = Math.round(cajaPct.y * H / 100 - padY);
+    let cw = Math.round(cajaPct.ancho * W / 100 + padX * 2);
+    let ch = Math.round(cajaPct.alto * H / 100 + padY * 2);
+    cx = Math.max(0, cx); cy = Math.max(0, cy);
+    cw = Math.min(W - cx, Math.max(4, cw)); ch = Math.min(H - cy, Math.max(4, ch));
+    if (cw < 4 || ch < 4) return null;
+
+    const { data, info } = await img.extract({ left: cx, top: cy, width: cw, height: ch })
+      .raw().toBuffer({ resolveWithObject: true });
+    const C = info.channels;
+    const lum = (px: number, py: number) => {
+      const i = (py * cw + px) * C;
+      return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    };
+    // 1) Bounding box del texto oscuro (numero) + color de tinta (media de lo mas oscuro)
+    let minX = 1e9, minY = 1e9, maxX = 0, maxY = 0, dark = 0;
+    let tr = 0, tg = 0, tb = 0, tn = 0;
+    // 2) Color de fondo = media de lo claro (lum>225)
+    let br = 0, bg = 0, bb = 0, bn = 0;
+    for (let py = 0; py < ch; py++) for (let px = 0; px < cw; px++) {
+      const i = (py * cw + px) * C;
+      const l = lum(px, py);
+      if (l < 110) {
+        if (px < minX) minX = px; if (px > maxX) maxX = px;
+        if (py < minY) minY = py; if (py > maxY) maxY = py;
+        dark++;
+        if (l < 90) { tr += data[i]; tg += data[i + 1]; tb += data[i + 2]; tn++; }
+      } else if (l > 225) { br += data[i]; bg += data[i + 1]; bb += data[i + 2]; bn++; }
+    }
+    if (dark < 4) return null; // no encontramos texto: mejor no crear recuadro
+    // Ajuste fino: pequeno padding alrededor del texto detectado (2px) sin salir del crop
+    const pad2 = 2;
+    minX = Math.max(0, minX - pad2); minY = Math.max(0, minY - pad2);
+    maxX = Math.min(cw - 1, maxX + pad2); maxY = Math.min(ch - 1, maxY + pad2);
+    const tightW = maxX - minX + 1, tightH = maxY - minY + 1;
+    // De crop-coords a px absolutos y a %
+    const absX = cx + minX, absY = cy + minY;
+    const color_texto = tn ? `rgb(${Math.round(tr / tn)},${Math.round(tg / tn)},${Math.round(tb / tn)})` : 'rgb(43,42,41)';
+    const color_fondo = bn ? `rgb(${Math.round(br / bn)},${Math.round(bg / bn)},${Math.round(bb / bn)})` : 'rgb(255,255,255)';
+    // font-size ~= alto_del_texto * 1.29 (calibrado en el prototipo); en % del ANCHO de imagen
+    const fontPx = tightH * 1.29;
+    return {
+      x: +(absX / W * 100).toFixed(3),
+      y: +(absY / H * 100).toFixed(3),
+      ancho: +(tightW / W * 100).toFixed(3),
+      alto: +(tightH / H * 100).toFixed(3),
+      color_fondo, color_texto,
+      tam_rel: +(fontPx / W * 100).toFixed(3),
+      alinear: 'left',
+    };
+  } catch (e: any) {
+    console.warn('[precio-fidelidad] refinar fallo:', String(e?.message || e));
+    return null;
+  }
+}
+
+const PROMPT_PRECIOS = `Eres experto en catalogos de parafarmacia espanoles.
+Analiza esta lamina y, para CADA producto con precio visible, localiza el RECUADRO EXACTO
+que envuelve SOLO el NUMERO del precio (los digitos + el simbolo de moneda), NO la etiqueta
+("P.V.L.", "PVP", "P.V.P.R.", etc.) ni la descripcion.
+
+Un producto puede tener DOS precios (ej. "P.V.L. 5.96 EUR" y "P.V.P.R. 10.50 EUR"): devuelve
+una caja para cada uno.
+
+Para cada precio devuelve:
+- codigo_nacional: digitos del CN del producto sin puntos/espacios (para casar con la BD). null si no se ve.
+- codigo_fabricante: ej. "24.110". null si no se ve.
+- tipo: "pvl" para el precio menor/sin IVA (P.V.L./PVL/PVF), "pvpr" para el mayor/con IVA (P.V.P.R./PVP/PVPR).
+- valor: el numero impreso como decimal (ej. 5.96).
+- sep_decimal: "." o "," segun lo que use la imagen.
+- box: {x,y,width,height} en % del ancho/alto TOTAL de la imagen, envolviendo SOLO el numero+moneda.
+
+Devuelve SOLO JSON valido:
+{"precios":[{"codigo_nacional":"239939","codigo_fabricante":"24.110","tipo":"pvl","valor":5.96,"sep_decimal":".","box":{"x":11.5,"y":34.5,"width":6.5,"height":1.6}}]}
+Sin markdown ni explicaciones.`;
+
+export interface PrecioDetectado {
+  codigo_nacional: string | null;
+  codigo_fabricante: string | null;
+  tipo: 'pvl' | 'pvpr';
+  valor: number | null;
+  sep_decimal: string;
+  box: { x: number; y: number; width: number; height: number };
+}
+
+/** Vision: localiza la caja de cada NUMERO de precio en la lamina. */
+export async function detectarPreciosIA(rutaImagenAbs: string): Promise<PrecioDetectado[] | null> {
+  _ultimoError = null;
+  const client = getClient();
+  if (!client) { _ultimoError = 'OPENAI_API_KEY no configurada'; return null; }
+  if (!fs.existsSync(rutaImagenAbs)) { _ultimoError = 'archivo no existe'; return null; }
+  try {
+    const buf = fs.readFileSync(rutaImagenAbs);
+    const ext = path.extname(rutaImagenAbs).toLowerCase().replace('.', '') || 'png';
+    const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+    const dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
+    let resp: any = null, ultimoError: any = null;
+    for (let intento = 0; intento < 3; intento++) {
+      try {
+        resp = await client.chat.completions.create({
+          model: 'gpt-4o', max_tokens: 16000, temperature: 0.1,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: PROMPT_PRECIOS },
+            { role: 'user', content: [{ type: 'image_url', image_url: { url: dataUrl, detail: 'high' } }] }
+          ]
+        });
+        break;
+      } catch (e: any) {
+        ultimoError = e;
+        const msg = String(e?.message || e);
+        if (/invalid api key|401|unauthorized|model_not_found|invalid_request/i.test(msg)) return null;
+        await new Promise(r => setTimeout(r, 1500 * Math.pow(2, intento)));
+      }
+    }
+    if (!resp) { _ultimoError = String(ultimoError?.message || 'sin resp'); return null; }
+    const texto = resp.choices?.[0]?.message?.content?.trim() || '';
+    let parsed: any;
+    try { parsed = JSON.parse(texto); } catch { _ultimoError = 'JSON invalido: ' + texto.slice(0, 200); return null; }
+    const raw = Array.isArray(parsed?.precios) ? parsed.precios : [];
+    const out: PrecioDetectado[] = [];
+    for (const p of raw) {
+      const b = p?.box || {};
+      const x = Math.max(0, Math.min(100, Number(b.x)));
+      const y = Math.max(0, Math.min(100, Number(b.y)));
+      const width = Math.max(0, Math.min(100 - x, Number(b.width)));
+      const height = Math.max(0, Math.min(100 - y, Number(b.height)));
+      if (![x, y, width, height].every(Number.isFinite) || width < 0.5 || height < 0.3) continue;
+      const tipo = String(p?.tipo || '').toLowerCase() === 'pvpr' ? 'pvpr' : 'pvl';
+      let cn: string | null = p?.codigo_nacional ? String(p.codigo_nacional).replace(/\D/g, '') : null;
+      if (cn && cn.length < 5) cn = null;
+      out.push({
+        codigo_nacional: cn,
+        codigo_fabricante: p?.codigo_fabricante ? String(p.codigo_fabricante).trim().slice(0, 30) : null,
+        tipo, valor: typeof p?.valor === 'number' ? p.valor : null,
+        sep_decimal: p?.sep_decimal === ',' ? ',' : (p?.sep_decimal === '.' ? '.' : ','),
+        box: { x, y, width, height },
+      });
+    }
+    return out;
+  } catch (e: any) {
+    _ultimoError = String(e?.message || e);
     return null;
   }
 }

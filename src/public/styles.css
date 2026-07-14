@@ -3328,6 +3328,33 @@ body.con-banner-update {
   position: absolute;
   inset: 0;
 }
+/* F3: overlays de los recuadros de precio en el lienzo del editor (revisión). */
+.zonas-recuadros-capa {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.zona-recuadro-ov {
+  position: absolute;
+  outline: 2px solid #7c3aed;
+  background: rgba(124, 58, 237, 0.14);
+  box-sizing: border-box;
+  pointer-events: auto;
+}
+.zona-recuadro-ov.sin-producto {
+  outline-color: #d97706;
+  background: rgba(217, 119, 6, 0.14);
+}
+.zona-recuadro-del {
+  position: absolute;
+  top: -10px; right: -10px;
+  width: 18px; height: 18px;
+  border: none; border-radius: 50%;
+  background: #dc2626; color: #fff;
+  font-size: 11px; line-height: 1;
+  cursor: pointer; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+}
 .zona-rect {
   position: absolute;
   border: 2px solid;
@@ -3489,6 +3516,29 @@ body.con-banner-update {
   position: absolute;
   inset: 0;
   pointer-events: none; /* la capa no bloquea; solo las zonas individuales */
+}
+/* F3 precios dinámicos: capa que TAPA el precio impreso y lo REESCRIBE (no interactiva). */
+.visor-recuadros-capa {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1; /* sobre la imagen, bajo la capa de zonas clicables */
+}
+.visor-recuadro-precio {
+  position: absolute;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+.visor-recuadro-txt {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
 }
 .visor-zona {
   position: absolute;
