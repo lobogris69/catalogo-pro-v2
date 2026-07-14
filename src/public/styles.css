@@ -3542,7 +3542,7 @@ body.con-banner-update {
 }
 .visor-recuadro-precio {
   position: absolute;
-  overflow: hidden;
+  overflow: visible;   /* el número nuevo puede desbordar al hueco blanco de la derecha */
   display: flex;
   align-items: center;
 }

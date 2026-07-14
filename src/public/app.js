@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v76 · 14 jul 2026';
+const APP_VERSION = 'v77 · 14 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3283,8 +3283,12 @@ function pintarRecuadrosPrecio() {
     div.className = 'visor-recuadro-precio';
     div.style.left = rec.x + '%';
     div.style.top = rec.y + '%';
-    div.style.width = rec.ancho + '%';
-    div.style.height = rec.alto + '%';
+    // Tapa un poco MÁS ancha que el número viejo (cubre restos aunque la fuente nueva
+    // sea algo más estrecha) y un pelín más alta; el texto puede desbordar a la derecha
+    // (cae en el hueco blanco antes de la siguiente columna) sin recortarse.
+    div.style.width = (rec.ancho * 1.15) + '%';
+    div.style.height = (rec.alto * 1.25) + '%';
+    div.style.marginTop = (-rec.alto * 0.12) + '%';
     div.style.background = rec.color_fondo || '#fff';
     const span = document.createElement('span');
     span.className = 'visor-recuadro-txt';
