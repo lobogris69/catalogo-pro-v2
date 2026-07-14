@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v81 · 15 jul 2026';
+const APP_VERSION = 'v82 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12050,6 +12050,53 @@ async function detectarPreciosConIA(sheetId, boton) {
   boton.textContent = orig; boton.disabled = false;
 }
 
+// Modo "dibujar recuadro de precio" a mano (para corregir lo que la IA no clavó).
+function toggleModoRecuadro(btn) {
+  _zonasEditor.modoRecuadro = !_zonasEditor.modoRecuadro;
+  const on = _zonasEditor.modoRecuadro;
+  if (btn) {
+    btn.style.background = on ? '#7c3aed' : '#f3e8ff';
+    btn.style.color = on ? '#fff' : '#7c3aed';
+    btn.textContent = on ? '✏️ Dibujando… (pulsa para salir)' : '✏️ Dibujar recuadro';
+  }
+  const ayuda = document.getElementById('zonas-ayuda');
+  if (ayuda) ayuda.innerHTML = on
+    ? '✏️ <b>Modo recuadro de precio:</b> arrastra una caja SOBRE un número de precio. La caja se ajusta y el color se muestrea solo; te preguntará si es P.V.F. o P.V.P.R. Vuelve a pulsar el botón para salir.'
+    : '✏️ <b>Arrastra</b> sobre la lámina para dibujar un rectángulo. Luego asígnale un producto en el panel derecho.';
+  const wrap = document.getElementById('zonas-lienzo-wrap');
+  if (wrap) wrap.style.cursor = on ? 'cell' : 'crosshair';
+}
+
+// Crea un recuadro a partir de una caja dibujada: muestrea colores/afina la caja en el
+// servidor, ancla al producto de la zona que la contiene y pregunta el campo.
+async function crearRecuadroDibujado(x, y, ancho, alto) {
+  const sheetId = _zonasEditor.sheetId;
+  const cxp = x + ancho / 2, cyp = y + alto / 2;
+  const zona = (_zonasEditor.zonas || []).find(z => z.product_id && cxp >= z.x && cxp <= z.x + z.ancho && cyp >= z.y && cyp <= z.y + z.alto);
+  if (!zona && !confirm('El recuadro no cae dentro de una zona con producto.\n¿Crearlo igual? (no se reescribirá hasta asignarle un producto)')) return;
+  let sug = null;
+  try {
+    const r = await api('/api/sheets/' + sheetId + '/recuadros/muestrear', { method: 'POST', body: { x, y, ancho, alto } });
+    sug = r.sugerencia;
+  } catch (e) { /* si no detecta texto, usamos la caja dibujada tal cual */ }
+  const esPVF = confirm('¿Qué precio es este recuadro?\n\n• Aceptar = P.V.F. (P.V.L., sin IVA)\n• Cancelar = P.V.P.R. (con IVA)');
+  const body = {
+    product_id: zona ? zona.product_id : null,
+    zone_id: zona ? zona.id : null,
+    campo: esPVF ? 'pvf' : 'pvpr',
+    x: sug ? sug.x : x, y: sug ? sug.y : y, ancho: sug ? sug.ancho : ancho, alto: sug ? sug.alto : alto,
+    color_fondo: sug ? sug.color_fondo : 'rgb(255,255,255)',
+    color_texto: sug ? sug.color_texto : 'rgb(43,42,41)',
+    tam_rel: sug ? sug.tam_rel : Math.max(1, alto * 0.9),
+    alinear: sug ? sug.alinear : 'left',
+    sep_decimal: '.', origen: 'manual'
+  };
+  try {
+    await api('/api/sheets/' + sheetId + '/recuadros', { method: 'POST', body });
+    await renderRecuadrosEnLienzo(sheetId);
+  } catch (e) { alert('Error creando recuadro: ' + e.message); }
+}
+
 async function renderRecuadrosEnLienzo(sheetId) {
   try {
     const r = await api('/api/sheets/' + sheetId + '/recuadros');
@@ -12076,6 +12123,17 @@ async function renderRecuadrosEnLienzo(sheetId) {
       };
       d.appendChild(ap);
     }
+    // Toggle de campo (P.V.F. ⇄ P.V.P.R.) por si la IA acertó la caja pero no el campo.
+    const sw = document.createElement('button');
+    sw.type = 'button'; sw.textContent = rec.campo === 'pvpr' ? 'PR' : 'F';
+    sw.className = 'zona-recuadro-campo'; sw.title = 'Cambiar a ' + (rec.campo === 'pvpr' ? 'P.V.F.' : 'P.V.P.R.');
+    sw.onclick = async (ev) => {
+      ev.stopPropagation();
+      const nuevo = rec.campo === 'pvpr' ? 'pvf' : 'pvpr';
+      try { await api('/api/recuadros/' + rec.id, { method: 'PUT', body: { campo: nuevo } }); await renderRecuadrosEnLienzo(sheetId); }
+      catch (e) { alert(e.message); }
+    };
+    d.appendChild(sw);
     const x = document.createElement('button');
     x.type = 'button'; x.textContent = '✕'; x.className = 'zona-recuadro-del';
     x.onclick = async (ev) => {
@@ -12096,6 +12154,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
   _zonasEditor.sheetId = sheetId;
   _zonasEditor.catalogId = catalogId;
   _zonasEditor.zonaSeleccionadaId = null;
+  _zonasEditor.modoRecuadro = false;
 
   // Cargar la lámina y sus zonas
   let sheet, zonas;
@@ -12128,6 +12187,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <button class="btn" id="btn-aprobar-zonas" onclick="toggleAprobarZonas(${sheet.id}, this)" style="background:${_zonasEditor.aprobada ? '#16a34a' : '#e5e7eb'};color:${_zonasEditor.aprobada ? '#fff' : '#374151'}" title="Marca esta lámina como revisada y aprobada por ti">${_zonasEditor.aprobada ? '✅ Revisada' : '☐ Marcar revisada'}</button>
         <button class="btn btn-primary" id="btn-detectar-zonas-ia" onclick="detectarZonasConIA(${sheet.id}, this)" title="La IA detecta los productos de la lámina y propone recuadros">🤖 Detectar productos con IA</button>
         <button class="btn" id="btn-detectar-precios-ia" onclick="detectarPreciosConIA(${sheet.id}, this)" style="background:#ede9fe;color:#6d28d9" title="La IA localiza los precios impresos y crea recuadros que los tapan y reescriben con el precio de la BD">🏷️ Detectar precios (IA)</button>
+        <button class="btn" id="btn-modo-recuadro" onclick="toggleModoRecuadro(this)" style="background:#f3e8ff;color:#7c3aed" title="Dibuja a mano una caja sobre un precio para taparlo y reescribirlo (si la IA lo olvidó o falló)">✏️ Dibujar recuadro</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
       </div>
     </div>
@@ -12285,8 +12345,9 @@ function montarLienzoZonas() {
   }
 
   function onDown(e) {
-    // Si se pulsa sobre una zona existente, no dibujar (se gestiona con su propio click)
-    if (e.target.classList.contains('zona-rect')) return;
+    // Si se pulsa sobre una zona existente, no dibujar (se gestiona con su propio click).
+    // EXCEPCIÓN: en modo recuadro sí dibujamos encima de la zona (el precio está dentro).
+    if (!_zonasEditor.modoRecuadro && e.target.classList.contains('zona-rect')) return;
     e.preventDefault();
     const p = getRel(e);
     _zonasEditor.dibujando = true;
@@ -12324,6 +12385,12 @@ function montarLienzoZonas() {
     const h = parseFloat(rectTemp.style.height);
     rectTemp.remove();
     rectTemp = null;
+    // En modo recuadro de precio: la caja dibujada crea un RECUADRO (tapar+reescribir),
+    // no una zona. Umbral más bajo porque los precios son pequeños.
+    if (_zonasEditor.modoRecuadro) {
+      if (w < 0.6 || h < 0.4) return;
+      return crearRecuadroDibujado(x, y, w, h);
+    }
     // Ignorar rectángulos minúsculos (clicks accidentales)
     if (w < 2 || h < 2) return;
     // Crear la zona en el servidor
@@ -12392,6 +12459,8 @@ function renderZonasEnCapa() {
 const _dragZona = { activo: false, zonaId: null, tipo: null, inicioX: 0, inicioY: 0, origX: 0, origY: 0, origW: 0, origH: 0 };
 
 function onZonaMouseDown(e, zona) {
+  // En modo recuadro no interactuamos con la zona: dejamos que el lienzo dibuje encima.
+  if (_zonasEditor.modoRecuadro) return;
   // Click derecho o modificadores: ignorar
   if (e.button != null && e.button !== 0) return;
   e.stopPropagation();
