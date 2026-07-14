@@ -674,6 +674,10 @@ async function initDB(): Promise<void> {
         updated_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_templates_orden ON annotation_templates(orden, id);
+      -- Clase (SOLO informativa/visual) de una plantilla de PEDIDO, para distinguir de un
+      -- vistazo un descuento en % de una bonificacion en genero (12+1). 'normal' = pedido
+      -- corriente. No cambia el pedido en si (es texto libre); solo pinta el badge.
+      ALTER TABLE annotation_templates ADD COLUMN IF NOT EXISTS clase VARCHAR(20);
 
       -- C: configuracion global de emails (clave-valor, gestion admin real)
       -- Permite cambiar entre modo "pruebas" (redirige a emails de test) y "produccion"
@@ -6939,11 +6943,13 @@ app.post('/api/annotation-templates', verifyToken, requireRealAdmin, async (req:
       return;
     }
     const tipoFinal = ['pedido','devolucion','nota'].includes(tipo) ? tipo : 'pedido';
+    // clase solo aplica a PEDIDO (descuento % / bonificacion); en el resto va null
+    const claseFinal = (tipoFinal === 'pedido' && ['descuento','bonificacion','normal'].includes(req.body.clase)) ? req.body.clase : null;
     const maxR = await pool.query(`SELECT COALESCE(MAX(orden),0) AS m FROM annotation_templates`);
     const orden = Number(maxR.rows[0].m) + 1;
     const r = await pool.query(
-      `INSERT INTO annotation_templates (texto, tipo, orden) VALUES ($1, $2, $3) RETURNING *`,
-      [String(texto).trim().substring(0, 150), tipoFinal, orden]
+      `INSERT INTO annotation_templates (texto, tipo, orden, clase) VALUES ($1, $2, $3, $4) RETURNING *`,
+      [String(texto).trim().substring(0, 150), tipoFinal, orden, claseFinal]
     );
     res.status(201).json({ success: true, template: r.rows[0] });
   } catch (e) {
@@ -6961,9 +6967,10 @@ app.put('/api/annotation-templates/:id', verifyToken, requireRealAdmin, async (r
       return;
     }
     const tipoFinal = ['pedido','devolucion','nota'].includes(tipo) ? tipo : 'pedido';
+    const claseFinal = (tipoFinal === 'pedido' && ['descuento','bonificacion','normal'].includes(req.body.clase)) ? req.body.clase : null;
     const r = await pool.query(
-      `UPDATE annotation_templates SET texto=$1, tipo=$2, updated_at=NOW() WHERE id=$3 RETURNING *`,
-      [String(texto).trim().substring(0, 150), tipoFinal, id]
+      `UPDATE annotation_templates SET texto=$1, tipo=$2, clase=$3, updated_at=NOW() WHERE id=$4 RETURNING *`,
+      [String(texto).trim().substring(0, 150), tipoFinal, claseFinal, id]
     );
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Plantilla no encontrada' });

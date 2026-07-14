@@ -1808,6 +1808,9 @@ html {
 .tipo-pedido { background: #dcfce7; color: #166534; }
 .tipo-devolucion { background: #fef3c7; color: #92400e; }
 .tipo-nota { background: #e5e7eb; color: #374151; }
+/* Clases de PEDIDO: descuento % (ámbar) vs bonificación en género (violeta) */
+.tpl-badge-descuento { background: color-mix(in srgb, var(--amber) 20%, transparent); color: var(--amber); }
+.tpl-badge-bonif { background: color-mix(in srgb, var(--violet) 18%, transparent); color: var(--violet); }
 .plantilla-texto {
   flex: 1;
   font-size: 14px;
@@ -3680,9 +3683,12 @@ body.con-banner-update {
   color: #374151;
 }
 .zona-tpl-chip:hover {
-  background: #eff6ff;
-  border-color: #3b82f6;
+  background: color-mix(in srgb, var(--brand) 7%, var(--surface));
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--gris-borde-2));
 }
+/* Distinción visual de la plantilla al anotar: descuento % (ámbar) / bonificación (violeta) */
+.zona-tpl-chip.zona-tpl-descuento { border-color: color-mix(in srgb, var(--amber) 55%, var(--gris-borde-2)); background: color-mix(in srgb, var(--amber) 9%, var(--surface)); color: var(--amber); font-weight: 600; }
+.zona-tpl-chip.zona-tpl-bonif { border-color: color-mix(in srgb, var(--violet) 55%, var(--gris-borde-2)); background: color-mix(in srgb, var(--violet) 9%, var(--surface)); color: var(--violet); font-weight: 600; }
 
 /* ============================================================================
    MOSAICO — reordenar láminas en cuadrícula

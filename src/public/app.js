@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v70 · 13 jul 2026';
+const APP_VERSION = 'v71 · 13 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -3368,11 +3368,13 @@ async function pulsarZonaComercial(zona) {
         <div class="form-group">
           <label>Plantillas rápidas</label>
           <div class="zona-plantillas">
-            ${plantillas.map(p => `
-              <button type="button" class="zona-tpl-chip" data-texto="${escape(p.texto).replace(/"/g,'&quot;')}">
-                ${escape(p.texto)}
-              </button>
-            `).join('')}
+            ${plantillas.map(p => {
+              const esDto = p.tipo === 'pedido' && p.clase === 'descuento';
+              const esBon = p.tipo === 'pedido' && p.clase === 'bonificacion';
+              const ic = esDto ? '🏷️ ' : esBon ? '🎁 ' : '';
+              const cls = esDto ? ' zona-tpl-descuento' : esBon ? ' zona-tpl-bonif' : '';
+              return `<button type="button" class="zona-tpl-chip${cls}" data-texto="${escape(p.texto).replace(/"/g,'&quot;')}" title="${esDto ? 'Descuento en %' : esBon ? 'Bonificación en género' : escape(p.tipo)}">${ic}${escape(p.texto)}</button>`;
+            }).join('')}
           </div>
         </div>
       ` : ''}
@@ -4276,7 +4278,11 @@ async function renderListaPlantillas() {
                 ${tpls.map(t => `
                   <div class="plantilla-fila" data-id="${t.id}" draggable="true">
                     <div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>
-                    <span class="plantilla-tipo-badge ${colorTipo(t.tipo)}">${iconoTipo(t.tipo)} ${t.tipo}</span>
+                    ${(t.tipo === 'pedido' && t.clase === 'descuento')
+                      ? '<span class="plantilla-tipo-badge tpl-badge-descuento">🏷️ descuento %</span>'
+                      : (t.tipo === 'pedido' && t.clase === 'bonificacion')
+                        ? '<span class="plantilla-tipo-badge tpl-badge-bonif">🎁 bonificación</span>'
+                        : `<span class="plantilla-tipo-badge ${colorTipo(t.tipo)}">${iconoTipo(t.tipo)} ${t.tipo}</span>`}
                     <span class="plantilla-texto">${escape(t.texto)}</span>
                     <div class="plantilla-acciones">
                       <button onclick="editarPlantilla(${t.id})" title="Editar">✏️</button>
@@ -4297,6 +4303,13 @@ async function renderListaPlantillas() {
   }
 }
 
+// Muestra el selector "Condición del pedido" solo cuando el tipo es "pedido".
+function _toggleCondicionPlantilla() {
+  const tipo = document.getElementById('tpl-tipo');
+  const grupo = document.getElementById('tpl-condicion-grupo');
+  if (grupo) grupo.style.display = (tipo && tipo.value === 'pedido') ? '' : 'none';
+}
+
 function abrirModalNuevaPlantilla() {
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
@@ -4310,11 +4323,20 @@ function abrirModalNuevaPlantilla() {
       <form id="form-nueva-plantilla">
         <div class="form-group">
           <label>Tipo</label>
-          <select id="tpl-tipo">
+          <select id="tpl-tipo" onchange="_toggleCondicionPlantilla()">
             <option value="pedido">🛒 Pedido</option>
             <option value="devolucion">↩️ Devolución</option>
             <option value="nota">📝 Nota</option>
           </select>
+        </div>
+        <div class="form-group" id="tpl-condicion-grupo">
+          <label>Condición del pedido</label>
+          <select id="tpl-clase">
+            <option value="normal">🛒 Pedido normal</option>
+            <option value="descuento">🏷️ Descuento en %</option>
+            <option value="bonificacion">🎁 Bonificación en género (12+1…)</option>
+          </select>
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Solo para distinguirlas de un vistazo (color/etiqueta). No cambia el pedido.</div>
         </div>
         <div class="form-group">
           <label>Texto (máx 150 caracteres)</label>
@@ -4328,13 +4350,14 @@ function abrirModalNuevaPlantilla() {
     </div>
   `;
   document.body.appendChild(modal);
-  setTimeout(() => { const t = document.getElementById('tpl-texto'); if (t) t.focus(); }, 50);
+  setTimeout(() => { const t = document.getElementById('tpl-texto'); if (t) t.focus(); _toggleCondicionPlantilla(); }, 50);
   document.getElementById('form-nueva-plantilla').addEventListener('submit', async (e) => {
     e.preventDefault();
     const texto = document.getElementById('tpl-texto').value.trim();
     const tipo = document.getElementById('tpl-tipo').value;
+    const clase = tipo === 'pedido' ? document.getElementById('tpl-clase').value : null;
     try {
-      await api('/api/annotation-templates', { method: 'POST', body: { texto, tipo } });
+      await api('/api/annotation-templates', { method: 'POST', body: { texto, tipo, clase } });
       modal.remove();
       invalidarPlantillasCache();
       renderListaPlantillas();
@@ -4359,11 +4382,20 @@ async function editarPlantilla(id) {
       <form id="form-editar-plantilla">
         <div class="form-group">
           <label>Tipo</label>
-          <select id="tpl-tipo">
+          <select id="tpl-tipo" onchange="_toggleCondicionPlantilla()">
             <option value="pedido" ${tpl.tipo === 'pedido' ? 'selected' : ''}>🛒 Pedido</option>
             <option value="devolucion" ${tpl.tipo === 'devolucion' ? 'selected' : ''}>↩️ Devolución</option>
             <option value="nota" ${tpl.tipo === 'nota' ? 'selected' : ''}>📝 Nota</option>
           </select>
+        </div>
+        <div class="form-group" id="tpl-condicion-grupo">
+          <label>Condición del pedido</label>
+          <select id="tpl-clase">
+            <option value="normal" ${(!tpl.clase || tpl.clase === 'normal') ? 'selected' : ''}>🛒 Pedido normal</option>
+            <option value="descuento" ${tpl.clase === 'descuento' ? 'selected' : ''}>🏷️ Descuento en %</option>
+            <option value="bonificacion" ${tpl.clase === 'bonificacion' ? 'selected' : ''}>🎁 Bonificación en género (12+1…)</option>
+          </select>
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Solo para distinguirlas de un vistazo (color/etiqueta). No cambia el pedido.</div>
         </div>
         <div class="form-group">
           <label>Texto</label>
@@ -4377,12 +4409,14 @@ async function editarPlantilla(id) {
     </div>
   `;
   document.body.appendChild(modal);
+  setTimeout(() => _toggleCondicionPlantilla(), 30);
   document.getElementById('form-editar-plantilla').addEventListener('submit', async (e) => {
     e.preventDefault();
     const texto = document.getElementById('tpl-texto').value.trim();
     const tipo = document.getElementById('tpl-tipo').value;
+    const clase = tipo === 'pedido' ? document.getElementById('tpl-clase').value : null;
     try {
-      await api('/api/annotation-templates/' + id, { method: 'PUT', body: { texto, tipo } });
+      await api('/api/annotation-templates/' + id, { method: 'PUT', body: { texto, tipo, clase } });
       modal.remove();
       invalidarPlantillasCache();
       renderListaPlantillas();
