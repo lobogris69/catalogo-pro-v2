@@ -6660,25 +6660,58 @@ app.post('/api/sheets/:sheetId/detect-precios-ia', verifyToken, requireAdmin, as
     const detec = await detectarPreciosIA(abs);
     if (detec === null) { res.status(500).json({ success: false, error: 'La IA no respondio: ' + (ultimoErrorIA() || '') }); return; }
 
-    // Borra los recuadros IA previos de esta lamina (re-detectar = empezar limpio; respeta los manuales)
-    await pool.query(`DELETE FROM lamina_recuadro WHERE sheet_id=$1 AND origen='ia'`, [sheetId]);
-
-    let creados = 0; const detalle: any[] = [];
+    // 1) Refinar cada deteccion con sharp + casar con producto (candidatos)
+    const cand: any[] = [];
     for (const d of detec) {
       const ref = await refinarRecuadroPrecio(abs, { x: d.box.x, y: d.box.y, ancho: d.box.width, alto: d.box.height });
-      if (!ref) { detalle.push({ tipo: d.tipo, casado: false, motivo: 'sin texto' }); continue; }
+      if (!ref) continue;
       const z = casarZona(d);
-      const campo = d.tipo === 'pvpr' ? 'pvpr' : 'pvf';
+      cand.push({ ref, campo: d.tipo === 'pvpr' ? 'pvpr' : 'pvf', sep: d.sep_decimal, zone_id: z?.zone_id || null, product_id: z?.product_id || null });
+    }
+    // 2) Filtrar tamaños atípicos (mis-detecciones: un "cm", un icono...). Referencia =
+    //    mediana del tam_rel del lote; se descartan los muy pequeños o muy grandes.
+    let descartados_tam = 0;
+    if (cand.length >= 4) {
+      const tams = cand.map(c => c.ref.tam_rel).sort((a, b) => a - b);
+      const med = tams[Math.floor(tams.length / 2)];
+      const antes = cand.length;
+      for (let i = cand.length - 1; i >= 0; i--) {
+        if (cand[i].ref.tam_rel < med * 0.55 || cand[i].ref.tam_rel > med * 2.2) cand.splice(i, 1);
+      }
+      descartados_tam = antes - cand.length;
+    }
+    // 3) Deduplicar por (product_id, campo): si la IA vio dos veces el mismo precio,
+    //    quedarse con el recuadro cuyo centro cae DENTRO/ mas cerca de su zona de producto.
+    const zonaById: any = {}; zonas.forEach((z: any) => { zonaById[z.zone_id] = z; });
+    const distZona = (c: any) => {
+      const z = c.zone_id ? zonaById[c.zone_id] : null; if (!z) return 1e9;
+      const cxp = c.ref.x + c.ref.ancho / 2, cyp = c.ref.y + c.ref.alto / 2;
+      const zx = z.x + z.ancho / 2, zy = z.y + z.alto / 2;
+      return (zx - cxp) ** 2 + (zy - cyp) ** 2;
+    };
+    const mejorPorClave: any = {};
+    let descartados_dup = 0;
+    for (const c of cand) {
+      const k = (c.product_id || 'x') + '|' + c.campo;
+      if (!mejorPorClave[k]) { mejorPorClave[k] = c; }
+      else { descartados_dup++; if (distZona(c) < distZona(mejorPorClave[k])) mejorPorClave[k] = c; }
+    }
+    const finales = Object.values(mejorPorClave) as any[];
+
+    // Borra los recuadros IA previos de esta lamina (re-detectar = empezar limpio; respeta los manuales)
+    await pool.query(`DELETE FROM lamina_recuadro WHERE sheet_id=$1 AND origen='ia'`, [sheetId]);
+    let creados = 0; const detalle: any[] = [];
+    for (const c of finales) {
       const ins = await pool.query(
         `INSERT INTO lamina_recuadro
           (sheet_id, zone_id, product_id, campo, x, y, ancho, alto, color_fondo, color_texto, tam_rel, alinear, sep_decimal, origen)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'ia') RETURNING id`,
-        [sheetId, z?.zone_id || null, z?.product_id || null, campo,
-         ref.x, ref.y, ref.ancho, ref.alto, ref.color_fondo, ref.color_texto, ref.tam_rel, ref.alinear, d.sep_decimal]);
+        [sheetId, c.zone_id, c.product_id, c.campo,
+         c.ref.x, c.ref.y, c.ref.ancho, c.ref.alto, c.ref.color_fondo, c.ref.color_texto, c.ref.tam_rel, c.ref.alinear, c.sep]);
       creados++;
-      detalle.push({ tipo: d.tipo, campo, product_id: z?.product_id || null, casado: !!z?.product_id, recuadro_id: ins.rows[0].id });
+      detalle.push({ campo: c.campo, product_id: c.product_id, casado: !!c.product_id, recuadro_id: ins.rows[0].id });
     }
-    res.json({ success: true, creados, total_detectados: detec.length, detalle });
+    res.json({ success: true, creados, total_detectados: detec.length, descartados_tam, descartados_dup, detalle });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

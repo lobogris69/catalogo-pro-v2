@@ -288,12 +288,21 @@ export async function refinarRecuadroPrecio(
     }
     if (cx0 >= 0) clusters.push({ x0: cx0, x1: cw - 1, peso: cpeso });
     if (!clusters.length) return null;
-    const hintCx = (cajaPct.x + cajaPct.ancho / 2) * W / 100 - cx;
-    let clus = clusters[0];
-    if (Number.isFinite(hintCx)) {
-      let bestD = 1e9;
+    // Elegir el cluster del NUMERO: el que mas SOLAPA con la caja de la IA (que apunta
+    // al numero, no a la etiqueta). Empate -> el mas a la derecha (el numero va tras la
+    // etiqueta "P.V.L."). Si ningun cluster solapa, el mas cercano al centro de la caja.
+    const aiX0 = cajaPct.x * W / 100 - cx;
+    const aiX1 = (cajaPct.x + cajaPct.ancho) * W / 100 - cx;
+    const solape = (cc: { x0: number; x1: number }) => Math.max(0, Math.min(cc.x1, aiX1) - Math.max(cc.x0, aiX0));
+    let clus = clusters[0], mejor = -1;
+    for (const cc of clusters) {
+      const s = solape(cc);
+      if (s > mejor || (s === mejor && cc.x0 > clus.x0)) { mejor = s; clus = cc; }
+    }
+    if (mejor <= 0) {
+      const hintCx = (aiX0 + aiX1) / 2; let bestD = 1e9;
       for (const cc of clusters) { const c = (cc.x0 + cc.x1) / 2; const d = Math.abs(c - hintCx); if (d < bestD) { bestD = d; clus = cc; } }
-    } else { for (const cc of clusters) if (cc.peso > clus.peso) clus = cc; }
+    }
     // bbox final: cluster elegido (x) x banda (y), + color de tinta dentro de esa caja
     let minX = clus.x0, maxX = clus.x1, minY = banda.y1, maxY = banda.y0, dark = 0;
     let tr = 0, tg = 0, tb = 0, tn = 0;
