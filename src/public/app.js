@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v69 · 13 jul 2026';
+const APP_VERSION = 'v70 · 13 jul 2026';
 const API = '';
 let token = localStorage.getItem('cpv2_token');
 let user = JSON.parse(localStorage.getItem('cpv2_user') || 'null');
@@ -13036,8 +13036,25 @@ function hacerVentanaArrastrable(card, handle) {
     document.addEventListener('touchend', soltar);
     e.preventDefault();
   };
-  handle.addEventListener('mousedown', bajar);
-  handle.addEventListener('touchstart', bajar, { passive: false });
+  const bindDrag = (h) => {
+    if (!h) return;
+    h.style.cursor = 'move';
+    h.style.userSelect = 'none';
+    h.style.touchAction = 'none';
+    h.addEventListener('mousedown', bajar);
+    h.addEventListener('touchstart', bajar, { passive: false });
+  };
+  bindDrag(handle);
+  // ASA INFERIOR: barra "✥ arrastra" pegada al fondo del cuadro para poder moverlo
+  // también desde abajo (no solo por la cabecera), y así recentrarlo con facilidad.
+  if (!card.querySelector('.drag-grip-inferior')) {
+    const grip = document.createElement('div');
+    grip.className = 'drag-grip-inferior';
+    grip.textContent = '✥ arrastra para mover';
+    grip.style.cssText = 'position:sticky;bottom:0;margin-top:12px;padding:7px;text-align:center;font-size:11px;font-weight:600;color:var(--gris-texto);background:var(--surface-2);border:1px solid var(--gris-borde);border-radius:9px;cursor:move;user-select:none;touch-action:none;z-index:2';
+    card.appendChild(grip);
+    bindDrag(grip);
+  }
 }
 
 // FASE 2.b': crear producto al vuelo (tipo comercial) desde el editor de zonas.
