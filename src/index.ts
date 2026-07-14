@@ -6657,16 +6657,27 @@ app.post('/api/sheets/:sheetId/detect-precios-ia', verifyToken, requireAdmin, as
     const nComa = detec.filter(d => d.sep_decimal === ',').length;
     const sepLamina = nComa > detec.length / 2 ? ',' : '.';
 
-    // Agrupar detecciones por la zona que CONTIENE su centro. Las que no caen en ninguna
-    // zona verificada se DESCARTAN (mejor no pintar que pintar mal).
+    // Asignar cada precio a su zona con robustez de REJILLA: misma COLUMNA (el centro-x del
+    // precio cae en el rango-x de la zona) + zona verticalmente MAS CERCANA. Asi no cruza de
+    // columna aunque la IA desvie un poco las coordenadas, y captura el precio aunque quede
+    // justo bajo el recuadro. Sin columna que encaje o demasiado lejos -> se DESCARTA.
     const porZona = new Map<number, any[]>();
     let descartados_fuera = 0;
+    const gapV = (z: any, cyp: number) => (cyp >= z.y && cyp <= z.y + z.alto) ? 0 : Math.min(Math.abs(cyp - z.y), Math.abs(cyp - (z.y + z.alto)));
     for (const d of detec) {
       const cxp = d.box.x + d.box.width / 2, cyp = d.box.y + d.box.height / 2;
-      const z = zonas.find((z: any) => cxp >= z.x && cxp <= z.x + z.ancho && cyp >= z.y && cyp <= z.y + z.alto);
-      if (!z) { descartados_fuera++; continue; }
-      if (!porZona.has(z.zone_id)) porZona.set(z.zone_id, []);
-      porZona.get(z.zone_id)!.push(d);
+      // 1) columna: zonas cuyo intervalo x contiene el centro-x del precio
+      let cand = zonas.filter((z: any) => cxp >= z.x && cxp <= z.x + z.ancho);
+      // 2) si ninguna columna encaja, permitir un pequeño margen lateral (2%)
+      if (!cand.length) cand = zonas.filter((z: any) => cxp >= z.x - 2 && cxp <= z.x + z.ancho + 2);
+      if (!cand.length) { descartados_fuera++; continue; }
+      // zona de esa columna con menor distancia vertical
+      let best: any = null, bestG = 1e9;
+      for (const z of cand) { const g = gapV(z, cyp); if (g < bestG) { bestG = g; best = z; } }
+      // demasiado lejos verticalmente (no es su precio) -> descartar. Tope = alto de la zona + 3%.
+      if (!best || bestG > best.alto + 3) { descartados_fuera++; continue; }
+      if (!porZona.has(best.zone_id)) porZona.set(best.zone_id, []);
+      porZona.get(best.zone_id)!.push(d);
     }
 
     // Borra los recuadros IA previos de esta lamina (respeta los manuales)
@@ -6676,8 +6687,9 @@ app.post('/api/sheets/:sheetId/detect-precios-ia', verifyToken, requireAdmin, as
     for (const z of zonas) {
       const dets = porZona.get(z.zone_id) || [];
       if (!dets.length) continue;
-      // Refinar cada precio de esta zona, RECORTANDO al bbox de la zona (no invade vecinos).
-      const clip = { x: z.x, y: z.y, ancho: z.ancho, alto: z.alto };
+      // Refinar cada precio de esta zona, RECORTANDO a la zona (+margen para el precio que
+      // cae justo bajo el recuadro). El margen es pequeño: no llega a la fila vecina (~28%).
+      const clip = { x: z.x - 1, y: z.y - 1, ancho: z.ancho + 2, alto: z.alto + 5 };
       const refs: any[] = [];
       for (const d of dets) {
         const ref = await refinarRecuadroPrecio(abs, { x: d.box.x, y: d.box.y, ancho: d.box.width, alto: d.box.height }, clip);
