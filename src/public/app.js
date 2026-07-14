@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v79 · 14 jul 2026';
+const APP_VERSION = 'v80 · 15 jul 2026';
 const API = '';
 
 // ============================================================================

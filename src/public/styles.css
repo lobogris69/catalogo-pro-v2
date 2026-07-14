@@ -3591,7 +3591,7 @@ body.con-banner-update {
 }
 .visor-zona-oferta {
   position: absolute;
-  right: 3px; top: 3px;
+  right: 3px; bottom: calc(100% + 2px); /* justo ENCIMA de la zona, no sobre el precio */
   background: #dc2626;
   color: #fff;
   font-size: 10px; font-weight: 800;

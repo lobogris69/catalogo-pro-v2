@@ -6999,7 +6999,8 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
     const padX = fs2 * 0.55, padY = fs2 * 0.32;
     const bw = label.length * fs2 * 0.6 + padX * 2, bh = fs2 + padY * 2;
     const zx = z.x / 100 * W, zy = z.y / 100 * H, zw = z.ancho / 100 * W;
-    const bx = Math.max(0, zx + zw - bw), by0 = zy;
+    // Badge JUSTO ENCIMA de la zona (esquina del producto), no sobre el precio.
+    const bx = Math.max(0, zx + zw - bw), by0 = Math.max(0, zy - bh - H * 0.004);
     els += `<rect x="${bx}" y="${by0}" width="${bw}" height="${bh}" rx="${bh * 0.3}" fill="${of.color || '#dc2626'}"/>`;
     els += `<text x="${bx + bw / 2}" y="${by0 + bh / 2 + fs2 * 0.35}" font-family="Liberation Sans, Arial, DejaVu Sans, sans-serif" font-weight="800" font-size="${fs2}" fill="#ffffff" text-anchor="middle">${esc(label)}</text>`;
   }
