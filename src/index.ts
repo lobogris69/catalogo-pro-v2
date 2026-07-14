@@ -6396,6 +6396,48 @@ app.get('/api/precios/vigente', verifyToken, async (req: AuthRequest, res: Respo
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
+// POST precios vigentes HOY de VARIOS productos de una vez (para pintar la lámina).
+// Body: { product_ids:[...], tarifa? }. Devuelve mapa product_id -> {pvf,pvpr,fuente,pendiente}.
+app.post('/api/precios/vigentes', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const rawIds: number[] = Array.isArray(req.body.product_ids)
+      ? req.body.product_ids.map((n: any) => Number(n)).filter((n: number) => Number.isInteger(n) && n > 0)
+      : [];
+    const ids: number[] = Array.from(new Set<number>(rawIds)).slice(0, 300);
+    const tarifa = Number(req.body.tarifa) || 1;
+    const precios: any = {};
+    if (!ids.length) { res.json({ success: true, precios }); return; }
+    // Cambios programados YA vigentes (uno por producto, el más reciente)
+    const prog = await pool.query(
+      `SELECT DISTINCT ON (product_id) product_id, pvf, pvpr, fecha_vigencia
+         FROM precio_programado
+        WHERE product_id = ANY($1::int[]) AND tarifa=$2 AND fecha_vigencia <= CURRENT_DATE
+        ORDER BY product_id, fecha_vigencia DESC, id DESC`, [ids, tarifa]);
+    const progMap: any = {}; prog.rows.forEach((r: any) => { progMap[r.product_id] = r; });
+    // Precio base de products
+    const col = (tarifa >= 1 && tarifa <= 3) ? tarifa : 1;
+    const base = await pool.query(
+      `SELECT id, precio_pvf_${col} AS pvf, precio_pvpr_${col} AS pvpr, precio_pvf AS pvf_l, precio_pvp AS pvpr_l
+         FROM products WHERE id = ANY($1::int[])`, [ids]);
+    const baseMap: any = {}; base.rows.forEach((r: any) => { baseMap[r.id] = r; });
+    // Cambios PENDIENTES (futuro) — uno por producto, el más próximo
+    const pend = await pool.query(
+      `SELECT DISTINCT ON (product_id) product_id, pvf, pvpr, fecha_vigencia
+         FROM precio_programado
+        WHERE product_id = ANY($1::int[]) AND tarifa=$2 AND fecha_vigencia > CURRENT_DATE
+        ORDER BY product_id, fecha_vigencia ASC, id ASC`, [ids, tarifa]);
+    const pendMap: any = {}; pend.rows.forEach((r: any) => { pendMap[r.product_id] = r; });
+    for (const id of ids) {
+      const p = progMap[id]; const b = baseMap[id];
+      let pvf: any = null, pvpr: any = null, fuente = 'no-existe';
+      if (p) { pvf = p.pvf; pvpr = p.pvpr; fuente = 'programado'; }
+      else if (b) { pvf = b.pvf ?? b.pvf_l ?? null; pvpr = b.pvpr ?? b.pvpr_l ?? null; fuente = 'base'; }
+      precios[id] = { pvf, pvpr, fuente, pendiente: pendMap[id] ? { pvf: pendMap[id].pvf, pvpr: pendMap[id].pvpr, fecha: pendMap[id].fecha_vigencia } : null };
+    }
+    res.json({ success: true, precios });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
 // GET lista de cambios programados (admin real)
 app.get('/api/precios/programados', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {

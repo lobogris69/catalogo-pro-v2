@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v73 · 14 jul 2026';
+const APP_VERSION = 'v74 · 14 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3215,6 +3215,7 @@ function engancharGestosPresentacion() {
 // FASE 2.c' — COMERCIAL pulsa zonas de productos
 // ============================================================================
 let _zonasComercial = []; // zonas de la lámina actual en el visor
+let _preciosVigentes = {}; // FASE 1: precio de hoy por product_id, para pintar sobre la zona
 
 async function cargarZonasComercial() {
   const $wrapper = document.getElementById('visor-imagen-wrapper');
@@ -3229,9 +3230,23 @@ async function cargarZonasComercial() {
     // Zonas "accionables": producto Sage, familia, comisión o enlace a otro catálogo.
     _zonasComercial = (r.zones || []).filter(z => z.product_id || z.familia_ref || (z.familia_skus && z.familia_skus.length) || z.es_comision || z.link_catalog_id || z.permite_sueltas);
     pintarZonasComercial();
+    cargarPreciosVigentesLamina(); // en segundo plano; repinta al llegar
   } catch (e) {
     _zonasComercial = [];
   }
+}
+
+// FASE 1 (precios dinámicos): trae el precio de HOY de los productos de la lámina y repinta.
+async function cargarPreciosVigentesLamina() {
+  const ids = _zonasComercial.filter(z => z.product_id).map(z => Number(z.product_id));
+  if (!ids.length) { _preciosVigentes = {}; return; }
+  try {
+    // tarifa del cliente de la visita si existe; si no, 1 (Lomhifar = tarifa única)
+    const tarifa = (appState.visitaActiva && appState.visitaActiva.tarifa_precio) ? appState.visitaActiva.tarifa_precio : 1;
+    const r = await api('/api/precios/vigentes', { method: 'POST', body: { product_ids: ids, tarifa } });
+    _preciosVigentes = r.precios || {};
+    pintarZonasComercial();
+  } catch (e) { /* si falla, el visor sigue funcionando sin la etiqueta */ }
 }
 
 function pintarZonasComercial() {
@@ -3255,6 +3270,24 @@ function pintarZonasComercial() {
       const txt = z.link_label || ('🔗 ' + (z.link_catalog_nombre || 'Ver catálogo') + ' →');
       div.innerHTML = '<span class="visor-zona-enlace-txt">' + escape(txt) + '</span>';
       div.title = 'Ir a ' + (z.link_catalog_nombre || 'otro catálogo');
+    } else if (z.product_id && _preciosVigentes[z.product_id]) {
+      // FASE 1 precios dinámicos: etiqueta con el precio de HOY (de la BD) sobre la zona.
+      // La imagen puede tener el número viejo; la app enseña el correcto.
+      const pr = _preciosVigentes[z.product_id];
+      const pvf = (pr.pvf != null && pr.pvf !== '') ? Number(pr.pvf).toFixed(2).replace('.', ',') + '€' : null;
+      if (pvf) {
+        const chip = document.createElement('span');
+        chip.className = 'visor-zona-precio' + (pr.pendiente ? ' tiene-pendiente' : '');
+        chip.textContent = 'PVF ' + pvf;
+        if (pr.pendiente && pr.pendiente.fecha) {
+          const f = String(pr.pendiente.fecha).slice(0, 10).split('-').reverse().join('/');
+          const npvf = pr.pendiente.pvf != null ? Number(pr.pendiente.pvf).toFixed(2).replace('.', ',') + '€' : '';
+          chip.title = 'Precio de hoy. Cambia a ' + npvf + ' el ' + f;
+        } else {
+          chip.title = 'Precio actual (base de datos)';
+        }
+        div.appendChild(chip);
+      }
     }
     div.addEventListener('click', (e) => {
       e.stopPropagation();
