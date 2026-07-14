@@ -6945,6 +6945,115 @@ app.delete('/api/ofertas/:id', verifyToken, requireRealAdmin, async (req: AuthRe
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
 });
 
+// ============================================================================
+// F5 EXPORT — RECOMPOSICION: hornea en la imagen los precios de HOY (recuadros
+// aprobados) + las ofertas vigentes. Sirve para descargar/compartir (WhatsApp),
+// PDF del catalogo o backup MEGA, sin depender de la app.
+// ============================================================================
+async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buffer | null> {
+  const s = await pool.query('SELECT imagen_path FROM sheets WHERE id=$1', [sheetId]);
+  if (!s.rows.length) return null;
+  const abs = resolverRutaImagen(s.rows[0].imagen_path, UPLOADS_DIR);
+  if (!abs || !fs.existsSync(abs)) return null;
+  const meta = await sharp(abs).metadata();
+  const W = meta.width || 0, H = meta.height || 0;
+  if (!W || !H) return null;
+
+  const recs = (await pool.query(
+    `SELECT * FROM lamina_recuadro WHERE sheet_id=$1 AND activo=TRUE AND revisar=FALSE`, [sheetId])).rows;
+  const zonas = (await pool.query(
+    `SELECT id, product_id, x, y, ancho, alto FROM sheet_zones WHERE sheet_id=$1 AND product_id IS NOT NULL`, [sheetId])).rows;
+  const prodIds = Array.from(new Set<number>([...recs.map((r: any) => r.product_id), ...zonas.map((z: any) => z.product_id)].filter(Boolean)));
+  const precios: Record<number, any> = {};
+  for (const r of recs) { if (r.product_id && !precios[r.product_id]) precios[r.product_id] = await precioVigenteHoy(r.product_id, tarifa); }
+  const ofertas = await ofertasVigentesLote(prodIds);
+
+  const esc = (s: any) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const fmt = (val: number, rec: any) => {
+    const dec = rec.decimales == null ? 2 : rec.decimales;
+    let t = Number(val).toFixed(dec);
+    if (rec.sep_decimal !== '.') t = t.replace('.', ',');
+    return (rec.prefijo || '') + t + (rec.sufijo == null ? '€' : rec.sufijo);
+  };
+  let els = '';
+  // Recuadros de precio (tapar + reescribir precio de HOY)
+  for (const rec of recs) {
+    const pr = rec.product_id ? precios[rec.product_id] : null; if (!pr) continue;
+    const val = rec.campo === 'pvpr' ? pr.pvpr : pr.pvf; if (val == null) continue;
+    const txt = fmt(Number(val), rec);
+    const dY = rec.alto / 100 * H * 0.12;
+    const x = rec.x / 100 * W, y = rec.y / 100 * H - dY;
+    const w = rec.ancho / 100 * W * 1.15, h = rec.alto / 100 * H * 1.25;
+    const fs2 = rec.tam_rel / 100 * W;
+    const by = y + h / 2 + fs2 * 0.35;
+    const anchor = rec.alinear === 'right' ? 'end' : (rec.alinear === 'center' ? 'middle' : 'start');
+    const tx = rec.alinear === 'right' ? x + w : (rec.alinear === 'center' ? x + w / 2 : x);
+    els += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${rec.color_fondo || '#fff'}"/>`;
+    els += `<text x="${tx}" y="${by}" font-family="${rec.fuente || 'Arial, Helvetica, sans-serif'}" font-weight="${rec.negrita === false ? '400' : '700'}" font-size="${fs2}" fill="${rec.color_texto || '#2b2a29'}" text-anchor="${anchor}">${esc(txt)}</text>`;
+  }
+  // Ofertas: badge arriba-derecha de la zona
+  for (const z of zonas) {
+    const of = ofertas[z.product_id]; if (!of) continue;
+    const label = String(of.label || 'Oferta');
+    const fs2 = W * 0.013;
+    const padX = fs2 * 0.55, padY = fs2 * 0.32;
+    const bw = label.length * fs2 * 0.6 + padX * 2, bh = fs2 + padY * 2;
+    const zx = z.x / 100 * W, zy = z.y / 100 * H, zw = z.ancho / 100 * W;
+    const bx = Math.max(0, zx + zw - bw), by0 = zy;
+    els += `<rect x="${bx}" y="${by0}" width="${bw}" height="${bh}" rx="${bh * 0.3}" fill="${of.color || '#dc2626'}"/>`;
+    els += `<text x="${bx + bw / 2}" y="${by0 + bh / 2 + fs2 * 0.35}" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="${fs2}" fill="#ffffff" text-anchor="middle">${esc(label)}</text>`;
+  }
+  if (!els) return await sharp(abs).png().toBuffer(); // nada que recomponer: imagen tal cual
+  const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">${els}</svg>`;
+  return await sharp(abs).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).png().toBuffer();
+}
+
+// GET lamina recompuesta (PNG) con precios de hoy + ofertas. Para descargar/compartir.
+app.get('/api/sheets/:id/recompuesta', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const tarifa = Number(req.query.tarifa) || 1;
+    const buf = await recomponerLaminaHoy(Number(req.params.id), tarifa);
+    if (!buf) { res.status(404).json({ success: false, error: 'Lamina o imagen no encontrada' }); return; }
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-store'); // los precios cambian
+    res.send(buf);
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// GET PDF del catalogo con TODAS las laminas recompuestas (precios de hoy + ofertas).
+app.get('/api/catalogs/:id/pdf-hoy', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const catId = Number(req.params.id);
+    const tarifa = Number(req.query.tarifa) || 1;
+    const cat = await pool.query('SELECT name FROM catalogs WHERE id=$1', [catId]);
+    if (!cat.rows.length) { res.status(404).json({ success: false, error: 'Catalogo no encontrado' }); return; }
+    const sheets = (await pool.query(
+      `SELECT id FROM sheets WHERE catalog_id=$1 AND (oculta IS NULL OR oculta=FALSE) ORDER BY orden, id`, [catId])).rows;
+    if (!sheets.length) { res.status(400).json({ success: false, error: 'El catalogo no tiene laminas' }); return; }
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const PDFDocument = require('pdfkit');
+    const doc = new PDFDocument({ autoFirstPage: false, margin: 0 });
+    const nombre = String(cat.rows[0].name || 'catalogo').replace(/[^a-z0-9._-]+/gi, '_');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${nombre}_precios_hoy.pdf"`);
+    doc.pipe(res);
+    const pageW = 595; // A4 ancho en pt
+    for (const s of sheets) {
+      const buf = await recomponerLaminaHoy(s.id, tarifa);
+      if (!buf) continue;
+      const m = await sharp(buf).metadata();
+      const w = m.width || pageW, h = m.height || pageW;
+      const pageH = pageW * h / w;
+      doc.addPage({ size: [pageW, pageH], margin: 0 });
+      doc.image(buf, 0, 0, { width: pageW, height: pageH });
+    }
+    doc.end();
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ success: false, error: (e as Error).message });
+    else res.end();
+  }
+});
+
 app.get('/api/admin/limpiar-pruebas/preview', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const counts: any = {};

@@ -3582,6 +3582,13 @@ body.con-banner-update {
 }
 .visor-zona-precio.tiene-pendiente { background: rgba(217,119,6,.96); } /* ámbar si hay cambio programado a futuro */
 /* F4 ofertas: etiqueta de campaña vigente (arriba-derecha de la zona). */
+.visor-export-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 10px 0 4px;
+}
 .visor-zona-oferta {
   position: absolute;
   right: 3px; top: 3px;

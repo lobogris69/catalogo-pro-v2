@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v78 · 14 jul 2026';
+const APP_VERSION = 'v79 · 14 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -2837,6 +2837,12 @@ function pintarPresentacion(visibles) {
         </div>
       ` : ''}
 
+      <!-- F5 export: compartir con precios de HOY + ofertas horneados -->
+      <div class="visor-export-bar">
+        <button class="btn btn-secondary btn-pequeno" onclick="descargarLaminaHoy(${sheet.id})" title="Descarga esta lámina con los precios de hoy y las ofertas ya pintados (para WhatsApp, email...)">📥 Lámina con precios de hoy</button>
+        <button class="btn btn-secondary btn-pequeno" onclick="descargarPdfCatalogoHoy(${_visorCatalog ? _visorCatalog.id : 'null'}, this)" title="Genera un PDF de TODO el catálogo con los precios de hoy y las ofertas">📄 PDF del catálogo (hoy)</button>
+      </div>
+
       ${appState.visitaActiva ? pintarPanelAnotaciones(sheet, numeroOriginal) : ''}
 
       <div class="visor-zoom-hint">
@@ -3305,6 +3311,42 @@ function pintarRecuadrosPrecio() {
 }
 // Repintar al rotar/redimensionar (el px de la fuente depende del ancho renderizado).
 window.addEventListener('resize', () => { clearTimeout(window._recuadroResizeT); window._recuadroResizeT = setTimeout(pintarRecuadrosPrecio, 120); });
+
+// F5 export: descarga un recurso protegido (con token) como archivo. El backend hornea
+// los precios de hoy + ofertas en la imagen/PDF antes de enviarlo.
+async function _descargarBlobAuth(url, filename) {
+  const headers = {};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  if (impersonating && user && user.role === 'admin') headers['X-Impersonate-User'] = String(impersonating.id);
+  const r = await fetch(API + url, { headers });
+  if (!r.ok) { let e = 'Error ' + r.status; try { e = (await r.json()).error || e; } catch {} throw new Error(e); }
+  const blob = await r.blob();
+  const u = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = u; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 5000);
+}
+
+function _tarifaVisor() {
+  return (appState.visitaActiva && appState.visitaActiva.tarifa_precio) ? appState.visitaActiva.tarifa_precio : 1;
+}
+
+async function descargarLaminaHoy(sheetId) {
+  try {
+    await _descargarBlobAuth('/api/sheets/' + sheetId + '/recompuesta?tarifa=' + _tarifaVisor(), 'lamina_' + sheetId + '_precios_hoy.png');
+  } catch (e) { alert('No se pudo generar la lámina: ' + e.message); }
+}
+
+async function descargarPdfCatalogoHoy(catalogId, btn) {
+  if (!catalogId) { alert('No hay catálogo activo'); return; }
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando PDF…'; }
+  try {
+    await _descargarBlobAuth('/api/catalogs/' + catalogId + '/pdf-hoy?tarifa=' + _tarifaVisor(), 'catalogo_' + catalogId + '_precios_hoy.pdf');
+  } catch (e) { alert('No se pudo generar el PDF: ' + e.message); }
+  if (btn) { btn.disabled = false; btn.textContent = orig; }
+}
 
 // FASE 1 (precios dinámicos): trae el precio de HOY de los productos de la lámina y repinta.
 async function cargarPreciosVigentesLamina() {
