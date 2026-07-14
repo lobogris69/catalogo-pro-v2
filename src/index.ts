@@ -5142,6 +5142,7 @@ interface MegaJob {
   started_at: number;
   ended_at?: number;
   created_by: number;
+  con_precios?: boolean; // F5: subir las laminas RECOMPUESTAS (precios de hoy + ofertas)
 }
 const megaJobs = new Map<string, MegaJob>();
 
@@ -5200,7 +5201,15 @@ async function ejecutarBackupMega(job: MegaJob): Promise<void> {
           else if (rel.startsWith('uploads/')) rel = rel.substring('uploads/'.length);
           const abs = path.join(UPLOADS_DIR, rel);
           if (!fs.existsSync(abs)) throw new Error('archivo no existe en disco: ' + rel);
-          const buf = fs.readFileSync(abs);
+          // F5: si el backup es "con precios de hoy", subimos la lamina RECOMPUESTA
+          // (precios vigentes + ofertas horneados); si falla, la original.
+          let buf: Buffer;
+          if (job.con_precios) {
+            const rec = await recomponerLaminaHoy(s.id, 1);
+            buf = rec || fs.readFileSync(abs);
+          } else {
+            buf = fs.readFileSync(abs);
+          }
           sizeTotal += buf.length;
           const ext = path.extname(rel) || '.png';
           const nombre = nombreLaminaOrdenada(s.orden || (i + 1), s.titulo, ext);
@@ -5298,7 +5307,8 @@ app.post('/api/admin/mega-backup/:id', verifyToken, requireRealAdmin, async (req
       fallidas: 0,
       destinos,
       started_at: Date.now(),
-      created_by: req.user!.id
+      created_by: req.user!.id,
+      con_precios: !!req.body?.con_precios
     };
     megaJobs.set(job.id, job);
 
@@ -6407,6 +6417,21 @@ async function numTarifasConfig(): Promise<number> {
   } catch { return 1; }
 }
 
+// Fuentes instaladas en el servidor válidas para reescribir precios (deben existir en el
+// build: ver nixpacks fonts-liberation). Liberation Sans = métricas de Arial.
+const FUENTES_SERVIDOR = ['Liberation Sans', 'Liberation Serif', 'Liberation Mono', 'DejaVu Sans', 'DejaVu Serif'];
+// Config de render de precios reescritos: fuente (config una vez) + factor de tamaño fino.
+async function configPreciosRender(): Promise<{ fuente: string; tamFactor: number }> {
+  try {
+    const r = await pool.query(`SELECT clave, valor FROM app_config WHERE clave IN ('precio_fuente','precio_tam_factor')`);
+    const m: any = {}; r.rows.forEach((x: any) => { m[x.clave] = x.valor; });
+    const fuente = FUENTES_SERVIDOR.includes(m.precio_fuente) ? m.precio_fuente : 'Liberation Sans';
+    const tf = parseFloat(m.precio_tam_factor || '1');
+    const tamFactor = (Number.isFinite(tf) && tf >= 0.5 && tf <= 2) ? tf : 1;
+    return { fuente, tamFactor };
+  } catch { return { fuente: 'Liberation Sans', tamFactor: 1 }; }
+}
+
 // Precio VIGENTE HOY de un producto para una tarifa: primero un cambio programado con
 // fecha <= hoy (el más reciente); si no hay, el precio base de products (columna _N).
 async function precioVigenteHoy(productId: number, tarifa: number): Promise<{ pvf: number | null; pvpr: number | null; fuente: string; fecha: string | null }> {
@@ -6445,7 +6470,19 @@ app.put('/api/config', verifyToken, requireRealAdmin, async (req: AuthRequest, r
       await pool.query(`INSERT INTO app_config (clave, valor, updated_at) VALUES ('num_tarifas',$1,NOW())
         ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`, [String(n)]);
     }
-    res.json({ success: true, num_tarifas: await numTarifasConfig() });
+    // F5 remate: fuente para reescribir precios (config una vez) + factor de tamaño.
+    if (req.body.precio_fuente !== undefined) {
+      const f = FUENTES_SERVIDOR.includes(String(req.body.precio_fuente)) ? String(req.body.precio_fuente) : 'Liberation Sans';
+      await pool.query(`INSERT INTO app_config (clave, valor, updated_at) VALUES ('precio_fuente',$1,NOW())
+        ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`, [f]);
+    }
+    if (req.body.precio_tam_factor !== undefined) {
+      const tf = parseFloat(String(req.body.precio_tam_factor));
+      if (!Number.isFinite(tf) || tf < 0.5 || tf > 2) { res.status(400).json({ success: false, error: 'precio_tam_factor debe ser 0.5..2' }); return; }
+      await pool.query(`INSERT INTO app_config (clave, valor, updated_at) VALUES ('precio_tam_factor',$1,NOW())
+        ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`, [String(tf)]);
+    }
+    res.json({ success: true, num_tarifas: await numTarifasConfig(), ...(await configPreciosRender()) });
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
 });
 
@@ -6967,6 +7004,7 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
   const precios: Record<number, any> = {};
   for (const r of recs) { if (r.product_id && !precios[r.product_id]) precios[r.product_id] = await precioVigenteHoy(r.product_id, tarifa); }
   const ofertas = await ofertasVigentesLote(prodIds);
+  const cfg = await configPreciosRender(); // fuente + factor de tamaño (config una vez)
 
   const esc = (s: any) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const fmt = (val: number, rec: any) => {
@@ -6984,12 +7022,13 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
     const dY = rec.alto / 100 * H * 0.12;
     const x = rec.x / 100 * W, y = rec.y / 100 * H - dY;
     const w = rec.ancho / 100 * W * 1.15, h = rec.alto / 100 * H * 1.25;
-    const fs2 = rec.tam_rel / 100 * W;
+    const fs2 = rec.tam_rel / 100 * W * cfg.tamFactor;
     const by = y + h / 2 + fs2 * 0.35;
     const anchor = rec.alinear === 'right' ? 'end' : (rec.alinear === 'center' ? 'middle' : 'start');
     const tx = rec.alinear === 'right' ? x + w : (rec.alinear === 'center' ? x + w / 2 : x);
+    const fam = rec.fuente || cfg.fuente;
     els += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${rec.color_fondo || '#fff'}"/>`;
-    els += `<text x="${tx}" y="${by}" font-family="${rec.fuente || 'Liberation Sans, Arial, DejaVu Sans, sans-serif'}" font-weight="${rec.negrita === false ? '400' : '700'}" font-size="${fs2}" fill="${rec.color_texto || '#2b2a29'}" text-anchor="${anchor}">${esc(txt)}</text>`;
+    els += `<text x="${tx}" y="${by}" font-family="${fam}, Arial, DejaVu Sans, sans-serif" font-weight="${rec.negrita === false ? '400' : '700'}" font-size="${fs2}" fill="${rec.color_texto || '#2b2a29'}" text-anchor="${anchor}">${esc(txt)}</text>`;
   }
   // Ofertas: badge arriba-derecha de la zona
   for (const z of zonas) {

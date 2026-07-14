@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v80 · 15 jul 2026';
+const APP_VERSION = 'v81 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3254,12 +3254,29 @@ async function cargarRecuadrosLamina(sheetId) {
     // revisar. Los dudosos (confianza baja) se dejan con el precio impreso hasta que el
     // admin los apruebe → nunca se muestra un precio mal a un cliente.
     _recuadrosLamina = (r.recuadros || []).filter(x => x.activo && !x.revisar);
+    cargarConfigPrecios(); // una vez: fuente + factor de tamaño
     pintarRecuadrosPrecio();
   } catch (e) { _recuadrosLamina = []; }
 }
 
 // Fuente por defecto para reescribir precios (config una vez; la real de BETER es tipo Helvetica).
 const RECUADRO_FUENTE_DEFECTO = 'Arial, Helvetica, sans-serif';
+// Config de render de precios (fuente + factor de tamaño), cargada una vez del servidor.
+let _cfgPrecioFuente = 'Liberation Sans';
+let _cfgPrecioTamFactor = 1;
+let _cfgPreciosCargada = false;
+async function cargarConfigPrecios() {
+  if (_cfgPreciosCargada) return;
+  _cfgPreciosCargada = true;
+  try {
+    const r = await api('/api/config');
+    const c = r.config || {};
+    if (c.precio_fuente) _cfgPrecioFuente = c.precio_fuente;
+    const tf = parseFloat(c.precio_tam_factor);
+    if (Number.isFinite(tf) && tf >= 0.5 && tf <= 2) _cfgPrecioTamFactor = tf;
+    pintarRecuadrosPrecio();
+  } catch (e) { /* usa valores por defecto */ }
+}
 
 function _formatearPrecioRecuadro(rec, pr) {
   if (!pr) return null;
@@ -3301,9 +3318,10 @@ function pintarRecuadrosPrecio() {
     span.className = 'visor-recuadro-txt';
     span.textContent = texto;
     span.style.color = rec.color_texto || '#2b2a29';
-    span.style.fontFamily = rec.fuente || RECUADRO_FUENTE_DEFECTO;
+    // Fuente configurada (Liberation Sans ≈ Arial en el navegador); factor de tamaño fino.
+    span.style.fontFamily = rec.fuente || (_cfgPrecioFuente + ', Arial, Helvetica, sans-serif');
     span.style.fontWeight = rec.negrita === false ? '400' : '700';
-    span.style.fontSize = (rec.tam_rel * anchoPx / 100).toFixed(1) + 'px';
+    span.style.fontSize = (rec.tam_rel * anchoPx / 100 * _cfgPrecioTamFactor).toFixed(1) + 'px';
     span.style.justifyContent = rec.alinear === 'right' ? 'flex-end' : (rec.alinear === 'center' ? 'center' : 'flex-start');
     div.appendChild(span);
     capa.appendChild(div);
@@ -4879,6 +4897,27 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE: Fuente de precios reescritos (F3/F5) -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">🔤 Tipografía de precios reescritos
+            ${ayuda('Fuente y tamaño con los que la app reescribe los precios de hoy sobre la lámina (visor y export PDF/WhatsApp). Se configura UNA vez. Liberation Sans es idéntica a Arial; ajusta el factor de tamaño si hiciera falta afinar.', 'izq')}
+          </h3>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div class="form-group" style="margin:0"><label>Fuente</label>
+              <select id="cfg-precio-fuente" style="padding:8px;border:1px solid #d1d5db;border-radius:6px">
+                <option value="Liberation Sans">Liberation Sans (= Arial)</option>
+                <option value="Liberation Serif">Liberation Serif (= Times)</option>
+                <option value="Liberation Mono">Liberation Mono</option>
+                <option value="DejaVu Sans">DejaVu Sans</option>
+                <option value="DejaVu Serif">DejaVu Serif</option>
+              </select></div>
+            <div class="form-group" style="margin:0"><label>Factor de tamaño</label>
+              <input type="number" id="cfg-precio-tam" min="0.5" max="2" step="0.02" value="1" style="width:90px;padding:8px;border:1px solid #d1d5db;border-radius:6px"></div>
+            <button class="btn btn-primary btn-pequeno" onclick="guardarConfigPreciosAdmin(this)">Guardar</button>
+            <span id="cfg-precio-msg" style="font-size:12px;color:var(--gris-texto)"></span>
+          </div>
+        </div>
+
         <!-- BLOQUE: IA Tags -->
         <div class="editor-panel" style="margin-top:14px">
           <h3 style="margin-top:0">🤖 Tags automáticos con IA
@@ -4979,6 +5018,8 @@ async function renderConfiguracion() {
     cargarResumenSyncSage();
     // Cargar ofertas / campañas (F4)
     cargarOfertasAdmin();
+    // Cargar config de tipografía de precios (F5 remate)
+    cargarConfigPreciosAdmin();
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
   }
@@ -5129,6 +5170,31 @@ async function borrarOferta(id) {
   if (!confirm('¿Eliminar esta oferta?')) return;
   try { await api('/api/ofertas/' + id, { method: 'DELETE' }); cargarOfertasAdmin(); }
   catch (e) { alert(e.message); }
+}
+
+// ===== F5 remate: tipografía de precios reescritos =====
+async function cargarConfigPreciosAdmin() {
+  try {
+    const r = await api('/api/config');
+    const c = r.config || {};
+    const sel = document.getElementById('cfg-precio-fuente');
+    const tam = document.getElementById('cfg-precio-tam');
+    if (sel && c.precio_fuente) sel.value = c.precio_fuente;
+    if (tam && c.precio_tam_factor) tam.value = c.precio_tam_factor;
+  } catch (e) { /* usa valores por defecto del select */ }
+}
+
+async function guardarConfigPreciosAdmin(btn) {
+  const $msg = document.getElementById('cfg-precio-msg');
+  const fuente = document.getElementById('cfg-precio-fuente').value;
+  const factor = document.getElementById('cfg-precio-tam').value;
+  btn.disabled = true;
+  try {
+    await api('/api/config', { method: 'PUT', body: { precio_fuente: fuente, precio_tam_factor: factor } });
+    if ($msg) { $msg.textContent = '✅ Guardado'; setTimeout(() => { $msg.textContent = ''; }, 2500); }
+    _cfgPreciosCargada = false; // recargar en el visor la próxima vez
+  } catch (e) { if ($msg) $msg.textContent = 'Error: ' + e.message; }
+  btn.disabled = false;
 }
 
 // ===== CATEGORÍAS / TAGS =====
@@ -6914,6 +6980,10 @@ async function abrirBackupMega(catalogId, nombreCatalogo) {
           </label>
         `).join('')}
       </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="mega-con-precios" style="margin:0">
+        <span>💶 Subir con <b>precios de hoy</b> y ofertas (recompone cada lámina; tarda algo más)</span>
+      </label>
       <div style="margin-top:14px;display:flex;gap:8px">
         <button class="btn btn-primary" onclick="lanzarBackupMega(${catalogId})">☁️ Empezar backup</button>
         <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
@@ -6931,13 +7001,14 @@ async function lanzarBackupMega(catalogId) {
     alert('Selecciona al menos una carpeta MEGA de destino');
     return;
   }
+  const conPrecios = !!(document.getElementById('mega-con-precios') && document.getElementById('mega-con-precios').checked);
   document.getElementById('mega-pre-confirm').style.display = 'none';
   document.getElementById('mega-progreso').style.display = 'block';
   window._megaJobRunning = true;
   try {
     const r = await api('/api/admin/mega-backup/' + catalogId, {
       method: 'POST',
-      body: JSON.stringify({ mega_folder_ids: seleccionadas })
+      body: JSON.stringify({ mega_folder_ids: seleccionadas, con_precios: conPrecios })
     });
     if (!r.job_id) throw new Error(r.error || 'No se pudo iniciar el backup');
     seguirBackupMega(r.job_id);
