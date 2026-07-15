@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v83 · 15 jul 2026';
+const APP_VERSION = 'v84 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3575,17 +3575,28 @@ async function pulsarZonaComercial(zona) {
 
       ${plantillas.length > 0 ? (() => {
         const g = _ordenarPlantillas(plantillas);
-        const chip = (p, cls) => `<button type="button" class="zona-tpl-chip${cls}" data-texto="${escape(p.texto).replace(/"/g,'&quot;')}">${escape(p.texto)}</button>`;
-        const grupo = (titulo, arr, cls) => arr.length ? `
+        const clsDe = p => (p.tipo === 'pedido' && p.clase === 'descuento') ? ' zona-tpl-descuento'
+          : (p.tipo === 'pedido' && p.clase === 'bonificacion') ? ' zona-tpl-bonif' : '';
+        const chip = p => `<button type="button" class="zona-tpl-chip${clsDe(p)}" data-texto="${escape(p.texto).replace(/"/g,'&quot;')}">${escape(p.texto)}</button>`;
+        const grupo = (titulo, arr) => arr.length ? `
           <div class="zona-tpl-grupo">
-            <div class="zona-tpl-grupo-tit">${titulo}</div>
-            <div class="zona-plantillas">${arr.map(p => chip(p, cls)).join('')}</div>
+            <div class="zona-tpl-grupo-tit">${titulo} <span class="zona-tpl-cuenta">${arr.length}</span></div>
+            <div class="zona-plantillas">${arr.map(chip).join('')}</div>
           </div>` : '';
+        // Con muchas plantillas, un buscador acelera muchísimo (escribe "12" → 12+1, 12+2…)
+        const buscador = plantillas.length > 12
+          ? `<input type="search" id="tpl-filtro" class="zona-tpl-filtro" placeholder="🔍 Filtrar (ej: 12, 15%, 3+1…)" autocomplete="off">`
+          : '';
         return `<div class="form-group">
           <label>Selección rápida</label>
-          ${grupo('🏷️ Descuentos', g.dtos, ' zona-tpl-descuento')}
-          ${grupo('🎁 Bonificaciones', g.bons, ' zona-tpl-bonif')}
-          ${grupo('Otras', g.otros, '')}
+          ${buscador}
+          <div class="zona-tpl-scroll">
+            ${g.frecuentes.length ? grupo('⭐ Frecuentes', g.frecuentes) : ''}
+            ${grupo('🏷️ Descuentos', g.dtos)}
+            ${grupo('🎁 Bonificaciones', g.bons)}
+            ${grupo('Otras', g.otros)}
+            <div id="tpl-sin-resultados" class="zona-tpl-vacio" style="display:none">Sin coincidencias</div>
+          </div>
         </div>`;
       })() : ''}
 
@@ -3628,12 +3639,18 @@ async function pulsarZonaComercial(zona) {
   });
 
   // Plantillas de selección rápida → conmutan (marcar/desmarcar) y sincronizan la nota.
+  // Como una plantilla puede salir en "Frecuentes" y en su grupo, sincronizamos TODAS
+  // las instancias con el mismo texto para que el estado sea coherente.
+  const marcarTodas = (txt, sel) => modal.querySelectorAll('.zona-tpl-chip').forEach(c => {
+    if (c.dataset.texto === txt) c.classList.toggle('seleccionada', sel);
+  });
   modal.querySelectorAll('.zona-tpl-chip').forEach(chip => {
     chip.addEventListener('click', () => {
       const txt = chip.dataset.texto;
-      const sel = chip.classList.toggle('seleccionada');
+      const sel = !chip.classList.contains('seleccionada');
+      marcarTodas(txt, sel);
       let partes = $nota.value ? $nota.value.split(' · ').map(s => s.trim()).filter(Boolean) : [];
-      if (sel) { if (!partes.includes(txt)) partes.push(txt); }
+      if (sel) { if (!partes.includes(txt)) partes.push(txt); _tplUsoInc(txt); }
       else { partes = partes.filter(s => s !== txt); }
       $nota.value = partes.join(' · ');
     });
@@ -3643,6 +3660,24 @@ async function pulsarZonaComercial(zona) {
     const partes = $nota.value.split(' · ').map(s => s.trim());
     modal.querySelectorAll('.zona-tpl-chip').forEach(chip => {
       if (partes.includes(chip.dataset.texto)) chip.classList.add('seleccionada');
+    });
+  }
+  // Buscador en vivo: filtra chips por texto y oculta grupos vacíos.
+  const $filtro = modal.querySelector('#tpl-filtro');
+  if ($filtro) {
+    const $vacio = modal.querySelector('#tpl-sin-resultados');
+    $filtro.addEventListener('input', () => {
+      const q = ($filtro.value || '').toLowerCase().trim();
+      let totalVis = 0;
+      modal.querySelectorAll('.zona-tpl-grupo').forEach(g => {
+        let vis = 0;
+        g.querySelectorAll('.zona-tpl-chip').forEach(ch => {
+          const ok = !q || ch.dataset.texto.toLowerCase().includes(q);
+          ch.style.display = ok ? '' : 'none'; if (ok) vis++;
+        });
+        g.style.display = vis ? '' : 'none'; totalVis += vis;
+      });
+      if ($vacio) $vacio.style.display = totalVis ? 'none' : '';
     });
   }
 
@@ -4455,18 +4490,27 @@ async function abrirAsignacionComerciales(catalogId) {
 
 let _plantillasCache = null; // se rellena al cargar; null = aún no cargadas
 
-// Agrupa y ORDENA las plantillas para la selección rápida del comercial:
-// descuentos (por % ascendente) → bonificaciones (por nº ascendente) → otras (orden admin).
-// Así el abanico sale siempre igual y es fácil de escanear de un vistazo.
+// Uso de plantillas POR DISPOSITIVO (localStorage): cada comercial acumula en su tablet
+// las que más usa → sección "Frecuentes". No necesita backend ni tocar la BD.
+function _tplUso() { try { return JSON.parse(localStorage.getItem('cpv2_tpl_uso') || '{}'); } catch { return {}; } }
+function _tplUsoInc(txt) { const u = _tplUso(); u[txt] = (u[txt] || 0) + 1; try { localStorage.setItem('cpv2_tpl_uso', JSON.stringify(u)); } catch {} }
+
+// Agrupa y ORDENA las plantillas para la selección rápida del comercial. Con muchas
+// (p.ej. 52 bonificaciones) esto + el buscador es lo que la hace usable:
+//  - Frecuentes: las más usadas en esta tablet (atajo).
+//  - Descuentos: por % ascendente.
+//  - Bonificaciones: agrupadas por su número BASE (12+1, 12+2… juntas), base asc.
 function _ordenarPlantillas(plantillas) {
   const numDto = t => { const m = String(t.texto || '').match(/(\d+(?:[.,]\d+)?)\s*%/); return m ? parseFloat(m[1].replace(',', '.')) : 1e9; };
-  const numBon = t => { const m = String(t.texto || '').match(/(\d+)/); return m ? parseInt(m[1], 10) : 1e9; };
+  const nums = t => { const a = (String(t.texto || '').match(/\d+/g) || []).map(Number); return [a[0] ?? 1e9, a[1] ?? 1e9]; };
   const esDto = p => p.tipo === 'pedido' && p.clase === 'descuento';
   const esBon = p => p.tipo === 'pedido' && p.clase === 'bonificacion';
   const dtos = plantillas.filter(esDto).sort((a, b) => numDto(a) - numDto(b));
-  const bons = plantillas.filter(esBon).sort((a, b) => numBon(a) - numBon(b));
+  const bons = plantillas.filter(esBon).sort((a, b) => { const na = nums(a), nb = nums(b); return na[0] - nb[0] || na[1] - nb[1]; });
   const otros = plantillas.filter(p => !esDto(p) && !esBon(p));
-  return { dtos, bons, otros };
+  const uso = _tplUso();
+  const frecuentes = plantillas.filter(p => uso[p.texto]).sort((a, b) => uso[b.texto] - uso[a.texto]).slice(0, 8);
+  return { frecuentes, dtos, bons, otros };
 }
 
 async function cargarPlantillas() {

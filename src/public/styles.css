@@ -3781,6 +3781,33 @@ body.con-banner-update {
   color: #fff;
 }
 /* Selección rápida de plantillas: agrupada, ordenada y muy visual para el comercial. */
+.zona-tpl-filtro {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1.5px solid var(--gris-borde-2);
+  border-radius: 10px;
+  font-size: 15px;
+  box-sizing: border-box;
+  margin-bottom: 10px;
+}
+.zona-tpl-filtro:focus { outline: none; border-color: var(--brand); }
+/* Con muchas plantillas (52+), la zona hace scroll y no dispara el modal. */
+.zona-tpl-scroll {
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.zona-tpl-cuenta {
+  display: inline-block;
+  background: var(--gris-borde);
+  color: var(--gris-texto);
+  border-radius: 10px;
+  padding: 0 7px;
+  font-size: 10px;
+  font-weight: 800;
+  margin-left: 4px;
+}
+.zona-tpl-vacio { color: var(--gris-texto); font-size: 13px; text-align: center; padding: 12px; }
 .zona-tpl-grupo { margin-bottom: 10px; }
 .zona-tpl-grupo-tit {
   font-size: 11px;
