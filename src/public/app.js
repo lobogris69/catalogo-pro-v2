@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v82 · 15 jul 2026';
+const APP_VERSION = 'v83 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3573,20 +3573,21 @@ async function pulsarZonaComercial(zona) {
         <div id="zona-subtotal" style="font-size:13px;color:#16a34a;font-weight:600;margin-top:6px;text-align:right"></div>
       </div>
 
-      ${plantillas.length > 0 ? `
-        <div class="form-group">
-          <label>Plantillas rápidas</label>
-          <div class="zona-plantillas">
-            ${plantillas.map(p => {
-              const esDto = p.tipo === 'pedido' && p.clase === 'descuento';
-              const esBon = p.tipo === 'pedido' && p.clase === 'bonificacion';
-              const ic = esDto ? '🏷️ ' : esBon ? '🎁 ' : '';
-              const cls = esDto ? ' zona-tpl-descuento' : esBon ? ' zona-tpl-bonif' : '';
-              return `<button type="button" class="zona-tpl-chip${cls}" data-texto="${escape(p.texto).replace(/"/g,'&quot;')}" title="${esDto ? 'Descuento en %' : esBon ? 'Bonificación en género' : escape(p.tipo)}">${ic}${escape(p.texto)}</button>`;
-            }).join('')}
-          </div>
-        </div>
-      ` : ''}
+      ${plantillas.length > 0 ? (() => {
+        const g = _ordenarPlantillas(plantillas);
+        const chip = (p, cls) => `<button type="button" class="zona-tpl-chip${cls}" data-texto="${escape(p.texto).replace(/"/g,'&quot;')}">${escape(p.texto)}</button>`;
+        const grupo = (titulo, arr, cls) => arr.length ? `
+          <div class="zona-tpl-grupo">
+            <div class="zona-tpl-grupo-tit">${titulo}</div>
+            <div class="zona-plantillas">${arr.map(p => chip(p, cls)).join('')}</div>
+          </div>` : '';
+        return `<div class="form-group">
+          <label>Selección rápida</label>
+          ${grupo('🏷️ Descuentos', g.dtos, ' zona-tpl-descuento')}
+          ${grupo('🎁 Bonificaciones', g.bons, ' zona-tpl-bonif')}
+          ${grupo('Otras', g.otros, '')}
+        </div>`;
+      })() : ''}
 
       <div class="form-group">
         <label>Nota adicional <small style="color:#9ca3af">opcional</small></label>
@@ -3626,13 +3627,24 @@ async function pulsarZonaComercial(zona) {
     });
   });
 
-  // Plantillas → añaden su texto a la nota
+  // Plantillas de selección rápida → conmutan (marcar/desmarcar) y sincronizan la nota.
   modal.querySelectorAll('.zona-tpl-chip').forEach(chip => {
     chip.addEventListener('click', () => {
       const txt = chip.dataset.texto;
-      $nota.value = $nota.value ? ($nota.value + ' · ' + txt) : txt;
+      const sel = chip.classList.toggle('seleccionada');
+      let partes = $nota.value ? $nota.value.split(' · ').map(s => s.trim()).filter(Boolean) : [];
+      if (sel) { if (!partes.includes(txt)) partes.push(txt); }
+      else { partes = partes.filter(s => s !== txt); }
+      $nota.value = partes.join(' · ');
     });
   });
+  // Marcar como seleccionadas las plantillas cuyo texto ya está en la nota (al editar).
+  if ($nota.value) {
+    const partes = $nota.value.split(' · ').map(s => s.trim());
+    modal.querySelectorAll('.zona-tpl-chip').forEach(chip => {
+      if (partes.includes(chip.dataset.texto)) chip.classList.add('seleccionada');
+    });
+  }
 
   // ---- FAMILIA: selectores genericos (N ejes) que resuelven al SKU ----
   const $guardar = modal.querySelector('#zona-guardar');
@@ -4442,6 +4454,20 @@ async function abrirAsignacionComerciales(catalogId) {
 // ============================================================================
 
 let _plantillasCache = null; // se rellena al cargar; null = aún no cargadas
+
+// Agrupa y ORDENA las plantillas para la selección rápida del comercial:
+// descuentos (por % ascendente) → bonificaciones (por nº ascendente) → otras (orden admin).
+// Así el abanico sale siempre igual y es fácil de escanear de un vistazo.
+function _ordenarPlantillas(plantillas) {
+  const numDto = t => { const m = String(t.texto || '').match(/(\d+(?:[.,]\d+)?)\s*%/); return m ? parseFloat(m[1].replace(',', '.')) : 1e9; };
+  const numBon = t => { const m = String(t.texto || '').match(/(\d+)/); return m ? parseInt(m[1], 10) : 1e9; };
+  const esDto = p => p.tipo === 'pedido' && p.clase === 'descuento';
+  const esBon = p => p.tipo === 'pedido' && p.clase === 'bonificacion';
+  const dtos = plantillas.filter(esDto).sort((a, b) => numDto(a) - numDto(b));
+  const bons = plantillas.filter(esBon).sort((a, b) => numBon(a) - numBon(b));
+  const otros = plantillas.filter(p => !esDto(p) && !esBon(p));
+  return { dtos, bons, otros };
+}
 
 async function cargarPlantillas() {
   try {

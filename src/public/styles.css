@@ -3780,17 +3780,34 @@ body.con-banner-update {
   border-color: #a855f7;
   color: #fff;
 }
+/* Selección rápida de plantillas: agrupada, ordenada y muy visual para el comercial. */
+.zona-tpl-grupo { margin-bottom: 10px; }
+.zona-tpl-grupo-tit {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--gris-texto);
+  margin: 2px 0 6px;
+}
 .zona-plantillas {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 .zona-tpl-chip {
-  padding: 6px 12px;
-  border: 1px solid #d1d5db;
+  padding: 10px 16px;
+  border: 1.5px solid #d1d5db;
   background: var(--surface);
-  border-radius: 16px;
-  font-size: 12px;
+  border-radius: 14px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.1;
+  min-height: 44px;               /* cómodo para tocar en tablet */
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+  transition: transform .08s ease, box-shadow .12s ease;
   cursor: pointer;
   color: #374151;
 }
@@ -3798,9 +3815,19 @@ body.con-banner-update {
   background: color-mix(in srgb, var(--brand) 7%, var(--surface));
   border-color: color-mix(in srgb, var(--brand) 45%, var(--gris-borde-2));
 }
-/* Distinción visual de la plantilla al anotar: descuento % (ámbar) / bonificación (violeta) */
-.zona-tpl-chip.zona-tpl-descuento { border-color: color-mix(in srgb, var(--amber) 55%, var(--gris-borde-2)); background: color-mix(in srgb, var(--amber) 9%, var(--surface)); color: var(--amber); font-weight: 600; }
-.zona-tpl-chip.zona-tpl-bonif { border-color: color-mix(in srgb, var(--violet) 55%, var(--gris-borde-2)); background: color-mix(in srgb, var(--violet) 9%, var(--surface)); color: var(--violet); font-weight: 600; }
+.zona-tpl-chip:active { transform: scale(0.96); }
+/* Distinción visual: descuento % (ámbar) / bonificación (violeta) */
+.zona-tpl-chip.zona-tpl-descuento { border-color: color-mix(in srgb, var(--amber) 55%, var(--gris-borde-2)); background: color-mix(in srgb, var(--amber) 12%, var(--surface)); color: var(--amber); }
+.zona-tpl-chip.zona-tpl-bonif { border-color: color-mix(in srgb, var(--violet) 55%, var(--gris-borde-2)); background: color-mix(in srgb, var(--violet) 12%, var(--surface)); color: var(--violet); }
+/* SELECCIONADA: relleno pleno + check, se ve al instante qué está elegido */
+.zona-tpl-chip.seleccionada { color: #fff; border-color: transparent; box-shadow: 0 3px 8px rgba(0,0,0,.18); padding-right: 34px; }
+.zona-tpl-chip.seleccionada::after {
+  content: '✓'; position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  font-size: 13px; font-weight: 900;
+}
+.zona-tpl-chip.seleccionada:not(.zona-tpl-descuento):not(.zona-tpl-bonif) { background: var(--brand); }
+.zona-tpl-chip.zona-tpl-descuento.seleccionada { background: var(--amber); }
+.zona-tpl-chip.zona-tpl-bonif.seleccionada { background: var(--violet); }
 
 /* ============================================================================
    MOSAICO — reordenar láminas en cuadrícula
