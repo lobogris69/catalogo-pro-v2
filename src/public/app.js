@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v93 · 15 jul 2026';
+const APP_VERSION = 'v94 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12176,6 +12176,30 @@ async function detectarPreciosConIA(sheetId, boton) {
   boton.textContent = orig; boton.disabled = false;
 }
 
+// Borrado MASIVO de recuadros de una lámina (paridad con "Borrar todas" de zonas):
+// si la detección IA no convence, se limpia de golpe en vez de ir uno por uno.
+// Si hay recuadros hechos a mano, ofrece respetarlos y borrar solo los de la IA.
+async function borrarTodosLosRecuadros(sheetId, boton) {
+  const recs = _zonasEditor.recuadros || [];
+  if (!recs.length) { alert('Esta lámina no tiene recuadros de precio.'); return; }
+  const nIA = recs.filter(r => r.origen === 'ia').length;
+  const nMano = recs.length - nIA;
+  let soloIA = false;
+  if (nIA > 0 && nMano > 0) {
+    // Hay de los dos tipos: preguntamos para no cargarnos el trabajo manual sin querer.
+    soloIA = confirm(`Esta lámina tiene ${nIA} recuadro(s) de IA y ${nMano} hecho(s) a mano.\n\n• Aceptar = borrar SOLO los ${nIA} de la IA (respeta los tuyos)\n• Cancelar = elegir borrarlos TODOS`);
+    if (!soloIA && !confirm(`¿Borrar los ${recs.length} recuadros de precio de esta lámina, incluidos los ${nMano} hechos a mano?`)) return;
+  } else if (!confirm(`¿Borrar los ${recs.length} recuadro(s) de precio de esta lámina?\n\nLas zonas y los productos NO se tocan; solo se quitan los precios reescritos.`)) return;
+  const orig = boton ? boton.textContent : '';
+  if (boton) { boton.disabled = true; boton.textContent = '⏳ Borrando…'; }
+  try {
+    const r = await api('/api/sheets/' + sheetId + '/recuadros' + (soloIA ? '?solo_ia=true' : ''), { method: 'DELETE' });
+    await renderRecuadrosEnLienzo(sheetId);
+    mostrarNotificacionOnline('🗑️ ' + (r.borrados || 0) + ' recuadros borrados', '#6b7280');
+  } catch (e) { alert('Error: ' + e.message); }
+  if (boton) { boton.disabled = false; boton.textContent = orig; }
+}
+
 // ---- Salto a la SIGUIENTE lámina pendiente de precios (repaso de 350+ láminas) ----
 // Pendiente = tiene zonas dibujadas (hay productos que precificar) pero 0 recuadros.
 // Así se saltan portadas y separadores, que no tienen precios que asignar.
@@ -12537,6 +12561,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <button class="btn btn-primary" id="btn-detectar-zonas-ia" onclick="detectarZonasConIA(${sheet.id}, this)" title="La IA detecta los productos de la lámina y propone recuadros">🤖 Detectar productos con IA</button>
         <button class="btn" id="btn-detectar-precios-ia" onclick="detectarPreciosConIA(${sheet.id}, this)" style="background:#ede9fe;color:#6d28d9" title="La IA localiza los precios impresos y crea recuadros que los tapan y reescriben con el precio de la BD">🏷️ Detectar precios (IA)</button>
         <button class="btn" id="btn-modo-recuadro" onclick="toggleModoRecuadro(this)" style="background:#f3e8ff;color:#7c3aed" title="Dibuja a mano una caja sobre un precio para taparlo y reescribirlo (si la IA lo olvidó o falló)">✏️ Dibujar recuadro</button>
+        <button class="btn" id="btn-borrar-recuadros" onclick="borrarTodosLosRecuadros(${sheet.id}, this)" style="background:#fee2e2;color:#b91c1c" title="Borra de golpe los recuadros de precio de esta lámina (por si la detección con IA no convence y quieres empezar de cero)">🗑️ Borrar precios</button>
         <button class="btn" id="btn-sig-sin-precios" onclick="irSiguienteSinPrecios()" style="background:#ede9fe;color:#6d28d9;font-weight:700" title="Cierra esta y abre directamente la siguiente lámina que tiene zonas pero aún no tiene precios asignados">⏭️ Siguiente sin precios${(() => { const n = _laminasPendientesPrecios().length; return n ? ' (' + n + ')' : ''; })()}</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
       </div>

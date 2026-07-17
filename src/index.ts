@@ -6704,6 +6704,20 @@ app.put('/api/recuadros/:id', verifyToken, requireRealAdmin, async (req: AuthReq
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
 });
 
+// DELETE TODOS los recuadros de una lamina de golpe (admin real). Mismo patron que el
+// borrado masivo de zonas: si la deteccion IA no convence, se limpia y se empieza de cero
+// sin ir uno por uno. ?solo_ia=true borra solo los de la IA y respeta los hechos a mano.
+app.delete('/api/sheets/:id/recuadros', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.id);
+    const soloIA = String(req.query.solo_ia || '') === 'true';
+    const r = soloIA
+      ? await pool.query(`DELETE FROM lamina_recuadro WHERE sheet_id=$1 AND origen='ia'`, [sheetId])
+      : await pool.query(`DELETE FROM lamina_recuadro WHERE sheet_id=$1`, [sheetId]);
+    res.json({ success: true, borrados: r.rowCount || 0 });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
 // DELETE recuadro (admin real).
 app.delete('/api/recuadros/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
