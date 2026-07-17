@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v89 · 15 jul 2026';
+const APP_VERSION = 'v90 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3249,6 +3249,8 @@ async function cargarZonasComercial() {
 let _recuadrosLamina = []; // recuadros activos de la lámina actual
 async function cargarRecuadrosLamina(sheetId) {
   try {
+    await cargarConfigPrecios(); // ANTES de pintar: si el interruptor está apagado, ni se piden
+    if (!_preciosDinamicosOn) { _recuadrosLamina = []; pintarRecuadrosPrecio(); return; }
     const r = await api('/api/sheets/' + sheetId + '/recuadros');
     // SEGURIDAD: solo se reescribe un precio si el recuadro está activo Y NO marcado para
     // revisar. Los dudosos (confianza baja) se dejan con el precio impreso hasta que el
@@ -3265,16 +3267,20 @@ const RECUADRO_FUENTE_DEFECTO = 'Arial, Helvetica, sans-serif';
 let _cfgPrecioFuente = 'Liberation Sans';
 let _cfgPrecioTamFactor = 1;
 let _cfgPreciosCargada = false;
+let _preciosDinamicosOn = true; // interruptor maestro (Configuración). OFF = lámina original.
 async function cargarConfigPrecios() {
   if (_cfgPreciosCargada) return;
   _cfgPreciosCargada = true;
   try {
     const r = await api('/api/config');
     const c = r.config || {};
+    _preciosDinamicosOn = (c.precios_dinamicos_activo ?? '1') !== '0';
     if (c.precio_fuente) _cfgPrecioFuente = c.precio_fuente;
     const tf = parseFloat(c.precio_tam_factor);
     if (Number.isFinite(tf) && tf >= 0.5 && tf <= 2) _cfgPrecioTamFactor = tf;
+    if (!_preciosDinamicosOn) { _recuadrosLamina = []; _preciosVigentes = {}; }
     pintarRecuadrosPrecio();
+    pintarZonasComercial();
   } catch (e) { /* usa valores por defecto */ }
 }
 
@@ -3298,6 +3304,8 @@ function pintarRecuadrosPrecio() {
   const wrapper = document.getElementById('visor-imagen-wrapper');
   const anchoPx = wrapper ? wrapper.clientWidth : 0;
   capa.innerHTML = '';
+  // Interruptor maestro apagado -> lámina TAL CUAL, no se reescribe ningún precio.
+  if (!_preciosDinamicosOn) return;
   if (!anchoPx || !_recuadrosLamina.length) return;
   _recuadrosLamina.forEach(rec => {
     const pr = rec.product_id ? _preciosVigentes[rec.product_id] : null;
@@ -3368,6 +3376,8 @@ async function descargarPdfCatalogoHoy(catalogId, btn) {
 
 // FASE 1 (precios dinámicos): trae el precio de HOY de los productos de la lámina y repinta.
 async function cargarPreciosVigentesLamina() {
+  await cargarConfigPrecios();
+  if (!_preciosDinamicosOn) { _preciosVigentes = {}; return; } // interruptor maestro apagado
   const ids = _zonasComercial.filter(z => z.product_id).map(z => Number(z.product_id));
   if (!ids.length) { _preciosVigentes = {}; return; }
   try {
@@ -4967,6 +4977,18 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE: Interruptor maestro de precios dinámicos -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">💶 Precios dinámicos en las láminas
+            ${ayuda('Interruptor general. Encendido: las láminas muestran el precio de la BD (tapando el impreso) en el visor y en las exportaciones. Apagado: las láminas se ven y se exportan TAL CUAL, como siempre. No borra nada: los recuadros se conservan para volver a encenderlo.', 'izq')}
+          </h3>
+          <div id="pd-estado" style="font-size:13px;color:var(--gris-texto);margin-bottom:10px">Cargando…</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <button class="btn" id="pd-toggle" onclick="togglePreciosDinamicos(this)">Cargando…</button>
+            <span style="font-size:12px;color:var(--gris-texto)">Si la primera prueba real no convence, apágalo y todo vuelve a la forma original al instante.</span>
+          </div>
+        </div>
+
         <!-- BLOQUE: Fuente de precios reescritos (F3/F5) -->
         <div class="editor-panel" style="margin-top:14px">
           <h3 style="margin-top:0">🔤 Tipografía de precios reescritos
@@ -5242,11 +5264,40 @@ async function borrarOferta(id) {
   catch (e) { alert(e.message); }
 }
 
+// ===== Interruptor maestro de precios dinámicos =====
+function _pintarEstadoPD(on) {
+  const $e = document.getElementById('pd-estado');
+  const $b = document.getElementById('pd-toggle');
+  if ($e) $e.innerHTML = on
+    ? '<b style="color:#16a34a">✅ ENCENDIDO</b> — las láminas muestran el precio de la base de datos (tapando el impreso) en el visor y al exportar.'
+    : '<b style="color:#b45309">⛔ APAGADO</b> — las láminas se ven y se exportan <b>tal cual</b>, como siempre. Los recuadros creados se conservan.';
+  if ($b) {
+    $b.textContent = on ? '⛔ Apagar precios dinámicos' : '✅ Encender precios dinámicos';
+    $b.style.background = on ? '#fee2e2' : '#dcfce7';
+    $b.style.color = on ? '#b91c1c' : '#15803d';
+    $b.dataset.on = on ? '1' : '0';
+  }
+}
+
+async function togglePreciosDinamicos(btn) {
+  const on = btn.dataset.on === '1';
+  if (on && !confirm('¿Apagar los precios dinámicos?\n\nLas láminas volverán a verse y exportarse TAL CUAL (con el precio impreso), como siempre.\n\nNo se borra nada: los recuadros se conservan para volver a encenderlo cuando quieras.')) return;
+  btn.disabled = true;
+  try {
+    await api('/api/config', { method: 'PUT', body: { precios_dinamicos_activo: on ? '0' : '1' } });
+    _pintarEstadoPD(!on);
+    _cfgPreciosCargada = false; // que el visor recargue el estado
+    mostrarNotificacionOnline(on ? '⛔ Precios dinámicos apagados' : '✅ Precios dinámicos encendidos', on ? '#b45309' : '#16a34a');
+  } catch (e) { alert('Error: ' + e.message); }
+  btn.disabled = false;
+}
+
 // ===== F5 remate: tipografía de precios reescritos =====
 async function cargarConfigPreciosAdmin() {
   try {
     const r = await api('/api/config');
     const c = r.config || {};
+    _pintarEstadoPD((c.precios_dinamicos_activo ?? '1') !== '0');
     const sel = document.getElementById('cfg-precio-fuente');
     const tam = document.getElementById('cfg-precio-tam');
     if (sel && c.precio_fuente) sel.value = c.precio_fuente;

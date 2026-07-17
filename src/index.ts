@@ -6417,6 +6417,17 @@ async function numTarifasConfig(): Promise<number> {
   } catch { return 1; }
 }
 
+// INTERRUPTOR MAESTRO de precios dinámicos. Si se apaga, las láminas se ven y se
+// exportan TAL CUAL (como siempre): no se reescribe ningún precio ni se pinta la capa
+// en vivo. Los recuadros NO se borran: siguen ahí para cuando se vuelva a encender.
+// Por defecto ENCENDIDO (no cambia el comportamiento actual).
+async function preciosDinamicosActivo(): Promise<boolean> {
+  try {
+    const r = await pool.query(`SELECT valor FROM app_config WHERE clave='precios_dinamicos_activo'`);
+    return (r.rows[0]?.valor ?? '1') !== '0';
+  } catch { return true; }
+}
+
 // Fuentes instaladas en el servidor válidas para reescribir precios (deben existir en el
 // build: ver nixpacks fonts-liberation). Liberation Sans = métricas de Arial.
 const FUENTES_SERVIDOR = ['Liberation Sans', 'Liberation Serif', 'Liberation Mono', 'DejaVu Sans', 'DejaVu Serif'];
@@ -6457,7 +6468,11 @@ app.get('/api/config', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const r = await pool.query(`SELECT clave, valor FROM app_config`);
     const cfg: any = {}; r.rows.forEach((x: any) => { cfg[x.clave] = x.valor; });
-    res.json({ success: true, config: cfg, num_tarifas: await numTarifasConfig() });
+    res.json({
+      success: true, config: cfg,
+      num_tarifas: await numTarifasConfig(),
+      precios_dinamicos_activo: await preciosDinamicosActivo()
+    });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
@@ -6469,6 +6484,12 @@ app.put('/api/config', verifyToken, requireRealAdmin, async (req: AuthRequest, r
       if (!Number.isInteger(n) || n < 1 || n > 3) { res.status(400).json({ success: false, error: 'num_tarifas debe ser 1..3 por ahora' }); return; }
       await pool.query(`INSERT INTO app_config (clave, valor, updated_at) VALUES ('num_tarifas',$1,NOW())
         ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`, [String(n)]);
+    }
+    // Interruptor maestro de precios dinámicos (volver a la lámina original al instante).
+    if (req.body.precios_dinamicos_activo !== undefined) {
+      const v = (req.body.precios_dinamicos_activo === false || req.body.precios_dinamicos_activo === '0' || req.body.precios_dinamicos_activo === 0) ? '0' : '1';
+      await pool.query(`INSERT INTO app_config (clave, valor, updated_at) VALUES ('precios_dinamicos_activo',$1,NOW())
+        ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`, [v]);
     }
     // F5 remate: fuente para reescribir precios (config una vez) + factor de tamaño.
     if (req.body.precio_fuente !== undefined) {
@@ -6993,6 +7014,8 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
   if (!s.rows.length) return null;
   const abs = resolverRutaImagen(s.rows[0].imagen_path, UPLOADS_DIR);
   if (!abs || !fs.existsSync(abs)) return null;
+  // Interruptor maestro APAGADO -> la lamina se exporta TAL CUAL (forma original).
+  if (!(await preciosDinamicosActivo())) return await sharp(abs).png().toBuffer();
   const meta = await sharp(abs).metadata();
   const W = meta.width || 0, H = meta.height || 0;
   if (!W || !H) return null;
