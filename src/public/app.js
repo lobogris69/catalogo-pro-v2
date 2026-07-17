@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v94 · 15 jul 2026';
+const APP_VERSION = 'v95 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12613,12 +12613,13 @@ async function cerrarEditorZonas() {
   if (_zonasEditor.acProducto) { try { _zonasEditor.acProducto.destroy(); } catch {} _zonasEditor.acProducto = null; }
   const ov = document.getElementById('zonas-editor-overlay');
   if (ov) ov.remove();
-  // Si cambió la aprobación, refrescar la rejilla para que el distintivo se actualice
-  if (_zonasEditor.aprobacionCambiada) {
-    _zonasEditor.aprobacionCambiada = false;
-    appState.editorRestoreSheetId = _zonasEditor.sheetId; // volver a esta lámina, no al principio
-    if (typeof render === 'function') render();
-  }
+  // SIEMPRE refrescamos la rejilla al cerrar. Antes solo se hacía si habías tocado
+  // "Revisada", así que los precios/zonas creados (sobre todo saltando con "Siguiente
+  // sin precios", que edita VARIAS láminas sin cerrar) seguían saliendo como "Sin
+  // precios": la rejilla conservaba los datos de antes de editar.
+  _zonasEditor.aprobacionCambiada = false;
+  appState.editorRestoreSheetId = _zonasEditor.sheetId; // volver a esta lámina, no al principio
+  if (typeof render === 'function') render();
 }
 
 // ----- ZOOM del lienzo del editor de zonas (para dibujar zonas pequeñas) -----
