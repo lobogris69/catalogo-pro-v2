@@ -1627,6 +1627,23 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
       );
       const zBySheet: { [key: number]: number } = {};
       for (const row of zR.rows) zBySheet[row.sheet_id] = row.n;
+      // Recuadros de PRECIO por lamina (distintivo morado en la rejilla): con 350+ laminas
+      // hay que ver de un vistazo cuales tienen precios asignados y cuales faltan.
+      // 'pendientes' = los marcados revisar (aun no se muestran al cliente).
+      const rR = await pool.query(
+        `SELECT sheet_id, COUNT(*)::int AS n,
+                COUNT(*) FILTER (WHERE revisar = TRUE)::int AS pend
+           FROM lamina_recuadro
+          WHERE sheet_id = ANY($1::int[]) AND activo = TRUE
+          GROUP BY sheet_id`,
+        [sheetIds]
+      );
+      const rBySheet: { [key: number]: { n: number; pend: number } } = {};
+      for (const row of rR.rows) rBySheet[row.sheet_id] = { n: row.n, pend: row.pend };
+      for (const s of sheetsRows) {
+        s.num_recuadros = rBySheet[s.id]?.n || 0;
+        s.num_recuadros_pend = rBySheet[s.id]?.pend || 0;
+      }
       for (const s of sheetsRows) {
         s.num_zonas = zBySheet[s.id] || 0;
       }

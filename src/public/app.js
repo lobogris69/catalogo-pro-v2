@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v90 · 15 jul 2026';
+const APP_VERSION = 'v91 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -729,6 +729,11 @@ async function renderEditorCatalogo(id) {
                         : (s.num_zonas > 0
                             ? `<span class="lamina-estado-zonas auto">🤖 Auto · sin revisar (${s.num_zonas})</span>`
                             : `<span class="lamina-estado-zonas none">⚪ Sin zonas</span>`)
+                    ) : ''}
+                    ${esAdmin ? (
+                      s.num_recuadros > 0
+                        ? `<span class="lamina-estado-precios ${s.num_recuadros_pend > 0 ? 'pend' : 'ok'}" title="${s.num_recuadros_pend > 0 ? s.num_recuadros_pend + ' de ' + s.num_recuadros + ' pendientes de aprobar (no se muestran al cliente)' : 'Los ' + s.num_recuadros + ' precios se reescriben con el de la base de datos'}">💶 ${s.num_recuadros} precio${s.num_recuadros === 1 ? '' : 's'}${s.num_recuadros_pend > 0 ? ' · ⚠️ ' + s.num_recuadros_pend + ' sin aprobar' : ''}</span>`
+                        : `<span class="lamina-estado-precios none" title="Esta lámina aún no tiene precios dinámicos asignados">💶 Sin precios</span>`
                     ) : ''}
                     ${catsChips ? `<div class="lamina-cats">${catsChips}</div>` : ''}
                     ${esAdmin ? `
