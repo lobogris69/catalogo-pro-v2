@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v88 · 15 jul 2026';
+const APP_VERSION = 'v89 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12217,6 +12217,70 @@ async function crearRecuadroDibujado(x, y, ancho, alto) {
   } catch (e) { alert('Error creando recuadro: ' + e.message); }
 }
 
+// Ficha de un recuadro: al pulsarlo (sin arrastrar) cuenta QUÉ tiene asignado y qué
+// precio va a escribir. Antes solo habia un tooltip al pasar el raton (invisible en tablet).
+async function abrirInfoRecuadro(rec, sheetId) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:470px">
+    <h3 style="margin-top:0">🏷️ Recuadro de precio</h3>
+    <div id="rec-info-cuerpo" style="font-size:14px"><div class="loading" style="padding:12px">Consultando precio…</div></div>
+  </div>`;
+  document.body.appendChild(m);
+  // Precio que ESCRIBIRÁ hoy (el dato clave): se consulta a la BD como en el visor.
+  let hoy = null, pend = null;
+  if (rec.product_id) {
+    try {
+      const r = await api('/api/precios/vigente?product_id=' + rec.product_id + '&tarifa=1');
+      hoy = r.hoy || null; pend = r.pendiente || null;
+    } catch (e) { /* seguimos mostrando el resto */ }
+  }
+  const esPVPR = rec.campo === 'pvpr';
+  const val = hoy ? (esPVPR ? hoy.pvpr : hoy.pvf) : null;
+  const fmt = v => (v == null || v === '') ? '—' : Number(v).toFixed(2).replace('.', ',') + '€';
+  const fila = (k, v) => `<div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--gris-borde)">
+      <div style="width:150px;color:var(--gris-texto);flex:0 0 150px">${k}</div><div style="flex:1">${v}</div></div>`;
+  const cuerpo = document.getElementById('rec-info-cuerpo');
+  if (!cuerpo) return;
+  cuerpo.innerHTML = `
+    ${fila('Campo', `<span style="background:${esPVPR ? 'var(--violet)' : 'var(--amber)'};color:#fff;font-weight:800;padding:2px 8px;border-radius:6px">${esPVPR ? 'P.V.P.R. (con IVA)' : 'P.V.F. (sin IVA)'}</span>`)}
+    ${fila('Producto', rec.product_id
+      ? `<b>${escape(rec.producto_codigo || '')}</b>${rec.producto_nombre ? '<br><span style="color:var(--gris-texto);font-size:13px">' + escape(rec.producto_nombre) + '</span>' : ''}`
+      : `<span style="color:#b45309;font-weight:600">⚠️ Sin producto asignado</span><br><span style="font-size:12px;color:var(--gris-texto)">No se reescribirá nada. Bórralo y vuelve a dibujarlo dentro de la zona del producto.</span>`)}
+    ${fila('Escribirá hoy', val != null
+      ? `<b style="font-size:17px;color:#16a34a">${fmt(val)}</b>${hoy && hoy.fuente ? ' <span style="font-size:12px;color:var(--gris-texto)">(' + escape(hoy.fuente) + ')</span>' : ''}`
+      : `<span style="color:#b45309">— sin precio en la BD para este campo</span>`)}
+    ${rec.valor_impreso != null ? fila('Impreso en la lámina', fmt(rec.valor_impreso) + ' <span style="font-size:12px;color:var(--gris-texto)">(lo que leyó la IA)</span>') : ''}
+    ${pend && pend.fecha_vigencia ? fila('Cambio programado', `${fmt(esPVPR ? pend.pvpr : pend.pvf)} el ${String(pend.fecha_vigencia).slice(0, 10).split('-').reverse().join('/')}`) : ''}
+    ${fila('Origen', rec.origen === 'ia' ? '🤖 Detectado por IA' : '✏️ Dibujado a mano')}
+    ${fila('Estado', rec.revisar
+      ? `<span style="color:#b45309;font-weight:700">⚠️ Pendiente de aprobar</span> <span style="font-size:12px;color:var(--gris-texto)">(no se muestra al cliente)</span>${rec.nota ? '<br><span style="font-size:12px;color:var(--gris-texto)">' + escape(rec.nota) + '</span>' : ''}`
+      : `<span style="color:#16a34a;font-weight:700">✅ Activo</span> <span style="font-size:12px;color:var(--gris-texto)">(se muestra al cliente)</span>`)}
+    ${fila('Confianza', (rec.confianza != null ? rec.confianza : 100) + '%')}
+    <div class="modal-acciones" style="margin-top:14px;flex-wrap:wrap;gap:8px">
+      <button type="button" class="btn" id="rec-i-campo" style="background:#ede9fe;color:#6d28d9">🔄 Cambiar a ${esPVPR ? 'P.V.F.' : 'P.V.P.R.'}</button>
+      ${rec.revisar ? `<button type="button" class="btn" id="rec-i-ap" style="background:#16a34a;color:#fff">✓ Aprobar</button>` : ''}
+      <button type="button" class="btn" id="rec-i-del" style="background:#dc2626;color:#fff">🗑️ Borrar</button>
+      <button type="button" class="btn btn-secondary" id="rec-i-cerrar">Cerrar</button>
+    </div>`;
+  const cerrar = () => m.remove();
+  document.getElementById('rec-i-cerrar').onclick = cerrar;
+  document.getElementById('rec-i-campo').onclick = async () => {
+    try { await api('/api/recuadros/' + rec.id, { method: 'PUT', body: { campo: esPVPR ? 'pvf' : 'pvpr' } }); cerrar(); await renderRecuadrosEnLienzo(sheetId); }
+    catch (e) { alert(e.message); }
+  };
+  const ap = document.getElementById('rec-i-ap');
+  if (ap) ap.onclick = async () => {
+    try { await api('/api/recuadros/' + rec.id, { method: 'PUT', body: { revisar: false } }); cerrar(); await renderRecuadrosEnLienzo(sheetId); }
+    catch (e) { alert(e.message); }
+  };
+  document.getElementById('rec-i-del').onclick = async () => {
+    if (!confirm('¿Borrar este recuadro de precio?')) return;
+    try { await api('/api/recuadros/' + rec.id, { method: 'DELETE' }); cerrar(); await renderRecuadrosEnLienzo(sheetId); }
+    catch (e) { alert(e.message); }
+  };
+}
+
 // Arrastrar un recuadro para MOVERLO sobre el precio (guarda al soltar).
 function _hacerRecuadroArrastrable(d, rec, sheetId) {
   const wrap = document.getElementById('zonas-lienzo-wrap');
@@ -12241,8 +12305,10 @@ function _hacerRecuadroArrastrable(d, rec, sheetId) {
     document.removeEventListener('touchmove', move); document.removeEventListener('touchend', up);
     if (!st) return;
     const s = st; st = null;
-    if (s.nx == null) return; // clic sin arrastrar
-    if (Math.abs(s.nx - s.x0) < 0.05 && Math.abs(s.ny - s.y0) < 0.05) return;
+    // Clic SIN arrastrar -> abrir la ficha (qué producto y qué precio lleva este recuadro)
+    if (s.nx == null || (Math.abs(s.nx - s.x0) < 0.05 && Math.abs(s.ny - s.y0) < 0.05)) {
+      return abrirInfoRecuadro(rec, sheetId);
+    }
     try {
       await api('/api/recuadros/' + rec.id, { method: 'PUT', body: { x: s.nx, y: s.ny } });
       rec.x = s.nx; rec.y = s.ny;
@@ -12261,7 +12327,7 @@ function _hacerRecuadroArrastrable(d, rec, sheetId) {
   d.addEventListener('mousedown', down);
   d.addEventListener('touchstart', down, { passive: false });
   d.style.cursor = 'move';
-  d.title = (d.title ? d.title + '\n' : '') + '↔ Arrastra para mover';
+  d.title = (d.title ? d.title + '\n' : '') + '👆 Pulsa para ver qué lleva asignado · ↔ Arrastra para mover';
 }
 
 async function renderRecuadrosEnLienzo(sheetId) {
