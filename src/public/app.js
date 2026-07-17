@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v85 · 15 jul 2026';
+const APP_VERSION = 'v86 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12332,7 +12332,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
           <span id="zonas-zoom-label">100%</span>
           <button type="button" onclick="zoomLienzo(0.25)" title="Acercar">+</button>
           <button type="button" onclick="zoomLienzoReset()" title="Ajustar a la ventana">Ajustar</button>
-          <span style="font-size:11px;color:#9ca3af;margin-left:6px">Amplía para zonas pequeñas; arrastra las barras para moverte.</span>
+          <span style="font-size:11px;color:#9ca3af;margin-left:6px">🖱️ Rueda del ratón sobre la lámina = ampliar/reducir donde apuntas; arrastra las barras para moverte.</span>
         </div>
         <div class="zonas-lienzo-wrap" id="zonas-lienzo-wrap">
           <img src="${escape(vurl(sheet.imagen_path, sheet))}" class="zonas-lienzo-img" id="zonas-lienzo-img" draggable="false" alt="">
@@ -12552,6 +12552,29 @@ function montarLienzoZonas() {
   document.addEventListener('mouseup', onDragUp);
   document.addEventListener('touchmove', onDragMove, { passive: false });
   document.addEventListener('touchend', onDragUp);
+
+  // ZOOM CON LA RUEDA del ratón, centrado en el cursor (sin subir a los botones +/−).
+  // Ampliamos hacia el punto donde está el cursor recolocando el scroll del contenedor.
+  const col = wrap.closest('.zonas-editor-lienzo-col');
+  wrap.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const z0 = _zonasEditor.zoom || 1;
+    const z1 = Math.max(1, Math.min(5, z0 * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+    if (Math.abs(z1 - z0) < 0.001) return;
+    let r = null, cx = 0, cy = 0;
+    if (col) {
+      r = col.getBoundingClientRect();
+      cx = e.clientX - r.left + col.scrollLeft;   // punto del contenido bajo el cursor
+      cy = e.clientY - r.top + col.scrollTop;
+    }
+    _zonasEditor.zoom = z1;
+    aplicarZoomLienzo();
+    if (col && r) {
+      const k = z1 / z0;  // el contenido escala desde su esquina sup-izq
+      col.scrollLeft = cx * k - (e.clientX - r.left);
+      col.scrollTop = cy * k - (e.clientY - r.top);
+    }
+  }, { passive: false });
 }
 
 function renderZonasEnCapa() {
