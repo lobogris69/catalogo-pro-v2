@@ -3333,6 +3333,9 @@ body.con-banner-update {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  /* DEBE ir por encima de .zonas-capa: esa capa cubre todo el lienzo y se pinta
+     después, así que sin z-index se comía los clics de ✓/✕/F y del arrastre. */
+  z-index: 6;
 }
 .zona-recuadro-ov {
   position: absolute;

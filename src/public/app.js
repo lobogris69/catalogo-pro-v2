@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v84 · 15 jul 2026';
+const APP_VERSION = 'v85 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12142,8 +12142,21 @@ function toggleModoRecuadro(btn) {
 async function crearRecuadroDibujado(x, y, ancho, alto) {
   const sheetId = _zonasEditor.sheetId;
   const cxp = x + ancho / 2, cyp = y + alto / 2;
-  const zona = (_zonasEditor.zonas || []).find(z => z.product_id && cxp >= z.x && cxp <= z.x + z.ancho && cyp >= z.y && cyp <= z.y + z.alto);
-  if (!zona && !confirm('El recuadro no cae dentro de una zona con producto.\n¿Crearlo igual? (no se reescribirá hasta asignarle un producto)')) return;
+  const conProd = (_zonasEditor.zonas || []).filter(z => z.product_id);
+  if (!conProd.length) { alert('Esta lámina no tiene ninguna zona con producto asignado.\n\nPrimero asigna productos a las zonas (🤖 Detectar productos con IA o a mano); el recuadro de precio necesita saber de qué producto es.'); return; }
+  // 1º: la zona que CONTIENE el recuadro. 2º: si ninguna, ofrecer la MÁS CERCANA
+  // (los precios suelen quedar fuera del recuadro de la zona, p. ej. en otra columna).
+  let zona = conProd.find(z => cxp >= z.x && cxp <= z.x + z.ancho && cyp >= z.y && cyp <= z.y + z.alto);
+  if (!zona) {
+    let best = null, bestD = Infinity;
+    for (const z of conProd) {
+      const d = ((z.x + z.ancho / 2) - cxp) ** 2 + ((z.y + z.alto / 2) - cyp) ** 2;
+      if (d < bestD) { bestD = d; best = z; }
+    }
+    const et = (best.producto_codigo || '') + (best.producto_nombre ? ' · ' + best.producto_nombre : '');
+    if (confirm('Este recuadro no cae dentro de ninguna zona.\n\n¿Es el precio de este producto?\n\n' + et + '\n\n• Aceptar = sí, asignárselo\n• Cancelar = no crear el recuadro')) zona = best;
+    else return;
+  }
   let sug = null;
   try {
     const r = await api('/api/sheets/' + sheetId + '/recuadros/muestrear', { method: 'POST', body: { x, y, ancho, alto } });
@@ -12165,6 +12178,53 @@ async function crearRecuadroDibujado(x, y, ancho, alto) {
     await api('/api/sheets/' + sheetId + '/recuadros', { method: 'POST', body });
     await renderRecuadrosEnLienzo(sheetId);
   } catch (e) { alert('Error creando recuadro: ' + e.message); }
+}
+
+// Arrastrar un recuadro para MOVERLO sobre el precio (guarda al soltar).
+function _hacerRecuadroArrastrable(d, rec, sheetId) {
+  const wrap = document.getElementById('zonas-lienzo-wrap');
+  if (!wrap) return;
+  let st = null;
+  const rel = (e) => {
+    const r = wrap.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+    return { x: cx / r.width * 100, y: cy / r.height * 100 };
+  };
+  const move = (e) => {
+    if (!st) return;
+    e.preventDefault();
+    const p = rel(e);
+    st.nx = Math.max(0, Math.min(100 - rec.ancho, st.x0 + (p.x - st.px)));
+    st.ny = Math.max(0, Math.min(100 - rec.alto, st.y0 + (p.y - st.py)));
+    d.style.left = st.nx + '%'; d.style.top = st.ny + '%';
+  };
+  const up = async () => {
+    document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+    document.removeEventListener('touchmove', move); document.removeEventListener('touchend', up);
+    if (!st) return;
+    const s = st; st = null;
+    if (s.nx == null) return; // clic sin arrastrar
+    if (Math.abs(s.nx - s.x0) < 0.05 && Math.abs(s.ny - s.y0) < 0.05) return;
+    try {
+      await api('/api/recuadros/' + rec.id, { method: 'PUT', body: { x: s.nx, y: s.ny } });
+      rec.x = s.nx; rec.y = s.ny;
+    } catch (e) { alert('No se pudo mover: ' + e.message); renderRecuadrosEnLienzo(sheetId); }
+  };
+  const down = (e) => {
+    if (e.target.tagName === 'BUTTON') return; // los botones ✓/✕/F no arrastran
+    e.preventDefault(); e.stopPropagation();
+    const p = rel(e);
+    st = { px: p.x, py: p.y, x0: rec.x, y0: rec.y, nx: null, ny: null };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    document.addEventListener('touchmove', move, { passive: false });
+    document.addEventListener('touchend', up);
+  };
+  d.addEventListener('mousedown', down);
+  d.addEventListener('touchstart', down, { passive: false });
+  d.style.cursor = 'move';
+  d.title = (d.title ? d.title + '\n' : '') + '↔ Arrastra para mover';
 }
 
 async function renderRecuadrosEnLienzo(sheetId) {
@@ -12213,6 +12273,7 @@ async function renderRecuadrosEnLienzo(sheetId) {
       catch (e) { alert(e.message); }
     };
     d.appendChild(x);
+    _hacerRecuadroArrastrable(d, rec, sheetId);
     capa.appendChild(d);
   });
 }
