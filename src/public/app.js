@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v91 · 15 jul 2026';
+const APP_VERSION = 'v92 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12176,6 +12176,31 @@ async function detectarPreciosConIA(sheetId, boton) {
   boton.textContent = orig; boton.disabled = false;
 }
 
+// ---- Salto a la SIGUIENTE lámina pendiente de precios (repaso de 350+ láminas) ----
+// Pendiente = tiene zonas dibujadas (hay productos que precificar) pero 0 recuadros.
+// Así se saltan portadas y separadores, que no tienen precios que asignar.
+function _laminasPendientesPrecios() {
+  return (_zonasEditor.sheets || []).filter(s => !s.oculta && (s.num_zonas || 0) > 0 && !(s.num_recuadros > 0));
+}
+function _siguienteSinPrecios() {
+  const list = (_zonasEditor.sheets || []).filter(s => !s.oculta);
+  if (!list.length) return null;
+  const i = list.findIndex(s => s.id === _zonasEditor.sheetId);
+  for (let k = 1; k <= list.length; k++) {           // desde la siguiente, dando la vuelta
+    const s = list[(Math.max(0, i) + k) % list.length];
+    if (s.id !== _zonasEditor.sheetId && (s.num_zonas || 0) > 0 && !(s.num_recuadros > 0)) return s;
+  }
+  return null;
+}
+async function irSiguienteSinPrecios() {
+  const sig = _siguienteSinPrecios();
+  if (!sig) { alert('🎉 No queda ninguna lámina pendiente de precios en este catálogo.\n\n(Solo se cuentan las que tienen zonas dibujadas; las portadas y separadores se saltan.)'); return; }
+  const cid = _zonasEditor.catalogId;
+  await cerrarEditorZonas();
+  if (document.getElementById('zonas-editor-overlay')) return; // el usuario canceló al cerrar
+  await abrirEditorZonas(sig.id, cid);
+}
+
 // Modo "dibujar recuadro de precio" a mano (para corregir lo que la IA no clavó).
 function toggleModoRecuadro(btn) {
   _zonasEditor.modoRecuadro = !_zonasEditor.modoRecuadro;
@@ -12452,6 +12477,9 @@ async function abrirEditorZonas(sheetId, catalogId) {
     const rCat = await api('/api/catalogs/' + catalogId);
     sheet = rCat.sheets.find(s => s.id === sheetId);
     if (!sheet) { alert('Lámina no encontrada'); return; }
+    // Guardamos las láminas del catálogo (con num_zonas/num_recuadros) para poder saltar
+    // directo a la SIGUIENTE pendiente sin cerrar y volver a buscarla en la rejilla.
+    _zonasEditor.sheets = rCat.sheets || [];
     const rZonas = await api('/api/sheets/' + sheetId + '/zones');
     zonas = rZonas.zones || [];
   } catch (e) {
@@ -12478,6 +12506,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <button class="btn btn-primary" id="btn-detectar-zonas-ia" onclick="detectarZonasConIA(${sheet.id}, this)" title="La IA detecta los productos de la lámina y propone recuadros">🤖 Detectar productos con IA</button>
         <button class="btn" id="btn-detectar-precios-ia" onclick="detectarPreciosConIA(${sheet.id}, this)" style="background:#ede9fe;color:#6d28d9" title="La IA localiza los precios impresos y crea recuadros que los tapan y reescriben con el precio de la BD">🏷️ Detectar precios (IA)</button>
         <button class="btn" id="btn-modo-recuadro" onclick="toggleModoRecuadro(this)" style="background:#f3e8ff;color:#7c3aed" title="Dibuja a mano una caja sobre un precio para taparlo y reescribirlo (si la IA lo olvidó o falló)">✏️ Dibujar recuadro</button>
+        <button class="btn" id="btn-sig-sin-precios" onclick="irSiguienteSinPrecios()" style="background:#ede9fe;color:#6d28d9;font-weight:700" title="Cierra esta y abre directamente la siguiente lámina que tiene zonas pero aún no tiene precios asignados">⏭️ Siguiente sin precios${(() => { const n = _laminasPendientesPrecios().length; return n ? ' (' + n + ')' : ''; })()}</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
       </div>
     </div>
