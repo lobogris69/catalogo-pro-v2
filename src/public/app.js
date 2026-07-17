@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v87 · 15 jul 2026';
+const APP_VERSION = 'v88 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12131,10 +12131,15 @@ function toggleModoRecuadro(btn) {
   }
   const ayuda = document.getElementById('zonas-ayuda');
   if (ayuda) ayuda.innerHTML = on
-    ? '✏️ <b>Modo recuadro de precio:</b> arrastra una caja SOBRE un número de precio. La caja se ajusta y el color se muestrea solo; te preguntará si es P.V.F. o P.V.P.R. Vuelve a pulsar el botón para salir.'
+    ? '✏️ <b>MODO DIBUJAR RECUADRO activo:</b> arrastra una caja SOBRE un número de precio. Mientras esté activo, las zonas y los recuadros quedan <b>atenuados y no se pueden tocar</b> (para poder dibujar encima). Pulsa otra vez el botón para salir y volver a moverlos.'
     : '✏️ <b>Arrastra</b> sobre la lámina para dibujar un rectángulo. Luego asígnale un producto en el panel derecho.';
   const wrap = document.getElementById('zonas-lienzo-wrap');
-  if (wrap) wrap.style.cursor = on ? 'cell' : 'crosshair';
+  if (wrap) {
+    wrap.style.cursor = on ? 'cell' : 'crosshair';
+    // Marca el lienzo: atenúa zonas/recuadros y los hace inertes (ver CSS). Así se VE
+    // que están desactivados a propósito y no parece que la app se haya bloqueado.
+    wrap.classList.toggle('modo-recuadro', on);
+  }
 }
 
 // Diálogo para elegir el campo del recuadro. NO usamos confirm(): "Aceptar/Cancelar" es

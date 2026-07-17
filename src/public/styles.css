@@ -3337,6 +3337,18 @@ body.con-banner-update {
      después, así que sin z-index se comía los clics de ✓/✕/F y del arrastre. */
   z-index: 6;
 }
+/* MODO DIBUJAR RECUADRO: solo se dibuja. Zonas y recuadros se atenúan y se hacen
+   inertes a propósito (si no, arrastrar sobre una zona la movería en vez de dibujar).
+   Se marca en el lienzo para que SE VEA que están desactivados, no que está colgado. */
+.zonas-lienzo-wrap.modo-recuadro {
+  outline: 3px dashed #7c3aed;
+  outline-offset: 2px;
+}
+.zonas-lienzo-wrap.modo-recuadro .zona-rect,
+.zonas-lienzo-wrap.modo-recuadro .zona-recuadro-ov {
+  pointer-events: none !important;
+  opacity: 0.35;
+}
 .zona-recuadro-ov {
   position: absolute;
   outline: 2px solid #7c3aed;
