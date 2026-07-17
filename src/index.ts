@@ -6687,7 +6687,8 @@ app.post('/api/sheets/:sheetId/recuadros/muestrear', verifyToken, requireRealAdm
     const b = req.body || {};
     const caja = { x: Number(b.x), y: Number(b.y), ancho: Number(b.ancho), alto: Number(b.alto) };
     if ([caja.x, caja.y, caja.ancho, caja.alto].some(v => !Number.isFinite(v))) { res.status(400).json({ success: false, error: 'caja invalida' }); return; }
-    const ref = await refinarRecuadroPrecio(abs, caja);
+    // modo 'manual': la caja dibujada por el usuario manda (solo se ajusta a la tinta).
+    const ref = await refinarRecuadroPrecio(abs, caja, undefined, 'manual');
     if (!ref) { res.status(422).json({ success: false, error: 'No se detecto texto en esa zona (ajusta la caja sobre el numero)' }); return; }
     res.json({ success: true, sugerencia: ref });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }

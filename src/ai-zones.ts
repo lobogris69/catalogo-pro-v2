@@ -203,6 +203,83 @@ export interface RecuadroRefinado {
 }
 
 /**
+ * Analiza un recorte y separa TINTA de FONDO sin asumir NADA de colores ni de polaridad.
+ * Son 350+ laminas, cada una con su paleta: hay precio oscuro sobre claro, pero tambien
+ * texto claro sobre fondo oscuro (cabeceras). Por eso:
+ *  - El FONDO se estima con el BORDE del recorte (el texto siempre va en el centro).
+ *  - La TINTA es lo que MAS SE ALEJA del fondo en luminancia, sea mas claro o mas oscuro.
+ * Devuelve null si no hay contraste suficiente (ahi no hay texto).
+ */
+function _analizarCrop(data: Buffer | Uint8Array, cw: number, ch: number, C: number) {
+  const n = cw * ch;
+  const L = new Float64Array(n);
+  for (let i = 0; i < n; i++) L[i] = 0.299 * data[i * C] + 0.587 * data[i * C + 1] + 0.114 * data[i * C + 2];
+  // Fondo = MODA del histograma (el tono mas repetido del recorte). Es lo mas fiable:
+  // el fondo siempre domina en area y funciona igual con texto oscuro sobre claro que
+  // con texto claro sobre oscuro. (Usar el borde fallaba en recortes que cortan letras.)
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < n; i++) hist[Math.min(255, Math.max(0, Math.round(L[i])))]++;
+  let bgL = 0, mejor = -1;
+  for (let v = 0; v < 256; v++) if (hist[v] > mejor) { mejor = hist[v]; bgL = v; }
+  const D = new Float64Array(n);
+  for (let i = 0; i < n; i++) D[i] = Math.abs(L[i] - bgL);
+  const ord = Array.from(D).sort((a, b) => a - b);
+  const dMax = ord[Math.floor(ord.length * 0.98)];
+  if (dMax < 25) return null; // sin contraste real -> no hay texto
+  return { L, D, bgL, umbral: dMax * 0.5, umbralNucleo: dMax * 0.75 };
+}
+
+/**
+ * MANUAL: el usuario ha dibujado la caja sobre el precio -> su caja MANDA. Solo la
+ * ajustamos a la tinta que hay dentro y muestreamos los colores reales.
+ * Polaridad y colores se deducen de la propia lamina (ver _analizarCrop).
+ */
+async function _refinarManual(
+  img: sharp.Sharp,
+  W: number, H: number,
+  cajaPct: { x: number; y: number; ancho: number; alto: number }
+): Promise<RecuadroRefinado | null> {
+  let cx = Math.max(0, Math.round(cajaPct.x * W / 100));
+  let cy = Math.max(0, Math.round(cajaPct.y * H / 100));
+  let cw = Math.min(W - cx, Math.round(cajaPct.ancho * W / 100));
+  let ch = Math.min(H - cy, Math.round(cajaPct.alto * H / 100));
+  if (cw < 3 || ch < 3) return null;
+  const { data, info } = await img.extract({ left: cx, top: cy, width: cw, height: ch })
+    .raw().toBuffer({ resolveWithObject: true });
+  const C = info.channels;
+  const a = _analizarCrop(data, cw, ch, C);
+  if (!a) return null;
+  let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1, n = 0;
+  let tr = 0, tg = 0, tb = 0, tn = 0, br = 0, bg = 0, bb = 0, bn = 0;
+  for (let py = 0; py < ch; py++) for (let px = 0; px < cw; px++) {
+    const k = py * cw + px, i = k * C, d = a.D[k];
+    if (d > a.umbral) {                       // TINTA (mas clara u oscura que el fondo)
+      if (px < minX) minX = px; if (px > maxX) maxX = px;
+      if (py < minY) minY = py; if (py > maxY) maxY = py;
+      n++;
+      if (d > a.umbralNucleo) { tr += data[i]; tg += data[i + 1]; tb += data[i + 2]; tn++; }
+    } else if (d < a.umbral * 0.15) {         // FONDO PURO (excluye el antialiasing del
+      br += data[i]; bg += data[i + 1]; bb += data[i + 2]; bn++;  // borde de las letras, que
+    }                                         // ensuciaba el color de la tapa)
+  }
+  if (n < 4 || maxX < minX) return null;
+  const pad = 2;
+  minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+  maxX = Math.min(cw - 1, maxX + pad); maxY = Math.min(ch - 1, maxY + pad);
+  const tw = maxX - minX + 1, th = maxY - minY + 1;
+  return {
+    x: +((cx + minX) / W * 100).toFixed(3),
+    y: +((cy + minY) / H * 100).toFixed(3),
+    ancho: +(tw / W * 100).toFixed(3),
+    alto: +(th / H * 100).toFixed(3),
+    color_fondo: bn ? `rgb(${Math.round(br / bn)},${Math.round(bg / bn)},${Math.round(bb / bn)})` : 'rgb(255,255,255)',
+    color_texto: tn ? `rgb(${Math.round(tr / tn)},${Math.round(tg / tn)},${Math.round(tb / tn)})` : 'rgb(43,42,41)',
+    tam_rel: +((th * 1.29) / W * 100).toFixed(3),
+    alinear: 'left',
+  };
+}
+
+/**
  * Dada una caja APROXIMADA (en %) donde hay un precio impreso, muestrea el PNG real
  * y devuelve la caja AJUSTADA + color de fondo + color de tinta + tamano de fuente,
  * para tapar el numero viejo y reescribir el actual de forma indistinguible.
@@ -211,7 +288,8 @@ export interface RecuadroRefinado {
 export async function refinarRecuadroPrecio(
   rutaImagenAbs: string,
   cajaPct: { x: number; y: number; ancho: number; alto: number },
-  clipPct?: { x: number; y: number; ancho: number; alto: number } // limite (zona del producto): el crop NUNCA lo excede
+  clipPct?: { x: number; y: number; ancho: number; alto: number }, // limite (zona del producto): el crop NUNCA lo excede
+  modo: 'ia' | 'manual' = 'ia'
 ): Promise<RecuadroRefinado | null> {
   try {
     if (!fs.existsSync(rutaImagenAbs)) return null;
@@ -219,6 +297,11 @@ export async function refinarRecuadroPrecio(
     const meta = await img.metadata();
     const W = meta.width || 0, H = meta.height || 0;
     if (!W || !H) return null;
+
+    // MANUAL: la caja que ha dibujado el usuario MANDA. Solo la ajustamos a la tinta que
+    // hay DENTRO y muestreamos colores; nada de ampliar ni de elegir bloques (con "0,07 €"
+    // el € va separado y la heuristica de "bloque mas a la derecha" dejaba la caja diminuta).
+    if (modo === 'manual') return await _refinarManual(img, W, H, cajaPct);
 
     // Caja aproximada -> px, con un margen para no perder digitos si la IA se queda corta
     const padX = Math.max(6, cajaPct.ancho * W / 100 * 0.35);
@@ -246,16 +329,20 @@ export async function refinarRecuadroPrecio(
       const i = (py * cw + px) * C;
       return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
     };
-    // Color de fondo = media de lo claro (lum>225) de TODO el crop
+    // Sin umbrales fijos ni suposicion de polaridad: cada lamina tiene su paleta y puede
+    // haber texto claro sobre fondo oscuro. _analizarCrop deduce fondo y tinta del recorte.
+    const an = _analizarCrop(data, cw, ch, C);
+    if (!an) return null;
+    const esTinta = (px: number, py: number) => an.D[py * cw + px] > an.umbral;
     let br = 0, bg = 0, bb = 0, bn = 0;
-    // Cuenta de pixeles oscuros por FILA -> para segmentar en LINEAS de texto y
+    // Cuenta de pixeles CON TINTA por FILA -> para segmentar en LINEAS de texto y
     // no fundir dos precios contiguos (P.V.L. y P.V.P.R.) en un unico recuadro gigante.
     const rowDark = new Array(ch).fill(0);
     for (let py = 0; py < ch; py++) for (let px = 0; px < cw; px++) {
-      const i = (py * cw + px) * C;
-      const l = lum(px, py);
-      if (l < 110) rowDark[py]++;
-      else if (l > 225) { br += data[i]; bg += data[i + 1]; bb += data[i + 2]; bn++; }
+      const k = py * cw + px, i = k * C;
+      if (an.D[k] > an.umbral) rowDark[py]++;
+      // Fondo PURO: excluye el antialiasing del borde de las letras (ensuciaba la tapa).
+      else if (an.D[k] < an.umbral * 0.15) { br += data[i]; bg += data[i + 1]; bb += data[i + 2]; bn++; }
     }
     // Umbral de fila "con tinta": al menos 2px o 2% del ancho del crop
     const rowMin = Math.max(2, Math.floor(cw * 0.02));
@@ -287,7 +374,7 @@ export async function refinarRecuadroPrecio(
     // de la caja de la IA para tapar SOLO el numero y NO pisar la etiqueta.
     const bandH = banda.y1 - banda.y0 + 1;
     const colDark = new Array(cw).fill(0);
-    for (let px = 0; px < cw; px++) { let c = 0; for (let py = banda.y0; py <= banda.y1; py++) if (lum(px, py) < 110) c++; colDark[px] = c; }
+    for (let px = 0; px < cw; px++) { let c = 0; for (let py = banda.y0; py <= banda.y1; py++) if (esTinta(px, py)) c++; colDark[px] = c; }
     const gapMax = Math.max(2, Math.round(bandH * 0.35)); // huecos entre digitos se fusionan; el de la etiqueta (mas ancho) separa
     const clusters: { x0: number; x1: number; peso: number }[] = [];
     let cx0 = -1, chueco = 0, cpeso = 0;
@@ -306,12 +393,11 @@ export async function refinarRecuadroPrecio(
     let minX = clus.x0, maxX = clus.x1, minY = banda.y1, maxY = banda.y0, dark = 0;
     let tr = 0, tg = 0, tb = 0, tn = 0;
     for (let py = banda.y0; py <= banda.y1; py++) for (let px = clus.x0; px <= clus.x1; px++) {
-      const i = (py * cw + px) * C;
-      const l = lum(px, py);
-      if (l < 110) {
+      const k = py * cw + px, i = k * C;
+      if (an.D[k] > an.umbral) {
         if (py < minY) minY = py; if (py > maxY) maxY = py;
         dark++;
-        if (l < 90) { tr += data[i]; tg += data[i + 1]; tb += data[i + 2]; tn++; }
+        if (an.D[k] > an.umbralNucleo) { tr += data[i]; tg += data[i + 1]; tb += data[i + 2]; tn++; }
       }
     }
     if (dark < 4 || minX > maxX || minY > maxY) return null; // no encontramos texto
