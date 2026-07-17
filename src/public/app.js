@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v92 · 15 jul 2026';
+const APP_VERSION = 'v93 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12377,29 +12377,53 @@ function _hacerRecuadroArrastrable(d, rec, sheetId) {
     if (!st) return;
     e.preventDefault();
     const p = rel(e);
-    st.nx = Math.max(0, Math.min(100 - rec.ancho, st.x0 + (p.x - st.px)));
-    st.ny = Math.max(0, Math.min(100 - rec.alto, st.y0 + (p.y - st.py)));
-    d.style.left = st.nx + '%'; d.style.top = st.ny + '%';
+    const dx = p.x - st.px, dy = p.y - st.py;
+    if (st.modo === 'mover') {
+      st.nx = Math.max(0, Math.min(100 - st.w0, st.x0 + dx));
+      st.ny = Math.max(0, Math.min(100 - st.h0, st.y0 + dy));
+      d.style.left = st.nx + '%'; d.style.top = st.ny + '%';
+    } else if (st.modo === 'se') {           // estirar por abajo-derecha
+      st.nw = Math.max(0.3, Math.min(100 - st.x0, st.w0 + dx));
+      st.nh = Math.max(0.2, Math.min(100 - st.y0, st.h0 + dy));
+      d.style.width = st.nw + '%'; d.style.height = st.nh + '%';
+    } else if (st.modo === 'nw') {           // estirar por arriba-izquierda
+      st.nx = Math.max(0, Math.min(st.x0 + st.w0 - 0.3, st.x0 + dx));
+      st.ny = Math.max(0, Math.min(st.y0 + st.h0 - 0.2, st.y0 + dy));
+      st.nw = st.w0 + (st.x0 - st.nx);
+      st.nh = st.h0 + (st.y0 - st.ny);
+      d.style.left = st.nx + '%'; d.style.top = st.ny + '%';
+      d.style.width = st.nw + '%'; d.style.height = st.nh + '%';
+    }
   };
   const up = async () => {
     document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
     document.removeEventListener('touchmove', move); document.removeEventListener('touchend', up);
     if (!st) return;
     const s = st; st = null;
-    // Clic SIN arrastrar -> abrir la ficha (qué producto y qué precio lleva este recuadro)
-    if (s.nx == null || (Math.abs(s.nx - s.x0) < 0.05 && Math.abs(s.ny - s.y0) < 0.05)) {
-      return abrirInfoRecuadro(rec, sheetId);
+    // Clic SIN arrastrar (solo en modo mover) -> abrir la ficha del recuadro
+    const movido = (s.nx != null && (Math.abs(s.nx - s.x0) > 0.05 || Math.abs(s.ny - s.y0) > 0.05));
+    const estirado = (s.nw != null && (Math.abs(s.nw - s.w0) > 0.05 || Math.abs(s.nh - s.h0) > 0.05));
+    if (!movido && !estirado) {
+      if (s.modo === 'mover') return abrirInfoRecuadro(rec, sheetId);
+      return;
     }
+    const body = {};
+    if (s.nx != null) { body.x = s.nx; body.y = s.ny; }
+    if (s.nw != null) { body.ancho = s.nw; body.alto = s.nh; }
     try {
-      await api('/api/recuadros/' + rec.id, { method: 'PUT', body: { x: s.nx, y: s.ny } });
-      rec.x = s.nx; rec.y = s.ny;
-    } catch (e) { alert('No se pudo mover: ' + e.message); renderRecuadrosEnLienzo(sheetId); }
+      await api('/api/recuadros/' + rec.id, { method: 'PUT', body });
+      if (body.x != null) { rec.x = body.x; rec.y = body.y; }
+      if (body.ancho != null) { rec.ancho = body.ancho; rec.alto = body.alto; }
+    } catch (e) { alert('No se pudo guardar: ' + e.message); renderRecuadrosEnLienzo(sheetId); }
   };
   const down = (e) => {
     if (e.target.tagName === 'BUTTON') return; // los botones ✓/✕/F no arrastran
+    // ¿Se ha agarrado un asa de redimensionar o el cuerpo (mover)?
+    const asa = e.target.classList && e.target.classList.contains('zona-recuadro-asa')
+      ? (e.target.classList.contains('se') ? 'se' : 'nw') : 'mover';
     e.preventDefault(); e.stopPropagation();
     const p = rel(e);
-    st = { px: p.x, py: p.y, x0: rec.x, y0: rec.y, nx: null, ny: null };
+    st = { modo: asa, px: p.x, py: p.y, x0: rec.x, y0: rec.y, w0: rec.ancho, h0: rec.alto, nx: null, ny: null, nw: null, nh: null };
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
     document.addEventListener('touchmove', move, { passive: false });
@@ -12408,7 +12432,7 @@ function _hacerRecuadroArrastrable(d, rec, sheetId) {
   d.addEventListener('mousedown', down);
   d.addEventListener('touchstart', down, { passive: false });
   d.style.cursor = 'move';
-  d.title = (d.title ? d.title + '\n' : '') + '👆 Pulsa para ver qué lleva asignado · ↔ Arrastra para mover';
+  d.title = (d.title ? d.title + '\n' : '') + '👆 Pulsa para ver qué lleva · ↔ Arrastra para mover · ⤡ Asas de las esquinas para estirar';
 }
 
 async function renderRecuadrosEnLienzo(sheetId) {
@@ -12457,6 +12481,13 @@ async function renderRecuadrosEnLienzo(sheetId) {
       catch (e) { alert(e.message); }
     };
     d.appendChild(x);
+    // Asas para ESTIRAR el recuadro (la IA no siempre clava la caja; hay que poder ajustarla)
+    ['nw', 'se'].forEach(pos => {
+      const a = document.createElement('div');
+      a.className = 'zona-recuadro-asa ' + pos;
+      a.title = 'Estirar';
+      d.appendChild(a);
+    });
     _hacerRecuadroArrastrable(d, rec, sheetId);
     capa.appendChild(d);
   });

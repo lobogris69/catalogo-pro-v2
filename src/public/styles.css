@@ -3376,9 +3376,21 @@ body.con-banner-update {
   cursor: pointer; padding: 0;
   display: flex; align-items: center; justify-content: center;
 }
+/* Asas para estirar el recuadro de precio (esquinas opuestas: mueve y ajusta tamaño). */
+.zona-recuadro-asa {
+  position: absolute;
+  width: 11px; height: 11px;
+  background: #fff;
+  border: 2px solid #7c3aed;
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+.zona-recuadro-asa.nw { top: -6px; left: -6px; cursor: nwse-resize; }
+.zona-recuadro-asa.se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+.zona-recuadro-ov.revisar .zona-recuadro-asa { border-color: #f59e0b; }
 .zona-recuadro-campo {
   position: absolute;
-  bottom: -10px; right: -8px;
+  bottom: -10px; left: -8px;   /* izquierda: la derecha la ocupa el asa de estirar */
   min-width: 18px; height: 16px;
   border: none; border-radius: 8px;
   background: #7c3aed; color: #fff;
