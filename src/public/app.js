@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v86 · 15 jul 2026';
+const APP_VERSION = 'v87 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12137,6 +12137,36 @@ function toggleModoRecuadro(btn) {
   if (wrap) wrap.style.cursor = on ? 'cell' : 'crosshair';
 }
 
+// Diálogo para elegir el campo del recuadro. NO usamos confirm(): "Aceptar/Cancelar" es
+// ambiguo (Cancelar parece abortar, no "es P.V.P.R.") y se presta a equivocarse.
+// Devuelve 'pvf' | 'pvpr' | null (cancelar). Muestra también a qué producto se asignará.
+function _pedirCampoPrecio(zona, porCercania) {
+  return new Promise(resolve => {
+    const et = (zona.producto_codigo || '') + (zona.producto_nombre ? ' · ' + zona.producto_nombre : '');
+    const m = document.createElement('div');
+    m.className = 'modal-bg';
+    m.innerHTML = `
+      <div class="modal" style="max-width:460px">
+        <h3 style="margin-top:0">🏷️ ¿Qué precio es este recuadro?</h3>
+        <div style="font-size:12px;color:var(--gris-texto)">Se asignará al producto:</div>
+        <div style="font-weight:600;font-size:14px;margin:4px 0 12px">${escape(et || '(sin código)')}</div>
+        ${porCercania ? `<div style="background:#fef3c7;color:#92400e;font-size:12px;padding:8px 10px;border-radius:8px;margin-bottom:12px">
+          ⚠️ El recuadro no cae dentro de ninguna zona: se ha cogido el producto <b>más cercano</b>. Si no es este, cancela y dibuja dentro de su zona.</div>` : ''}
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button type="button" class="btn zona-campo-op" data-campo="pvf" style="background:color-mix(in srgb, var(--amber) 14%, var(--surface));color:var(--amber);border:1.5px solid var(--amber);font-weight:800;padding:14px;font-size:15px">P.V.F. · precio de farmacia (sin IVA)</button>
+          <button type="button" class="btn zona-campo-op" data-campo="pvpr" style="background:color-mix(in srgb, var(--violet) 14%, var(--surface));color:var(--violet);border:1.5px solid var(--violet);font-weight:800;padding:14px;font-size:15px">P.V.P.R. · precio público (con IVA)</button>
+        </div>
+        <div class="modal-acciones" style="margin-top:14px">
+          <button type="button" class="btn btn-secondary zona-campo-op" data-campo="">Cancelar (no crear nada)</button>
+        </div>
+      </div>`;
+    m.querySelectorAll('.zona-campo-op').forEach(b => b.addEventListener('click', () => {
+      const c = b.dataset.campo; m.remove(); resolve(c || null);
+    }));
+    document.body.appendChild(m);
+  });
+}
+
 // Crea un recuadro a partir de una caja dibujada: muestrea colores/afina la caja en el
 // servidor, ancla al producto de la zona que la contiene y pregunta el campo.
 async function crearRecuadroDibujado(x, y, ancho, alto) {
@@ -12147,22 +12177,24 @@ async function crearRecuadroDibujado(x, y, ancho, alto) {
   // 1º: la zona que CONTIENE el recuadro. 2º: si ninguna, ofrecer la MÁS CERCANA
   // (los precios suelen quedar fuera del recuadro de la zona, p. ej. en otra columna).
   let zona = conProd.find(z => cxp >= z.x && cxp <= z.x + z.ancho && cyp >= z.y && cyp <= z.y + z.alto);
+  let porCercania = false;
   if (!zona) {
     let best = null, bestD = Infinity;
     for (const z of conProd) {
       const d = ((z.x + z.ancho / 2) - cxp) ** 2 + ((z.y + z.alto / 2) - cyp) ** 2;
       if (d < bestD) { bestD = d; best = z; }
     }
-    const et = (best.producto_codigo || '') + (best.producto_nombre ? ' · ' + best.producto_nombre : '');
-    if (confirm('Este recuadro no cae dentro de ninguna zona.\n\n¿Es el precio de este producto?\n\n' + et + '\n\n• Aceptar = sí, asignárselo\n• Cancelar = no crear el recuadro')) zona = best;
-    else return;
+    zona = best; porCercania = true;
   }
+  // Un ÚNICO diálogo: a qué producto va + qué precio es (con botones explícitos).
+  const campo = await _pedirCampoPrecio(zona, porCercania);
+  if (!campo) return; // cancelado: no se crea nada
   let sug = null;
   try {
     const r = await api('/api/sheets/' + sheetId + '/recuadros/muestrear', { method: 'POST', body: { x, y, ancho, alto } });
     sug = r.sugerencia;
   } catch (e) { /* si no detecta texto, usamos la caja dibujada tal cual */ }
-  const esPVF = confirm('¿Qué precio es este recuadro?\n\n• Aceptar = P.V.F. (P.V.L., sin IVA)\n• Cancelar = P.V.P.R. (con IVA)');
+  const esPVF = campo === 'pvf';
   const body = {
     product_id: zona ? zona.product_id : null,
     zone_id: zona ? zona.id : null,
