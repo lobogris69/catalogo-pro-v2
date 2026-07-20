@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v97 · 20 jul 2026';
+const APP_VERSION = 'v98 · 20 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12329,9 +12329,20 @@ async function crearRecuadroDibujado(x, y, ancho, alto) {
   const sheetId = _zonasEditor.sheetId;
   const cxp = x + ancho / 2, cyp = y + alto / 2;
   // Zonas "precificables": producto individual O FAMILIA con variantes (comparten precio impreso).
+  // Las de COMISIÓN y REFERENCIAS SUELTAS no valen: esos productos NO están en Sage, así que
+  // no hay precio de BD que reescribir (Combe, Lainco... son labs a comisión).
   const esFam = z => !!(z.familia_ref || (Array.isArray(z.familia_skus) && z.familia_skus.length));
-  const cand = (_zonasEditor.zonas || []).filter(z => z.product_id || esFam(z));
-  if (!cand.length) { alert('Esta lámina no tiene ninguna zona con producto ni familia.\n\nPrimero asigna productos/familias a las zonas; el recuadro de precio necesita saber de qué producto es.'); return; }
+  const zonas = _zonasEditor.zonas || [];
+  const cand = zonas.filter(z => z.product_id || esFam(z));
+  if (!cand.length) {
+    const hayComision = zonas.some(z => z.es_comision || z.permite_sueltas);
+    if (hayComision) {
+      alert('Esta lámina es de COMISIÓN o de referencias sueltas.\n\nEsos productos NO están en Sage, así que NO tienen precio en la base de datos que reescribir. Los precios dinámicos no se pueden aplicar aquí.\n\n👉 Lo mejor: en «Editar lámina» marca «🔒 Excluir de los precios dinámicos» y déjala tal cual / hazla a mano.');
+    } else {
+      alert('Esta lámina no tiene ninguna zona con producto ni familia.\n\nPrimero asigna productos/familias a las zonas; el recuadro de precio necesita saber de qué producto es.');
+    }
+    return;
+  }
   // 1º la zona que CONTIENE el recuadro; 2º la MÁS CERCANA (el precio suele caer fuera del recuadro).
   let zona = cand.find(z => cxp >= z.x && cxp <= z.x + z.ancho && cyp >= z.y && cyp <= z.y + z.alto);
   let porCercania = false;
