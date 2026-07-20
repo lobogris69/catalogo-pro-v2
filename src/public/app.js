@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v96 · 15 jul 2026';
+const APP_VERSION = 'v97 · 20 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12284,18 +12284,19 @@ function toggleModoRecuadro(btn) {
 // Diálogo para elegir el campo del recuadro. NO usamos confirm(): "Aceptar/Cancelar" es
 // ambiguo (Cancelar parece abortar, no "es P.V.P.R.") y se presta a equivocarse.
 // Devuelve 'pvf' | 'pvpr' | null (cancelar). Muestra también a qué producto se asignará.
-function _pedirCampoPrecio(zona, porCercania) {
+function _pedirCampoPrecio(etiqueta, porCercania, notaFamilia) {
   return new Promise(resolve => {
-    const et = (zona.producto_codigo || '') + (zona.producto_nombre ? ' · ' + zona.producto_nombre : '');
+    const et = etiqueta;
     const m = document.createElement('div');
     m.className = 'modal-bg';
     m.innerHTML = `
       <div class="modal" style="max-width:460px">
         <h3 style="margin-top:0">🏷️ ¿Qué precio es este recuadro?</h3>
-        <div style="font-size:12px;color:var(--gris-texto)">Se asignará al producto:</div>
+        <div style="font-size:12px;color:var(--gris-texto)">Se asignará a:</div>
         <div style="font-weight:600;font-size:14px;margin:4px 0 12px">${escape(et || '(sin código)')}</div>
+        ${notaFamilia ? `<div style="background:#ede9fe;color:#5b21b6;font-size:12px;padding:8px 10px;border-radius:8px;margin-bottom:12px">👓 ${escape(notaFamilia)}</div>` : ''}
         ${porCercania ? `<div style="background:#fef3c7;color:#92400e;font-size:12px;padding:8px 10px;border-radius:8px;margin-bottom:12px">
-          ⚠️ El recuadro no cae dentro de ninguna zona: se ha cogido el producto <b>más cercano</b>. Si no es este, cancela y dibuja dentro de su zona.</div>` : ''}
+          ⚠️ El recuadro no cae dentro de ninguna zona: se ha cogido lo <b>más cercano</b>. Si no es eso, cancela y dibuja dentro de su zona.</div>` : ''}
         <div style="display:flex;flex-direction:column;gap:8px">
           <button type="button" class="btn zona-campo-op" data-campo="pvf" style="background:color-mix(in srgb, var(--amber) 14%, var(--surface));color:var(--amber);border:1.5px solid var(--amber);font-weight:800;padding:14px;font-size:15px">P.V.F. · precio de farmacia (sin IVA)</button>
           <button type="button" class="btn zona-campo-op" data-campo="pvpr" style="background:color-mix(in srgb, var(--violet) 14%, var(--surface));color:var(--violet);border:1.5px solid var(--violet);font-weight:800;padding:14px;font-size:15px">P.V.P.R. · precio público (con IVA)</button>
@@ -12313,25 +12314,54 @@ function _pedirCampoPrecio(zona, porCercania) {
 
 // Crea un recuadro a partir de una caja dibujada: muestrea colores/afina la caja en el
 // servidor, ancla al producto de la zona que la contiene y pregunta el campo.
+// Resuelve las variantes de una zona-FAMILIA (por lista curada o por modelo).
+async function _resolverVariantesFamilia(zona) {
+  try {
+    const q = (Array.isArray(zona.familia_skus) && zona.familia_skus.length)
+      ? '/api/families/resolve?ids=' + zona.familia_skus.join(',')
+      : '/api/families/resolve?ref=' + encodeURIComponent(zona.familia_ref || '');
+    const r = await api(q);
+    return (r.familia && Array.isArray(r.familia.variantes)) ? r.familia.variantes : [];
+  } catch { return []; }
+}
+
 async function crearRecuadroDibujado(x, y, ancho, alto) {
   const sheetId = _zonasEditor.sheetId;
   const cxp = x + ancho / 2, cyp = y + alto / 2;
-  const conProd = (_zonasEditor.zonas || []).filter(z => z.product_id);
-  if (!conProd.length) { alert('Esta lámina no tiene ninguna zona con producto asignado.\n\nPrimero asigna productos a las zonas (🤖 Detectar productos con IA o a mano); el recuadro de precio necesita saber de qué producto es.'); return; }
-  // 1º: la zona que CONTIENE el recuadro. 2º: si ninguna, ofrecer la MÁS CERCANA
-  // (los precios suelen quedar fuera del recuadro de la zona, p. ej. en otra columna).
-  let zona = conProd.find(z => cxp >= z.x && cxp <= z.x + z.ancho && cyp >= z.y && cyp <= z.y + z.alto);
+  // Zonas "precificables": producto individual O FAMILIA con variantes (comparten precio impreso).
+  const esFam = z => !!(z.familia_ref || (Array.isArray(z.familia_skus) && z.familia_skus.length));
+  const cand = (_zonasEditor.zonas || []).filter(z => z.product_id || esFam(z));
+  if (!cand.length) { alert('Esta lámina no tiene ninguna zona con producto ni familia.\n\nPrimero asigna productos/familias a las zonas; el recuadro de precio necesita saber de qué producto es.'); return; }
+  // 1º la zona que CONTIENE el recuadro; 2º la MÁS CERCANA (el precio suele caer fuera del recuadro).
+  let zona = cand.find(z => cxp >= z.x && cxp <= z.x + z.ancho && cyp >= z.y && cyp <= z.y + z.alto);
   let porCercania = false;
   if (!zona) {
     let best = null, bestD = Infinity;
-    for (const z of conProd) {
+    for (const z of cand) {
       const d = ((z.x + z.ancho / 2) - cxp) ** 2 + ((z.y + z.alto / 2) - cyp) ** 2;
       if (d < bestD) { bestD = d; best = z; }
     }
     zona = best; porCercania = true;
   }
-  // Un ÚNICO diálogo: a qué producto va + qué precio es (con botones explícitos).
-  const campo = await _pedirCampoPrecio(zona, porCercania);
+  // Resolver el PRODUCTO al que va el precio. En familias, un precio impreso vale para todas
+  // las variantes: se usa una variante representante (la 1ª) como fuente del precio de BD.
+  let productId = zona.product_id || null;
+  let etiqueta, notaFamilia = '';
+  if (!productId && esFam(zona)) {
+    const vars = await _resolverVariantesFamilia(zona);
+    if (!vars.length) { alert('No se pudieron resolver las variantes de esta familia. Revisa la zona.'); return; }
+    const rep = vars[0];
+    productId = rep.product_id;
+    etiqueta = 'Familia «' + (zona.familia_ref || zona.etiqueta || 'variantes') + '» → ' + (rep.codigo || '') + ' (' + vars.length + ' variantes)';
+    const precios = new Set(vars.map(v => String(v.pvf ?? '')));
+    notaFamilia = precios.size > 1
+      ? 'Las variantes tienen PVF distintos; se escribirá el de ' + (rep.codigo || 'la 1ª') + '. Si no encaja, mejor excluir esta lámina.'
+      : 'Todas las variantes comparten precio: se escribirá ese.';
+  } else {
+    etiqueta = (zona.producto_codigo || '') + (zona.producto_nombre ? ' · ' + zona.producto_nombre : '');
+  }
+  // Un ÚNICO diálogo: a qué va + qué precio es (con botones explícitos).
+  const campo = await _pedirCampoPrecio(etiqueta, porCercania, notaFamilia);
   if (!campo) return; // cancelado: no se crea nada
   let sug = null;
   try {
@@ -12340,7 +12370,7 @@ async function crearRecuadroDibujado(x, y, ancho, alto) {
   } catch (e) { /* si no detecta texto, usamos la caja dibujada tal cual */ }
   const esPVF = campo === 'pvf';
   const body = {
-    product_id: zona ? zona.product_id : null,
+    product_id: productId,
     zone_id: zona ? zona.id : null,
     campo: esPVF ? 'pvf' : 'pvpr',
     x: sug ? sug.x : x, y: sug ? sug.y : y, ancho: sug ? sug.ancho : ancho, alto: sug ? sug.alto : alto,
