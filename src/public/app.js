@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v103 · 20 jul 2026';
+const APP_VERSION = 'v104 · 20 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12776,6 +12776,97 @@ function _hacerRecuadroArrastrable(d, rec, sheetId) {
   d.title = (d.title ? d.title + '\n' : '') + '👆 Pulsa para ver qué lleva · ↔ Arrastra para mover · ⤡ Asas de las esquinas para estirar';
 }
 
+// ===== TABLAS de expositor en el lienzo: hueco arrastrable + redimensionable =====
+async function renderTablasEnLienzo(sheetId, catalogId) {
+  const capa = document.getElementById('zonas-tablas-capa');
+  if (!capa) return;
+  let asocs = [];
+  try { asocs = (await api('/api/sheets/' + sheetId + '/tablas')).tablas || []; } catch { asocs = []; }
+  _zonasEditor.tablas = asocs;
+  capa.innerHTML = '';
+  asocs.forEach(a => {
+    const d = document.createElement('div');
+    d.className = 'zona-tabla-ov';
+    d.style.left = a.x + '%'; d.style.top = a.y + '%'; d.style.width = a.ancho + '%'; d.style.height = a.alto + '%';
+    d.title = '📊 ' + (a.tabla_nombre || '') + ' · arrastra para mover · asas para estirar';
+    const lbl = document.createElement('span'); lbl.className = 'zona-tabla-lbl'; lbl.textContent = '📊 ' + (a.tabla_nombre || 'Tabla');
+    d.appendChild(lbl);
+    const x = document.createElement('button');
+    x.type = 'button'; x.textContent = '✕'; x.className = 'zona-recuadro-del';
+    x.onclick = async (ev) => { ev.stopPropagation(); if (!confirm('¿Quitar esta tabla de la lámina? (sigue en la biblioteca)')) return; try { await api('/api/lamina-tabla/' + a.id, { method: 'DELETE' }); renderTablasEnLienzo(sheetId, catalogId); } catch (e) { alert(e.message); } };
+    d.appendChild(x);
+    ['nw', 'se'].forEach(pos => { const h = document.createElement('div'); h.className = 'zona-recuadro-asa ' + pos; d.appendChild(h); });
+    _hacerTablaArrastrable(d, a, sheetId);
+    capa.appendChild(d);
+  });
+}
+
+// Arrastrar/redimensionar el hueco de una tabla (guarda x/y/ancho/alto al soltar).
+function _hacerTablaArrastrable(d, a, sheetId) {
+  const wrap = document.getElementById('zonas-lienzo-wrap');
+  if (!wrap) return;
+  let st = null;
+  const rel = (e) => { const r = wrap.getBoundingClientRect(); const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left; const cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top; return { x: cx / r.width * 100, y: cy / r.height * 100 }; };
+  const move = (e) => {
+    if (!st) return; e.preventDefault(); const p = rel(e); const dx = p.x - st.px, dy = p.y - st.py;
+    if (st.modo === 'mover') { st.nx = Math.max(0, Math.min(100 - st.w0, st.x0 + dx)); st.ny = Math.max(0, Math.min(100 - st.h0, st.y0 + dy)); d.style.left = st.nx + '%'; d.style.top = st.ny + '%'; }
+    else if (st.modo === 'se') { st.nw = Math.max(5, Math.min(100 - st.x0, st.w0 + dx)); st.nh = Math.max(3, Math.min(100 - st.y0, st.h0 + dy)); d.style.width = st.nw + '%'; d.style.height = st.nh + '%'; }
+    else if (st.modo === 'nw') { st.nx = Math.max(0, Math.min(st.x0 + st.w0 - 5, st.x0 + dx)); st.ny = Math.max(0, Math.min(st.y0 + st.h0 - 3, st.y0 + dy)); st.nw = st.w0 + (st.x0 - st.nx); st.nh = st.h0 + (st.y0 - st.ny); d.style.left = st.nx + '%'; d.style.top = st.ny + '%'; d.style.width = st.nw + '%'; d.style.height = st.nh + '%'; }
+  };
+  const up = async () => {
+    document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+    document.removeEventListener('touchmove', move); document.removeEventListener('touchend', up);
+    if (!st) return; const s = st; st = null;
+    const changed = (s.nx != null && (Math.abs(s.nx - s.x0) > 0.05 || Math.abs(s.ny - s.y0) > 0.05)) || (s.nw != null && (Math.abs(s.nw - s.w0) > 0.05 || Math.abs(s.nh - s.h0) > 0.05));
+    if (!changed) return;
+    const body = {};
+    if (s.nx != null) { body.x = s.nx; body.y = s.ny; }
+    if (s.nw != null) { body.ancho = s.nw; body.alto = s.nh; }
+    try { await api('/api/lamina-tabla/' + a.id, { method: 'PUT', body }); if (body.x != null) { a.x = body.x; a.y = body.y; } if (body.ancho != null) { a.ancho = body.ancho; a.alto = body.alto; } }
+    catch (e) { alert('No se pudo guardar: ' + e.message); renderTablasEnLienzo(sheetId, _zonasEditor.catalogId); }
+  };
+  const down = (e) => {
+    if (e.target.tagName === 'BUTTON') return;
+    const asa = e.target.classList && e.target.classList.contains('zona-recuadro-asa') ? (e.target.classList.contains('se') ? 'se' : 'nw') : 'mover';
+    e.preventDefault(); e.stopPropagation();
+    const p = rel(e);
+    st = { modo: asa, px: p.x, py: p.y, x0: a.x, y0: a.y, w0: a.ancho, h0: a.alto, nx: null, ny: null, nw: null, nh: null };
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+    document.addEventListener('touchmove', move, { passive: false }); document.addEventListener('touchend', up);
+  };
+  d.addEventListener('mousedown', down); d.addEventListener('touchstart', down, { passive: false });
+}
+
+// Asociar una tabla de la biblioteca desde el editor (aparece como caja arrastrable).
+async function asociarTablaDesdeEditor(sheetId, catalogId) {
+  let tablas = [];
+  try { tablas = (await api('/api/tablas')).tablas || []; } catch (e) { alert(e.message); return; }
+  if (!tablas.length) { alert('No hay tablas en la biblioteca.\n\nSúbelas en ⚙️ Configuración → 📊 Tablas de expositor.'); return; }
+  const yaHay = (_zonasEditor.tablas || []).length;
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:460px">
+    <h3 style="margin-top:0">📊 Poner tabla de expositor</h3>
+    ${yaHay ? `<div style="background:#fef3c7;color:#92400e;font-size:12px;padding:8px 10px;border-radius:8px;margin-bottom:10px">Esta lámina ya tiene una tabla. Puedes añadir otra o quitar la anterior con su ✕.</div>` : ''}
+    <div class="form-group"><label>Elige la tabla</label>
+      <select id="pick-tabla" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px">
+        ${tablas.map(t => `<option value="${t.id}">${escape(t.nombre)} · ${t.n_filas} filas</option>`).join('')}
+      </select></div>
+    <div style="font-size:12px;color:var(--gris-texto)">Aparecerá una caja azul: arrástrala sobre el bloque de precios y estírala con las esquinas hasta que lo tape.</div>
+    <div class="modal-acciones" style="margin-top:14px">
+      <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+      <button type="button" class="btn btn-primary" id="pick-tabla-ok">Poner</button>
+    </div></div>`;
+  document.body.appendChild(m);
+  document.getElementById('pick-tabla-ok').onclick = async () => {
+    const tid = Number(document.getElementById('pick-tabla').value);
+    try {
+      await api('/api/sheets/' + sheetId + '/tablas', { method: 'POST', body: { tabla_id: tid, x: 4, y: 15, ancho: 55, alto: 70 } });
+      m.remove(); await renderTablasEnLienzo(sheetId, catalogId);
+    } catch (e) { alert(e.message); }
+  };
+}
+
 async function renderRecuadrosEnLienzo(sheetId) {
   try {
     const r = await api('/api/sheets/' + sheetId + '/recuadros');
@@ -12879,6 +12970,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <button class="btn" id="btn-detectar-precios-ia" onclick="detectarPreciosConIA(${sheet.id}, this)" style="background:#ede9fe;color:#6d28d9" title="La IA localiza los precios impresos y crea recuadros que los tapan y reescriben con el precio de la BD">🏷️ Detectar precios (IA)</button>
         <button class="btn" id="btn-modo-recuadro" onclick="toggleModoRecuadro(this)" style="background:#f3e8ff;color:#7c3aed" title="Dibuja a mano una caja sobre un precio para taparlo y reescribirlo (si la IA lo olvidó o falló)">✏️ Dibujar recuadro</button>
         <button class="btn" id="btn-borrar-recuadros" onclick="borrarTodosLosRecuadros(${sheet.id}, this)" style="background:#fee2e2;color:#b91c1c" title="Borra de golpe los recuadros de precio de esta lámina (por si la detección con IA no convence y quieres empezar de cero)">🗑️ Borrar precios</button>
+        <button class="btn" id="btn-asociar-tabla" onclick="asociarTablaDesdeEditor(${sheet.id}, ${catalogId})" style="background:#e0f2fe;color:#0369a1;font-weight:700" title="Asocia una tabla de expositor (de la biblioteca) y colócala arrastrando sobre el hueco de precios">📊 Poner tabla</button>
         <button class="btn" id="btn-sig-sin-precios" onclick="irSiguienteSinPrecios()" style="background:#ede9fe;color:#6d28d9;font-weight:700" title="Cierra esta y abre directamente la siguiente lámina que tiene zonas pero aún no tiene precios asignados">⏭️ Siguiente sin precios${(() => { const n = _laminasPendientesPrecios().length; return n ? ' (' + n + ')' : ''; })()}</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
       </div>
@@ -12898,6 +12990,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <div class="zonas-lienzo-wrap" id="zonas-lienzo-wrap">
           <img src="${escape(vurl(sheet.imagen_path, sheet))}" class="zonas-lienzo-img" id="zonas-lienzo-img" draggable="false" alt="">
           <div class="zonas-recuadros-capa" id="zonas-recuadros-capa"></div>
+          <div class="zonas-tablas-capa" id="zonas-tablas-capa"></div>
           <div class="zonas-capa" id="zonas-capa"></div>
         </div>
       </div>
@@ -12917,6 +13010,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
   }
   renderListaZonas();
   renderRecuadrosEnLienzo(sheetId); // F3: pintar recuadros de precio existentes
+  renderTablasEnLienzo(sheetId, catalogId); // tablas de expositor asociadas (arrastrables)
 }
 
 async function cerrarEditorZonas() {

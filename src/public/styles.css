@@ -3353,6 +3353,27 @@ body.con-banner-update {
      después, así que sin z-index se comía los clics de ✓/✕/F y del arrastre. */
   z-index: 6;
 }
+/* Tablas de expositor: hueco arrastrable/redimensionable en el lienzo del editor. */
+.zonas-tablas-capa { position: absolute; inset: 0; pointer-events: none; z-index: 6; }
+.zona-tabla-ov {
+  position: absolute;
+  outline: 3px dashed #0ea5e9;
+  background: rgba(14, 165, 233, 0.10);
+  box-sizing: border-box;
+  pointer-events: none;   /* el interior deja pasar clics a las zonas de debajo */
+}
+/* Se arrastra por la barra de título; se estira por las asas; ✕ para quitar. */
+.zona-tabla-lbl {
+  position: absolute; top: 0; left: 0; right: 0;
+  background: #0369a1; color: #fff;
+  font-size: 11px; font-weight: 700;
+  padding: 4px 8px; border-radius: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  pointer-events: auto; cursor: move;
+}
+.zona-tabla-ov .zona-recuadro-asa { border-color: #0ea5e9; pointer-events: auto; }
+.zona-tabla-ov .zona-recuadro-del { pointer-events: auto; }
+
 /* MODO DIBUJAR RECUADRO: solo se dibuja. Zonas y recuadros se atenúan y se hacen
    inertes a propósito (si no, arrastrar sobre una zona la movería en vez de dibujar).
    Se marca en el lienzo para que SE VEA que están desactivados, no que está colgado. */
