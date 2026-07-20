@@ -7187,9 +7187,31 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
     els += `<rect x="${bx}" y="${by0}" width="${bw}" height="${bh}" rx="${bh * 0.3}" fill="${of.color || '#dc2626'}"/>`;
     els += `<text x="${bx + bw / 2}" y="${by0 + bh / 2 + fs2 * 0.35}" font-family="Liberation Sans, Arial, DejaVu Sans, sans-serif" font-weight="800" font-size="${fs2}" fill="#ffffff" text-anchor="middle">${esc(label)}</text>`;
   }
-  if (!els) return await sharp(abs).png().toBuffer(); // nada que recomponer: imagen tal cual
+  // TABLAS de expositor asociadas: tapan su hueco (rect blanco) y pegan la tabla dibujada.
+  const tablasComposites: sharp.OverlayOptions[] = [];
+  const lt = await pool.query(
+    `SELECT lt.x, lt.y, lt.ancho, lt.alto, t.datos FROM lamina_tabla lt
+       JOIN expositor_tabla t ON t.id = lt.tabla_id
+      WHERE lt.sheet_id = $1 AND lt.activo = TRUE`, [sheetId]);
+  for (const row of lt.rows) {
+    const bx = Math.round(row.x / 100 * W), by = Math.round(row.y / 100 * H);
+    const bw = Math.round(row.ancho / 100 * W), bh = Math.round(row.alto / 100 * H);
+    if (bw < 10 || bh < 10) continue;
+    els += `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="#ffffff"/>`; // borra la tabla vieja
+    try {
+      const { buffer: tb } = await renderTablaExpositor(row.datos, { width: bw });
+      // Encajar en el hueco: nunca más alta que el hueco (contain por altura).
+      let img = sharp(tb); const m = await img.metadata();
+      if ((m.height || 0) > bh) img = sharp(await sharp(tb).resize({ width: bw, height: bh, fit: 'inside' }).png().toBuffer());
+      const fin = await img.png().toBuffer();
+      tablasComposites.push({ input: fin, left: bx, top: by });
+    } catch (e) { /* si falla el render de una tabla, seguimos con el resto */ }
+  }
+
+  if (!els && !tablasComposites.length) return await sharp(abs).png().toBuffer(); // nada que recomponer
   const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">${els}</svg>`;
-  return await sharp(abs).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).png().toBuffer();
+  const capas: sharp.OverlayOptions[] = [{ input: Buffer.from(svg), top: 0, left: 0 }, ...tablasComposites];
+  return await sharp(abs).composite(capas).png().toBuffer();
 }
 
 // GET lamina recompuesta (PNG) con precios de hoy + ofertas. Para descargar/compartir.
@@ -7327,6 +7349,52 @@ app.delete('/api/tablas/:id', verifyToken, requireRealAdmin, async (req: AuthReq
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
     res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// ----- Asociación tabla -> lámina (el "hueco" donde se pega) -----
+// GET asociaciones de una lámina.
+app.get('/api/sheets/:sheetId/tablas', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `SELECT lt.*, t.nombre AS tabla_nombre FROM lamina_tabla lt
+         JOIN expositor_tabla t ON t.id = lt.tabla_id
+        WHERE lt.sheet_id = $1 ORDER BY lt.id`, [Number(req.params.sheetId)]);
+    res.json({ success: true, tablas: r.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+// POST asociar tabla a lámina (con bbox del hueco).
+app.post('/api/sheets/:sheetId/tablas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const b = req.body || {};
+    const r = await pool.query(
+      `INSERT INTO lamina_tabla (sheet_id, tabla_id, x, y, ancho, alto)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [Number(req.params.sheetId), Number(b.tabla_id),
+       b.x != null ? Number(b.x) : 2, b.y != null ? Number(b.y) : 20,
+       b.ancho != null ? Number(b.ancho) : 60, b.alto != null ? Number(b.alto) : 65]);
+    res.json({ success: true, asociacion: r.rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+// PUT mover/redimensionar el hueco o cambiar la tabla.
+app.put('/api/lamina-tabla/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const b = req.body || {}; const sets: string[] = []; const vals: any[] = []; let i = 1;
+    ['x', 'y', 'ancho', 'alto', 'tabla_id'].forEach(k => { if (b[k] !== undefined) { sets.push(`${k}=$${i++}`); vals.push(Number(b[k])); } });
+    if (b.activo !== undefined) { sets.push(`activo=$${i++}`); vals.push(!!b.activo); }
+    if (!sets.length) { res.status(400).json({ success: false, error: 'nada que actualizar' }); return; }
+    sets.push('updated_at=NOW()'); vals.push(Number(req.params.id));
+    const r = await pool.query(`UPDATE lamina_tabla SET ${sets.join(', ')} WHERE id=$${vals.length} RETURNING *`, vals);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    res.json({ success: true, asociacion: r.rows[0] });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+// DELETE quitar la tabla de la lámina.
+app.delete('/api/lamina-tabla/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`DELETE FROM lamina_tabla WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    res.json({ success: true });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
 });
 
 app.get('/api/admin/limpiar-pruebas/preview', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {

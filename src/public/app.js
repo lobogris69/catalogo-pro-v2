@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v102 · 20 jul 2026';
+const APP_VERSION = 'v103 · 20 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -1802,6 +1802,72 @@ async function togglePreciosExcluida(sheetId, chk) {
   chk.disabled = false;
 }
 
+// ===== Asociar una TABLA de expositor a la lámina (pegar en el hueco) =====
+async function cargarTablaDeLamina(sheetId, catalogId) {
+  const $c = document.getElementById('ed-tabla-cont');
+  if (!$c) return;
+  try {
+    const [rTab, rAsoc] = await Promise.all([api('/api/tablas'), api('/api/sheets/' + sheetId + '/tablas')]);
+    const tablas = rTab.tablas || [];
+    const asoc = (rAsoc.tablas || [])[0] || null; // MVP: una tabla por lámina
+    if (!tablas.length) {
+      $c.innerHTML = `<div style="color:#b45309;font-size:12px">No hay tablas en la biblioteca. Súbelas en ⚙️ Configuración → 📊 Tablas de expositor.</div>`;
+      return;
+    }
+    if (!asoc) {
+      $c.innerHTML = `
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="ed-tabla-sel" style="flex:1;min-width:160px;padding:8px;border:1px solid #d1d5db;border-radius:6px">
+            ${tablas.map(t => `<option value="${t.id}">${escape(t.nombre)}</option>`).join('')}
+          </select>
+          <button type="button" class="btn btn-primary btn-pequeno" onclick="asociarTablaLamina(${sheetId}, ${catalogId})">Asociar</button>
+        </div>`;
+      return;
+    }
+    // Ya tiene una tabla asociada: mostrar controles del hueco + ver montaje.
+    $c.innerHTML = `
+      <div style="background:var(--surface-2);border-radius:8px;padding:10px">
+        <div style="font-weight:600;margin-bottom:6px">✅ ${escape(asoc.tabla_nombre)}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
+          ${['x', 'y', 'ancho', 'alto'].map(k => `<label>${k} %<input type="number" step="0.5" id="ed-tb-${k}" value="${Number(asoc[k]).toFixed(1)}" style="width:100%;padding:6px;border:1px solid #d1d5db;border-radius:6px"></label>`).join('')}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <button type="button" class="btn btn-secondary btn-pequeno" onclick="guardarHuecoTabla(${asoc.id}, ${sheetId}, ${catalogId})">💾 Guardar hueco</button>
+          <button type="button" class="btn btn-secondary btn-pequeno" onclick="verLaminaMontada(${sheetId})">👁️ Ver montada</button>
+          <button type="button" class="btn-borrar" onclick="quitarTablaLamina(${asoc.id}, ${sheetId}, ${catalogId})" title="Quitar tabla">✖ Quitar</button>
+        </div>
+        <small style="color:var(--gris-texto);display:block;margin-top:6px">x/y = esquina sup-izq del hueco; ancho/alto = tamaño (en % de la lámina). Ajusta y pulsa "Ver montada".</small>
+      </div>`;
+  } catch (e) { $c.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`; }
+}
+async function asociarTablaLamina(sheetId, catalogId) {
+  const tid = Number(document.getElementById('ed-tabla-sel').value);
+  try { await api('/api/sheets/' + sheetId + '/tablas', { method: 'POST', body: { tabla_id: tid } }); cargarTablaDeLamina(sheetId, catalogId); }
+  catch (e) { alert(e.message); }
+}
+async function guardarHuecoTabla(asocId, sheetId, catalogId) {
+  const body = {};
+  ['x', 'y', 'ancho', 'alto'].forEach(k => { body[k] = Number(document.getElementById('ed-tb-' + k).value); });
+  try { await api('/api/lamina-tabla/' + asocId, { method: 'PUT', body }); mostrarNotificacionOnline('💾 Hueco guardado', '#16a34a'); }
+  catch (e) { alert(e.message); }
+}
+async function quitarTablaLamina(asocId, sheetId, catalogId) {
+  if (!confirm('¿Quitar la tabla de esta lámina? (la tabla sigue en la biblioteca)')) return;
+  try { await api('/api/lamina-tabla/' + asocId, { method: 'DELETE' }); cargarTablaDeLamina(sheetId, catalogId); }
+  catch (e) { alert(e.message); }
+}
+function verLaminaMontada(sheetId) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal-card" style="max-width:92vw;max-height:92vh;display:flex;flex-direction:column">
+    <div class="modal-header"><h3>👁️ Lámina montada (precios de hoy)</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div style="overflow:auto"><img style="width:100%;height:auto" alt="Generando…"></div></div>`;
+  document.body.appendChild(m);
+  const img = m.querySelector('img');
+  const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
+  fetch(API + '/api/sheets/' + sheetId + '/recompuesta?tarifa=1', { headers }).then(r => r.blob()).then(b => { img.src = URL.createObjectURL(b); }).catch(() => {});
+}
+
 function abrirModalEditarLamina(sheet, catalogId) {
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
@@ -1861,6 +1927,11 @@ function abrirModalEditarLamina(sheet, catalogId) {
           </label>
           <div id="ed-precios-excluida-msg" style="font-size:12px;margin-top:6px"></div>
         </div>
+        <div class="form-group" style="border-top:1px solid var(--gris-borde);padding-top:12px">
+          <label style="margin:0"><b>📊 Tabla de expositor</b></label>
+          <small style="color:var(--gris-texto);display:block;margin:2px 0 8px">Para láminas con tabla densa de precios: elige una tabla de la biblioteca y la app la pega en el hueco (se actualiza sola al cambiar el Excel).</small>
+          <div id="ed-tabla-cont" style="font-size:13px"><div style="color:var(--gris-texto)">Cargando…</div></div>
+        </div>
         <div class="modal-acciones">
           <button type="button" class="btn btn-secondary" onclick="cerrarEditarLaminaConAviso(this)">Cancelar</button>
           <button type="submit" class="btn btn-primary">Guardar</button>
@@ -1869,6 +1940,7 @@ function abrirModalEditarLamina(sheet, catalogId) {
     </div>
   `;
   document.body.appendChild(modal);
+  cargarTablaDeLamina(sheet.id, catalogId);
 
   // Cargar categorías disponibles + las que tiene esta lámina
   (async () => {
