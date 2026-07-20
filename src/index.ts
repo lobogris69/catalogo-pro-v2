@@ -29,6 +29,7 @@ import {
 } from './mega';
 import { generarTagsIA, resolverRutaImagen } from './ai-tags';
 import { detectarZonasIA, ultimoErrorIA, refinarRecuadroPrecio, detectarPreciosIA } from './ai-zones';
+import { parseExcelTabla, computarTabla, renderTablaExpositor } from './expositor-tablas';
 
 // ============================================================================
 // AI-TAGS - dispara generacion en background y hace UPDATE cuando esta listo.
@@ -861,6 +862,32 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_oferta_prod ON oferta(product_id);
       CREATE INDEX IF NOT EXISTS idx_oferta_marca ON oferta(marca);
       CREATE INDEX IF NOT EXISTS idx_oferta_familia ON oferta(familia);
+
+      -- ===== TABLAS DE EXPOSITOR (biblioteca) =====
+      -- Laminas de expositor con TABLA densa de precios (Leukoplast/Essity...). El admin
+      -- sube su Excel (con la estructura secciones/filas), la app calcula importes y totales
+      -- y la dibuja bonita, y se asocia a la(s) lamina(s) para sustituir el bloque de precios.
+      CREATE TABLE IF NOT EXISTS expositor_tabla (
+        id SERIAL PRIMARY KEY,
+        nombre VARCHAR(160) NOT NULL,
+        datos JSONB NOT NULL,            -- { titulo, secciones:[{titulo, filas:[{producto,medidas,cn,uds,pvl,dto}]}] }
+        origen VARCHAR(12) NOT NULL DEFAULT 'excel',  -- excel | manual
+        archivo VARCHAR(200),            -- nombre del xlsx original (informativo)
+        creado_por INTEGER REFERENCES users(id),
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      -- Asociacion tabla -> lamina + hueco (bbox %) donde se pega la tabla dibujada.
+      CREATE TABLE IF NOT EXISTS lamina_tabla (
+        id SERIAL PRIMARY KEY,
+        sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+        tabla_id INTEGER NOT NULL REFERENCES expositor_tabla(id) ON DELETE CASCADE,
+        x REAL NOT NULL DEFAULT 2, y REAL NOT NULL DEFAULT 20,
+        ancho REAL NOT NULL DEFAULT 60, alto REAL NOT NULL DEFAULT 65,
+        activo BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_lamina_tabla_sheet ON lamina_tabla(sheet_id);
 
       -- ===== Sync Sage - campos extra en clients (idempotente) =====
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS tarifa_precio INTEGER;
@@ -7209,6 +7236,97 @@ app.get('/api/catalogs/:id/pdf-hoy', verifyToken, async (req: AuthRequest, res: 
     if (!res.headersSent) res.status(500).json({ success: false, error: (e as Error).message });
     else res.end();
   }
+});
+
+// ============================================================================
+// TABLAS DE EXPOSITOR — biblioteca (subir Excel), calcular y dibujar.
+// ============================================================================
+const uploadTablaMem = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const n = file.originalname.toLowerCase();
+    cb(null, n.endsWith('.xlsx') || n.endsWith('.xls'));
+  }
+});
+
+// Subir un Excel -> parsear -> guardar como tabla nueva.
+app.post('/api/tablas', verifyToken, requireRealAdmin, uploadTablaMem.single('archivo'), async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.file) { res.status(400).json({ success: false, error: 'Sube un archivo Excel (.xlsx)' }); return; }
+    const datos = parseExcelTabla(req.file.buffer);
+    if (!datos.secciones.length) { res.status(422).json({ success: false, error: 'No se reconocieron filas de productos en el Excel. ¿Sigue la plantilla (Producto/Medidas/C.N./Uds/pvl/Dto)?' }); return; }
+    const calc = computarTabla(datos);
+    const nombre = (req.body.nombre ? String(req.body.nombre) : req.file.originalname.replace(/\.(xlsx|xls)$/i, '')).slice(0, 160);
+    const r = await pool.query(
+      `INSERT INTO expositor_tabla (nombre, datos, origen, archivo, creado_por)
+       VALUES ($1,$2,'excel',$3,$4) RETURNING id, nombre, updated_at`,
+      [nombre, JSON.stringify(datos), req.file.originalname.slice(0, 200), req.user?.id || null]);
+    res.json({ success: true, tabla: r.rows[0], n_filas: calc.n_filas, total: calc.total });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Listar tablas (con total y nº de filas calculados).
+app.get('/api/tablas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`SELECT id, nombre, datos, archivo, updated_at FROM expositor_tabla ORDER BY updated_at DESC`);
+    const tablas = r.rows.map((t: any) => {
+      const c = computarTabla(t.datos);
+      return { id: t.id, nombre: t.nombre, archivo: t.archivo, updated_at: t.updated_at, n_filas: c.n_filas, n_secciones: c.secciones.length, total: c.total };
+    });
+    res.json({ success: true, tablas });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Detalle (datos + calculado).
+app.get('/api/tablas/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`SELECT * FROM expositor_tabla WHERE id=$1`, [Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    res.json({ success: true, tabla: r.rows[0], calc: computarTabla(r.rows[0].datos) });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Previsualización PNG de la tabla dibujada.
+app.get('/api/tablas/:id/preview.png', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`SELECT datos FROM expositor_tabla WHERE id=$1`, [Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    const w = Number(req.query.w) || 1040;
+    const { buffer } = await renderTablaExpositor(r.rows[0].datos, { width: w });
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(buffer);
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Renombrar o sustituir por un Excel nuevo (actualización de precios).
+app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single('archivo'), async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (req.body.nombre !== undefined) { sets.push(`nombre=$${i++}`); vals.push(String(req.body.nombre).slice(0, 160)); }
+    if (req.file) {
+      const datos = parseExcelTabla(req.file.buffer);
+      if (!datos.secciones.length) { res.status(422).json({ success: false, error: 'El Excel no tiene filas reconocibles' }); return; }
+      sets.push(`datos=$${i++}`); vals.push(JSON.stringify(datos));
+      sets.push(`archivo=$${i++}`); vals.push(req.file.originalname.slice(0, 200));
+    }
+    if (!sets.length) { res.status(400).json({ success: false, error: 'Nada que actualizar' }); return; }
+    sets.push('updated_at=NOW()'); vals.push(id);
+    const r = await pool.query(`UPDATE expositor_tabla SET ${sets.join(', ')} WHERE id=$${vals.length} RETURNING id, nombre, updated_at`, vals);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    res.json({ success: true, tabla: r.rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Borrar tabla (y sus asociaciones, por el ON DELETE CASCADE).
+app.delete('/api/tablas/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`DELETE FROM expositor_tabla WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 app.get('/api/admin/limpiar-pruebas/preview', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
