@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v99 · 20 jul 2026';
+const APP_VERSION = 'v100 · 20 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12365,6 +12365,33 @@ function _pedirCampoPrecio(etiqueta, porCercania, notaFamilia) {
 
 // Crea un recuadro a partir de una caja dibujada: muestrea colores/afina la caja en el
 // servidor, ancla al producto de la zona que la contiene y pregunta el campo.
+// Diálogo: elegir DE QUÉ variante/formato es el precio dibujado (familias con precios
+// distintos). Muestra el precio de cada formato para no equivocarse. Devuelve variante | null.
+function _pedirVarianteFamilia(variantes, campo) {
+  return new Promise(resolve => {
+    const fmt = v => (v == null || v === '') ? '—' : Number(v).toFixed(2).replace('.', ',') + '€';
+    const et = campo === 'pvpr' ? 'P.V.P.R.' : 'P.V.F.';
+    const m = document.createElement('div');
+    m.className = 'modal-bg';
+    m.innerHTML = `
+      <div class="modal" style="max-width:480px">
+        <h3 style="margin-top:0">👓 ¿De qué formato es este precio?</h3>
+        <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">Esta familia tiene variantes con <b>${et} distinto</b>. Elige a cuál corresponde el precio que has dibujado, para que se reescriba el correcto.</div>
+        <div style="display:flex;flex-direction:column;gap:6px;max-height:50vh;overflow-y:auto">
+          ${variantes.map((v, i) => `<button type="button" class="btn zona-var-op" data-i="${i}" style="text-align:left;display:flex;justify-content:space-between;gap:10px;padding:12px;border:1.5px solid var(--gris-borde)">
+              <span><b>${escape(v.codigo || '')}</b><br><small style="color:var(--gris-texto)">${escape(v.nombre || '')}</small></span>
+              <span style="white-space:nowrap;font-weight:800;color:${campo === 'pvpr' ? 'var(--violet)' : 'var(--amber)'}">${fmt(campo === 'pvpr' ? v.pvpr : v.pvf)}</span>
+            </button>`).join('')}
+        </div>
+        <div class="modal-acciones" style="margin-top:12px"><button type="button" class="btn btn-secondary zona-var-op" data-i="-1">Cancelar</button></div>
+      </div>`;
+    m.querySelectorAll('.zona-var-op').forEach(b => b.addEventListener('click', () => {
+      const i = Number(b.dataset.i); m.remove(); resolve(i >= 0 ? variantes[i] : null);
+    }));
+    document.body.appendChild(m);
+  });
+}
+
 // Resuelve las variantes de una zona-FAMILIA (por lista curada o por modelo).
 async function _resolverVariantesFamilia(zona) {
   try {
@@ -12405,26 +12432,33 @@ async function crearRecuadroDibujado(x, y, ancho, alto) {
     }
     zona = best; porCercania = true;
   }
-  // Resolver el PRODUCTO al que va el precio. En familias, un precio impreso vale para todas
-  // las variantes: se usa una variante representante (la 1ª) como fuente del precio de BD.
+  // Resolver el PRODUCTO al que va el precio.
   let productId = zona.product_id || null;
-  let etiqueta, notaFamilia = '';
+  let etiqueta, variantesFam = null;
   if (!productId && esFam(zona)) {
-    const vars = await _resolverVariantesFamilia(zona);
-    if (!vars.length) { alert('No se pudieron resolver las variantes de esta familia. Revisa la zona.'); return; }
-    const rep = vars[0];
-    productId = rep.product_id;
-    etiqueta = 'Familia «' + (zona.familia_ref || zona.etiqueta || 'variantes') + '» → ' + (rep.codigo || '') + ' (' + vars.length + ' variantes)';
-    const precios = new Set(vars.map(v => String(v.pvf ?? '')));
-    notaFamilia = precios.size > 1
-      ? 'Las variantes tienen PVF distintos; se escribirá el de ' + (rep.codigo || 'la 1ª') + '. Si no encaja, mejor excluir esta lámina.'
-      : 'Todas las variantes comparten precio: se escribirá ese.';
+    variantesFam = await _resolverVariantesFamilia(zona);
+    if (!variantesFam.length) { alert('No se pudieron resolver las variantes de esta familia. Revisa la zona.'); return; }
+    etiqueta = 'Familia «' + (zona.familia_ref || zona.etiqueta || 'variantes') + '» · ' + variantesFam.length + ' variantes';
   } else {
     etiqueta = (zona.producto_codigo || '') + (zona.producto_nombre ? ' · ' + zona.producto_nombre : '');
   }
-  // Un ÚNICO diálogo: a qué va + qué precio es (con botones explícitos).
-  const campo = await _pedirCampoPrecio(etiqueta, porCercania, notaFamilia);
-  if (!campo) return; // cancelado: no se crea nada
+  // 1) qué precio es (PVF/PVPR).
+  const campo = await _pedirCampoPrecio(etiqueta, porCercania, '');
+  if (!campo) return;
+  // 2) si es familia: ¿todas las variantes comparten ese precio? Si SÍ, cualquiera vale.
+  //    Si NO (p.ej. 100 ml a 5,07€ y 500 ml a 12,94€), preguntamos DE QUÉ formato es este
+  //    precio, para enlazarlo al producto correcto (si no, el otro saldría mal).
+  if (!productId && variantesFam) {
+    const precioDe = v => campo === 'pvpr' ? v.pvpr : v.pvf;
+    const distintos = Array.from(new Set(variantesFam.map(v => precioDe(v)).filter(x => x != null && x !== '')));
+    if (distintos.length <= 1) {
+      productId = (variantesFam.find(v => precioDe(v) != null) || variantesFam[0]).product_id;
+    } else {
+      const elegido = await _pedirVarianteFamilia(variantesFam, campo);
+      if (!elegido) return; // cancelado
+      productId = elegido.product_id;
+    }
+  }
   let sug = null;
   try {
     const r = await api('/api/sheets/' + sheetId + '/recuadros/muestrear', { method: 'POST', body: { x, y, ancho, alto } });
