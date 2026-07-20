@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v101 · 20 jul 2026';
+const APP_VERSION = 'v102 · 20 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -5015,6 +5015,23 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE: Tablas de expositor -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">📊 Tablas de expositor
+            ${ayuda('Sube tus Excel de expositor (Leukoplast, etc.). La app calcula importes y totales y dibuja la tabla; luego la asocias a una lámina para sustituir su bloque de precios. Al actualizar precios, subes el Excel nuevo y todas las láminas que la usen se actualizan solas.', 'izq')}
+          </h3>
+          <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">
+            Sube el Excel con tu plantilla (Producto · Medidas · C.N. · Uds · pvl · Dto). La app calcula Neto, importes, subtotales y TOTAL.
+          </div>
+          <div id="tablas-lista"><div style="color:var(--gris-texto);font-size:13px;padding:12px;text-align:center">Cargando tablas…</div></div>
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--gris-borde)">
+            <label class="btn btn-primary btn-pequeno" style="cursor:pointer">📥 Subir Excel
+              <input type="file" accept=".xlsx,.xls" style="display:none" onchange="subirTablaExcel(this)">
+            </label>
+            <span id="tablas-msg" style="font-size:12px;color:var(--gris-texto);margin-left:8px"></span>
+          </div>
+        </div>
+
         <!-- BLOQUE: Interruptor maestro de precios dinámicos -->
         <div class="editor-panel" style="margin-top:14px">
           <h3 style="margin-top:0">💶 Precios dinámicos en las láminas
@@ -5148,6 +5165,8 @@ async function renderConfiguracion() {
     cargarResumenSyncSage();
     // Cargar ofertas / campañas (F4)
     cargarOfertasAdmin();
+    // Cargar biblioteca de tablas de expositor
+    cargarTablasAdmin();
     // Cargar config de tipografía de precios (F5 remate)
     cargarConfigPreciosAdmin();
   } catch (err) {
@@ -5166,6 +5185,72 @@ function _ofertaResumen(o) {
   const hoy = new Date().toISOString().slice(0, 10);
   const vig = o.activo && String(o.fecha_inicio).slice(0, 10) <= hoy && String(o.fecha_fin).slice(0, 10) >= hoy;
   return { amb, et, fechas: f(o.fecha_inicio) + ' → ' + f(o.fecha_fin), vig };
+}
+
+// ===== Tablas de expositor (biblioteca) =====
+async function cargarTablasAdmin() {
+  const $l = document.getElementById('tablas-lista');
+  if (!$l) return;
+  try {
+    const r = await api('/api/tablas');
+    const tablas = r.tablas || [];
+    if (!tablas.length) {
+      $l.innerHTML = `<div style="padding:1rem;background:var(--surface-2);border-radius:8px;color:#6b7280;font-size:13px;text-align:center">Aún no hay tablas. Sube tu primer Excel de expositor abajo.</div>`;
+      return;
+    }
+    const f = s => String(s || '').slice(0, 10).split('-').reverse().join('/');
+    $l.innerHTML = tablas.map(t => `
+      <div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--gris-borde);border-radius:8px;margin-bottom:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px">${escape(t.nombre)}</div>
+          <div style="font-size:12px;color:var(--gris-texto)">${t.n_secciones} secciones · ${t.n_filas} productos · TOTAL ${Number(t.total).toFixed(2).replace('.', ',')}€ · actualizada ${f(t.updated_at)}</div>
+        </div>
+        <button class="btn btn-secondary btn-pequeno" onclick="verTablaExpositor(${t.id}, '${escape((t.nombre || '').replace(/'/g, "\\'"))}')">👁️ Ver</button>
+        <label class="btn btn-secondary btn-pequeno" style="cursor:pointer" title="Actualizar precios: sube el Excel nuevo">🔄 Actualizar
+          <input type="file" accept=".xlsx,.xls" style="display:none" onchange="actualizarTablaExcel(${t.id}, this)"></label>
+        <button class="btn-borrar" onclick="borrarTablaExpositor(${t.id})" title="Eliminar tabla">✖</button>
+      </div>`).join('');
+  } catch (e) { $l.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`; }
+}
+
+async function _subirTabla(input, url, method) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const $m = document.getElementById('tablas-msg');
+  if ($m) $m.textContent = '⏳ Leyendo Excel…';
+  const fd = new FormData(); fd.append('archivo', file);
+  const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
+  try {
+    const r = await fetch(API + url, { method, headers, body: fd });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.success) throw new Error(data.error || 'Error ' + r.status);
+    if ($m) $m.textContent = data.total != null ? ('✅ ' + data.n_filas + ' filas · TOTAL ' + Number(data.total).toFixed(2).replace('.', ',') + '€') : '✅ Actualizada';
+    input.value = '';
+    cargarTablasAdmin();
+    setTimeout(() => { if ($m) $m.textContent = ''; }, 4000);
+  } catch (e) { if ($m) $m.textContent = '❌ ' + e.message; input.value = ''; }
+}
+function subirTablaExcel(input) { _subirTabla(input, '/api/tablas', 'POST'); }
+function actualizarTablaExcel(id, input) { _subirTabla(input, '/api/tablas/' + id, 'PUT'); }
+
+function verTablaExpositor(id, nombre) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal-card" style="max-width:90vw;max-height:90vh;display:flex;flex-direction:column">
+    <div class="modal-header"><h3>📊 ${escape(nombre || 'Tabla')}</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div style="overflow:auto"><img style="width:100%;height:auto;border:1px solid var(--gris-borde);border-radius:8px" alt="Cargando…"></div>
+  </div>`;
+  // La imagen necesita el token; la traemos como blob (no por src directo -> daría 401).
+  document.body.appendChild(m);
+  const img = m.querySelector('img');
+  const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
+  fetch(API + '/api/tablas/' + id + '/preview.png', { headers }).then(r => r.blob()).then(b => { img.src = URL.createObjectURL(b); }).catch(() => {});
+}
+
+async function borrarTablaExpositor(id) {
+  if (!confirm('¿Eliminar esta tabla de la biblioteca?\n\nSe quitará también de las láminas que la usen.')) return;
+  try { await api('/api/tablas/' + id, { method: 'DELETE' }); cargarTablasAdmin(); }
+  catch (e) { alert(e.message); }
 }
 
 async function cargarOfertasAdmin() {
