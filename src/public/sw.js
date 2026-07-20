@@ -16,7 +16,7 @@
  * El usuario decide cuándo activar el nuevo SW pulsando el banner.
  * ============================================================================ */
 
-const CACHE_VERSION = 'cpv2-shell-v98-20jul';
+const CACHE_VERSION = 'cpv2-shell-v99-20jul';
 // El nombre de la caché del shell LLEVA la versión: así, al desplegar, se crea una
 // caché nueva (con app.js/styles.css frescos) y `activate` borra las viejas. Antes el
 // nombre era constante ('cpv2-shell') y nunca se purgaba → servía el CSS/JS antiguo

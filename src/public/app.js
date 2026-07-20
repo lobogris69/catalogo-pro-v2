@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v98 · 20 jul 2026';
+const APP_VERSION = 'v99 · 20 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -641,6 +641,7 @@ async function renderEditorCatalogo(id) {
               <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
               ${sheets.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>${ayuda('Vista en cuadrícula para reordenar las láminas. Arrastra y suelta o escribe el número de orden.')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalDescargarPdf(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar PDF del catálogo">📥 Descargar PDF</button>${ayuda('Genera el PDF del catálogo en alta calidad (impresión) o pequeño (para enviar por WhatsApp/email a clientes).')}` : ''}
+              ${sheets.length > 0 && esAdminReal() ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirInformePrecios(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Informe de qué láminas hay que revisar/actualizar a mano en precios dinámicos">📋 Informe precios</button>` : ''}
               ${sheets.length > 0 && esAdminReal() ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirBackupMega(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Copia de respaldo en MEGA como fotos sueltas para cada comercial">☁️ Backup MEGA</button>${ayuda('Sube todas las láminas como PNG sueltos a MEGA en la carpeta de cada comercial (o en /General si el catálogo está asignado a todos). Sistema de respaldo por si la app falla: los comerciales abren la carpeta con el visor de fotos del móvil.', 'izq')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo actual: genera PDF + ZIP de respaldo descargables, queda registrado en el historial, y la versión sube V1→V2. Útil al final de cada temporada.', 'izq')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="borrarTodasLaminas(${id}, ${sheets.length})">🗑️ Borrar todas</button>` : ''}
@@ -7071,6 +7072,56 @@ async function verHistorialResumenes() {
 // ============================================================================
 // MEGA BACKUP - modal que arranca el job asincrono + polling con progreso
 // ============================================================================
+// Informe de precios dinámicos del catálogo: qué láminas revisar/actualizar a mano.
+async function abrirInformePrecios(catalogId, nombreCatalogo) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `<div class="modal-card" style="max-width:680px;max-height:88vh;display:flex;flex-direction:column">
+    <div class="modal-header"><h3>📋 Informe de precios · ${escape(nombreCatalogo || '')}</h3>
+      <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div id="informe-cuerpo" style="overflow-y:auto"><div class="loading" style="padding:24px">Analizando el catálogo…</div></div>
+  </div>`;
+  document.body.appendChild(modal);
+  let inf;
+  try { inf = (await api('/api/catalogs/' + catalogId + '/informe-precios')).informe; }
+  catch (e) { document.getElementById('informe-cuerpo').innerHTML = `<div class="error-msg" style="margin:16px">${escape(e.message)}</div>`; return; }
+  const irA = (sid) => { modal.remove(); abrirEditorZonas(sid, catalogId); };
+  window._informeIr = irA;
+  const lista = (arr, extra) => arr.map(x => `
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--gris-borde)">
+      <span style="background:#111827;color:#fff;border-radius:6px;padding:1px 8px;font-size:12px;font-weight:700;flex:0 0 auto">${x.numero}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600">${escape(x.titulo)}</div>
+        ${extra ? extra(x) : ''}
+      </div>
+      <button class="btn btn-secondary btn-pequeno" onclick="_informeIr(${x.sheet_id})">Abrir</button>
+    </div>`).join('');
+  const bloque = (icono, titulo, color, arr, desc, extra) => `
+    <details ${arr.length ? 'open' : ''} style="margin:0 0 6px">
+      <summary style="cursor:pointer;padding:10px 12px;font-weight:700;background:${color};border-radius:8px;list-style:none">
+        ${icono} ${titulo} <span style="background:#fff;border-radius:10px;padding:0 8px;font-size:12px">${arr.length}</span>
+      </summary>
+      ${arr.length ? `<div style="font-size:12px;color:var(--gris-texto);padding:6px 12px">${desc}</div>${lista(arr, extra)}` : `<div style="font-size:12px;color:var(--gris-texto);padding:8px 12px">Ninguna 👍</div>`}
+    </details>`;
+  const notasHtml = x => x.notas && x.notas.length
+    ? `<div style="font-size:12px;color:#b45309;margin-top:2px">⚠️ ${x.pendientes}/${x.total} sin aprobar · ${escape(x.notas.slice(0, 3).join(' · '))}${x.notas.length > 3 ? '…' : ''}</div>`
+    : `<div style="font-size:12px;color:#b45309;margin-top:2px">⚠️ ${x.pendientes}/${x.total} sin aprobar</div>`;
+  document.getElementById('informe-cuerpo').innerHTML = `
+    <div style="padding:12px 16px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <span class="lamina-estado-precios ok">✅ ${inf.ok} al día</span>
+        <span class="lamina-estado-precios pend">⚠️ ${inf.anomalas.length} con avisos</span>
+        <span class="lamina-estado-precios none">💶 ${inf.pendientes.length} sin precios</span>
+        <span class="lamina-estado-precios excl">🔒 ${inf.excluidas.length} excluidas</span>
+        <span style="font-size:12px;color:var(--gris-texto);align-self:center">de ${inf.total} láminas</span>
+      </div>
+      ${bloque('⚠️', 'Con precios anómalos (revisar)', '#fef3c7', inf.anomalas, 'Tienen precios detectados pero con avisos (PVPR dudoso, valor lejos del impreso…). No se muestran al cliente hasta aprobarlos.', notasHtml)}
+      ${bloque('💶', 'Sin precios (pendientes)', '#f3f4f6', inf.pendientes, 'Tienen productos/familias pero aún no se les han asignado precios. Ábrelas y detecta/dibuja.', null)}
+      ${bloque('🔒', 'Excluidas (a mano)', '#e5e7eb', inf.excluidas, 'Marcadas para hacer a mano; el sistema no las toca.', null)}
+      ${bloque('🧾', 'De comisión (no aplica)', '#f5f3ff', inf.comision, 'Productos de laboratorios a comisión: no están en Sage, no hay precio de BD que reescribir.', null)}
+    </div>`;
+}
+
 async function abrirBackupMega(catalogId, nombreCatalogo) {
   const modal = document.createElement('div');
   modal.className = 'modal-bg';

@@ -6723,6 +6723,52 @@ app.delete('/api/sheets/:id/recuadros', verifyToken, requireRealAdmin, async (re
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
+// INFORME de precios dinamicos de un catalogo: clasifica cada lamina para saber cuales
+// hay que revisar/actualizar a mano (no se actualizaron solas, precios anomalos, sin precio).
+app.get('/api/catalogs/:id/informe-precios', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catId = Number(req.params.id);
+    const sheets = (await pool.query(
+      `SELECT id, orden, titulo, precios_excluida FROM sheets
+        WHERE catalog_id=$1 AND (oculta IS NULL OR oculta=FALSE) ORDER BY orden, id`, [catId])).rows;
+    if (!sheets.length) { res.json({ success: true, informe: { pendientes: [], anomalas: [], comision: [], excluidas: [], ok: 0, total: 0 } }); return; }
+    const ids = sheets.map((s: any) => s.id);
+    // Zonas por lamina: precificables (producto/familia) vs comision/sueltas.
+    const zAgg = (await pool.query(
+      `SELECT sheet_id,
+              COUNT(*) FILTER (WHERE product_id IS NOT NULL OR familia_ref IS NOT NULL OR familia_skus IS NOT NULL)::int AS precif,
+              COUNT(*) FILTER (WHERE es_comision=TRUE OR permite_sueltas=TRUE)::int AS comis,
+              COUNT(*)::int AS total
+         FROM sheet_zones WHERE sheet_id = ANY($1::int[]) GROUP BY sheet_id`, [ids])).rows;
+    const zBy: any = {}; zAgg.forEach((r: any) => { zBy[r.sheet_id] = r; });
+    // Recuadros por lamina: activos, pendientes de revisar y sus notas (anomalias).
+    const rAgg = (await pool.query(
+      `SELECT r.sheet_id,
+              COUNT(*)::int AS n,
+              COUNT(*) FILTER (WHERE r.revisar=TRUE)::int AS pend,
+              ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN r.revisar=TRUE AND r.nota IS NOT NULL THEN
+                COALESCE(p.codigo,'') || ': ' || r.nota END), NULL) AS notas
+         FROM lamina_recuadro r LEFT JOIN products p ON p.id=r.product_id
+        WHERE r.sheet_id = ANY($1::int[]) AND r.activo=TRUE GROUP BY r.sheet_id`, [ids])).rows;
+    const rBy: any = {}; rAgg.forEach((r: any) => { rBy[r.sheet_id] = r; });
+
+    const pendientes: any[] = [], anomalas: any[] = [], comision: any[] = [], excluidas: any[] = [];
+    let ok = 0;
+    sheets.forEach((s: any, i: number) => {
+      const z = zBy[s.id] || { precif: 0, comis: 0, total: 0 };
+      const r = rBy[s.id] || { n: 0, pend: 0, notas: [] };
+      const num = s.orden != null ? s.orden : (i + 1);
+      const item = { sheet_id: s.id, numero: num, titulo: s.titulo || 'Sin título' };
+      if (s.precios_excluida) { excluidas.push(item); return; }
+      if (z.precif === 0) { if (z.comis > 0) comision.push(item); return; } // comision/sueltas o sin productos
+      if (r.n === 0) { pendientes.push(item); return; }                    // tiene productos pero 0 precios
+      if (r.pend > 0) { anomalas.push({ ...item, pendientes: r.pend, total: r.n, notas: r.notas || [] }); return; }
+      ok++;
+    });
+    res.json({ success: true, informe: { pendientes, anomalas, comision, excluidas, ok, total: sheets.length } });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
 // Excluir / incluir una lamina de los precios dinamicos (para expositores complejos que
 // se prefiere rehacer a mano). Excluida -> se ve y exporta TAL CUAL.
 app.put('/api/sheets/:id/precios-modo', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
