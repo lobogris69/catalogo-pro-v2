@@ -7372,6 +7372,9 @@ app.post('/api/sheets/:sheetId/tablas', verifyToken, requireRealAdmin, async (re
       [Number(req.params.sheetId), Number(b.tabla_id),
        b.x != null ? Number(b.x) : 2, b.y != null ? Number(b.y) : 20,
        b.ancho != null ? Number(b.ancho) : 60, b.alto != null ? Number(b.alto) : 65]);
+    // Asociar una tabla = querer automatizar esta lamina -> quitar la exclusion (si la tenia),
+    // que es contradictoria (excluida = no se toca nada, y la tabla justamente la toca).
+    await pool.query(`UPDATE sheets SET precios_excluida=FALSE WHERE id=$1 AND precios_excluida=TRUE`, [Number(req.params.sheetId)]);
     res.json({ success: true, asociacion: r.rows[0] });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
