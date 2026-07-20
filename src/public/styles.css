@@ -3766,6 +3766,7 @@ body.con-banner-update {
 .lamina-estado-precios.pend { background: #fef3c7; color: #b45309; }
 .lamina-estado-precios.none { background: var(--surface-2); color: var(--gris-texto); }
 .lamina-estado-precios.excl { background: #e5e7eb; color: #374151; }
+.lamina-estado-precios.tabla { background: #e0f2fe; color: #0369a1; }
 .lamina-estado-zonas.none { background: #f3f4f6; color: #9ca3af; }
 
 /* Zona-enlace en el visor: se pinta como un BOTÓN visible (deliberado) */

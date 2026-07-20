@@ -1672,9 +1672,15 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
       );
       const rBySheet: { [key: number]: { n: number; pend: number } } = {};
       for (const row of rR.rows) rBySheet[row.sheet_id] = { n: row.n, pend: row.pend };
+      // Tablas de expositor asociadas por lámina (distintivo "Tabla dinámica" en la rejilla).
+      const tR = await pool.query(
+        `SELECT sheet_id, COUNT(*)::int AS n FROM lamina_tabla WHERE sheet_id = ANY($1::int[]) AND activo=TRUE GROUP BY sheet_id`, [sheetIds]);
+      const tBySheet: { [key: number]: number } = {};
+      for (const row of tR.rows) tBySheet[row.sheet_id] = row.n;
       for (const s of sheetsRows) {
         s.num_recuadros = rBySheet[s.id]?.n || 0;
         s.num_recuadros_pend = rBySheet[s.id]?.pend || 0;
+        s.num_tablas = tBySheet[s.id] || 0;
       }
       for (const s of sheetsRows) {
         s.num_zonas = zBySheet[s.id] || 0;
@@ -6778,21 +6784,25 @@ app.get('/api/catalogs/:id/informe-precios', verifyToken, requireRealAdmin, asyn
          FROM lamina_recuadro r LEFT JOIN products p ON p.id=r.product_id
         WHERE r.sheet_id = ANY($1::int[]) AND r.activo=TRUE GROUP BY r.sheet_id`, [ids])).rows;
     const rBy: any = {}; rAgg.forEach((r: any) => { rBy[r.sheet_id] = r; });
+    // Láminas con tabla de expositor asociada.
+    const tAgg = (await pool.query(`SELECT sheet_id, COUNT(*)::int AS n FROM lamina_tabla WHERE sheet_id = ANY($1::int[]) AND activo=TRUE GROUP BY sheet_id`, [ids])).rows;
+    const tBy: any = {}; tAgg.forEach((r: any) => { tBy[r.sheet_id] = r.n; });
 
-    const pendientes: any[] = [], anomalas: any[] = [], comision: any[] = [], excluidas: any[] = [];
+    const pendientes: any[] = [], anomalas: any[] = [], comision: any[] = [], excluidas: any[] = [], tablas: any[] = [];
     let ok = 0;
     sheets.forEach((s: any, i: number) => {
       const z = zBy[s.id] || { precif: 0, comis: 0, total: 0 };
       const r = rBy[s.id] || { n: 0, pend: 0, notas: [] };
       const num = s.orden != null ? s.orden : (i + 1);
       const item = { sheet_id: s.id, numero: num, titulo: s.titulo || 'Sin título' };
+      if (tBy[s.id] > 0) { tablas.push(item); return; }                    // tabla de expositor: al día por sí sola
       if (s.precios_excluida) { excluidas.push(item); return; }
       if (z.precif === 0) { if (z.comis > 0) comision.push(item); return; } // comision/sueltas o sin productos
       if (r.n === 0) { pendientes.push(item); return; }                    // tiene productos pero 0 precios
       if (r.pend > 0) { anomalas.push({ ...item, pendientes: r.pend, total: r.n, notas: r.notas || [] }); return; }
       ok++;
     });
-    res.json({ success: true, informe: { pendientes, anomalas, comision, excluidas, ok, total: sheets.length } });
+    res.json({ success: true, informe: { pendientes, anomalas, comision, excluidas, tablas, ok, total: sheets.length } });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

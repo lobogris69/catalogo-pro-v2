@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v104 · 20 jul 2026';
+const APP_VERSION = 'v105 · 20 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -732,7 +732,9 @@ async function renderEditorCatalogo(id) {
                             : `<span class="lamina-estado-zonas none">⚪ Sin zonas</span>`)
                     ) : ''}
                     ${esAdmin ? (
-                      s.precios_excluida
+                      s.num_tablas > 0
+                        ? `<span class="lamina-estado-precios tabla" title="Lleva una tabla de expositor: se pega y se actualiza al cambiar el Excel">📊 Tabla dinámica</span>`
+                        : s.precios_excluida
                         ? `<span class="lamina-estado-precios excl" title="Excluida de los precios dinámicos: se ve y exporta tal cual (se rehace a mano)">🔒 Precios a mano</span>`
                         : (s.num_recuadros > 0
                           ? `<span class="lamina-estado-precios ${s.num_recuadros_pend > 0 ? 'pend' : 'ok'}" title="${s.num_recuadros_pend > 0 ? s.num_recuadros_pend + ' de ' + s.num_recuadros + ' pendientes de aprobar (no se muestran al cliente)' : 'Los ' + s.num_recuadros + ' precios se reescriben con el de la base de datos'}">💶 ${s.num_recuadros} precio${s.num_recuadros === 1 ? '' : 's'}${s.num_recuadros_pend > 0 ? ' · ⚠️ ' + s.num_recuadros_pend + ' sin aprobar' : ''}</span>`
@@ -12444,7 +12446,7 @@ async function borrarTodosLosRecuadros(sheetId, boton) {
 // Pendiente = tiene zonas dibujadas (hay productos que precificar) pero 0 recuadros.
 // Así se saltan portadas y separadores, que no tienen precios que asignar.
 // Pendiente = zonas dibujadas, 0 recuadros y NO excluida (las excluidas son a mano aposta).
-function _pendientePrecios(s) { return (s.num_zonas || 0) > 0 && !(s.num_recuadros > 0) && !s.precios_excluida; }
+function _pendientePrecios(s) { return (s.num_zonas || 0) > 0 && !(s.num_recuadros > 0) && !(s.num_tablas > 0) && !s.precios_excluida; }
 function _laminasPendientesPrecios() {
   return (_zonasEditor.sheets || []).filter(s => !s.oculta && _pendientePrecios(s));
 }
