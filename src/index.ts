@@ -517,6 +517,11 @@ async function initDB(): Promise<void> {
       ALTER TABLE sheets ADD COLUMN IF NOT EXISTS zones_ia_at TIMESTAMP;
       CREATE INDEX IF NOT EXISTS idx_sheets_zones_ia ON sheets(zones_ia_at);
 
+      -- Excluir esta lamina de los PRECIOS DINAMICOS. Para laminas complejas (expositores
+      -- con muchas referencias) donde reescribir precio a precio es arriesgado y se prefiere
+      -- rehacer la lamina a mano a la manera original. Excluida = se ve y exporta TAL CUAL.
+      ALTER TABLE sheets ADD COLUMN IF NOT EXISTS precios_excluida BOOLEAN NOT NULL DEFAULT FALSE;
+
       -- Marca cuando el ADMIN ha REVISADO y APROBADO a mano las zonas de la lamina
       -- (distinto de zones_ia_at, que es solo "la IA paso por aqui"). Para saber en la
       -- rejilla que laminas estan hechas de verdad y no perder tiempo re-abriendolas.
@@ -6718,6 +6723,17 @@ app.delete('/api/sheets/:id/recuadros', verifyToken, requireRealAdmin, async (re
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
+// Excluir / incluir una lamina de los precios dinamicos (para expositores complejos que
+// se prefiere rehacer a mano). Excluida -> se ve y exporta TAL CUAL.
+app.put('/api/sheets/:id/precios-modo', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const excluida = (req.body?.excluida === true || req.body?.excluida === 'true' || req.body?.excluida === 1 || req.body?.excluida === '1');
+    const r = await pool.query(`UPDATE sheets SET precios_excluida=$1, updated_at=NOW() WHERE id=$2 RETURNING precios_excluida`, [excluida, Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Lamina no encontrada' }); return; }
+    res.json({ success: true, precios_excluida: r.rows[0].precios_excluida });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
 // DELETE recuadro (admin real).
 app.delete('/api/recuadros/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
@@ -7041,12 +7057,12 @@ app.delete('/api/ofertas/:id', verifyToken, requireRealAdmin, async (req: AuthRe
 // PDF del catalogo o backup MEGA, sin depender de la app.
 // ============================================================================
 async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buffer | null> {
-  const s = await pool.query('SELECT imagen_path FROM sheets WHERE id=$1', [sheetId]);
+  const s = await pool.query('SELECT imagen_path, precios_excluida FROM sheets WHERE id=$1', [sheetId]);
   if (!s.rows.length) return null;
   const abs = resolverRutaImagen(s.rows[0].imagen_path, UPLOADS_DIR);
   if (!abs || !fs.existsSync(abs)) return null;
-  // Interruptor maestro APAGADO -> la lamina se exporta TAL CUAL (forma original).
-  if (!(await preciosDinamicosActivo())) return await sharp(abs).png().toBuffer();
+  // Interruptor maestro apagado O lamina EXCLUIDA -> se exporta TAL CUAL (forma original).
+  if (!(await preciosDinamicosActivo()) || s.rows[0].precios_excluida) return await sharp(abs).png().toBuffer();
   const meta = await sharp(abs).metadata();
   const W = meta.width || 0, H = meta.height || 0;
   if (!W || !H) return null;

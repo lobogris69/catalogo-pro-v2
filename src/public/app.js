@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v95 · 15 jul 2026';
+const APP_VERSION = 'v96 · 15 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -731,9 +731,11 @@ async function renderEditorCatalogo(id) {
                             : `<span class="lamina-estado-zonas none">⚪ Sin zonas</span>`)
                     ) : ''}
                     ${esAdmin ? (
-                      s.num_recuadros > 0
-                        ? `<span class="lamina-estado-precios ${s.num_recuadros_pend > 0 ? 'pend' : 'ok'}" title="${s.num_recuadros_pend > 0 ? s.num_recuadros_pend + ' de ' + s.num_recuadros + ' pendientes de aprobar (no se muestran al cliente)' : 'Los ' + s.num_recuadros + ' precios se reescriben con el de la base de datos'}">💶 ${s.num_recuadros} precio${s.num_recuadros === 1 ? '' : 's'}${s.num_recuadros_pend > 0 ? ' · ⚠️ ' + s.num_recuadros_pend + ' sin aprobar' : ''}</span>`
-                        : `<span class="lamina-estado-precios none" title="Esta lámina aún no tiene precios dinámicos asignados">💶 Sin precios</span>`
+                      s.precios_excluida
+                        ? `<span class="lamina-estado-precios excl" title="Excluida de los precios dinámicos: se ve y exporta tal cual (se rehace a mano)">🔒 Precios a mano</span>`
+                        : (s.num_recuadros > 0
+                          ? `<span class="lamina-estado-precios ${s.num_recuadros_pend > 0 ? 'pend' : 'ok'}" title="${s.num_recuadros_pend > 0 ? s.num_recuadros_pend + ' de ' + s.num_recuadros + ' pendientes de aprobar (no se muestran al cliente)' : 'Los ' + s.num_recuadros + ' precios se reescriben con el de la base de datos'}">💶 ${s.num_recuadros} precio${s.num_recuadros === 1 ? '' : 's'}${s.num_recuadros_pend > 0 ? ' · ⚠️ ' + s.num_recuadros_pend + ' sin aprobar' : ''}</span>`
+                          : `<span class="lamina-estado-precios none" title="Esta lámina aún no tiene precios dinámicos asignados">💶 Sin precios</span>`)
                     ) : ''}
                     ${catsChips ? `<div class="lamina-cats">${catsChips}</div>` : ''}
                     ${esAdmin ? `
@@ -1786,6 +1788,19 @@ async function editarLamina(sheetId) {
   }
 }
 
+// Excluir/incluir una lámina de los precios dinámicos. Se guarda AL VUELO (no espera al
+// "Guardar" del formulario, que solo toca título/notas/tags).
+async function togglePreciosExcluida(sheetId, chk) {
+  const $m = document.getElementById('ed-precios-excluida-msg');
+  const val = chk.checked;
+  chk.disabled = true;
+  try {
+    await api('/api/sheets/' + sheetId + '/precios-modo', { method: 'PUT', body: { excluida: val } });
+    if ($m) { $m.innerHTML = val ? '<span style="color:#b45309">🔒 Excluida — se exporta tal cual.</span>' : '<span style="color:#16a34a">✅ Incluida en precios dinámicos.</span>'; }
+  } catch (e) { chk.checked = !val; if ($m) $m.innerHTML = '<span style="color:#dc2626">Error: ' + escape(e.message) + '</span>'; }
+  chk.disabled = false;
+}
+
 function abrirModalEditarLamina(sheet, catalogId) {
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
@@ -1834,6 +1849,16 @@ function abrirModalEditarLamina(sheet, catalogId) {
           <small style="color:var(--gris-texto);display:block;margin-top:4px">
             Dibuja rectángulos sobre la lámina y asigna un producto a cada uno. Los comerciales podrán pulsarlos en la visita.
           </small>
+        </div>
+        <div class="form-group" style="border-top:1px solid var(--gris-borde);padding-top:12px">
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin:0">
+            <input type="checkbox" id="ed-precios-excluida" ${sheet.precios_excluida ? 'checked' : ''} onchange="togglePreciosExcluida(${sheet.id}, this)" style="margin-top:3px;width:18px;height:18px;flex:0 0 auto">
+            <span>
+              <b>🔒 Excluir de los precios dinámicos</b>
+              <small style="color:var(--gris-texto);display:block;margin-top:2px">Para láminas complejas (expositores con muchas referencias) que prefieres rehacer a mano. Marcada: se ve y se exporta <b>tal cual</b>, sin tocar ningún precio.</small>
+            </span>
+          </label>
+          <div id="ed-precios-excluida-msg" style="font-size:12px;margin-top:6px"></div>
         </div>
         <div class="modal-acciones">
           <button type="button" class="btn btn-secondary" onclick="cerrarEditarLaminaConAviso(this)">Cancelar</button>
@@ -3252,10 +3277,15 @@ async function cargarZonasComercial() {
 
 // F3 (precios dinámicos): recuadros que TAPAN el precio impreso y lo REESCRIBEN.
 let _recuadrosLamina = []; // recuadros activos de la lámina actual
+function _laminaVisorExcluida(sheetId) {
+  const s = (_visorSheets || []).find(x => x.id === sheetId);
+  return !!(s && s.precios_excluida);
+}
 async function cargarRecuadrosLamina(sheetId) {
   try {
     await cargarConfigPrecios(); // ANTES de pintar: si el interruptor está apagado, ni se piden
-    if (!_preciosDinamicosOn) { _recuadrosLamina = []; pintarRecuadrosPrecio(); return; }
+    // Interruptor maestro apagado O lámina EXCLUIDA -> lámina tal cual, sin reescribir.
+    if (!_preciosDinamicosOn || _laminaVisorExcluida(sheetId)) { _recuadrosLamina = []; pintarRecuadrosPrecio(); return; }
     const r = await api('/api/sheets/' + sheetId + '/recuadros');
     // SEGURIDAD: solo se reescribe un precio si el recuadro está activo Y NO marcado para
     // revisar. Los dudosos (confianza baja) se dejan con el precio impreso hasta que el
@@ -3382,7 +3412,9 @@ async function descargarPdfCatalogoHoy(catalogId, btn) {
 // FASE 1 (precios dinámicos): trae el precio de HOY de los productos de la lámina y repinta.
 async function cargarPreciosVigentesLamina() {
   await cargarConfigPrecios();
-  if (!_preciosDinamicosOn) { _preciosVigentes = {}; return; } // interruptor maestro apagado
+  const $w = document.getElementById('visor-imagen-wrapper');
+  const sid = $w ? Number($w.dataset.sheetId) : null;
+  if (!_preciosDinamicosOn || (sid && _laminaVisorExcluida(sid))) { _preciosVigentes = {}; return; }
   const ids = _zonasComercial.filter(z => z.product_id).map(z => Number(z.product_id));
   if (!ids.length) { _preciosVigentes = {}; return; }
   try {
@@ -12203,8 +12235,10 @@ async function borrarTodosLosRecuadros(sheetId, boton) {
 // ---- Salto a la SIGUIENTE lámina pendiente de precios (repaso de 350+ láminas) ----
 // Pendiente = tiene zonas dibujadas (hay productos que precificar) pero 0 recuadros.
 // Así se saltan portadas y separadores, que no tienen precios que asignar.
+// Pendiente = zonas dibujadas, 0 recuadros y NO excluida (las excluidas son a mano aposta).
+function _pendientePrecios(s) { return (s.num_zonas || 0) > 0 && !(s.num_recuadros > 0) && !s.precios_excluida; }
 function _laminasPendientesPrecios() {
-  return (_zonasEditor.sheets || []).filter(s => !s.oculta && (s.num_zonas || 0) > 0 && !(s.num_recuadros > 0));
+  return (_zonasEditor.sheets || []).filter(s => !s.oculta && _pendientePrecios(s));
 }
 function _siguienteSinPrecios() {
   const list = (_zonasEditor.sheets || []).filter(s => !s.oculta);
@@ -12212,7 +12246,7 @@ function _siguienteSinPrecios() {
   const i = list.findIndex(s => s.id === _zonasEditor.sheetId);
   for (let k = 1; k <= list.length; k++) {           // desde la siguiente, dando la vuelta
     const s = list[(Math.max(0, i) + k) % list.length];
-    if (s.id !== _zonasEditor.sheetId && (s.num_zonas || 0) > 0 && !(s.num_recuadros > 0)) return s;
+    if (s.id !== _zonasEditor.sheetId && _pendientePrecios(s)) return s;
   }
   return null;
 }
