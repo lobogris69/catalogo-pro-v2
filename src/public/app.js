@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v106 · 21 jul 2026';
+const APP_VERSION = 'v107 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -14614,8 +14614,9 @@ async function abrirMosaicoLaminas(catalogId) {
       </div>
     </div>
     <div class="mosaico-ayuda">
-      ✋ Arrastra una lámina para cambiar el orden · 👆 <b>Pulsa sobre las láminas para marcarlas</b>
-      y moverlas todas juntas (Mayúsculas + clic marca un rango seguido). Se guarda automáticamente.
+      ✋ Arrastra una lámina para cambiar el orden: se abrirá un <b>hueco magenta</b> en el sitio exacto
+      donde va a caer · 👆 <b>Pulsa sobre las láminas para marcarlas</b> y moverlas todas juntas
+      (Mayúsculas + clic marca un rango seguido). Se guarda automáticamente.
     </div>
     <div class="mosaico-barra-sel" id="mosaico-barra-sel" hidden>
       <span class="mosaico-barra-cuenta" id="mosaico-sel-cuenta"></span>
@@ -14722,15 +14723,22 @@ function limpiarSeleccionMosaico() {
   repintarMarcasMosaico();
 }
 
-// Reordena el array dejando el bloque marcado empezando en la posición destino (1-based).
-// Las marcadas conservan su orden relativo entre ellas.
-function moverBloqueMosaico(destino1) {
-  const bloque = _mosaicoSheets.filter(s => _mosaicoSel.has(s.id));
+// Núcleo del movimiento: saca las láminas de `ids` y las reinserta juntas en la
+// posición `i` contada SOBRE LAS QUE SE QUEDAN (así el hueco que se ve al arrastrar
+// coincide exactamente con el resultado). Conservan su orden relativo.
+function aplicarMovimientoBloque(i, ids) {
+  const set = new Set(ids);
+  const bloque = _mosaicoSheets.filter(s => set.has(s.id));
   if (!bloque.length) return false;
-  const resto = _mosaicoSheets.filter(s => !_mosaicoSel.has(s.id));
-  let i = Math.max(0, Math.min(resto.length, (destino1 | 0) - 1));
+  const resto = _mosaicoSheets.filter(s => !set.has(s.id));
+  i = Math.max(0, Math.min(resto.length, i | 0));
   _mosaicoSheets = [...resto.slice(0, i), ...bloque, ...resto.slice(i)];
   return true;
+}
+
+// Mueve las marcadas a la posición destino (1-based), para el botón y el número.
+function moverBloqueMosaico(destino1) {
+  return aplicarMovimientoBloque((destino1 | 0) - 1, [..._mosaicoSel]);
 }
 
 async function moverSeleccionAPosicion() {
@@ -14815,8 +14823,49 @@ async function aplicarMoverPorNumero(input) {
 function activarDragDropMosaico() {
   const grid = document.getElementById('mosaico-grid');
   if (!grid) return;
-  // `arrastrando` es SIEMPRE una lista: 1 tarjeta suelta, o todas las marcadas (bloque)
+  // `arrastrando` es SIEMPRE una lista: 1 tarjeta suelta, o todas las marcadas (bloque).
+  // Las tarjetas NO se recolocan mientras arrastras (antes bailaban y no se entendía
+  // dónde iban a caer): se abre un HUECO magenta en el punto exacto de destino.
   let arrastrando = [];
+  let marcador = null;
+  let refActual;
+
+  function ponerMarcador(ref) {
+    if (!marcador) {
+      marcador = document.createElement('div');
+      marcador.className = 'mosaico-insercion';
+      marcador.id = 'mosaico-insercion';
+    }
+    const n = arrastrando.length;
+    marcador.innerHTML = `<span>⬇<br>${n === 1 ? 'Aquí' : 'Aquí las ' + n}</span>`;
+    if (ref !== refActual || !marcador.parentNode) {
+      refActual = ref;
+      grid.insertBefore(marcador, ref || null);
+    }
+  }
+
+  function quitarMarcador() {
+    if (marcador && marcador.parentNode) marcador.remove();
+    refActual = undefined;
+  }
+
+  // Posición de destino contada solo sobre las láminas que NO se mueven
+  function indiceDestino() {
+    let i = 0;
+    for (const nodo of grid.children) {
+      if (nodo === marcador) return i;
+      if (nodo.classList.contains('mosaico-card') && !arrastrando.includes(nodo)) i++;
+    }
+    return i;
+  }
+
+  // Soltar en el espacio vacío del final = mandar al final del catálogo
+  grid.addEventListener('dragover', (e) => {
+    if (!arrastrando.length) return;
+    e.preventDefault();
+    if (e.target === grid) ponerMarcador(null);
+  });
+  grid.addEventListener('drop', (e) => { if (arrastrando.length) e.preventDefault(); });
 
   grid.querySelectorAll('.mosaico-card').forEach(card => {
     card.addEventListener('dragstart', (e) => {
@@ -14829,32 +14878,33 @@ function activarDragDropMosaico() {
         arrastrando = [card];
       }
       arrastrando.forEach(c => c.classList.add('mosaico-arrastrando'));
+      grid.classList.add('mosaico-arrastrando-activo');
       e.dataTransfer.effectAllowed = 'move';
       try { e.dataTransfer.setData('text/plain', String(card.dataset.id || '')); } catch(_) {}
     });
+
     card.addEventListener('dragend', async () => {
+      const hayDestino = !!(marcador && marcador.parentNode);
+      const destino = hayDestino ? indiceDestino() : -1;
+      const ids = arrastrando.map(n => Number(n.dataset.id));
       arrastrando.forEach(c => c.classList.remove('mosaico-arrastrando'));
+      grid.classList.remove('mosaico-arrastrando-activo');
+      quitarMarcador();
       arrastrando = [];
-      if (_mosaicoCambios) {
+      if (hayDestino && aplicarMovimientoBloque(destino, ids)) {
+        pintarMosaicoReorden();      // renumera y deja el DOM igual que el orden real
         await guardarOrdenMosaico();
-        pintarMosaicoReorden(); // refresca números e índices tras mover
       }
     });
+
     card.addEventListener('dragover', (e) => {
+      if (!arrastrando.length) return;
       e.preventDefault();
-      if (!arrastrando.length || arrastrando.includes(card)) return;
+      e.stopPropagation();
+      if (arrastrando.includes(card)) return;
       const rect = card.getBoundingClientRect();
-      const despues = (e.clientY - rect.top) > rect.height / 2 || (e.clientX - rect.left) > rect.width / 2;
-      // Referencia de inserción: saltando las que se están arrastrando, porque
-      // insertBefore(nodo, elMismoNodo) no movería nada.
-      let ref = despues ? card.nextSibling : card;
-      while (ref && arrastrando.includes(ref)) ref = ref.nextSibling;
-      arrastrando.forEach(n => card.parentNode.insertBefore(n, ref));
-      _mosaicoCambios = true;
-      Array.from(grid.querySelectorAll('.mosaico-card')).forEach((c, i) => {
-        const n = c.querySelector('.mosaico-num');
-        if (n) { n.value = String(i + 1); n.dataset.pos = String(i + 1); }
-      });
+      const despues = (e.clientX - rect.left) > rect.width / 2;
+      ponerMarcador(despues ? card.nextSibling : card);
     });
   });
 }

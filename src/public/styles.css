@@ -3998,8 +3998,38 @@ body.con-banner-update {
   box-shadow: 0 6px 16px rgba(0,0,0,0.4);
 }
 .mosaico-arrastrando {
-  opacity: 0.4;
-  border: 2px dashed #0ea5e9;
+  opacity: 0.35;
+  filter: grayscale(0.6);
+  outline: 3px dashed var(--brand, #d80a6b);
+  outline-offset: -3px;
+}
+/* Mientras se arrastra, las demás no deben "saltar" al pasar por encima */
+.mosaico-arrastrando-activo .mosaico-card:hover {
+  transform: none;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+/* Hueco de destino: dónde van a caer exactamente las láminas */
+.mosaico-insercion {
+  height: 250px;
+  border-radius: 8px;
+  border: 3px dashed var(--brand, #d80a6b);
+  background: rgba(216, 10, 107, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.5;
+  animation: mosaicoLatido 1s ease-in-out infinite;
+}
+@keyframes mosaicoLatido {
+  0%, 100% { background: rgba(216, 10, 107, 0.18); }
+  50%      { background: rgba(216, 10, 107, 0.38); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mosaico-insercion { animation: none; }
 }
 .mosaico-num {
   position: absolute;
