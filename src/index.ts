@@ -7197,9 +7197,24 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
     if (rec.sep_decimal !== '.') t = t.replace('.', ',');
     return (rec.prefijo || '') + t + (rec.sufijo == null ? '€' : rec.sufijo);
   };
+  // Huecos de las TABLAS de expositor asociadas. Se cargan ANTES de pintar los
+  // precios porque un precio que caiga dentro de una tabla NO debe escribirse:
+  // la tabla ya trae ese precio, y encima salia superpuesto y enorme sobre ella.
+  const lt = await pool.query(
+    `SELECT lt.x, lt.y, lt.ancho, lt.alto, t.datos FROM lamina_tabla lt
+       JOIN expositor_tabla t ON t.id = lt.tabla_id
+      WHERE lt.sheet_id = $1 AND lt.activo = TRUE`, [sheetId]);
+  const huecos = lt.rows.map((r: any) => ({ x: Number(r.x), y: Number(r.y), x2: Number(r.x) + Number(r.ancho), y2: Number(r.y) + Number(r.alto) }));
+  // ¿El centro del recuadro cae dentro de algún hueco de tabla? (en %)
+  const dentroDeTabla = (rec: any) => {
+    const cx = Number(rec.x) + Number(rec.ancho) / 2, cy = Number(rec.y) + Number(rec.alto) / 2;
+    return huecos.some(h => cx >= h.x && cx <= h.x2 && cy >= h.y && cy <= h.y2);
+  };
+
   let els = '';
   // Recuadros de precio (tapar + reescribir precio de HOY)
   for (const rec of recs) {
+    if (dentroDeTabla(rec)) continue;   // esa zona la cubre una tabla de expositor
     const pr = rec.product_id ? precios[rec.product_id] : null; if (!pr) continue;
     const val = rec.campo === 'pvpr' ? pr.pvpr : pr.pvf; if (val == null) continue;
     const txt = fmt(Number(val), rec);
@@ -7216,6 +7231,7 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
   }
   // Ofertas: badge arriba-derecha de la zona
   for (const z of zonas) {
+    if (dentroDeTabla(z)) continue;     // esa zona la cubre una tabla de expositor
     const of = ofertas[z.product_id]; if (!of) continue;
     const label = String(of.label || 'Oferta');
     const fs2 = W * 0.013;
@@ -7227,12 +7243,8 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
     els += `<rect x="${bx}" y="${by0}" width="${bw}" height="${bh}" rx="${bh * 0.3}" fill="${of.color || '#dc2626'}"/>`;
     els += `<text x="${bx + bw / 2}" y="${by0 + bh / 2 + fs2 * 0.35}" font-family="Liberation Sans, Arial, DejaVu Sans, sans-serif" font-weight="800" font-size="${fs2}" fill="#ffffff" text-anchor="middle">${esc(label)}</text>`;
   }
-  // TABLAS de expositor asociadas: tapan su hueco (rect blanco) y pegan la tabla dibujada.
+  // TABLAS de expositor asociadas: se pegan dibujadas (ya cargadas arriba en `lt`).
   const tablasComposites: sharp.OverlayOptions[] = [];
-  const lt = await pool.query(
-    `SELECT lt.x, lt.y, lt.ancho, lt.alto, t.datos FROM lamina_tabla lt
-       JOIN expositor_tabla t ON t.id = lt.tabla_id
-      WHERE lt.sheet_id = $1 AND lt.activo = TRUE`, [sheetId]);
   for (const row of lt.rows) {
     const bx = Math.round(row.x / 100 * W), by = Math.round(row.y / 100 * H);
     const bw = Math.round(row.ancho / 100 * W), bh = Math.round(row.alto / 100 * H);
