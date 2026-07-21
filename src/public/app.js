@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v122 · 21 jul 2026';
+const APP_VERSION = 'v123 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -5461,12 +5461,15 @@ function hacerDialogoArrastrable(caja, asa) {
 }
 
 // Carga la imagen de una tabla en un <img> (necesita token -> se trae como blob).
-async function cargarPreviewTabla(id, img) {
+async function cargarPreviewTabla(id, img, anchoPct) {
   if (!img || !id) return;
   img.alt = 'Cargando vista previa…';
   const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
   try {
-    const r = await fetch(API + '/api/tablas/' + id + '/preview.png?w=900', { headers });
+    // anchoPct = % de la lámina que ocupa el hueco: hace que la vista previa use
+    // la misma letra que al pegarla (ver FS_TABLA en el servidor).
+    const extra = anchoPct > 0 ? '&anchoPct=' + anchoPct : '';
+    const r = await fetch(API + '/api/tablas/' + id + '/preview.png?w=900' + extra, { headers });
     if (!r.ok) throw new Error('no se pudo cargar');
     if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
     const url = URL.createObjectURL(await r.blob());
@@ -13045,7 +13048,7 @@ async function renderTablasEnLienzo(sheetId, catalogId) {
       d.style.minHeight = '0';   // ya está la tabla: el alto de la caja es el suyo
     };
     d.appendChild(prev);
-    cargarPreviewTabla(a.tabla_id, prev);
+    cargarPreviewTabla(a.tabla_id, prev, a.ancho);
     const lbl = document.createElement('span'); lbl.className = 'zona-tabla-lbl'; lbl.textContent = '📊 ' + (a.tabla_nombre || 'Tabla');
     d.appendChild(lbl);
     // Interruptor de opacidad: ver la tabla sólida o semitransparente para
@@ -13107,7 +13110,16 @@ function _hacerTablaArrastrable(d, a, sheetId) {
     if (s.nx != null) { body.x = s.nx; body.y = s.ny; }
     // El alto que se guarda es el que ha quedado de verdad (lo marca la tabla).
     if (s.nw != null) { body.ancho = s.nw; body.alto = _altoRealCaja(d, wrap); }
-    try { await api('/api/lamina-tabla/' + a.id, { method: 'PUT', body }); if (body.x != null) { a.x = body.x; a.y = body.y; } if (body.ancho != null) { a.ancho = body.ancho; a.alto = body.alto; } }
+    try {
+      await api('/api/lamina-tabla/' + a.id, { method: 'PUT', body });
+      if (body.x != null) { a.x = body.x; a.y = body.y; }
+      if (body.ancho != null) {
+        a.ancho = body.ancho; a.alto = body.alto;
+        // Al cambiar el ancho, las columnas se separan (la letra no crece):
+        // se vuelve a pedir la imagen para verlo tal cual quedará.
+        cargarPreviewTabla(a.tabla_id, d.querySelector('.zona-tabla-img'), a.ancho);
+      }
+    }
     catch (e) { alert('No se pudo guardar: ' + e.message); renderTablasEnLienzo(sheetId, _zonasEditor.catalogId); }
   };
   const down = (e) => {

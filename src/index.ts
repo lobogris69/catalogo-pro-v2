@@ -7144,6 +7144,12 @@ app.delete('/api/ofertas/:id', verifyToken, requireRealAdmin, async (req: AuthRe
 // aprobados) + las ofertas vigentes. Sirve para descargar/compartir (WhatsApp),
 // PDF del catalogo o backup MEGA, sin depender de la app.
 // ============================================================================
+// Tamano de letra de las tablas de expositor, como fraccion del ANCHO DE LA
+// LAMINA. Es fijo a proposito: al ensanchar el hueco se separan las columnas,
+// no crece la letra. El editor usa esta misma constante para que la vista previa
+// coincida con lo que se pega (ver FS_TABLA en app.js).
+const FS_TABLA = 0.011;
+
 // Color de fondo de la lamina alrededor del hueco de una tabla. Se muestrea una
 // franja JUSTO ENCIMA (y si no, a la izquierda) del sitio donde va la tabla, para
 // que el rectangulo que tapa la tabla vieja se funda con la lamina en vez de ser
@@ -7261,7 +7267,10 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
       // Como la tabla se dibuja al ancho del hueco, el hueco queda cubierto a lo
       // ancho; si sobra alto, es sitio que él ha dibujado de más.
       const fondo = await colorFondoLamina(abs, W, H, bx, by, bw, bh);
-      const { buffer: tb } = await renderTablaExpositor(row.datos, { width: bw, fondo });
+      // Letra proporcional a LA LÁMINA (no al hueco): así todas las tablas del
+      // catálogo tienen la misma letra, y ensanchar el hueco separa columnas sin
+      // agrandar la letra ni el alto.
+      const { buffer: tb } = await renderTablaExpositor(row.datos, { width: bw, fondo, fs: W * FS_TABLA });
       // MANDA EL ANCHO: la tabla se pega ocupando todo el ancho del hueco, que es
       // lo que tiene que tapar. Antes, si salía más alta que el hueco se encogía
       // entera (contain) y al encogerla se ESTRECHABA -> dejaba de cubrir la tabla
@@ -7434,7 +7443,12 @@ app.get('/api/tablas/:id/preview.png', verifyToken, async (req: AuthRequest, res
     const r = await pool.query(`SELECT datos FROM expositor_tabla WHERE id=$1 AND deleted_at IS NULL`, [Number(req.params.id)]);
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
     const w = Number(req.query.w) || 1040;
-    const { buffer } = await renderTablaExpositor(r.rows[0].datos, { width: w });
+    // `anchoPct` = qué porcentaje de la lámina ocupa el hueco. Con eso la vista
+    // previa usa la MISMA letra proporcional que al pegarla, y lo que se ve
+    // colocando es lo que sale (si no viene, letra por defecto).
+    const pct = Number(req.query.anchoPct);
+    const fs = (pct > 0 && pct <= 100) ? (w / (pct / 100)) * FS_TABLA : undefined;
+    const { buffer } = await renderTablaExpositor(r.rows[0].datos, { width: w, fs });
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Cache-Control', 'no-store');
     res.send(buffer);

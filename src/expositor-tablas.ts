@@ -352,7 +352,10 @@ function partirTexto(s: string, fs: number, ancho: number, maxLineas: number): s
 const BRAND = '#d80a6b', BRAND2 = '#9a1259', PLOMO = '#3a2b33';
 const HEAD_BG = '#f3e3ec', ZEBRA = '#faf5f8', LINEA = '#ead9e3';
 
-export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: number; fondo?: string }): Promise<{ buffer: Buffer; width: number; height: number }> {
+// opts.fs = tamano de letra en px. Al pegar en una lamina se pasa un tamano
+// proporcional a LA LAMINA, no al hueco: asi ensanchar el hueco separa las
+// columnas pero NO agranda la letra ni el alto (estirar de lado, no en diagonal).
+export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: number; fondo?: string; fs?: number }): Promise<{ buffer: Buffer; width: number; height: number }> {
   const calc: any = computarTabla(datos);
   if (!calc.fiel) return renderLegado(calc, opts);   // tablas guardadas antes del cambio
 
@@ -366,7 +369,7 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
   }
 
   let y = M, els = '';
-  const fsBase = Math.round(W * 0.0145);
+  const fsBase = Math.max(5, Math.round(opts?.fs || W * 0.0145));
   if (calc.titulo) {
     els += `<text x="${M}" y="${y + fsBase}" font-family="${FUENTE}" font-weight="700" font-size="${Math.round(fsBase * 1.4)}" fill="${BRAND2}">${esc(calc.titulo)}</text>`;
     y += Math.round(fsBase * 2.2);
@@ -399,31 +402,22 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
       for (const f of filas) if (f.tipo !== 'seccion' && f.tipo !== 'cabecera') mx = Math.max(mx, anchoTexto(f.celdas[i] || '', tam));
       return mx + tam * 1.3;
     });
-    // La tabla OCUPA EL HUECO que dibuja el usuario: se escala la letra hasta que
-    // el contenido mide justo el ancho del hueco. Antes solo se encogía si no
-    // cabía, así que una tabla de pocas columnas se quedaba en un 37% del hueco
-    // (pequeñita arriba a la izquierda) y el resto quedaba vacío. Ojo: esto NO
-    // separa las columnas — se agranda todo junto, columnas pegadas.
+    // LA LETRA NO CRECE CON EL ANCHO. La tabla llena el hueco SEPARANDO las
+    // columnas, no agrandando la letra: por eso estirar de lado ensancha las
+    // columnas y NO cambia el alto (antes todo crecía junto, en diagonal).
+    // La letra solo se ENCOGE si el contenido no cabe de ninguna manera.
     let fs = fsBase;
-    let anchos = medir(fs);
-    let suma = anchos.reduce((a, x) => a + x, 0) || 1;
-    for (let i = 0; i < 3 && Math.abs(suma - cw) > cw * 0.01; i++) {
-      fs = Math.max(6, Math.min(fsBase * 3, fs * (cw / suma)));
-      anchos = medir(fs);
-      suma = anchos.reduce((a, x) => a + x, 0) || 1;
+    let naturales = medir(fs);
+    let suma = naturales.reduce((a, x) => a + x, 0) || 1;
+    if (suma > cw) {
+      fs = Math.max(6, fs * (cw / suma));
+      naturales = medir(fs);
+      suma = naturales.reduce((a, x) => a + x, 0) || 1;
     }
-    {
-      if (suma > cw) {
-        // Ni con la letra al minimo: las centradas conservan su ancho y el resto
-        // se reparte entre las de texto, que pueden ir a dos lineas.
-        const anchoFijo = anchos.reduce((a, x, i) => a + (centrar[i] ? x : 0), 0);
-        const resto = Math.max(cw * 0.25, cw - anchoFijo);
-        const sumaTxt = anchos.reduce((a, x, i) => a + (centrar[i] ? 0 : x), 0) || 1;
-        anchos = anchos.map((x, i) => centrar[i] ? x : (x / sumaTxt) * resto);
-        suma = Math.min(cw, anchos.reduce((a, x) => a + x, 0));
-      }
-    }
-    layouts.push({ b, fs, pad: Math.round(fs * 0.6), lineH: Math.round(fs * 1.22), anchos, tw: Math.ceil(suma), centrar });
+    // El ancho sobrante se reparte entre las columnas (proporcional a lo que
+    // ocupa cada una), de modo que la tabla mide justo el ancho del hueco.
+    const anchos = naturales.map(x => (x / suma) * cw);
+    layouts.push({ b, fs, pad: Math.round(fs * 0.6), lineH: Math.round(fs * 1.22), anchos, tw: Math.round(cw), centrar });
   }
   if (!layouts.length) {
     const vacio = await sharp({ create: { width: 300, height: 60, channels: 3, background: '#fff' } }).png().toBuffer();
