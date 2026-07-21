@@ -7295,8 +7295,12 @@ app.post('/api/tablas', verifyToken, requireRealAdmin, uploadTablaMem.single('ar
     // Cortafuegos: si el TOTAL sale 0 es que las columnas leidas no son las buenas
     // (paso con los Leukoplast: se tomo el C.N. como precio y las uds quedaron a 0).
     // Antes se guardaba la tabla con datos basura sin avisar. Ahora se rechaza.
-    if (!calc.total) {
-      res.status(422).json({ success: false, error: `He leído ${calc.n_filas} productos pero TODOS los importes salen 0 €, así que las columnas que estoy leyendo no son las correctas. No guardo la tabla para no meter precios falsos. Esto es lo que he leído — ` + resumenExcel(req.file.buffer) });
+    // Cortafuegos: lo que valida la lectura son los PRECIOS (en una tarifa sin
+    // unidades no hay importes). Si todos los precios salen 0, las columnas leidas
+    // no son las buenas y no se guarda nada (paso con los Leukoplast: se tomo el
+    // C.N. como precio). Antes se guardaba basura sin avisar.
+    if (!calc.suma_precios) {
+      res.status(422).json({ success: false, error: `He leído ${calc.n_filas} productos pero TODOS los precios salen 0 €, así que las columnas que estoy leyendo no son las correctas. No guardo la tabla para no meter precios falsos. Esto es lo que he leído — ` + resumenExcel(req.file.buffer) });
       return;
     }
     const nombre = (req.body.nombre ? String(req.body.nombre) : req.file.originalname.replace(/\.(xlsx|xls)$/i, '')).slice(0, 160);
@@ -7353,8 +7357,8 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
       const datos = parseExcelTabla(req.file.buffer);
       if (!datos.secciones.length) { res.status(422).json({ success: false, error: 'No se reconocieron filas de productos. Esto es lo que he leído — ' + resumenExcel(req.file.buffer) }); return; }
       calc = computarTabla(datos);
-      if (!calc.total) {
-        res.status(422).json({ success: false, error: `He leído ${calc.n_filas} productos pero TODOS los importes salen 0 €: las columnas que leo no son las correctas. No toco la tabla anterior. Esto es lo que he leído — ` + resumenExcel(req.file.buffer) });
+      if (!calc.suma_precios) {
+        res.status(422).json({ success: false, error: `He leído ${calc.n_filas} productos pero TODOS los precios salen 0 €: las columnas que leo no son las correctas. No toco la tabla anterior. Esto es lo que he leído — ` + resumenExcel(req.file.buffer) });
         return;
       }
       sets.push(`datos=$${i++}`); vals.push(JSON.stringify(datos));

@@ -11,7 +11,9 @@ import sharp from 'sharp';
 
 export interface FilaTabla { producto: string; medidas: string; cn: string; uds: number; pvl: number; dto: number; }
 export interface SeccionTabla { titulo: string; filas: FilaTabla[]; }
-export interface DatosTabla { titulo?: string; secciones: SeccionTabla[]; }
+// sin_uds = el Excel NO trae columna de unidades: es una TARIFA (lista de precios),
+// no una composicion de expositor. Sin unidades no hay importes ni TOTAL que sumar.
+export interface DatosTabla { titulo?: string; secciones: SeccionTabla[]; sin_uds?: boolean; }
 
 const num = (v: any): number | null => {
   if (v == null || v === '') return null;
@@ -45,16 +47,41 @@ const SINONIMOS: { [campo: string]: string[] } = {
 
 type Mapa = { [campo: string]: number };
 
+// Segunda pasada: cabeceras que CONTIENEN la palabra clave ("Uds. expositor",
+// "Cantidad por caja", "% Dto.", "Descripcion del articulo"...). Solo para los
+// campos que la pasada exacta no ha encontrado, y sin tocar 'pvl' (ahi la
+// coincidencia debe ser exacta para no confundir "pvl dto" o "pvp" con el pvl).
+// OJO con "desc": "Descripción del artículo" NO es un descuento. Por eso 'desc'
+// solo vale si es la palabra entera, y el orden pone 'producto' antes que 'dto'.
+const PARCIAL: { [campo: string]: RegExp } = {
+  producto: /(producto|descripcion|articulo|denominacion|referencia|concepto)/,
+  cn:       /(codigonacional|codnacional|^cn$|^ean)/,
+  uds:      /(uds|unds|unid|cantidad|^cant|ctd|piezas)/,
+  dto:      /(^dto|^dcto|^dscto|^desc$|descuento|rappel)/,
+  medidas:  /(medida|formato|tamano|presentacion|variedad)/,
+};
+
 // Busca en las primeras filas una que parezca la cabecera de la tabla.
 function detectarCabecera(rows: any[][]): { fila: number; mapa: Mapa } | null {
   for (let r = 0; r < Math.min(rows.length, 40); r++) {
     const fila = rows[r] || [];
     const mapa: Mapa = {};
+    const usadas = new Set<number>();
+    // 1) coincidencia exacta
     for (let c = 0; c < fila.length; c++) {
       const v = norm(fila[c]);
       if (!v) continue;
       for (const campo of Object.keys(SINONIMOS)) {
-        if (mapa[campo] === undefined && SINONIMOS[campo].includes(v)) { mapa[campo] = c; break; }
+        if (mapa[campo] === undefined && SINONIMOS[campo].includes(v)) { mapa[campo] = c; usadas.add(c); break; }
+      }
+    }
+    // 2) coincidencia parcial para lo que falte
+    for (let c = 0; c < fila.length; c++) {
+      if (usadas.has(c)) continue;
+      const v = norm(fila[c]);
+      if (!v) continue;
+      for (const campo of Object.keys(PARCIAL)) {
+        if (mapa[campo] === undefined && PARCIAL[campo].test(v)) { mapa[campo] = c; usadas.add(c); break; }
       }
     }
     // Vale como cabecera si hay precio y algo que identifique el producto.
@@ -123,15 +150,20 @@ const cuentaFilas = (ss: SeccionTabla[]) => ss.reduce((a, s) => a + s.filas.leng
 export function parseExcelTabla(buffer: Buffer): DatosTabla {
   const wb = XLSX.read(buffer, { type: 'buffer' });
   let mejor: SeccionTabla[] = [];
+  let mejorSinUds = false;
   for (const nombreHoja of wb.SheetNames) {
     const ws = wb.Sheets[nombreHoja];
     if (!ws) continue;
     const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
     const cab = detectarCabecera(rows);
     const cand = cab ? leerConMapa(rows, cab.fila, cab.mapa) : leerColumnasFijas(rows);
-    if (cuentaFilas(cand) > cuentaFilas(mejor)) mejor = cand;
+    if (cuentaFilas(cand) > cuentaFilas(mejor)) {
+      mejor = cand;
+      // Sin columna de unidades = TARIFA: se muestran precios, no importes.
+      mejorSinUds = !!cab && cab.mapa.uds === undefined;
+    }
   }
-  return { secciones: mejor };
+  return { secciones: mejor, sin_uds: mejorSinUds };
 }
 
 // Explica QUE se ha leido del libro, para que un fallo sea accionable y no
@@ -150,9 +182,12 @@ export function resumenExcel(buffer: Buffer): string {
       const cols = Object.keys(cab.mapa).map(k => `${k}=col ${letra(cab.mapa[k])}`).join(', ');
       const faltan = ['producto', 'cn', 'uds', 'pvl', 'dto'].filter(k => cab.mapa[k] === undefined);
       const nFilas = cuentaFilas(leerConMapa(rows, cab.fila, cab.mapa));
+      // Volcado de la fila de cabeceras TAL CUAL: si algo no se reconoce, aqui se ve
+      // el nombre exacto que usa el Excel y se puede anadir como sinonimo.
+      const crudas = (rows[cab.fila] || []).map((c, i) => txt(c) ? `[${letra(i)}] ${txt(c)}` : '').filter(Boolean).slice(0, 14).join('  ');
       return `"${n}": cabeceras en la fila ${cab.fila + 1} (${cols})` +
         (faltan.length ? `; NO encuentro la columna de: ${faltan.join(', ')}` : '') +
-        `; ${nFilas} filas de producto leídas`;
+        `; ${nFilas} filas de producto leídas. Cabeceras del Excel: ${crudas}`;
     });
     return partes.join(' · ');
   } catch { return ''; }
@@ -161,20 +196,26 @@ export function resumenExcel(buffer: Buffer): string {
 // Calcula pvl_neto, importe, subtotales y total. round2 = redondeo espanol a 2 decimales.
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 export function computarTabla(datos: DatosTabla) {
+  // TARIFA (sin columna de unidades): no hay importes ni totales que sumar; solo
+  // precios. Multiplicar por "0 unidades" era lo que dejaba todo a 0 antes.
+  const sinUds = !!datos.sin_uds;
   let total = 0;
   const secciones = (datos.secciones || []).map(s => {
     let subtotal = 0;
     const filas = s.filas.map(f => {
       const netoRaw = f.pvl * (1 - f.dto);
-      const importe = r2(netoRaw * (f.uds || 0));
-      subtotal += importe;
+      const importe = sinUds ? null : r2(netoRaw * (f.uds || 0));
+      if (importe != null) subtotal += importe;
       return { ...f, pvl_neto: r2(netoRaw), importe };
     });
     subtotal = r2(subtotal); total += subtotal;
-    return { titulo: s.titulo, filas, subtotal };
+    return { titulo: s.titulo, filas, subtotal: sinUds ? null : subtotal };
   });
-  return { titulo: datos.titulo, secciones, total: r2(total),
-    n_filas: secciones.reduce((a, s) => a + s.filas.length, 0) };
+  const n_filas = secciones.reduce((a, s) => a + s.filas.length, 0);
+  // En una tarifa, el "valor" que valida que la lectura es buena son los precios.
+  const sumaPrecios = r2(secciones.reduce((a, s) => a + s.filas.reduce((b: number, f: any) => b + (f.pvl || 0), 0), 0));
+  return { titulo: datos.titulo, secciones, sin_uds: sinUds,
+    total: sinUds ? null : r2(total), suma_precios: sumaPrecios, n_filas };
 }
 
 const esc = (s: any) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -192,16 +233,24 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
   const secH = Math.round(fs * 2.3);   // alto de banda de seccion
   const headH = Math.round(fs * 1.9);  // alto de cabecera de columnas
   // Columnas (fraccion del ancho de contenido) + alineacion
+  // Las columnas se eligen segun lo que TRAIGA el Excel: una tarifa sin unidades
+  // no debe pintar "Uds." ni "Importe" (salian vacios/0), ni "Dto." si no hay
+  // descuentos, ni "Medidas"/"C.N." si vienen vacias. Los anchos se reparten.
+  const todas = (f: any[]) => f.length > 0;
+  const filasTodas: any[] = calc.secciones.reduce((a: any[], s: any) => a.concat(s.filas), []);
+  const hay = (k: string) => filasTodas.some((f: any) => String(f[k] ?? '').trim() !== '');
   const cols = [
-    { k: 'producto', t: 'Producto', w: 0.25, a: 'start' },
-    { k: 'medidas', t: 'Medidas', w: 0.17, a: 'start' },
-    { k: 'cn', t: 'C.N.', w: 0.12, a: 'start' },
-    { k: 'uds', t: 'Uds.', w: 0.07, a: 'middle' },
-    { k: 'pvl', t: 'P.V.L.', w: 0.11, a: 'end' },
-    { k: 'dto', t: 'Dto.', w: 0.08, a: 'middle' },
-    { k: 'neto', t: 'Neto', w: 0.10, a: 'end' },
-    { k: 'imp', t: 'Importe', w: 0.10, a: 'end' },
-  ];
+    { k: 'producto', t: 'Producto', w: 0.25, a: 'start', on: hay('producto') },
+    { k: 'medidas', t: 'Medidas', w: 0.17, a: 'start', on: hay('medidas') },
+    { k: 'cn', t: 'C.N.', w: 0.12, a: 'start', on: hay('cn') },
+    { k: 'uds', t: 'Uds.', w: 0.07, a: 'middle', on: !calc.sin_uds },
+    { k: 'pvl', t: 'P.V.L.', w: 0.11, a: 'end', on: true },
+    { k: 'dto', t: 'Dto.', w: 0.08, a: 'middle', on: filasTodas.some((f: any) => f.dto > 0) },
+    { k: 'neto', t: 'Neto', w: 0.10, a: 'end', on: filasTodas.some((f: any) => f.dto > 0) },
+    { k: 'imp', t: 'Importe', w: 0.10, a: 'end', on: !calc.sin_uds },
+  ].filter(c => c.on && todas(filasTodas));
+  const sumaW = cols.reduce((a, c) => a + c.w, 0) || 1;
+  cols.forEach(c => { c.w = c.w / sumaW; });   // reparten el 100% del ancho
   const xs: number[] = []; let acc = M;
   for (const c of cols) { xs.push(acc); acc += c.w * cw; }
   const cellX = (i: number, a: string) => a === 'start' ? xs[i] + 8 : a === 'end' ? xs[i] + cols[i].w * cw - 8 : xs[i] + cols[i].w * cw / 2;
@@ -232,7 +281,8 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
       if (idx % 2 === 1) els += `<rect x="${M}" y="${y}" width="${cw}" height="${rowH}" fill="${ZEBRA}"/>`;
       const vals: any = {
         producto: f.producto, medidas: f.medidas, cn: f.cn, uds: f.uds || '',
-        pvl: eur(f.pvl), dto: '-' + Math.round(f.dto * 100) + '%', neto: eur(f.pvl_neto), imp: eur(f.importe),
+        pvl: eur(f.pvl), dto: f.dto > 0 ? '-' + Math.round(f.dto * 100) + '%' : '',
+        neto: eur(f.pvl_neto), imp: f.importe == null ? '' : eur(f.importe),
       };
       cols.forEach((c, i) => {
         const b = (c.k === 'imp'); const col = c.k === 'imp' ? BRAND2 : c.k === 'dto' ? '#b45309' : PLOMO;
@@ -241,17 +291,24 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
       els += `<line x1="${M}" y1="${y + rowH}" x2="${M + cw}" y2="${y + rowH}" stroke="${LINEA}" stroke-width="1"/>`;
       y += rowH;
     });
-    // Subtotal de seccion
-    els += txt(M + cw - 8, y + rowH * 0.72, 'Subtotal  ' + eur(s.subtotal), { a: 'end', b: true, c: PLOMO });
-    y += Math.round(rowH * 1.05);
+    // Subtotal de seccion (solo si hay importes que sumar)
+    if (s.subtotal != null) {
+      els += txt(M + cw - 8, y + rowH * 0.72, 'Subtotal  ' + eur(s.subtotal), { a: 'end', b: true, c: PLOMO });
+      y += Math.round(rowH * 1.05);
+    }
     y += Math.round(fs * 0.6); // separacion entre secciones
   }
-  // TOTAL general
-  const totH = Math.round(fs * 2.4);
-  els += `<rect x="${M}" y="${y}" width="${cw}" height="${totH}" rx="6" fill="${BRAND2}"/>`;
-  els += txt(M + 14, y + totH / 2 + fs * 0.35, 'TOTAL', { b: true, c: '#fff', sz: Math.round(fs * 1.1) });
-  els += txt(M + cw - 12, y + totH / 2 + fs * 0.35, eur(calc.total), { a: 'end', b: true, c: '#fff', sz: Math.round(fs * 1.2) });
-  y += totH + M;
+  // TOTAL general (una tarifa de precios no lleva total: sumar precios sueltos no
+  // significa nada; solo lo lleva la composicion de expositor, que si tiene uds).
+  if (calc.total != null) {
+    const totH = Math.round(fs * 2.4);
+    els += `<rect x="${M}" y="${y}" width="${cw}" height="${totH}" rx="6" fill="${BRAND2}"/>`;
+    els += txt(M + 14, y + totH / 2 + fs * 0.35, 'TOTAL', { b: true, c: '#fff', sz: Math.round(fs * 1.1) });
+    els += txt(M + cw - 12, y + totH / 2 + fs * 0.35, eur(calc.total), { a: 'end', b: true, c: '#fff', sz: Math.round(fs * 1.2) });
+    y += totH + M;
+  } else {
+    y += M;
+  }
 
   const H = Math.ceil(y);
   const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#ffffff"/>${els}</svg>`;
