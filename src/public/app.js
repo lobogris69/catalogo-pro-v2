@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v112 · 21 jul 2026';
+const APP_VERSION = 'v113 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -5369,7 +5369,9 @@ function verTablaExpositor(id, nombre) {
   m.className = 'modal-bg';
   m.innerHTML = `<div class="modal-card" style="max-width:90vw;max-height:90vh;display:flex;flex-direction:column">
     <div class="modal-header"><h3>📊 ${escape(nombre || 'Tabla')}</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
-    <div style="overflow:auto"><img style="width:100%;height:auto;border:1px solid var(--gris-borde);border-radius:8px" alt="Cargando…"></div>
+    <!-- La imagen se muestra a su TAMAÑO REAL (una tabla pequeña es pequeña):
+         estirarla al ancho de la ventana agigantaba la letra y se veia fatal. -->
+    <div style="overflow:auto;text-align:center"><img style="width:auto;max-width:100%;height:auto;border:1px solid var(--gris-borde);border-radius:8px" alt="Cargando…"></div>
   </div>`;
   // La imagen necesita el token; la traemos como blob (no por src directo -> daría 401).
   document.body.appendChild(m);
