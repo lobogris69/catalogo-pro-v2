@@ -119,19 +119,28 @@ function extraerHoja(ws: XLSX.WorkSheet): Extraida | null {
   const filas: FilaFiel[] = [];
   // El titulo del PRIMER apartado suele ir justo ENCIMA de la fila de cabeceras
   // (los siguientes van intercalados). Sin esto se perdia.
-  for (let r = rCab - 1; r >= 0 && r >= rCab - 3; r--) {
+  // Pueden ser VARIAS lineas de titulo (caso Carmex: nombre del expositor y
+  // debajo la campana). Se recogen todas las de una sola celda de texto, de
+  // arriba a abajo, y se paran al topar con una fila de datos o un hueco doble.
+  const titulos: string[] = [];
+  let huecos = 0;
+  for (let r = rCab - 1; r >= 0 && r >= rCab - 6; r--) {
     const f = (rows[r] || []).map(txt);
     const conTexto = f.filter(Boolean).length;
-    if (!conTexto) continue;
+    if (!conTexto) { if (++huecos >= 2) break; continue; }
+    huecos = 0;
     const idx = f.findIndex(Boolean);
-    if (conTexto === 1 && !numericas[idx - c0]) {
+    if (conTexto === 1 && !numericas[idx - c0]) titulos.unshift(f[idx]);
+    else break;
+  }
+  if (titulos.length) {
+    for (const t of titulos) {
       const celdas = new Array(nCols).fill('');
-      celdas[Math.max(0, idx - c0)] = f[idx];
+      celdas[0] = t;
       filas.push({ tipo: 'seccion', celdas });
-      // ...y justo debajo iba la fila de cabeceras: se conserva ese orden.
-      filas.push({ tipo: 'cabecera', celdas: new Array(nCols).fill('') });
     }
-    break;
+    // ...y justo debajo iba la fila de cabeceras: se conserva ese orden.
+    filas.push({ tipo: 'cabecera', celdas: new Array(nCols).fill('') });
   }
   // Se recogen en bruto todas las filas por debajo de la cabecera.
   const bruto: string[][] = [];
@@ -485,7 +494,9 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
   y += M;
 
   const H = Math.ceil(y);
-  const svg = `<svg width="${Wout}" height="${H}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#ffffff"/>${els}</svg>`;
+  // FONDO TRANSPARENTE: la tabla se pega sobre la lamina comercial y un fondo
+  // blanco de sobra tapaba cosas suyas. Solo pintan las bandas/cebra propias.
+  const svg = `<svg width="${Wout}" height="${H}" xmlns="http://www.w3.org/2000/svg">${els}</svg>`;
   const buffer = await sharp(Buffer.from(svg)).png().toBuffer();
   return { buffer, width: Wout, height: H };
 }

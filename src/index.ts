@@ -7139,6 +7139,24 @@ app.delete('/api/ofertas/:id', verifyToken, requireRealAdmin, async (req: AuthRe
 // aprobados) + las ofertas vigentes. Sirve para descargar/compartir (WhatsApp),
 // PDF del catalogo o backup MEGA, sin depender de la app.
 // ============================================================================
+// Color de fondo de la lamina alrededor del hueco de una tabla. Se muestrea una
+// franja JUSTO ENCIMA (y si no, a la izquierda) del sitio donde va la tabla, para
+// que el rectangulo que tapa la tabla vieja se funda con la lamina en vez de ser
+// un bloque blanco que canta. Si algo falla, blanco.
+async function colorFondoLamina(abs: string, W: number, H: number, x: number, y: number, w: number, h: number): Promise<string> {
+  const muestra = async (left: number, top: number, width: number, height: number) => {
+    if (width < 2 || height < 2 || left < 0 || top < 0 || left + width > W || top + height > H) return null;
+    const px = await sharp(abs).extract({ left, top, width, height }).resize(1, 1, { fit: 'fill' }).raw().toBuffer();
+    return px.length >= 3 ? `#${[px[0], px[1], px[2]].map(v => v.toString(16).padStart(2, '0')).join('')}` : null;
+  };
+  try {
+    const franja = Math.max(3, Math.round(H * 0.004));
+    return (await muestra(x, Math.max(0, y - franja - 2), w, franja))      // encima
+        || (await muestra(Math.max(0, x - franja - 2), y, franja, h))      // a la izquierda
+        || '#ffffff';
+  } catch { return '#ffffff'; }
+}
+
 async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buffer | null> {
   const s = await pool.query('SELECT imagen_path, precios_excluida FROM sheets WHERE id=$1', [sheetId]);
   if (!s.rows.length) return null;
@@ -7207,13 +7225,20 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
     const bx = Math.round(row.x / 100 * W), by = Math.round(row.y / 100 * H);
     const bw = Math.round(row.ancho / 100 * W), bh = Math.round(row.alto / 100 * H);
     if (bw < 10 || bh < 10) continue;
-    els += `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="#ffffff"/>`; // borra la tabla vieja
     try {
       const { buffer: tb } = await renderTablaExpositor(row.datos, { width: bw });
       // Encajar en el hueco: nunca más alta que el hueco (contain por altura).
-      let img = sharp(tb); const m = await img.metadata();
-      if ((m.height || 0) > bh) img = sharp(await sharp(tb).resize({ width: bw, height: bh, fit: 'inside' }).png().toBuffer());
-      const fin = await img.png().toBuffer();
+      let fin = tb; const m = await sharp(tb).metadata();
+      let tw = m.width || bw, th = m.height || bh;
+      if (th > bh) {
+        fin = await sharp(tb).resize({ width: bw, height: bh, fit: 'inside' }).png().toBuffer();
+        const m2 = await sharp(fin).metadata(); tw = m2.width || bw; th = m2.height || bh;
+      }
+      // El fondo que tapa la tabla vieja ocupa SOLO lo que ocupa la tabla nueva
+      // (antes se pintaba todo el hueco y sus bordes tapaban cosas de la lámina)
+      // y se pinta con el color de fondo de la propia lámina, no blanco fijo.
+      const fondo = await colorFondoLamina(abs, W, H, bx, by, tw, th);
+      els += `<rect x="${bx}" y="${by}" width="${tw}" height="${th}" fill="${fondo}"/>`;
       tablasComposites.push({ input: fin, left: bx, top: by });
     } catch (e) { /* si falla el render de una tabla, seguimos con el resto */ }
   }

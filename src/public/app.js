@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v115 · 21 jul 2026';
+const APP_VERSION = 'v116 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -1822,8 +1822,11 @@ async function cargarTablaDeLamina(sheetId, catalogId) {
           <select id="ed-tabla-sel" style="flex:1;min-width:160px;padding:8px;border:1px solid #d1d5db;border-radius:6px">
             ${tablas.map(t => `<option value="${t.id}">${escape(t.nombre)}</option>`).join('')}
           </select>
+          <button type="button" class="btn btn-secondary btn-pequeno" onclick="verTablaSeleccionada()"
+                  title="Ver la tabla seleccionada antes de asociarla">👁️ Ver</button>
           <button type="button" class="btn btn-primary btn-pequeno" onclick="asociarTablaLamina(${sheetId}, ${catalogId})">Asociar</button>
-        </div>`;
+        </div>
+        <small style="color:var(--gris-texto);display:block;margin-top:4px">Con 👁️ Ver compruebas la tabla antes de asociarla (los nombres a veces se parecen).</small>`;
       return;
     }
     // Ya tiene una tabla asociada: mostrar controles del hueco + ver montaje.
@@ -5386,6 +5389,27 @@ async function actualizarTablaExcel(id, input) {
     }
     cargarTablasAdmin();
   } catch (e) { if ($m) $m.textContent = '❌ ' + e.message; }
+}
+
+// Carga la imagen de una tabla en un <img> (necesita token -> se trae como blob).
+async function cargarPreviewTabla(id, img) {
+  if (!img || !id) return;
+  img.alt = 'Cargando vista previa…';
+  const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
+  try {
+    const r = await fetch(API + '/api/tablas/' + id + '/preview.png?w=900', { headers });
+    if (!r.ok) throw new Error('no se pudo cargar');
+    if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+    const url = URL.createObjectURL(await r.blob());
+    img.dataset.url = url; img.src = url;
+  } catch (e) { img.removeAttribute('src'); img.alt = 'No se pudo cargar la vista previa'; }
+}
+
+// Ver la tabla elegida en el desplegable ANTES de asociarla (nombres parecidos).
+function verTablaSeleccionada() {
+  const $s = document.getElementById('ed-tabla-sel');
+  if (!$s || !$s.value) return;
+  verTablaExpositor(Number($s.value), $s.options[$s.selectedIndex].textContent);
 }
 
 function verTablaExpositor(id, nombre) {
@@ -12981,12 +13005,21 @@ async function asociarTablaDesdeEditor(sheetId, catalogId) {
       <select id="pick-tabla" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px">
         ${tablas.map(t => `<option value="${t.id}">${escape(t.nombre)} · ${t.n_filas} filas</option>`).join('')}
       </select></div>
-    <div style="font-size:12px;color:var(--gris-texto)">Aparecerá una caja azul: arrástrala sobre el bloque de precios y estírala con las esquinas hasta que lo tape.</div>
+    <!-- Vista previa: con nombres parecidos ("LOTE 2"/"LOTE 3") hay que ver la tabla antes de elegir -->
+    <div style="max-height:220px;overflow:auto;border:1px solid var(--gris-borde);border-radius:8px;padding:6px;background:#fff;text-align:center">
+      <img id="pick-tabla-prev" style="width:auto;max-width:100%;height:auto" alt="Cargando vista previa…">
+    </div>
+    <div style="font-size:12px;color:var(--gris-texto);margin-top:8px">Aparecerá una caja azul: arrástrala sobre el bloque de precios y estírala con las esquinas hasta que lo tape.</div>
     <div class="modal-acciones" style="margin-top:14px">
       <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
       <button type="button" class="btn btn-primary" id="pick-tabla-ok">Poner</button>
     </div></div>`;
   document.body.appendChild(m);
+  const $sel = document.getElementById('pick-tabla');
+  const $prev = document.getElementById('pick-tabla-prev');
+  const pintarPrev = () => cargarPreviewTabla(Number($sel.value), $prev);
+  $sel.onchange = pintarPrev;
+  pintarPrev();
   document.getElementById('pick-tabla-ok').onclick = async () => {
     const tid = Number(document.getElementById('pick-tabla').value);
     try {
@@ -13100,6 +13133,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <button class="btn" id="btn-modo-recuadro" onclick="toggleModoRecuadro(this)" style="background:#f3e8ff;color:#7c3aed" title="Dibuja a mano una caja sobre un precio para taparlo y reescribirlo (si la IA lo olvidó o falló)">✏️ Dibujar recuadro</button>
         <button class="btn" id="btn-borrar-recuadros" onclick="borrarTodosLosRecuadros(${sheet.id}, this)" style="background:#fee2e2;color:#b91c1c" title="Borra de golpe los recuadros de precio de esta lámina (por si la detección con IA no convence y quieres empezar de cero)">🗑️ Borrar precios</button>
         <button class="btn" id="btn-asociar-tabla" onclick="asociarTablaDesdeEditor(${sheet.id}, ${catalogId})" style="background:#e0f2fe;color:#0369a1;font-weight:700" title="Asocia una tabla de expositor (de la biblioteca) y colócala arrastrando sobre el hueco de precios">📊 Poner tabla</button>
+        <button class="btn btn-secondary" onclick="verLaminaMontada(${sheet.id})" title="Ver la lámina con la tabla ya pegada, para comprobar si tapa bien el bloque de precios anterior">👁️ Ver montada</button>
         <button class="btn" id="btn-sig-sin-precios" onclick="irSiguienteSinPrecios()" style="background:#ede9fe;color:#6d28d9;font-weight:700" title="Cierra esta y abre directamente la siguiente lámina que tiene zonas pero aún no tiene precios asignados">⏭️ Siguiente sin precios${(() => { const n = _laminasPendientesPrecios().length; return n ? ' (' + n + ')' : ''; })()}</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
       </div>
