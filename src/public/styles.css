@@ -3574,6 +3574,13 @@ body.con-banner-update {
   background: rgba(14, 165, 233, 0.15);
   border-style: dashed;
 }
+/* Hueco que se está dibujando para una tabla NUEVA (modo colocar tabla):
+   verde, para que no se confunda con dibujar una zona de producto. */
+.zona-rect-temp-tabla {
+  border-color: #16a34a;
+  background: rgba(22, 163, 74, 0.18);
+  border-width: 3px;
+}
 .zona-num {
   background: #111827;
   color: #fff;

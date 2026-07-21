@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v129 · 22 jul 2026';
+const APP_VERSION = 'v130 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12928,10 +12928,10 @@ function toggleModoTabla(btn, forzar) {
   if (b) {
     b.style.background = on ? '#0369a1' : '#e0f2fe';
     b.style.color = on ? '#fff' : '#0369a1';
-    b.textContent = on ? '📊 Colocando tabla… (pulsa para salir)' : '📊 Colocar tabla';
+    b.textContent = on ? '📊 Ajustando tablas… (pulsa para salir)' : '📊 Ajustar tablas';
   }
   const ayuda = document.getElementById('zonas-ayuda');
-  if (ayuda && on) ayuda.innerHTML = '📊 <b>MODO COLOCAR TABLA activo:</b> mueve la tabla y ajusta su <b>ancho</b> (separa columnas) y su <b>alto</b> (tamaño de letra) hasta tapar el bloque de precios viejo. Mientras esté activo <b>no se crean zonas ni cuadros de precio</b> aunque pulses fuera. Para salir: pulsa otra vez el botón o la tecla <b>ESC</b>.';
+  if (ayuda && on) ayuda.innerHTML = '📊 <b>MODO COLOCAR TABLA activo:</b> mueve la tabla y ajusta su <b>ancho</b> (separa columnas) y su <b>alto</b> (tamaño de letra) hasta tapar el bloque de precios viejo. ➕ <b>¿Otra tabla en esta misma lámina?</b> arrastra sobre un hueco vacío y elige la tabla: puedes poner las que hagan falta. Mientras esté activo <b>no se crean zonas ni cuadros de precio</b>. Para salir: pulsa otra vez el botón o <b>ESC</b>.';
   else if (ayuda) ayuda.innerHTML = '✏️ <b>Arrastra</b> sobre la lámina para dibujar un rectángulo. Luego asígnale un producto en el panel derecho.';
   const wrap = document.getElementById('zonas-lienzo-wrap');
   if (wrap) {
@@ -13384,7 +13384,9 @@ function _hacerTablaArrastrable(d, a, sheetId) {
 }
 
 // Asociar una tabla de la biblioteca desde el editor (aparece como caja arrastrable).
-async function asociarTablaDesdeEditor(sheetId, catalogId) {
+// hueco (opcional): {x,y,ancho,alto} en % — viene de arrastrar sobre la lámina en
+// modo colocar tabla. Sin él, la tabla cae en una posición por defecto y se mueve luego.
+async function asociarTablaDesdeEditor(sheetId, catalogId, hueco) {
   let tablas = [];
   try { tablas = (await api('/api/tablas')).tablas || []; } catch (e) { alert(e.message); return; }
   if (!tablas.length) { alert('No hay tablas en la biblioteca.\n\nSúbelas en ⚙️ Configuración → 📊 Tablas de expositor.'); return; }
@@ -13393,7 +13395,8 @@ async function asociarTablaDesdeEditor(sheetId, catalogId) {
   m.className = 'modal-bg';
   m.innerHTML = `<div class="modal" style="max-width:460px">
     <h3 style="margin-top:0">📊 Poner tabla de expositor</h3>
-    ${yaHay ? `<div style="background:#fef3c7;color:#92400e;font-size:12px;padding:8px 10px;border-radius:8px;margin-bottom:10px">Esta lámina ya tiene una tabla. Puedes añadir otra o quitar la anterior con su ✕.</div>` : ''}
+    ${yaHay ? `<div style="background:#fef3c7;color:#92400e;font-size:12px;padding:8px 10px;border-radius:8px;margin-bottom:10px">Esta lámina ya tiene ${yaHay} tabla${yaHay > 1 ? 's' : ''}. Esta se <b>añade</b> a las que hay (puedes poner las que necesites); para quitar una, su ✕.</div>` : ''}
+    ${hueco ? `<div style="background:#dcfce7;color:#166534;font-size:12px;padding:8px 10px;border-radius:8px;margin-bottom:10px">Se colocará justo en el hueco que acabas de dibujar.</div>` : ''}
     <div class="form-group"><label>Elige la tabla</label>
       <select id="pick-tabla" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px">
         ${tablas.map(t => `<option value="${t.id}">${escape(t.nombre)} · ${t.n_filas} filas</option>`).join('')}
@@ -13419,7 +13422,8 @@ async function asociarTablaDesdeEditor(sheetId, catalogId) {
   document.getElementById('pick-tabla-ok').onclick = async () => {
     const tid = Number(document.getElementById('pick-tabla').value);
     try {
-      await api('/api/sheets/' + sheetId + '/tablas', { method: 'POST', body: { tabla_id: tid, x: 4, y: 15, ancho: 55, alto: 70 } });
+      const h = hueco || { x: 4, y: 15, ancho: 55, alto: 70 };
+      await api('/api/sheets/' + sheetId + '/tablas', { method: 'POST', body: { tabla_id: tid, x: h.x, y: h.y, ancho: h.ancho, alto: h.alto } });
       m.remove();
       await renderTablasEnLienzo(sheetId, catalogId);
       // Se entra solo en modo colocar: es justo lo que toca hacer ahora, y evita
@@ -13525,7 +13529,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <b>🎯 Zonas de productos</b>
         <span style="color:#9ca3af;font-size:13px">${escape(sheet.titulo || 'Lámina')}</span>
       </div>
-      <div style="display:flex;gap:8px;align-items:center">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
         <span class="zonas-contador" id="zonas-contador">${zonas.length} zonas</span>
         <button class="btn" id="btn-borrar-todas-zonas" onclick="borrarTodasLasZonas(${sheet.id}, this)" style="background:#fee2e2;color:#b91c1c" title="Borra TODAS las zonas de esta lámina de golpe (ej. expositor grande que es 1 solo producto)">🗑️ Borrar todas</button>
         <button class="btn" id="btn-aprobar-zonas" onclick="toggleAprobarZonas(${sheet.id}, this)" style="background:${_zonasEditor.aprobada ? '#16a34a' : '#e5e7eb'};color:${_zonasEditor.aprobada ? '#fff' : '#374151'}" title="Marca esta lámina como revisada y aprobada por ti">${_zonasEditor.aprobada ? '✅ Revisada' : '☐ Marcar revisada'}</button>
@@ -13533,8 +13537,8 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <button class="btn" id="btn-detectar-precios-ia" onclick="detectarPreciosConIA(${sheet.id}, this)" style="background:#ede9fe;color:#6d28d9" title="La IA localiza los precios impresos y crea recuadros que los tapan y reescriben con el precio de la BD">🏷️ Detectar precios (IA)</button>
         <button class="btn" id="btn-modo-recuadro" onclick="toggleModoRecuadro(this)" style="background:#f3e8ff;color:#7c3aed" title="Dibuja a mano una caja SOBRE UN PRECIO impreso de la lámina para taparlo y reescribirlo con el precio de hoy (si la IA lo olvidó o falló)">✏️ Dibujar cuadro de precio</button>
         <button class="btn" id="btn-borrar-recuadros" onclick="borrarTodosLosRecuadros(${sheet.id}, this)" style="background:#fee2e2;color:#b91c1c" title="Borra de golpe los recuadros de precio de esta lámina (por si la detección con IA no convence y quieres empezar de cero)">🗑️ Borrar precios</button>
-        <button class="btn" id="btn-asociar-tabla" onclick="asociarTablaDesdeEditor(${sheet.id}, ${catalogId})" style="background:#e0f2fe;color:#0369a1;font-weight:700" title="Asocia una tabla de expositor (de la biblioteca) y colócala arrastrando sobre el hueco de precios">📊 Poner tabla</button>
-        <button class="btn" id="btn-modo-tabla" onclick="toggleModoTabla(this)" style="background:#e0f2fe;color:#0369a1" title="Mientras está puesto solo se mueve y ajusta la tabla: no se crean zonas ni cuadros de precio por descuido">📊 Colocar tabla</button>
+        <button class="btn" id="btn-asociar-tabla" onclick="asociarTablaDesdeEditor(${sheet.id}, ${catalogId})" style="background:#e0f2fe;color:#0369a1;font-weight:700" title="Añade una tabla de expositor de la biblioteca. Se pueden poner VARIAS en la misma lámina: púlsalo otra vez por cada una.">➕ Añadir tabla</button>
+        <button class="btn" id="btn-modo-tabla" onclick="toggleModoTabla(this)" style="background:#e0f2fe;color:#0369a1" title="Mientras está puesto solo se mueven y ajustan las tablas (y arrastrando sobre un hueco vacío se añade otra): no se crean zonas ni cuadros de precio por descuido">📊 Ajustar tablas</button>
         <button class="btn btn-secondary" onclick="verLaminaMontada(${sheet.id})" title="Ver la lámina con la tabla ya pegada, para comprobar si tapa bien el bloque de precios anterior">👁️ Ver montada</button>
         <button class="btn" id="btn-sig-sin-precios" onclick="irSiguienteSinPrecios()" style="background:#ede9fe;color:#6d28d9;font-weight:700" title="Cierra esta y abre directamente la siguiente lámina que tiene zonas pero aún no tiene precios asignados">⏭️ Siguiente sin precios${(() => { const n = _laminasPendientesPrecios().length; return n ? ' (' + n + ')' : ''; })()}</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
@@ -13697,9 +13701,26 @@ function montarLienzoZonas() {
   }
 
   function onDown(e) {
-    // MODO COLOCAR TABLA: no se dibuja NADA. Así no se crean zonas ni cuadros de
-    // precio por descuido al pulsar fuera de la tabla que se está colocando.
-    if (_zonasEditor.modoTabla) return;
+    // MODO COLOCAR TABLA: no se crean zonas ni cuadros de precio por descuido.
+    // Pero arrastrar sobre un hueco vacío SÍ sirve para añadir OTRA tabla ahí:
+    // una lámina puede llevar varias (un expositor por bloque de precios).
+    if (_zonasEditor.modoTabla) {
+      // sobre una tabla ya puesta manda su propio arrastre (mover / estirar)
+      if (e.target.closest && e.target.closest('.zona-tabla-ov')) return;
+      e.preventDefault();
+      const p0 = getRel(e);
+      _zonasEditor.dibujando = true;
+      _zonasEditor.inicioX = p0.x;
+      _zonasEditor.inicioY = p0.y;
+      rectTemp = document.createElement('div');
+      rectTemp.className = 'zona-rect zona-rect-temp zona-rect-temp-tabla';
+      rectTemp.style.left = p0.x + '%';
+      rectTemp.style.top = p0.y + '%';
+      rectTemp.style.width = '0%';
+      rectTemp.style.height = '0%';
+      capa.appendChild(rectTemp);
+      return;
+    }
     // Si se pulsa sobre una zona existente, no dibujar (se gestiona con su propio click).
     // EXCEPCIÓN: en modo recuadro sí dibujamos encima de la zona (el precio está dentro).
     if (!_zonasEditor.modoRecuadro && e.target.classList.contains('zona-rect')) return;
@@ -13740,6 +13761,12 @@ function montarLienzoZonas() {
     const h = parseFloat(rectTemp.style.height);
     rectTemp.remove();
     rectTemp = null;
+    // En modo colocar tabla: la caja dibujada es el HUECO de una tabla NUEVA.
+    // Se abre el selector y la tabla elegida cae justo en ese hueco.
+    if (_zonasEditor.modoTabla) {
+      if (w < 3 || h < 2) return;
+      return asociarTablaDesdeEditor(_zonasEditor.sheetId, _zonasEditor.catalogId, { x, y, ancho: w, alto: h });
+    }
     // En modo recuadro de precio: la caja dibujada crea un RECUADRO (tapar+reescribir),
     // no una zona. Umbral más bajo porque los precios son pequeños.
     if (_zonasEditor.modoRecuadro) {
