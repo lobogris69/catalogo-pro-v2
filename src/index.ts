@@ -889,6 +889,28 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_lamina_tabla_sheet ON lamina_tabla(sheet_id);
 
+      -- ===== CANAL DE INCIDENCIAS (comercial -> admin) =====
+      -- El comercial reporta desde la propia app, con captura opcional. Se guarda
+      -- la VERSION y la pantalla donde estaba: sin eso, media incidencia es
+      -- adivinar. Mismo planteamiento que en las otras apps.
+      CREATE TABLE IF NOT EXISTS incidencias (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        autor VARCHAR(150),                    -- nombre/email al reportar (queda aunque se borre el usuario)
+        rol VARCHAR(20),
+        tipo VARCHAR(20) NOT NULL DEFAULT 'incidencia',  -- incidencia | sugerencia | duda
+        texto TEXT NOT NULL,
+        captura_path VARCHAR(300),
+        version_app VARCHAR(40),
+        pantalla VARCHAR(200),                 -- dónde estaba (hash/vista)
+        dispositivo VARCHAR(300),              -- user agent recortado
+        estado VARCHAR(20) NOT NULL DEFAULT 'nueva',     -- nueva | vista | resuelta
+        respuesta TEXT,
+        respondida_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_incidencias_estado ON incidencias(estado, created_at DESC);
+
       -- PAPELERA: borrar una tabla (o quitarla de una lamina) ya no destruye nada,
       -- solo marca la fecha. Asi se puede DESHACER, sobre todo un borrado en bloque.
       ALTER TABLE expositor_tabla ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL;
@@ -10891,6 +10913,105 @@ async function notificarFormacion(formacionId: number, accion: 'nueva' | 'actual
     console.error('[notif-formacion] Error global:', e.message);
   }
 }
+
+// ============================================================================
+// CANAL DE INCIDENCIAS  (comercial -> admin)
+// El comercial reporta desde la propia app, con captura opcional. Se guarda
+// SIEMPRE la version y la pantalla: la mitad de los "no funciona" son versiones
+// viejas cacheadas, y sin eso se pierde el tiempo a ciegas.
+// Aviso a Telegram opcional: en cuanto existan las variables de entorno
+// INCIDENCIAS_BOT_TOKEN / INCIDENCIAS_CHAT_ID empieza a avisar, sin tocar codigo.
+// ============================================================================
+async function avisarIncidenciaTelegram(inc: any): Promise<void> {
+  const token = process.env.INCIDENCIAS_BOT_TOKEN, chat = process.env.INCIDENCIAS_CHAT_ID;
+  if (!token || !chat) return;   // aun no configurado: no pasa nada
+  try {
+    const t = `🛟 *${inc.tipo}* de ${inc.autor || 'alguien'}\n` +
+      `${String(inc.texto).slice(0, 500)}\n` +
+      `_${inc.version_app || 's/v'} · ${inc.pantalla || ''}_`;
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text: t, parse_mode: 'Markdown' }),
+    });
+  } catch (e) { console.error('[incidencias] Telegram:', (e as Error).message); }
+}
+
+// Reportar (cualquier usuario identificado). Captura opcional.
+app.post('/api/incidencias', verifyToken, upload.single('captura'), async (req: AuthRequest, res: Response) => {
+  try {
+    const texto = String(req.body?.texto || '').trim();
+    if (!texto) { res.status(400).json({ success: false, error: 'Escribe qué ha pasado' }); return; }
+    const tipo = ['incidencia', 'sugerencia', 'duda'].includes(req.body?.tipo) ? req.body.tipo : 'incidencia';
+    const u = (await pool.query('SELECT name, email, role FROM users WHERE id=$1', [req.user?.id])).rows[0] || {};
+    const r = await pool.query(
+      `INSERT INTO incidencias (user_id, autor, rol, tipo, texto, captura_path, version_app, pantalla, dispositivo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [req.user?.id || null, (u.name || u.email || '').slice(0, 150), u.role || null, tipo,
+       texto.slice(0, 4000), req.file ? req.file.filename : null,
+       String(req.body?.version || '').slice(0, 40), String(req.body?.pantalla || '').slice(0, 200),
+       String(req.headers['user-agent'] || '').slice(0, 300)]);
+    avisarIncidenciaTelegram(r.rows[0]);   // best-effort, no bloquea la respuesta
+    res.json({ success: true, incidencia: { id: r.rows[0].id } });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Las mías (el comercial ve su historial y la respuesta del admin).
+app.get('/api/incidencias/mias', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, tipo, texto, captura_path, estado, respuesta, respondida_at, created_at
+         FROM incidencias WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [req.user?.id]);
+    res.json({ success: true, incidencias: r.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Bandeja del admin. `estado=pendientes` = nuevas + vistas (lo que queda por cerrar).
+app.get('/api/admin/incidencias', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const filtro = String(req.query.estado || 'pendientes');
+    const cond = filtro === 'todas' ? '' : (filtro === 'pendientes' ? `WHERE estado <> 'resuelta'` : `WHERE estado = '${filtro.replace(/[^a-z]/g, '')}'`);
+    const r = await pool.query(`SELECT * FROM incidencias ${cond} ORDER BY created_at DESC LIMIT 200`);
+    const n = await pool.query(`SELECT COUNT(*)::int AS n FROM incidencias WHERE estado <> 'resuelta'`);
+    res.json({ success: true, incidencias: r.rows, pendientes: n.rows[0].n });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Contador para el aviso del menu (barato, se puede pedir a menudo).
+app.get('/api/admin/incidencias/pendientes', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const n = await pool.query(`SELECT COUNT(*)::int AS n FROM incidencias WHERE estado <> 'resuelta'`);
+    res.json({ success: true, pendientes: n.rows[0].n });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Responder / cambiar estado.
+app.put('/api/admin/incidencias/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (req.body?.estado && ['nueva', 'vista', 'resuelta'].includes(req.body.estado)) { sets.push(`estado=$${i++}`); vals.push(req.body.estado); }
+    if (req.body?.respuesta !== undefined) {
+      sets.push(`respuesta=$${i++}`); vals.push(String(req.body.respuesta).slice(0, 4000));
+      sets.push(`respondida_at=NOW()`);
+    }
+    if (!sets.length) { res.status(400).json({ success: false, error: 'Nada que cambiar' }); return; }
+    vals.push(Number(req.params.id));
+    const r = await pool.query(`UPDATE incidencias SET ${sets.join(', ')} WHERE id=$${vals.length} RETURNING *`, vals);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    res.json({ success: true, incidencia: r.rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Captura de una incidencia (sirve la imagen solo a quien puede verla).
+app.get('/api/incidencias/:id/captura', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query('SELECT user_id, captura_path FROM incidencias WHERE id=$1', [Number(req.params.id)]);
+    if (!r.rows.length || !r.rows[0].captura_path) { res.status(404).json({ success: false, error: 'Sin captura' }); return; }
+    if (req.user?.role !== 'admin' && r.rows[0].user_id !== req.user?.id) { res.status(403).json({ success: false, error: 'No autorizado' }); return; }
+    const abs = path.join(UPLOADS_DIR, path.basename(r.rows[0].captura_path));
+    if (!fs.existsSync(abs)) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    res.sendFile(abs);
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
 
 // ============================================================================
 // FRONTEND FALLBACK (DEBE ser el último GET, después de todos los /api/*)

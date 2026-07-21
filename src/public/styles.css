@@ -4111,6 +4111,38 @@ body.con-banner-update {
   flex-shrink: 0;
 }
 
+/* --- Canal de incidencias: botón flotante siempre a mano --- */
+.btn-incidencia {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 9000;
+  min-width: 52px;
+  height: 52px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 26px;
+  background: var(--brand, #d80a6b);
+  color: #fff;
+  font-size: 22px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.28);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.btn-incidencia:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,0.34); }
+.btn-incidencia.con-pendientes { background: #b45309; }
+@media (max-width: 640px) { .btn-incidencia { right: 12px; bottom: 12px; } }
+
+/* Tipo de aviso: chips de una sola elección */
+.chip-tipo {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border: 2px solid var(--gris-borde);
+  border-radius: 999px; cursor: pointer; font-size: 13px;
+}
+.chip-tipo:has(input:checked) { border-color: var(--brand, #d80a6b); background: rgba(216,10,107,0.08); font-weight: 700; }
+.chip-tipo input { margin: 0; accent-color: var(--brand, #d80a6b); }
+
 /* --- Aviso flotante con DESHACER tras borrar algo --- */
 .toast-deshacer {
   position: fixed;

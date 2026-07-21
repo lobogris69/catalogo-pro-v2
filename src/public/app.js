@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v124 · 21 jul 2026';
+const APP_VERSION = 'v125 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -267,8 +267,11 @@ async function renderApp() {
       <div id="vista-contenido"></div>
       <div style="text-align:center;font-size:11px;color:#9ca3af;padding:14px 0 8px">CatalogPRO ${APP_VERSION}</div>
     </div>
+    <!-- Canal de incidencias: siempre a mano, también en la visita -->
+    <button class="btn-incidencia" onclick="abrirIncidencia()" title="Avisar de un problema, una duda o una idea">🛟</button>
   `;
   routerVista();
+  if (esAdmin) refrescarAvisoIncidencias();
   // I: re-aplicar estado del indicador online tras cada render
   if (typeof actualizarIndicadorOnline === 'function') actualizarIndicadorOnline();
 }
@@ -5392,7 +5395,195 @@ async function actualizarTablaExcel(id, input) {
   } catch (e) { if ($m) $m.textContent = '❌ ' + e.message; }
 }
 
-// Aviso flotante con botón DESHACER tras una acción destructiva. Vale para
+// ============================================================================
+// CANAL DE INCIDENCIAS — el comercial avisa desde la propia app, con captura.
+// Se manda siempre la VERSIÓN y la pantalla donde estaba: sin eso, la mitad de
+// los avisos son imposibles de reproducir (versión vieja cacheada, otra vista…).
+// ============================================================================
+function abrirIncidencia() {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:520px">
+    <h3 style="margin-top:0">🛟 Avisar al administrador</h3>
+    <div class="form-group"><label>¿Qué quieres contar?</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <label class="chip-tipo"><input type="radio" name="inc-tipo" value="incidencia" checked> 🐞 Algo falla</label>
+        <label class="chip-tipo"><input type="radio" name="inc-tipo" value="sugerencia"> 💡 Una idea</label>
+        <label class="chip-tipo"><input type="radio" name="inc-tipo" value="duda"> ❓ Una duda</label>
+      </div>
+    </div>
+    <div class="form-group"><label>Cuéntalo con tus palabras</label>
+      <textarea id="inc-texto" rows="5" placeholder="Ej.: al abrir el catálogo de Essity, la lámina 12 sale sin precios."
+                style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea></div>
+    <div class="form-group">
+      <label>Captura (opcional pero ayuda mucho)</label>
+      <input type="file" id="inc-captura" accept="image/*" capture="environment"
+             style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px">
+      <small style="color:var(--gris-texto);display:block;margin-top:4px">También puedes <b>pegar</b> una captura con Ctrl+V.</small>
+      <div id="inc-previa" style="margin-top:8px"></div>
+    </div>
+    <div id="inc-msg" style="font-size:13px;margin-top:4px"></div>
+    <div class="modal-acciones" style="margin-top:12px">
+      <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+      <button type="button" class="btn btn-primary" id="inc-enviar">Enviar</button>
+    </div>
+    <div style="margin-top:10px;text-align:center">
+      <button type="button" class="btn-enlace" onclick="verMisIncidencias()" style="background:none;border:0;color:var(--brand);cursor:pointer;font-size:13px">Ver mis avisos anteriores</button>
+    </div></div>`;
+  document.body.appendChild(m);
+  hacerDialogoArrastrable(m.querySelector('.modal'), m.querySelector('h3'));
+  const $f = m.querySelector('#inc-captura'), $prev = m.querySelector('#inc-previa');
+  let pegada = null;   // captura pegada con Ctrl+V
+  const pintarPrevia = (file) => {
+    if (!file) { $prev.innerHTML = ''; return; }
+    const url = URL.createObjectURL(file);
+    $prev.innerHTML = `<img src="${url}" style="max-width:100%;max-height:160px;border:1px solid var(--gris-borde);border-radius:8px">`;
+  };
+  $f.onchange = () => { pegada = null; pintarPrevia($f.files[0]); };
+  m.addEventListener('paste', (e) => {
+    const it = [...(e.clipboardData?.items || [])].find(x => x.type.startsWith('image/'));
+    if (!it) return;
+    pegada = it.getAsFile(); $f.value = ''; pintarPrevia(pegada);
+  });
+  m.querySelector('#inc-enviar').onclick = async (ev) => {
+    const b = ev.currentTarget;
+    const texto = m.querySelector('#inc-texto').value.trim();
+    const $msg = m.querySelector('#inc-msg');
+    if (!texto) { $msg.innerHTML = '<span style="color:#b91c1c">Escribe qué ha pasado.</span>'; return; }
+    b.disabled = true; b.textContent = '⏳ Enviando…';
+    const fd = new FormData();
+    fd.append('texto', texto);
+    fd.append('tipo', m.querySelector('input[name="inc-tipo"]:checked').value);
+    fd.append('version', APP_VERSION);
+    fd.append('pantalla', (appState && appState.vista) || location.hash || '');
+    const cap = pegada || $f.files[0];
+    if (cap) fd.append('captura', cap, cap.name || 'captura.png');
+    const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
+    try {
+      const r = await fetch(API + '/api/incidencias', { method: 'POST', headers, body: fd });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.success) throw new Error(d.error || 'Error ' + r.status);
+      m.remove();
+      toastDeshacer('✅ Aviso enviado. Gracias — lo verá el administrador.', async () => {});
+      const t = document.getElementById('toast-deshacer');
+      if (t) { const bo = t.querySelector('.btn'); if (bo) bo.remove(); }
+    } catch (e) {
+      $msg.innerHTML = '<span style="color:#b91c1c">No se pudo enviar: ' + escape(e.message) + '</span>';
+      b.disabled = false; b.textContent = 'Enviar';
+    }
+  };
+}
+
+// Historial del propio comercial, con la respuesta del administrador.
+async function verMisIncidencias() {
+  let lista = [];
+  try { lista = (await api('/api/incidencias/mias')).incidencias || []; } catch (e) { alert(e.message); return; }
+  const f = s => new Date(s).toLocaleDateString('es-ES') + ' ' + new Date(s).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+  const color = { nueva: '#b45309', vista: '#0369a1', resuelta: '#16a34a' };
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal-card" style="max-width:560px;max-height:85vh;display:flex;flex-direction:column">
+    <div class="modal-header"><h3>🛟 Mis avisos</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div style="overflow:auto;padding:4px">
+      ${lista.length ? lista.map(i => `
+        <div style="border:1px solid var(--gris-borde);border-radius:8px;padding:10px;margin-bottom:8px">
+          <div style="font-size:12px;color:var(--gris-texto)">${f(i.created_at)} ·
+            <b style="color:${color[i.estado] || '#666'}">${i.estado}</b></div>
+          <div style="margin:4px 0">${escape(i.texto)}</div>
+          ${i.respuesta ? `<div style="background:#ecfdf5;border-left:3px solid #16a34a;padding:8px;border-radius:6px;font-size:13px"><b>Respuesta:</b> ${escape(i.respuesta)}</div>` : ''}
+        </div>`).join('')
+      : '<div style="padding:1rem;text-align:center;color:var(--gris-texto)">Aún no has enviado ningún aviso.</div>'}
+    </div></div>`;
+  document.body.appendChild(m);
+  hacerDialogoArrastrable(m.querySelector('.modal-card'), m.querySelector('.modal-header'));
+}
+
+// Aviso en el botón cuando hay incidencias sin cerrar (solo admin).
+async function refrescarAvisoIncidencias() {
+  try {
+    const r = await api('/api/admin/incidencias/pendientes');
+    const b = document.querySelector('.btn-incidencia');
+    if (!b) return;
+    b.classList.toggle('con-pendientes', r.pendientes > 0);
+    b.textContent = r.pendientes > 0 ? '🛟' + r.pendientes : '🛟';
+    b.title = r.pendientes > 0 ? r.pendientes + ' aviso(s) sin cerrar — pulsa para verlos' : 'Avisar de un problema, una duda o una idea';
+    b.onclick = r.pendientes > 0 ? abrirBandejaIncidencias : abrirIncidencia;
+  } catch (_) { /* sin conexión: se queda como está */ }
+}
+
+// Bandeja del administrador.
+async function abrirBandejaIncidencias(filtro) {
+  const est = typeof filtro === 'string' ? filtro : 'pendientes';
+  let d = { incidencias: [] };
+  try { d = await api('/api/admin/incidencias?estado=' + est); } catch (e) { alert(e.message); return; }
+  const f = s => new Date(s).toLocaleDateString('es-ES') + ' ' + new Date(s).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+  const icono = { incidencia: '🐞', sugerencia: '💡', duda: '❓' };
+  const viejo = document.getElementById('modal-incidencias'); if (viejo) viejo.remove();
+  const m = document.createElement('div');
+  m.className = 'modal-bg'; m.id = 'modal-incidencias';
+  m.innerHTML = `<div class="modal-card" style="max-width:760px;max-height:88vh;display:flex;flex-direction:column">
+    <div class="modal-header"><h3>🛟 Avisos de los comerciales</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div style="padding:8px 4px;display:flex;gap:8px;flex-wrap:wrap">
+      ${['pendientes', 'todas', 'resuelta'].map(x => `<button class="btn btn-pequeno ${x === est ? 'btn-primary' : 'btn-secondary'}" onclick="abrirBandejaIncidencias('${x}')">${x === 'resuelta' ? 'resueltas' : x}</button>`).join('')}
+      <button class="btn btn-secondary btn-pequeno" onclick="abrirIncidencia()" style="margin-left:auto">✍️ Escribir uno</button>
+    </div>
+    <div style="overflow:auto;padding:4px">
+      ${d.incidencias.length ? d.incidencias.map(i => `
+        <div style="border:1px solid var(--gris-borde);border-radius:8px;padding:10px;margin-bottom:10px">
+          <div style="font-size:12px;color:var(--gris-texto)">
+            ${icono[i.tipo] || '🛟'} <b>${escape(i.autor || '—')}</b> (${escape(i.rol || '')}) · ${f(i.created_at)}
+            · <b>${escape(i.version_app || 'sin versión')}</b>${i.pantalla ? ' · ' + escape(i.pantalla) : ''}
+          </div>
+          <div style="margin:6px 0;white-space:pre-wrap">${escape(i.texto)}</div>
+          ${i.captura_path ? `<button class="btn btn-secondary btn-pequeno" onclick="verCapturaIncidencia(${i.id})">🖼️ Ver captura</button>` : ''}
+          ${i.respuesta ? `<div style="background:#ecfdf5;border-left:3px solid #16a34a;padding:8px;border-radius:6px;font-size:13px;margin-top:6px"><b>Respondido:</b> ${escape(i.respuesta)}</div>` : ''}
+          <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
+            <input id="resp-${i.id}" placeholder="Responder al comercial…" style="flex:1;min-width:180px;padding:7px;border:1px solid #d1d5db;border-radius:6px">
+            <button class="btn btn-primary btn-pequeno" onclick="responderIncidencia(${i.id})">Responder</button>
+            ${i.estado !== 'resuelta' ? `<button class="btn btn-secondary btn-pequeno" onclick="cambiarEstadoIncidencia(${i.id}, 'resuelta')">✅ Resuelta</button>` : `<button class="btn btn-secondary btn-pequeno" onclick="cambiarEstadoIncidencia(${i.id}, 'vista')">↩️ Reabrir</button>`}
+          </div>
+        </div>`).join('')
+      : '<div style="padding:1.5rem;text-align:center;color:var(--gris-texto)">No hay avisos en este filtro.</div>'}
+    </div></div>`;
+  document.body.appendChild(m);
+  hacerDialogoArrastrable(m.querySelector('.modal-card'), m.querySelector('.modal-header'));
+}
+
+function verCapturaIncidencia(id) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal-card" style="max-width:92vw;max-height:92vh;display:flex;flex-direction:column">
+    <div class="modal-header"><h3>🖼️ Captura del aviso</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div style="overflow:auto;text-align:center"><img style="max-width:100%;height:auto" alt="Cargando…"></div></div>`;
+  document.body.appendChild(m);
+  hacerDialogoArrastrable(m.querySelector('.modal-card'), m.querySelector('.modal-header'));
+  const img = m.querySelector('img');
+  const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
+  fetch(API + '/api/incidencias/' + id + '/captura', { headers })
+    .then(r => r.blob()).then(b => { img.src = URL.createObjectURL(b); })
+    .catch(() => { img.alt = 'No se pudo cargar la captura'; });
+}
+
+async function responderIncidencia(id) {
+  const $i = document.getElementById('resp-' + id);
+  const respuesta = ($i && $i.value.trim()) || '';
+  if (!respuesta) { alert('Escribe la respuesta.'); return; }
+  try {
+    await api('/api/admin/incidencias/' + id, { method: 'PUT', body: { respuesta, estado: 'resuelta' } });
+    abrirBandejaIncidencias();
+    refrescarAvisoIncidencias();
+  } catch (e) { alert(e.message); }
+}
+
+async function cambiarEstadoIncidencia(id, estado) {
+  try {
+    await api('/api/admin/incidencias/' + id, { method: 'PUT', body: { estado } });
+    abrirBandejaIncidencias();
+    refrescarAvisoIncidencias();
+  } catch (e) { alert(e.message); }
+}
+
+// Aviso flotante con DESHACER tras una acción destructiva. Vale para
 // cualquier pantalla: aparece abajo y se va solo a los 12 s si no lo usas.
 let _deshacerTimer = null;
 function toastDeshacer(texto, alDeshacer) {
