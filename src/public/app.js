@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v117 · 21 jul 2026';
+const APP_VERSION = 'v118 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12627,11 +12627,11 @@ function toggleModoRecuadro(btn) {
   if (btn) {
     btn.style.background = on ? '#7c3aed' : '#f3e8ff';
     btn.style.color = on ? '#fff' : '#7c3aed';
-    btn.textContent = on ? '✏️ Dibujando… (pulsa para salir)' : '✏️ Dibujar recuadro';
+    btn.textContent = on ? '✏️ Dibujando precio… (pulsa para salir)' : '✏️ Dibujar cuadro de precio';
   }
   const ayuda = document.getElementById('zonas-ayuda');
   if (ayuda) ayuda.innerHTML = on
-    ? '✏️ <b>MODO DIBUJAR RECUADRO activo:</b> arrastra una caja SOBRE un número de precio. Mientras esté activo, las zonas y los recuadros quedan <b>atenuados y no se pueden tocar</b> (para poder dibujar encima). Pulsa otra vez el botón para salir y volver a moverlos.'
+    ? '✏️ <b>MODO DIBUJAR CUADRO DE PRECIO activo:</b> arrastra una caja SOBRE un número de precio impreso de la lámina; la app lo tapará y escribirá encima el precio de hoy. Mientras esté activo, las zonas y los cuadros quedan <b>atenuados y no se pueden tocar</b> (para poder dibujar encima). Pulsa otra vez el botón para salir y volver a moverlos.'
     : '✏️ <b>Arrastra</b> sobre la lámina para dibujar un rectángulo. Luego asígnale un producto en el panel derecho.';
   const wrap = document.getElementById('zonas-lienzo-wrap');
   if (wrap) {
@@ -13150,7 +13150,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <button class="btn" id="btn-aprobar-zonas" onclick="toggleAprobarZonas(${sheet.id}, this)" style="background:${_zonasEditor.aprobada ? '#16a34a' : '#e5e7eb'};color:${_zonasEditor.aprobada ? '#fff' : '#374151'}" title="Marca esta lámina como revisada y aprobada por ti">${_zonasEditor.aprobada ? '✅ Revisada' : '☐ Marcar revisada'}</button>
         <button class="btn btn-primary" id="btn-detectar-zonas-ia" onclick="detectarZonasConIA(${sheet.id}, this)" title="La IA detecta los productos de la lámina y propone recuadros">🤖 Detectar productos con IA</button>
         <button class="btn" id="btn-detectar-precios-ia" onclick="detectarPreciosConIA(${sheet.id}, this)" style="background:#ede9fe;color:#6d28d9" title="La IA localiza los precios impresos y crea recuadros que los tapan y reescriben con el precio de la BD">🏷️ Detectar precios (IA)</button>
-        <button class="btn" id="btn-modo-recuadro" onclick="toggleModoRecuadro(this)" style="background:#f3e8ff;color:#7c3aed" title="Dibuja a mano una caja sobre un precio para taparlo y reescribirlo (si la IA lo olvidó o falló)">✏️ Dibujar recuadro</button>
+        <button class="btn" id="btn-modo-recuadro" onclick="toggleModoRecuadro(this)" style="background:#f3e8ff;color:#7c3aed" title="Dibuja a mano una caja SOBRE UN PRECIO impreso de la lámina para taparlo y reescribirlo con el precio de hoy (si la IA lo olvidó o falló)">✏️ Dibujar cuadro de precio</button>
         <button class="btn" id="btn-borrar-recuadros" onclick="borrarTodosLosRecuadros(${sheet.id}, this)" style="background:#fee2e2;color:#b91c1c" title="Borra de golpe los recuadros de precio de esta lámina (por si la detección con IA no convence y quieres empezar de cero)">🗑️ Borrar precios</button>
         <button class="btn" id="btn-asociar-tabla" onclick="asociarTablaDesdeEditor(${sheet.id}, ${catalogId})" style="background:#e0f2fe;color:#0369a1;font-weight:700" title="Asocia una tabla de expositor (de la biblioteca) y colócala arrastrando sobre el hueco de precios">📊 Poner tabla</button>
         <button class="btn btn-secondary" onclick="verLaminaMontada(${sheet.id})" title="Ver la lámina con la tabla ya pegada, para comprobar si tapa bien el bloque de precios anterior">👁️ Ver montada</button>
