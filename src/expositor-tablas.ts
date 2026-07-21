@@ -21,38 +21,135 @@ const num = (v: any): number | null => {
 };
 
 // Lee el .xlsx y devuelve la estructura de secciones/filas.
-export function parseExcelTabla(buffer: Buffer): DatosTabla {
-  const wb = XLSX.read(buffer, { type: 'buffer' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+// --- Lectura FLEXIBLE ------------------------------------------------------
+// El primer lector exigia columnas fijas B..G en la primera hoja. Con eso, un
+// Excel que empezara en A, con una columna de mas o con la tabla en la segunda
+// pestana daba "no se reconocieron filas". Ahora buscamos la fila de cabeceras
+// y mapeamos cada columna POR SU NOMBRE, en cualquier hoja del libro.
+
+// Normaliza un titulo de columna: minusculas, sin acentos, sin espacios ni signos.
+const norm = (s: any) => String(s == null ? '' : s)
+  .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/[\s._%º°ª()\/-]/g, '').trim();
+
+// Sinonimos aceptados para cada campo (coincidencia EXACTA tras normalizar, para
+// que "pvl dto" -> "pvldto" no se confunda con "pvl").
+const SINONIMOS: { [campo: string]: string[] } = {
+  producto: ['producto', 'productos', 'descripcion', 'articulo', 'articulos', 'denominacion', 'nombre', 'referencia', 'ref', 'concepto'],
+  medidas:  ['medidas', 'medida', 'formato', 'tamano', 'presentacion', 'modelo', 'variedad', 'color'],
+  cn:       ['cn', 'codigonacional', 'codnacional', 'codigo', 'cod', 'ean', 'codigoean', 'codean', 'codart'],
+  uds:      ['uds', 'ud', 'unidades', 'unid', 'cantidad', 'cant', 'ctd', 'cajas', 'nunidades'],
+  pvl:      ['pvl', 'precio', 'preciopvl', 'preciounitario', 'pvlunitario', 'pvf', 'tarifa', 'preciolista'],
+  dto:      ['dto', 'dtos', 'descuento', 'desc', 'dscto', 'dcto'],
+};
+
+type Mapa = { [campo: string]: number };
+
+// Busca en las primeras filas una que parezca la cabecera de la tabla.
+function detectarCabecera(rows: any[][]): { fila: number; mapa: Mapa } | null {
+  for (let r = 0; r < Math.min(rows.length, 40); r++) {
+    const fila = rows[r] || [];
+    const mapa: Mapa = {};
+    for (let c = 0; c < fila.length; c++) {
+      const v = norm(fila[c]);
+      if (!v) continue;
+      for (const campo of Object.keys(SINONIMOS)) {
+        if (mapa[campo] === undefined && SINONIMOS[campo].includes(v)) { mapa[campo] = c; break; }
+      }
+    }
+    // Vale como cabecera si hay precio y algo que identifique el producto.
+    if (mapa.pvl !== undefined && (mapa.cn !== undefined || mapa.producto !== undefined)) return { fila: r, mapa };
+  }
+  return null;
+}
+
+const txt = (v: any) => String(v == null ? '' : v).trim();
+
+// Lee las filas usando el mapa de columnas detectado.
+function leerConMapa(rows: any[][], desde: number, mapa: Mapa): SeccionTabla[] {
+  const secciones: SeccionTabla[] = [];
+  let actual: SeccionTabla | null = null;
+  const cel = (f: any[], i: number | undefined) => (i === undefined ? null : f[i]);
+  for (let r = desde + 1; r < rows.length; r++) {
+    const f = rows[r] || [];
+    const pvl = num(cel(f, mapa.pvl));
+    const cn = txt(cel(f, mapa.cn));
+    const prod = txt(cel(f, mapa.producto));
+    // Fila de DATOS: precio numerico + algo que identifique el producto.
+    if (pvl != null && (cn || prod) && !/^(sub)?total/i.test(prod)) {
+      if (!actual) { actual = { titulo: 'Productos', filas: [] }; secciones.push(actual); }
+      let dto = num(cel(f, mapa.dto)) ?? 0; dto = Math.abs(dto); if (dto > 1) dto = dto / 100;
+      actual.filas.push({ producto: prod, medidas: txt(cel(f, mapa.medidas)), cn, uds: num(cel(f, mapa.uds)) ?? 0, pvl, dto });
+      continue;
+    }
+    // Titulo de SECCION: primera celda con texto, sin precio y que no sea un total.
+    const primero = f.map(txt).find(x => x);
+    if (primero && pvl == null && !/^(sub)?total/i.test(primero)) {
+      actual = { titulo: primero, filas: [] };
+      secciones.push(actual);
+    }
+  }
+  return secciones.filter(s => s.filas.length > 0);
+}
+
+// Lector antiguo de columnas fijas B..G: se conserva como respaldo para los
+// Excel sin fila de cabeceras (los 12 ya subidos siguen leyendose igual).
+function leerColumnasFijas(rows: any[][]): SeccionTabla[] {
   const secciones: SeccionTabla[] = [];
   let actual: SeccionTabla | null = null;
   for (const r of rows) {
     const B = r[1], C = r[2], D = r[3], E = r[4], F = r[5], G = r[6];
-    const bTxt = (B == null ? '' : String(B)).trim();
-    const cn = D == null ? '' : String(D).trim();
+    const bTxt = txt(B);
+    const cn = txt(D);
     const pvl = num(F), uds = num(E);
-    // Fila de DATOS: tiene CN y pvl numerico.
     if (cn && pvl != null) {
       if (!actual) { actual = { titulo: 'Productos', filas: [] }; secciones.push(actual); }
-      let dto = num(G) ?? 0; dto = Math.abs(dto); if (dto > 1) dto = dto / 100; // -0.25 o 25 -> 0.25
-      actual.filas.push({
-        producto: (B == null ? '' : String(B)).trim(),
-        medidas: (C == null ? '' : String(C)).trim(),
-        cn, uds: uds ?? 0, pvl, dto,
-      });
+      let dto = num(G) ?? 0; dto = Math.abs(dto); if (dto > 1) dto = dto / 100;
+      actual.filas.push({ producto: bTxt, medidas: txt(C), cn, uds: uds ?? 0, pvl, dto });
       continue;
     }
-    // Cabecera de columnas: la ignoramos.
     if (bTxt.toLowerCase() === 'producto') continue;
-    // Titulo de SECCION: hay texto en B pero NO hay CN/uds/pvl (y no es "TOTAL").
     if (bTxt && !cn && pvl == null && uds == null && !/^total/i.test(bTxt)) {
       actual = { titulo: bTxt, filas: [] };
       secciones.push(actual);
     }
   }
-  // Quitar secciones vacias (p.ej. un titulo suelto sin filas)
-  return { secciones: secciones.filter(s => s.filas.length > 0) };
+  return secciones.filter(s => s.filas.length > 0);
+}
+
+const cuentaFilas = (ss: SeccionTabla[]) => ss.reduce((a, s) => a + s.filas.length, 0);
+
+// Lee el .xlsx probando TODAS las hojas y se queda con la que mas productos da.
+export function parseExcelTabla(buffer: Buffer): DatosTabla {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  let mejor: SeccionTabla[] = [];
+  for (const nombreHoja of wb.SheetNames) {
+    const ws = wb.Sheets[nombreHoja];
+    if (!ws) continue;
+    const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+    const cab = detectarCabecera(rows);
+    const cand = cab ? leerConMapa(rows, cab.fila, cab.mapa) : leerColumnasFijas(rows);
+    if (cuentaFilas(cand) > cuentaFilas(mejor)) mejor = cand;
+  }
+  return { secciones: mejor };
+}
+
+// Explica QUE se ha leido del libro, para que un fallo sea accionable y no
+// un "no se reconocieron filas" a ciegas.
+export function resumenExcel(buffer: Buffer): string {
+  try {
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const partes = wb.SheetNames.slice(0, 5).map(n => {
+      const rows: any[][] = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: null, raw: true });
+      const cab = detectarCabecera(rows);
+      if (!cab) {
+        const primera = (rows.find(f => (f || []).some(c => txt(c))) || []).map(txt).filter(Boolean).slice(0, 8).join(' | ');
+        return `"${n}": sin fila de cabeceras reconocible. Primera fila con texto: ${primera || '(vacía)'}`;
+      }
+      return `"${n}": cabeceras en la fila ${cab.fila + 1} → ${Object.keys(cab.mapa).join(', ')}; 0 filas de producto debajo`;
+    });
+    return partes.join(' · ');
+  } catch { return ''; }
 }
 
 // Calcula pvl_neto, importe, subtotales y total. round2 = redondeo espanol a 2 decimales.

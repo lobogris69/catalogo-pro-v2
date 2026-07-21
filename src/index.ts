@@ -29,7 +29,7 @@ import {
 } from './mega';
 import { generarTagsIA, resolverRutaImagen } from './ai-tags';
 import { detectarZonasIA, ultimoErrorIA, refinarRecuadroPrecio, detectarPreciosIA } from './ai-zones';
-import { parseExcelTabla, computarTabla, renderTablaExpositor } from './expositor-tablas';
+import { parseExcelTabla, computarTabla, renderTablaExpositor, resumenExcel } from './expositor-tablas';
 
 // ============================================================================
 // AI-TAGS - dispara generacion en background y hace UPDATE cuando esta listo.
@@ -7287,7 +7287,10 @@ app.post('/api/tablas', verifyToken, requireRealAdmin, uploadTablaMem.single('ar
   try {
     if (!req.file) { res.status(400).json({ success: false, error: 'Sube un archivo Excel (.xlsx)' }); return; }
     const datos = parseExcelTabla(req.file.buffer);
-    if (!datos.secciones.length) { res.status(422).json({ success: false, error: 'No se reconocieron filas de productos en el Excel. ¿Sigue la plantilla (Producto/Medidas/C.N./Uds/pvl/Dto)?' }); return; }
+    if (!datos.secciones.length) {
+      res.status(422).json({ success: false, error: 'No se reconocieron filas de productos. Necesita una fila de cabeceras con al menos "Producto" (o "C.N.") y "pvl" (o "Precio"). Esto es lo que he leído — ' + resumenExcel(req.file.buffer) });
+      return;
+    }
     const calc = computarTabla(datos);
     const nombre = (req.body.nombre ? String(req.body.nombre) : req.file.originalname.replace(/\.(xlsx|xls)$/i, '')).slice(0, 160);
     const r = await pool.query(
@@ -7341,7 +7344,7 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
     if (req.body.nombre !== undefined) { sets.push(`nombre=$${i++}`); vals.push(String(req.body.nombre).slice(0, 160)); }
     if (req.file) {
       const datos = parseExcelTabla(req.file.buffer);
-      if (!datos.secciones.length) { res.status(422).json({ success: false, error: 'El Excel no tiene filas reconocibles' }); return; }
+      if (!datos.secciones.length) { res.status(422).json({ success: false, error: 'No se reconocieron filas de productos. Esto es lo que he leído — ' + resumenExcel(req.file.buffer) }); return; }
       calc = computarTabla(datos);
       sets.push(`datos=$${i++}`); vals.push(JSON.stringify(datos));
       sets.push(`archivo=$${i++}`); vals.push(req.file.originalname.slice(0, 200));
