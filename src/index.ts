@@ -7337,10 +7337,12 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
   try {
     const id = Number(req.params.id);
     const sets: string[] = []; const vals: any[] = []; let i = 1;
+    let calc: any = null;
     if (req.body.nombre !== undefined) { sets.push(`nombre=$${i++}`); vals.push(String(req.body.nombre).slice(0, 160)); }
     if (req.file) {
       const datos = parseExcelTabla(req.file.buffer);
       if (!datos.secciones.length) { res.status(422).json({ success: false, error: 'El Excel no tiene filas reconocibles' }); return; }
+      calc = computarTabla(datos);
       sets.push(`datos=$${i++}`); vals.push(JSON.stringify(datos));
       sets.push(`archivo=$${i++}`); vals.push(req.file.originalname.slice(0, 200));
     }
@@ -7348,7 +7350,7 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
     sets.push('updated_at=NOW()'); vals.push(id);
     const r = await pool.query(`UPDATE expositor_tabla SET ${sets.join(', ')} WHERE id=$${vals.length} RETURNING id, nombre, updated_at`, vals);
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
-    res.json({ success: true, tabla: r.rows[0] });
+    res.json({ success: true, tabla: r.rows[0], n_filas: calc ? calc.n_filas : undefined, total: calc ? calc.total : undefined });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

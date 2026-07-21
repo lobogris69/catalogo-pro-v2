@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v107 · 21 jul 2026';
+const APP_VERSION = 'v108 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -5099,10 +5099,19 @@ async function renderConfiguracion() {
           </div>
           <div id="tablas-lista"><div style="color:var(--gris-texto);font-size:13px;padding:12px;text-align:center">Cargando tablas…</div></div>
           <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--gris-borde)">
-            <label class="btn btn-primary btn-pequeno" style="cursor:pointer">📥 Subir Excel
-              <input type="file" accept=".xlsx,.xls" style="display:none" onchange="subirTablaExcel(this)">
-            </label>
-            <span id="tablas-msg" style="font-size:12px;color:var(--gris-texto);margin-left:8px"></span>
+            <div class="tablas-drop" id="tablas-drop"
+                 ondragover="event.preventDefault(); this.classList.add('activo')"
+                 ondragleave="this.classList.remove('activo')"
+                 ondrop="event.preventDefault(); this.classList.remove('activo'); subirTablasExcel(event.dataTransfer.files)">
+              <div style="font-size:22px">📥</div>
+              <div><b>Arrastra aquí tus Excel</b> — puedes soltar <b>varios a la vez</b></div>
+              <label class="btn btn-primary btn-pequeno" style="cursor:pointer;margin-top:6px">Elegir archivos
+                <input type="file" accept=".xlsx,.xls" multiple style="display:none"
+                       onchange="subirTablasExcel(this.files); this.value='';">
+              </label>
+              <small style="color:var(--gris-texto)">Si el nombre coincide con una tabla que ya existe, se actualiza esa (no se duplica).</small>
+            </div>
+            <div id="tablas-msg" style="font-size:12px;color:var(--gris-texto);margin-top:8px"></div>
           </div>
         </div>
 
@@ -5287,25 +5296,76 @@ async function cargarTablasAdmin() {
   } catch (e) { $l.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`; }
 }
 
-async function _subirTabla(input, url, method) {
+// Envía UN Excel y devuelve la respuesta ya validada (lanza si falla).
+async function _enviarTabla(file, url, method) {
+  const fd = new FormData(); fd.append('archivo', file);
+  const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
+  const r = await fetch(API + url, { method, headers, body: fd });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || !data.success) throw new Error(data.error || 'Error ' + r.status);
+  return data;
+}
+
+// Subida MÚLTIPLE: acepta varios Excel de golpe (selector o arrastrando).
+// Se envían de uno en uno para no saturar el servidor, con progreso a la vista.
+// Si el nombre del archivo coincide con una tabla existente, se ACTUALIZA esa
+// (es lo que se espera al re-subir precios) en vez de crear un duplicado.
+async function subirTablasExcel(lista) {
+  const files = Array.from(lista || []).filter(f => /\.(xlsx|xls)$/i.test(f.name));
+  const $m = document.getElementById('tablas-msg');
+  if (!files.length) {
+    if ($m) $m.innerHTML = '<span style="color:#b91c1c">❌ Ningún archivo Excel (.xlsx / .xls) en lo que has soltado.</span>';
+    return;
+  }
+  let porNombre = {};
+  try {
+    ((await api('/api/tablas')).tablas || []).forEach(t => { porNombre[String(t.nombre).trim().toLowerCase()] = t.id; });
+  } catch (_) { /* si falla el listado, se suben todas como nuevas */ }
+
+  const nuevas = [], actualizadas = [], fallos = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const base = f.name.replace(/\.(xlsx|xls)$/i, '').trim();
+    const clave = base.toLowerCase();
+    const existeId = porNombre[clave];
+    if ($m) $m.innerHTML = `⏳ Subiendo <b>${i + 1} de ${files.length}</b> · ${escape(f.name)}`;
+    try {
+      const d = await _enviarTabla(f, existeId ? '/api/tablas/' + existeId : '/api/tablas', existeId ? 'PUT' : 'POST');
+      if (existeId) actualizadas.push(base);
+      else { nuevas.push(base); if (d.tabla && d.tabla.id) porNombre[clave] = d.tabla.id; }
+    } catch (e) {
+      fallos.push(base + ' → ' + e.message);
+    }
+  }
+
+  if ($m) {
+    const partes = [];
+    if (nuevas.length) partes.push(`✅ ${nuevas.length} nueva${nuevas.length > 1 ? 's' : ''}`);
+    if (actualizadas.length) partes.push(`🔄 ${actualizadas.length} actualizada${actualizadas.length > 1 ? 's' : ''}`);
+    if (fallos.length) partes.push(`<span style="color:#b91c1c">❌ ${fallos.length} con error</span>`);
+    $m.innerHTML = partes.join(' · ') +
+      (fallos.length ? `<ul style="margin:6px 0 0 16px;color:#b91c1c">${fallos.map(x => `<li>${escape(x)}</li>`).join('')}</ul>` : '');
+    if (!fallos.length) setTimeout(() => { if ($m) $m.innerHTML = ''; }, 6000);
+  }
+  cargarTablasAdmin();
+}
+
+// Actualizar UNA tabla concreta desde su fila de la lista (botón 🔄).
+async function actualizarTablaExcel(id, input) {
   const file = input.files && input.files[0];
+  input.value = '';
   if (!file) return;
   const $m = document.getElementById('tablas-msg');
   if ($m) $m.textContent = '⏳ Leyendo Excel…';
-  const fd = new FormData(); fd.append('archivo', file);
-  const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
   try {
-    const r = await fetch(API + url, { method, headers, body: fd });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok || !data.success) throw new Error(data.error || 'Error ' + r.status);
-    if ($m) $m.textContent = data.total != null ? ('✅ ' + data.n_filas + ' filas · TOTAL ' + Number(data.total).toFixed(2).replace('.', ',') + '€') : '✅ Actualizada';
-    input.value = '';
+    const d = await _enviarTabla(file, '/api/tablas/' + id, 'PUT');
+    if ($m) $m.textContent = d.total != null
+      ? `✅ Actualizada · ${d.n_filas} filas · TOTAL ${Number(d.total).toFixed(2).replace('.', ',')}€`
+      : '✅ Actualizada';
     cargarTablasAdmin();
-    setTimeout(() => { if ($m) $m.textContent = ''; }, 4000);
-  } catch (e) { if ($m) $m.textContent = '❌ ' + e.message; input.value = ''; }
+    setTimeout(() => { if ($m) $m.textContent = ''; }, 5000);
+  } catch (e) { if ($m) $m.textContent = '❌ ' + e.message; }
 }
-function subirTablaExcel(input) { _subirTabla(input, '/api/tablas', 'POST'); }
-function actualizarTablaExcel(id, input) { _subirTabla(input, '/api/tablas/' + id, 'PUT'); }
 
 function verTablaExpositor(id, nombre) {
   const m = document.createElement('div');

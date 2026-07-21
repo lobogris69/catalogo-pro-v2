@@ -4076,6 +4076,25 @@ body.con-banner-update {
   flex-shrink: 0;
 }
 
+/* --- Zona para soltar varios Excel a la vez (tablas de expositor) --- */
+.tablas-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  padding: 18px 14px;
+  border: 2px dashed var(--gris-borde);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 13px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.tablas-drop.activo {
+  border-color: var(--brand, #d80a6b);
+  background: rgba(216, 10, 107, 0.10);
+}
+
 /* --- Selección múltiple en el mosaico (mover varias láminas en bloque) --- */
 .mosaico-marca {
   position: absolute;
