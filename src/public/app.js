@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v113 · 21 jul 2026';
+const APP_VERSION = 'v114 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -5271,6 +5271,9 @@ function _ofertaResumen(o) {
 }
 
 // ===== Tablas de expositor (biblioteca) =====
+// Seleccion multiple para borrar varias de una vez (misma idea que el mosaico)
+let _tablasSel = new Set();
+
 async function cargarTablasAdmin() {
   const $l = document.getElementById('tablas-lista');
   if (!$l) return;
@@ -5278,12 +5281,25 @@ async function cargarTablasAdmin() {
     const r = await api('/api/tablas');
     const tablas = r.tablas || [];
     if (!tablas.length) {
+      _tablasSel.clear();
       $l.innerHTML = `<div style="padding:1rem;background:var(--surface-2);border-radius:8px;color:#6b7280;font-size:13px;text-align:center">Aún no hay tablas. Sube tu primer Excel de expositor abajo.</div>`;
       return;
     }
+    // Marcas de tablas que ya no existen (tras borrar), fuera
+    const idsVivos = new Set(tablas.map(t => t.id));
+    _tablasSel = new Set([..._tablasSel].filter(id => idsVivos.has(id)));
     const f = s => String(s || '').slice(0, 10).split('-').reverse().join('/');
-    $l.innerHTML = tablas.map(t => `
+    $l.innerHTML = `
+      <div id="tablas-barra-sel" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 10px;margin-bottom:10px;background:var(--surface-2);border-radius:8px;font-size:13px">
+        <span id="tablas-sel-cuenta" style="font-weight:700"></span>
+        <button class="btn btn-secondary btn-pequeno" onclick="marcarTodasLasTablas(true)">Marcar todas</button>
+        <button class="btn btn-secondary btn-pequeno" onclick="marcarTodasLasTablas(false)">Quitar marcas</button>
+        <button class="btn-borrar" id="tablas-sel-borrar" onclick="borrarTablasMarcadas()" style="padding:6px 12px">🗑 Eliminar marcadas</button>
+      </div>` + tablas.map(t => `
       <div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--gris-borde);border-radius:8px;margin-bottom:8px">
+        <input type="checkbox" class="tabla-check" data-id="${t.id}" ${_tablasSel.has(t.id) ? 'checked' : ''}
+               onchange="marcarTabla(${t.id}, this.checked)" title="Marcar para acciones en bloque"
+               style="width:18px;height:18px;accent-color:var(--brand);flex-shrink:0;cursor:pointer">
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:13px">${escape(t.nombre)}</div>
           <div style="font-size:12px;color:var(--gris-texto)">${t.n_filas} filas${t.n_hojas > 1 ? ' · ' + t.n_hojas + ' hojas' : ''}${t.n_columnas ? ' · ' + t.n_columnas + ' columnas' : ''}${t.n_secciones ? ' · ' + t.n_secciones + ' apartados' : ''}${
@@ -5295,6 +5311,7 @@ async function cargarTablasAdmin() {
           <input type="file" accept=".xlsx,.xls" style="display:none" onchange="actualizarTablaExcel(${t.id}, this)"></label>
         <button class="btn-borrar" onclick="borrarTablaExpositor(${t.id})" title="Eliminar tabla">✖</button>
       </div>`).join('');
+    actualizarBarraTablas();
   } catch (e) { $l.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`; }
 }
 
@@ -5382,8 +5399,52 @@ function verTablaExpositor(id, nombre) {
 
 async function borrarTablaExpositor(id) {
   if (!confirm('¿Eliminar esta tabla de la biblioteca?\n\nSe quitará también de las láminas que la usen.')) return;
-  try { await api('/api/tablas/' + id, { method: 'DELETE' }); cargarTablasAdmin(); }
+  try { await api('/api/tablas/' + id, { method: 'DELETE' }); _tablasSel.delete(id); cargarTablasAdmin(); }
   catch (e) { alert(e.message); }
+}
+
+// --- Seleccion multiple de tablas (borrar varias de una vez) ---
+function marcarTabla(id, marcada) {
+  if (marcada) _tablasSel.add(id); else _tablasSel.delete(id);
+  actualizarBarraTablas();
+}
+
+function marcarTodasLasTablas(marcar) {
+  document.querySelectorAll('.tabla-check').forEach(ch => {
+    ch.checked = marcar;
+    const id = Number(ch.dataset.id);
+    if (marcar) _tablasSel.add(id); else _tablasSel.delete(id);
+  });
+  actualizarBarraTablas();
+}
+
+function actualizarBarraTablas() {
+  const $c = document.getElementById('tablas-sel-cuenta');
+  const $b = document.getElementById('tablas-sel-borrar');
+  if (!$c || !$b) return;
+  const n = _tablasSel.size;
+  $c.textContent = n === 0 ? 'Marca tablas para actuar en bloque' : (n === 1 ? '1 tabla marcada' : `${n} tablas marcadas`);
+  $b.disabled = n === 0;
+  $b.style.opacity = n === 0 ? '0.4' : '1';
+  $b.textContent = n > 0 ? `🗑 Eliminar marcadas (${n})` : '🗑 Eliminar marcadas';
+}
+
+async function borrarTablasMarcadas() {
+  const ids = [..._tablasSel];
+  if (!ids.length) return;
+  if (!confirm(`¿Eliminar ${ids.length === 1 ? 'la tabla marcada' : 'las ' + ids.length + ' tablas marcadas'}?\n\nSe quitarán también de las láminas que las usen.`)) return;
+  const $m = document.getElementById('tablas-msg');
+  const fallos = [];
+  for (let i = 0; i < ids.length; i++) {
+    if ($m) $m.textContent = `⏳ Eliminando ${i + 1} de ${ids.length}…`;
+    try { await api('/api/tablas/' + ids[i], { method: 'DELETE' }); _tablasSel.delete(ids[i]); }
+    catch (e) { fallos.push(e.message); }
+  }
+  if ($m) {
+    $m.textContent = fallos.length ? `❌ ${fallos.length} no se pudieron eliminar: ${fallos[0]}` : `✅ ${ids.length - fallos.length} eliminadas`;
+    if (!fallos.length) setTimeout(() => { if ($m) $m.textContent = ''; }, 4000);
+  }
+  cargarTablasAdmin();
 }
 
 async function cargarOfertasAdmin() {
