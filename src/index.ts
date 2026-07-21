@@ -7310,7 +7310,7 @@ app.get('/api/tablas', verifyToken, requireRealAdmin, async (req: AuthRequest, r
     const tablas = r.rows.map((t: any) => {
       const c = computarTabla(t.datos);
       return { id: t.id, nombre: t.nombre, archivo: t.archivo, updated_at: t.updated_at,
-               n_filas: c.n_filas, n_secciones: c.n_secciones, n_columnas: (c as any).n_columnas || null, total: c.total };
+               n_filas: c.n_filas, n_secciones: c.n_secciones, n_columnas: (c as any).n_columnas || null, n_hojas: (c as any).n_hojas || 1, total: c.total };
     });
     res.json({ success: true, tablas });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }

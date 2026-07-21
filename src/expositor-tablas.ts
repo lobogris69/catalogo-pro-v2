@@ -21,12 +21,18 @@ import sharp from 'sharp';
 // --- Formato FIEL (el que se usa ahora) ---
 export type TipoFila = 'datos' | 'seccion' | 'total' | 'cabecera';
 export interface FilaFiel { tipo: TipoFila; celdas: string[]; }
+// Un bloque = la tabla de UNA hoja del Excel. Un libro con varias hojas
+// ("Emuliquen" y "Lactulosa", "Tabla 1" y "Tabla 2") produce varios bloques,
+// que se dibujan uno debajo de otro — antes solo se quedaba una hoja.
+export interface BloqueTabla { titulo: string; cabeceras: string[]; filas: FilaFiel[]; numericas: boolean[]; }
 export interface DatosTabla {
   titulo?: string;
-  cabeceras?: string[];      // cabeceras del Excel, tal cual
-  filas?: FilaFiel[];        // filas del Excel, tal cual
-  numericas?: boolean[];     // que columnas son numericas (para alinear a la derecha)
-  // --- formato antiguo, solo para tablas ya guardadas ---
+  bloques?: BloqueTabla[];   // formato actual: una tabla por hoja del Excel
+  // --- formato de una sola hoja (tablas guardadas con v110) ---
+  cabeceras?: string[];
+  filas?: FilaFiel[];
+  numericas?: boolean[];     // que columnas son numericas (se centran)
+  // --- formato antiguo calculado, solo para tablas aun mas viejas ---
   secciones?: any[];
   sin_uds?: boolean;
 }
@@ -196,18 +202,27 @@ function extraerHoja(ws: XLSX.WorkSheet): Extraida | null {
   };
 }
 
-// Lee el .xlsx probando TODAS las hojas y se queda con la que mas filas da.
+// Lee el .xlsx entero: TODAS las hojas con tabla entran, cada una como un
+// bloque (antes se quedaba solo la hoja con mas filas y se perdian las demas).
 export function parseExcelTabla(buffer: Buffer): DatosTabla {
   const wb = XLSX.read(buffer, { type: 'buffer' });
-  let mejor: Extraida | null = null;
+  const bloques: BloqueTabla[] = [];
   for (const nombre of wb.SheetNames) {
     const ws = wb.Sheets[nombre];
     if (!ws) continue;
     const e = extraerHoja(ws);
-    if (e && (!mejor || e.filas.length > mejor.filas.length)) mejor = e;
+    if (e) bloques.push({ titulo: nombre, cabeceras: e.cabeceras, filas: e.filas, numericas: e.numericas });
   }
-  if (!mejor) return { cabeceras: [], filas: [], numericas: [] };
-  return { cabeceras: mejor.cabeceras, filas: mejor.filas, numericas: mejor.numericas };
+  return { bloques };
+}
+
+// Normaliza cualquier formato guardado a la lista de bloques que dibuja render.
+function bloquesDe(datos: DatosTabla): BloqueTabla[] {
+  if (datos.bloques && datos.bloques.length) return datos.bloques;
+  if (datos.cabeceras && datos.cabeceras.length) {
+    return [{ titulo: '', cabeceras: datos.cabeceras, filas: datos.filas || [], numericas: datos.numericas || [] }];
+  }
+  return [];
 }
 
 // Explica QUE se ha leido, para que un fallo sea accionable.
@@ -231,16 +246,17 @@ export function resumenExcel(buffer: Buffer): string {
 // Resumen para la lista de la biblioteca. NO calcula importes ni totales: solo
 // cuenta lo que hay. (Se mantiene el nombre por compatibilidad con el resto.)
 export function computarTabla(datos: DatosTabla) {
-  if (datos && datos.cabeceras) {
-    const filas = datos.filas || [];
+  const bloques = datos ? bloquesDe(datos) : [];
+  if (bloques.length) {
+    const todas = bloques.reduce((a: FilaFiel[], b) => a.concat(b.filas), []);
     return {
       titulo: datos.titulo,
       fiel: true,
-      cabeceras: datos.cabeceras,
-      filas,
-      n_filas: filas.filter(f => f.tipo === 'datos').length,
-      n_secciones: filas.filter(f => f.tipo === 'seccion').length,
-      n_columnas: datos.cabeceras.length,
+      bloques,
+      n_filas: todas.filter(f => f.tipo === 'datos').length,
+      n_secciones: todas.filter(f => f.tipo === 'seccion').length + (bloques.length > 1 ? bloques.length : 0),
+      n_columnas: Math.max(...bloques.map(b => b.cabeceras.length)),
+      n_hojas: bloques.length,
       total: null as number | null,
     };
   }
@@ -318,105 +334,119 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
   const W = Math.max(700, Math.min(1600, opts?.width || 1040));
   const M = 24;
   const cw = W - M * 2;
-  const cabeceras: string[] = calc.cabeceras;
-  const filas: FilaFiel[] = calc.filas;
-  const numericas: boolean[] = datos.numericas || cabeceras.map(() => false);
-  const n = cabeceras.length;
-  if (!n || !filas.length) {
+  const bloques: BloqueTabla[] = calc.bloques || [];
+  if (!bloques.length) {
     const vacio = await sharp({ create: { width: W, height: 60, channels: 3, background: '#fff' } }).png().toBuffer();
     return { buffer: vacio, width: W, height: 60 };
   }
 
-  // ANCHOS. Regla: no recortar NADA. Se mide lo que ocupa cada columna de verdad
-  // (cabecera + todas sus celdas) y, si no cabe, se REDUCE LA LETRA hasta que
-  // quepa. Solo si aun asi no entra se parte en 2 lineas la columna de texto mas
-  // larga. Las columnas numericas nunca se parten: por eso el "€" caia solo.
-  const medir = (tam: number) => cabeceras.map((h, i) => {
-    let mx = anchoTexto(h, tam * 0.92);
-    // Cuentan tambien subtotales y TOTAL (si no, salia "TOTA…").
-    for (const f of filas) if (f.tipo !== 'seccion' && f.tipo !== 'cabecera') mx = Math.max(mx, anchoTexto(f.celdas[i] || '', tam));
-    return mx + tam * 1.4;   // margen interior proporcional a la letra
-  });
-  let fs = Math.round(W * 0.0145);
-  let naturales = medir(fs);
-  let suma = naturales.reduce((a, b) => a + b, 0) || 1;
-  if (suma > cw) {                       // no cabe: se encoge la letra
-    fs = Math.max(9, fs * (cw / suma));
-    naturales = medir(fs);
-    suma = naturales.reduce((a, b) => a + b, 0) || 1;
-  }
-  const pad = Math.round(fs * 0.7);
-  const lineH = Math.round(fs * 1.35);
-
-  let anchos: number[];
-  if (suma <= cw) {
-    anchos = naturales.map(x => (x / suma) * cw);   // sobra sitio: se reparte
-  } else {
-    // Ni con la letra al minimo: las numericas conservan su ancho entero y el
-    // resto se reparte entre las de texto, que si pueden ir a dos lineas.
-    const anchoNum = naturales.reduce((a, x, i) => a + (numericas[i] ? x : 0), 0);
-    const resto = Math.max(cw * 0.25, cw - anchoNum);
-    const sumaTxt = naturales.reduce((a, x, i) => a + (numericas[i] ? 0 : x), 0) || 1;
-    anchos = naturales.map((x, i) => numericas[i] ? x * Math.min(1, cw / suma) : (x / sumaTxt) * resto);
-  }
-  const xs: number[] = []; let acc = M;
-  for (const a of anchos) { xs.push(acc); acc += a; }
-
-  const texto = (x: number, y: number, s: string, o: { a?: string; b?: boolean; c?: string; sz?: number } = {}) =>
-    `<text x="${x}" y="${y}" font-family="${FUENTE}" font-weight="${o.b ? 700 : 400}" font-size="${o.sz || fs}" fill="${o.c || PLOMO}" text-anchor="${o.a || 'start'}">${esc(s)}</text>`;
-  const posX = (i: number, der: boolean) => der ? xs[i] + anchos[i] - pad : xs[i] + pad;
-
   let y = M, els = '';
+  const fsBase = Math.round(W * 0.0145);
   if (calc.titulo) {
-    els += texto(M, y + fs, calc.titulo, { b: true, c: BRAND2, sz: Math.round(fs * 1.4) });
-    y += Math.round(fs * 2.2);
+    els += `<text x="${M}" y="${y + fsBase}" font-family="${FUENTE}" font-weight="700" font-size="${Math.round(fsBase * 1.4)}" fill="${BRAND2}">${esc(calc.titulo)}</text>`;
+    y += Math.round(fsBase * 2.2);
   }
+  // El nombre de la hoja (lo puso el usuario en su Excel) encabeza cada bloque,
+  // pero solo si hay varias hojas y el nombre no es el generico de Excel.
+  const nombreUtil = (t: string) => t && !/^(hoja|sheet)\s*\d*$/i.test(t.trim());
 
-  // Cabecera del Excel. Se dibuja arriba y, si el usuario la repite en cada
-  // apartado, se vuelve a dibujar en ese sitio (fila de tipo 'cabecera').
-  const lineasCab = cabeceras.map((h, i) => partirTexto(h, fs * 0.92, anchos[i] - pad * 2, 2));
-  const hCab = Math.max(...lineasCab.map(l => l.length)) * lineH + pad;
-  const pintarCabecera = () => {
-    els += `<rect x="${M}" y="${y}" width="${cw}" height="${hCab}" fill="${HEAD_BG}"/>`;
-    lineasCab.forEach((ls, i) => {
-      ls.forEach((l, k) => {
-        els += texto(posX(i, numericas[i]), y + pad * 0.8 + (k + 1) * lineH - lineH * 0.25, l,
-          { b: true, c: BRAND2, a: numericas[i] ? 'end' : 'start', sz: Math.round(fs * 0.92) });
-      });
+  for (let nb = 0; nb < bloques.length; nb++) {
+    const { cabeceras, filas, numericas } = bloques[nb];
+    if (!cabeceras.length || !filas.length) continue;
+
+    // ANCHOS del bloque. Regla: no recortar NADA. Se mide lo que ocupa cada
+    // columna de verdad y, si no cabe, se REDUCE LA LETRA hasta que quepa.
+    // Las columnas numericas nunca se parten (el "€" no cae a otra linea).
+    const medir = (tam: number) => cabeceras.map((h, i) => {
+      let mx = anchoTexto(h, tam * 0.92);
+      // Cuentan tambien subtotales y TOTAL (si no, salia "TOTA…").
+      for (const f of filas) if (f.tipo !== 'seccion' && f.tipo !== 'cabecera') mx = Math.max(mx, anchoTexto(f.celdas[i] || '', tam));
+      return mx + tam * 1.4;
     });
-    y += hCab;
-  };
-  // Si el Excel ya repite la cabecera dentro de cada apartado y empieza por el
-  // titulo de uno, se respeta ese orden (titulo -> cabecera) y no se duplica.
-  const repiteCabecera = filas.some(f => f.tipo === 'cabecera');
-  if (!(repiteCabecera && filas[0] && filas[0].tipo === 'seccion')) pintarCabecera();
+    let fs = fsBase;
+    let naturales = medir(fs);
+    let suma = naturales.reduce((a, b) => a + b, 0) || 1;
+    if (suma > cw) {
+      fs = Math.max(9, fs * (cw / suma));
+      naturales = medir(fs);
+      suma = naturales.reduce((a, b) => a + b, 0) || 1;
+    }
+    const pad = Math.round(fs * 0.7);
+    const lineH = Math.round(fs * 1.35);
 
-  // Filas, respetando el tipo que traia el Excel
-  let z = 0;
-  filas.forEach(f => {
-    if (f.tipo === 'cabecera') { pintarCabecera(); z = 0; return; }
-    if (f.tipo === 'seccion') {
-      const t = f.celdas.find(Boolean) || '';
+    let anchos: number[];
+    if (suma <= cw) {
+      anchos = naturales.map(x => (x / suma) * cw);
+    } else {
+      const anchoNum = naturales.reduce((a, x, i) => a + (numericas[i] ? x : 0), 0);
+      const resto = Math.max(cw * 0.25, cw - anchoNum);
+      const sumaTxt = naturales.reduce((a, x, i) => a + (numericas[i] ? 0 : x), 0) || 1;
+      anchos = naturales.map((x, i) => numericas[i] ? x * Math.min(1, cw / suma) : (x / sumaTxt) * resto);
+    }
+    const xs: number[] = []; let acc = M;
+    for (const a of anchos) { xs.push(acc); acc += a; }
+
+    const texto = (x: number, yy: number, s: string, o: { a?: string; b?: boolean; c?: string; sz?: number } = {}) =>
+      `<text x="${x}" y="${yy}" font-family="${FUENTE}" font-weight="${o.b ? 700 : 400}" font-size="${o.sz || fs}" fill="${o.c || PLOMO}" text-anchor="${o.a || 'start'}">${esc(s)}</text>`;
+    // Numeros CENTRADOS en su columna (uds, bonificacion, precios, codigos);
+    // el texto (articulo, descripcion) a la izquierda.
+    const posX = (i: number, num: boolean) => num ? xs[i] + anchos[i] / 2 : xs[i] + pad;
+    const ancla = (num: boolean) => num ? 'middle' : 'start';
+
+    if (bloques.length > 1 && nombreUtil(bloques[nb].titulo)) {
       const h = Math.round(fs * 2.2);
       els += `<rect x="${M}" y="${y + 3}" width="${cw}" height="${h - 3}" rx="5" fill="${BRAND}"/>`;
-      els += texto(M + pad, y + 3 + (h - 3) / 2 + fs * 0.35, t, { b: true, c: '#fff', sz: Math.round(fs * 1.03) });
-      y += h + 2; z = 0;
-      return;
+      els += texto(M + pad, y + 3 + (h - 3) / 2 + fs * 0.35, bloques[nb].titulo, { b: true, c: '#fff', sz: Math.round(fs * 1.03) });
+      y += h + 2;
     }
-    const lineas = f.celdas.map((c, i) => partirTexto(c || "", fs, anchos[i] - pad * 2, numericas[i] ? 1 : 2));
-    const h = Math.max(...lineas.map(l => l.length)) * lineH + pad * 0.6;
-    const esTotal = f.tipo === 'total';
-    if (esTotal) els += `<rect x="${M}" y="${y}" width="${cw}" height="${h}" fill="#f7edf3"/>`;
-    else if (z % 2 === 1) els += `<rect x="${M}" y="${y}" width="${cw}" height="${h}" fill="${ZEBRA}"/>`;
-    lineas.forEach((ls, i) => {
-      ls.forEach((l, k) => {
-        els += texto(posX(i, numericas[i]), y + pad * 0.3 + (k + 1) * lineH - lineH * 0.22, l,
-          { a: numericas[i] ? 'end' : 'start', b: esTotal, c: esTotal ? BRAND2 : PLOMO });
+
+    // Cabecera del Excel. Se dibuja arriba y, si el usuario la repite en cada
+    // apartado, se vuelve a dibujar en ese sitio (fila de tipo 'cabecera').
+    const lineasCab = cabeceras.map((h, i) => partirTexto(h, fs * 0.92, anchos[i] - pad * 2, 2));
+    const hCab = Math.max(...lineasCab.map(l => l.length)) * lineH + pad;
+    const pintarCabecera = () => {
+      els += `<rect x="${M}" y="${y}" width="${cw}" height="${hCab}" fill="${HEAD_BG}"/>`;
+      lineasCab.forEach((ls, i) => {
+        ls.forEach((l, k) => {
+          els += texto(posX(i, numericas[i]), y + pad * 0.8 + (k + 1) * lineH - lineH * 0.25, l,
+            { b: true, c: BRAND2, a: ancla(numericas[i]), sz: Math.round(fs * 0.92) });
+        });
       });
+      y += hCab;
+    };
+    // Si el Excel ya repite la cabecera en cada apartado y empieza por el titulo
+    // de uno, se respeta ese orden (titulo -> cabecera) y no se duplica.
+    const repiteCabecera = filas.some(f => f.tipo === 'cabecera');
+    if (!(repiteCabecera && filas[0] && filas[0].tipo === 'seccion')) pintarCabecera();
+
+    // Filas, respetando el tipo que traia el Excel
+    let z = 0;
+    filas.forEach(f => {
+      if (f.tipo === 'cabecera') { pintarCabecera(); z = 0; return; }
+      if (f.tipo === 'seccion') {
+        const t = f.celdas.find(Boolean) || '';
+        const h = Math.round(fs * 2.2);
+        els += `<rect x="${M}" y="${y + 3}" width="${cw}" height="${h - 3}" rx="5" fill="${BRAND}"/>`;
+        els += texto(M + pad, y + 3 + (h - 3) / 2 + fs * 0.35, t, { b: true, c: '#fff', sz: Math.round(fs * 1.03) });
+        y += h + 2; z = 0;
+        return;
+      }
+      const lineas = f.celdas.map((c, i) => partirTexto(c || '', fs, anchos[i] - pad * 2, numericas[i] ? 1 : 2));
+      const h = Math.max(...lineas.map(l => l.length)) * lineH + pad * 0.6;
+      const esTotal = f.tipo === 'total';
+      if (esTotal) els += `<rect x="${M}" y="${y}" width="${cw}" height="${h}" fill="#f7edf3"/>`;
+      else if (z % 2 === 1) els += `<rect x="${M}" y="${y}" width="${cw}" height="${h}" fill="${ZEBRA}"/>`;
+      lineas.forEach((ls, i) => {
+        ls.forEach((l, k) => {
+          els += texto(posX(i, numericas[i]), y + pad * 0.3 + (k + 1) * lineH - lineH * 0.22, l,
+            { a: ancla(numericas[i]), b: esTotal, c: esTotal ? BRAND2 : PLOMO });
+        });
+      });
+      els += `<line x1="${M}" y1="${y + h}" x2="${M + cw}" y2="${y + h}" stroke="${esTotal ? BRAND : LINEA}" stroke-width="${esTotal ? 1.5 : 1}"/>`;
+      y += h; z++;
     });
-    els += `<line x1="${M}" y1="${y + h}" x2="${M + cw}" y2="${y + h}" stroke="${esTotal ? BRAND : LINEA}" stroke-width="${esTotal ? 1.5 : 1}"/>`;
-    y += h; z++;
-  });
+    if (nb < bloques.length - 1) y += Math.round(fsBase * 1.3);   // aire entre hojas
+  }
   y += M;
 
   const H = Math.ceil(y);
