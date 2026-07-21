@@ -4046,6 +4046,72 @@ body.con-banner-update {
   flex-shrink: 0;
 }
 
+/* --- Selección múltiple en el mosaico (mover varias láminas en bloque) --- */
+.mosaico-marca {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.85);
+  background: rgba(17,24,39,0.55);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+  z-index: 2;
+  pointer-events: none; /* el clic lo gestiona la tarjeta entera */
+}
+.mosaico-card.mosaico-sel {
+  outline: 3px solid var(--brand, #d80a6b);
+  outline-offset: -3px;
+}
+.mosaico-card.mosaico-sel .mosaico-marca {
+  background: var(--brand, #d80a6b);
+  border-color: #fff;
+}
+.mosaico-barra-sel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: #111827;
+  border-top: 2px solid var(--brand, #d80a6b);
+  color: #e5e7eb;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.mosaico-barra-sel[hidden] { display: none; }
+.mosaico-barra-cuenta {
+  font-weight: 700;
+  color: #fff;
+  background: var(--brand, #d80a6b);
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+.mosaico-barra-sep {
+  width: 1px;
+  height: 20px;
+  background: #374151;
+}
+.mosaico-barra-input {
+  width: 70px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 2px solid #374151;
+  background: #1f2937;
+  color: #fff;
+  font-weight: 700;
+  text-align: center;
+}
+.mosaico-barra-input:focus {
+  outline: none;
+  border-color: var(--brand, #d80a6b);
+}
+
 /* ============================================================================
    Resumen pre-envío de visita (revisar antes de enviar emails)
    ============================================================================ */
