@@ -889,6 +889,11 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_lamina_tabla_sheet ON lamina_tabla(sheet_id);
 
+      -- PAPELERA: borrar una tabla (o quitarla de una lamina) ya no destruye nada,
+      -- solo marca la fecha. Asi se puede DESHACER, sobre todo un borrado en bloque.
+      ALTER TABLE expositor_tabla ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL;
+      ALTER TABLE lamina_tabla   ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL;
+
       -- ===== Sync Sage - campos extra en clients (idempotente) =====
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS tarifa_precio INTEGER;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS nombre_comercial VARCHAR(255);
@@ -1674,7 +1679,7 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
       for (const row of rR.rows) rBySheet[row.sheet_id] = { n: row.n, pend: row.pend };
       // Tablas de expositor asociadas por lámina (distintivo "Tabla dinámica" en la rejilla).
       const tR = await pool.query(
-        `SELECT sheet_id, COUNT(*)::int AS n FROM lamina_tabla WHERE sheet_id = ANY($1::int[]) AND activo=TRUE GROUP BY sheet_id`, [sheetIds]);
+        `SELECT sheet_id, COUNT(*)::int AS n FROM lamina_tabla WHERE sheet_id = ANY($1::int[]) AND activo=TRUE AND deleted_at IS NULL GROUP BY sheet_id`, [sheetIds]);
       const tBySheet: { [key: number]: number } = {};
       for (const row of tR.rows) tBySheet[row.sheet_id] = row.n;
       for (const s of sheetsRows) {
@@ -6785,7 +6790,7 @@ app.get('/api/catalogs/:id/informe-precios', verifyToken, requireRealAdmin, asyn
         WHERE r.sheet_id = ANY($1::int[]) AND r.activo=TRUE GROUP BY r.sheet_id`, [ids])).rows;
     const rBy: any = {}; rAgg.forEach((r: any) => { rBy[r.sheet_id] = r; });
     // Láminas con tabla de expositor asociada.
-    const tAgg = (await pool.query(`SELECT sheet_id, COUNT(*)::int AS n FROM lamina_tabla WHERE sheet_id = ANY($1::int[]) AND activo=TRUE GROUP BY sheet_id`, [ids])).rows;
+    const tAgg = (await pool.query(`SELECT sheet_id, COUNT(*)::int AS n FROM lamina_tabla WHERE sheet_id = ANY($1::int[]) AND activo=TRUE AND deleted_at IS NULL GROUP BY sheet_id`, [ids])).rows;
     const tBy: any = {}; tAgg.forEach((r: any) => { tBy[r.sheet_id] = r.n; });
 
     const pendientes: any[] = [], anomalas: any[] = [], comision: any[] = [], excluidas: any[] = [], tablas: any[] = [];
@@ -7203,7 +7208,7 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
   const lt = await pool.query(
     `SELECT lt.x, lt.y, lt.ancho, lt.alto, t.datos FROM lamina_tabla lt
        JOIN expositor_tabla t ON t.id = lt.tabla_id
-      WHERE lt.sheet_id = $1 AND lt.activo = TRUE`, [sheetId]);
+      WHERE lt.sheet_id = $1 AND lt.activo = TRUE AND lt.deleted_at IS NULL AND t.deleted_at IS NULL`, [sheetId]);
   const huecos = lt.rows.map((r: any) => ({ x: Number(r.x), y: Number(r.y), x2: Number(r.x) + Number(r.ancho), y2: Number(r.y) + Number(r.alto) }));
   // ¿El centro del recuadro cae dentro de algún hueco de tabla? (en %)
   const dentroDeTabla = (rec: any) => {
@@ -7377,7 +7382,7 @@ app.post('/api/tablas', verifyToken, requireRealAdmin, uploadTablaMem.single('ar
       const datosUno = JSON.stringify({ bloques: [b] });
       // Si ya existe una tabla con ese nombre se ACTUALIZA (re-subida de precios),
       // no se duplica. Asi el flujo de "soltar todos los Excel otra vez" funciona.
-      const ex = await pool.query(`SELECT id FROM expositor_tabla WHERE LOWER(nombre)=LOWER($1)`, [nombre]);
+      const ex = await pool.query(`SELECT id FROM expositor_tabla WHERE LOWER(nombre)=LOWER($1) AND deleted_at IS NULL`, [nombre]);
       if (ex.rows.length) {
         await pool.query(`UPDATE expositor_tabla SET datos=$1, archivo=$2, updated_at=NOW() WHERE id=$3`,
           [datosUno, req.file.originalname.slice(0, 200), ex.rows[0].id]);
@@ -7398,7 +7403,7 @@ app.post('/api/tablas', verifyToken, requireRealAdmin, uploadTablaMem.single('ar
 // Listar tablas (con total y nº de filas calculados).
 app.get('/api/tablas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query(`SELECT id, nombre, datos, archivo, updated_at FROM expositor_tabla ORDER BY updated_at DESC`);
+    const r = await pool.query(`SELECT id, nombre, datos, archivo, updated_at FROM expositor_tabla WHERE deleted_at IS NULL ORDER BY updated_at DESC`);
     const tablas = r.rows.map((t: any) => {
       const c = computarTabla(t.datos);
       return { id: t.id, nombre: t.nombre, archivo: t.archivo, updated_at: t.updated_at,
@@ -7411,7 +7416,7 @@ app.get('/api/tablas', verifyToken, requireRealAdmin, async (req: AuthRequest, r
 // Detalle (datos + calculado).
 app.get('/api/tablas/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query(`SELECT * FROM expositor_tabla WHERE id=$1`, [Number(req.params.id)]);
+    const r = await pool.query(`SELECT * FROM expositor_tabla WHERE id=$1 AND deleted_at IS NULL`, [Number(req.params.id)]);
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
     res.json({ success: true, tabla: r.rows[0], calc: computarTabla(r.rows[0].datos) });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
@@ -7420,7 +7425,7 @@ app.get('/api/tablas/:id', verifyToken, requireRealAdmin, async (req: AuthReques
 // Previsualización PNG de la tabla dibujada.
 app.get('/api/tablas/:id/preview.png', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query(`SELECT datos FROM expositor_tabla WHERE id=$1`, [Number(req.params.id)]);
+    const r = await pool.query(`SELECT datos FROM expositor_tabla WHERE id=$1 AND deleted_at IS NULL`, [Number(req.params.id)]);
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
     const w = Number(req.query.w) || 1040;
     const { buffer } = await renderTablaExpositor(r.rows[0].datos, { width: w });
@@ -7453,7 +7458,7 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
       let elegido = bloques[0];
       let aviso: string | undefined;
       if (bloques.length > 1) {
-        const act = await pool.query(`SELECT nombre FROM expositor_tabla WHERE id=$1`, [id]);
+        const act = await pool.query(`SELECT nombre FROM expositor_tabla WHERE id=$1 AND deleted_at IS NULL`, [id]);
         const nomAct = String(act.rows[0]?.nombre || '');
         const match = bloques.find(b => (b.titulo || '').toLowerCase() === nomAct.toLowerCase());
         if (match) {
@@ -7469,7 +7474,7 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
             nombre = candidato;
             usados.add(nombre.toLowerCase());
             const datosUno = JSON.stringify({ bloques: [b] });
-            const ex = await pool.query(`SELECT id FROM expositor_tabla WHERE LOWER(nombre)=LOWER($1)`, [nombre]);
+            const ex = await pool.query(`SELECT id FROM expositor_tabla WHERE LOWER(nombre)=LOWER($1) AND deleted_at IS NULL`, [nombre]);
             if (ex.rows.length) {
               await pool.query(`UPDATE expositor_tabla SET datos=$1, archivo=$2, updated_at=NOW() WHERE id=$3`,
                 [datosUno, req.file.originalname.slice(0, 200), ex.rows[0].id]);
@@ -7497,10 +7502,34 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
 });
 
 // Borrar tabla (y sus asociaciones, por el ON DELETE CASCADE).
+// DESHACER un borrado de tablas: las saca de la papelera junto con las
+// asociaciones a laminas que se marcaron al borrarlas (vuelve todo como estaba).
+app.post('/api/tablas/restaurar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map((x: any) => Number(x)).filter((n: number) => Number.isInteger(n) && n > 0);
+    if (!ids.length) { res.status(400).json({ success: false, error: 'Nada que restaurar' }); return; }
+    const r = await pool.query(`UPDATE expositor_tabla SET deleted_at=NULL WHERE id = ANY($1::int[]) RETURNING id, nombre`, [ids]);
+    await pool.query(`UPDATE lamina_tabla SET deleted_at=NULL WHERE tabla_id = ANY($1::int[])`, [ids]);
+    res.json({ success: true, restauradas: r.rows.map((x: any) => x.nombre), n: r.rows.length });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// DESHACER quitar una tabla de una lamina.
+app.post('/api/lamina-tabla/:id/restaurar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`UPDATE lamina_tabla SET deleted_at=NULL WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
 app.delete('/api/tablas/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query(`DELETE FROM expositor_tabla WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    // A la PAPELERA (no se destruye): asi se puede deshacer. Se marcan tambien sus
+    // asociaciones a laminas para que la lamina deje de usarla, y vuelvan si se deshace.
+    const r = await pool.query(`UPDATE expositor_tabla SET deleted_at=NOW() WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [Number(req.params.id)]);
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
+    await pool.query(`UPDATE lamina_tabla SET deleted_at=NOW() WHERE tabla_id=$1 AND deleted_at IS NULL`, [Number(req.params.id)]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -7511,8 +7540,8 @@ app.get('/api/sheets/:sheetId/tablas', verifyToken, async (req: AuthRequest, res
   try {
     const r = await pool.query(
       `SELECT lt.*, t.nombre AS tabla_nombre FROM lamina_tabla lt
-         JOIN expositor_tabla t ON t.id = lt.tabla_id
-        WHERE lt.sheet_id = $1 ORDER BY lt.id`, [Number(req.params.sheetId)]);
+         JOIN expositor_tabla t ON t.id = lt.tabla_id AND t.deleted_at IS NULL
+        WHERE lt.sheet_id = $1 AND lt.deleted_at IS NULL ORDER BY lt.id`, [Number(req.params.sheetId)]);
     res.json({ success: true, tablas: r.rows });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -7548,7 +7577,7 @@ app.put('/api/lamina-tabla/:id', verifyToken, requireRealAdmin, async (req: Auth
 // DELETE quitar la tabla de la lámina.
 app.delete('/api/lamina-tabla/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query(`DELETE FROM lamina_tabla WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    const r = await pool.query(`UPDATE lamina_tabla SET deleted_at=NOW() WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [Number(req.params.id)]);
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
     res.json({ success: true });
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }

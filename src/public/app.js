@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v119 · 21 jul 2026';
+const APP_VERSION = 'v120 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -5313,7 +5313,7 @@ async function cargarTablasAdmin() {
         <button class="btn btn-secondary btn-pequeno" onclick="verTablaExpositor(${t.id}, '${escape((t.nombre || '').replace(/'/g, "\\'"))}')">👁️ Ver</button>
         <label class="btn btn-secondary btn-pequeno" style="cursor:pointer" title="Actualizar precios: sube el Excel nuevo">🔄 Actualizar
           <input type="file" accept=".xlsx,.xls" style="display:none" onchange="actualizarTablaExcel(${t.id}, this)"></label>
-        <button class="btn-borrar" onclick="borrarTablaExpositor(${t.id})" title="Eliminar tabla">✖</button>
+        <button class="btn-borrar" onclick="borrarTablaExpositor(${t.id}, '${escape((t.nombre || '').replace(/'/g, "\\'"))}')" title="Eliminar tabla">✖</button>
       </div>`).join('');
     actualizarBarraTablas();
   } catch (e) { $l.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`; }
@@ -5390,6 +5390,34 @@ async function actualizarTablaExcel(id, input) {
     }
     cargarTablasAdmin();
   } catch (e) { if ($m) $m.textContent = '❌ ' + e.message; }
+}
+
+// Aviso flotante con botón DESHACER tras una acción destructiva. Vale para
+// cualquier pantalla: aparece abajo y se va solo a los 12 s si no lo usas.
+let _deshacerTimer = null;
+function toastDeshacer(texto, alDeshacer) {
+  const viejo = document.getElementById('toast-deshacer');
+  if (viejo) viejo.remove();
+  if (_deshacerTimer) clearTimeout(_deshacerTimer);
+  const t = document.createElement('div');
+  t.id = 'toast-deshacer';
+  t.className = 'toast-deshacer';
+  t.innerHTML = `<span>${escape(texto)}</span>`;
+  const b = document.createElement('button');
+  b.className = 'btn btn-pequeno';
+  b.textContent = '↩️ Deshacer';
+  b.onclick = async () => {
+    b.disabled = true; b.textContent = '⏳ Restaurando…';
+    try { await alDeshacer(); t.remove(); }
+    catch (e) { b.disabled = false; b.textContent = '↩️ Deshacer'; alert('No se pudo deshacer: ' + e.message); }
+  };
+  t.appendChild(b);
+  const x = document.createElement('button');
+  x.className = 'toast-deshacer-x'; x.textContent = '×'; x.title = 'Cerrar';
+  x.onclick = () => t.remove();
+  t.appendChild(x);
+  document.body.appendChild(t);
+  _deshacerTimer = setTimeout(() => { const e = document.getElementById('toast-deshacer'); if (e) e.remove(); }, 12000);
 }
 
 // Hace ARRASTRABLE un diálogo por su título, para poder apartarlo cuando tapa lo
@@ -5470,10 +5498,17 @@ function verTablaExpositor(id, nombre) {
   fetch(API + '/api/tablas/' + id + '/preview.png', { headers }).then(r => r.blob()).then(b => { img.src = URL.createObjectURL(b); }).catch(() => {});
 }
 
-async function borrarTablaExpositor(id) {
-  if (!confirm('¿Eliminar esta tabla de la biblioteca?\n\nSe quitará también de las láminas que la usen.')) return;
-  try { await api('/api/tablas/' + id, { method: 'DELETE' }); _tablasSel.delete(id); cargarTablasAdmin(); }
-  catch (e) { alert(e.message); }
+async function borrarTablaExpositor(id, nombre) {
+  if (!confirm('¿Eliminar esta tabla de la biblioteca?\n\nSe quitará también de las láminas que la usen.\nPodrás deshacerlo justo después.')) return;
+  try {
+    await api('/api/tablas/' + id, { method: 'DELETE' });
+    _tablasSel.delete(id);
+    cargarTablasAdmin();
+    toastDeshacer('🗑 Eliminada: ' + (nombre || 'tabla'), async () => {
+      await api('/api/tablas/restaurar', { method: 'POST', body: { ids: [id] } });
+      cargarTablasAdmin();
+    });
+  } catch (e) { alert(e.message); }
 }
 
 // --- Seleccion multiple de tablas (borrar varias de una vez) ---
@@ -5513,11 +5548,18 @@ async function borrarTablasMarcadas() {
     try { await api('/api/tablas/' + ids[i], { method: 'DELETE' }); _tablasSel.delete(ids[i]); }
     catch (e) { fallos.push(e.message); }
   }
+  const borradas = ids.filter(x => !_tablasSel.has(x));
   if ($m) {
-    $m.textContent = fallos.length ? `❌ ${fallos.length} no se pudieron eliminar: ${fallos[0]}` : `✅ ${ids.length - fallos.length} eliminadas`;
+    $m.textContent = fallos.length ? `❌ ${fallos.length} no se pudieron eliminar: ${fallos[0]}` : `✅ ${borradas.length} eliminadas`;
     if (!fallos.length) setTimeout(() => { if ($m) $m.textContent = ''; }, 4000);
   }
   cargarTablasAdmin();
+  if (borradas.length) {
+    toastDeshacer(`🗑 ${borradas.length} tabla${borradas.length > 1 ? 's' : ''} eliminada${borradas.length > 1 ? 's' : ''}`, async () => {
+      await api('/api/tablas/restaurar', { method: 'POST', body: { ids: borradas } });
+      cargarTablasAdmin();
+    });
+  }
 }
 
 async function cargarOfertasAdmin() {
@@ -13008,7 +13050,18 @@ async function renderTablasEnLienzo(sheetId, catalogId) {
     d.appendChild(oj);
     const x = document.createElement('button');
     x.type = 'button'; x.textContent = '✕'; x.className = 'zona-recuadro-del';
-    x.onclick = async (ev) => { ev.stopPropagation(); if (!confirm('¿Quitar esta tabla de la lámina? (sigue en la biblioteca)')) return; try { await api('/api/lamina-tabla/' + a.id, { method: 'DELETE' }); renderTablasEnLienzo(sheetId, catalogId); } catch (e) { alert(e.message); } };
+    x.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm('¿Quitar esta tabla de la lámina? (sigue en la biblioteca)\n\nPodrás deshacerlo justo después.')) return;
+      try {
+        await api('/api/lamina-tabla/' + a.id, { method: 'DELETE' });
+        renderTablasEnLienzo(sheetId, catalogId);
+        toastDeshacer('🗑 Tabla quitada de la lámina: ' + (a.tabla_nombre || ''), async () => {
+          await api('/api/lamina-tabla/' + a.id + '/restaurar', { method: 'POST' });
+          renderTablasEnLienzo(sheetId, catalogId);
+        });
+      } catch (e) { alert(e.message); }
+    };
     d.appendChild(x);
     ['nw', 'se'].forEach(pos => { const h = document.createElement('div'); h.className = 'zona-recuadro-asa ' + pos; d.appendChild(h); });
     _hacerTablaArrastrable(d, a, sheetId);
