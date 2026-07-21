@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v116 · 21 jul 2026';
+const APP_VERSION = 'v117 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12942,8 +12942,28 @@ async function renderTablasEnLienzo(sheetId, catalogId) {
     d.className = 'zona-tabla-ov';
     d.style.left = a.x + '%'; d.style.top = a.y + '%'; d.style.width = a.ancho + '%'; d.style.height = a.alto + '%';
     d.title = '📊 ' + (a.tabla_nombre || '') + ' · arrastra para mover · asas para estirar';
+    // VISTA REAL dentro de la caja: se ve la tabla que se va a pegar mientras se
+    // mueve y se estira, encima de lo que va a tapar. Asi se comprueba de una vez
+    // que es la tabla correcta y que el hueco la cubre bien.
+    const prev = document.createElement('img');
+    prev.className = 'zona-tabla-img';
+    prev.alt = '';
+    // La vista previa se pide a 900 px de ancho de hueco. Como la letra (y por
+    // tanto el ancho de la tabla) es proporcional al ancho del hueco, la tabla
+    // ocupará la misma FRACCIÓN del hueco sea cual sea su tamaño real: así se ve
+    // aquí exactamente lo que ocupará al pegarla, sin estirar.
+    prev.onload = () => { prev.style.width = Math.min(100, (prev.naturalWidth / 900) * 100).toFixed(1) + '%'; };
+    d.appendChild(prev);
+    cargarPreviewTabla(a.tabla_id, prev);
     const lbl = document.createElement('span'); lbl.className = 'zona-tabla-lbl'; lbl.textContent = '📊 ' + (a.tabla_nombre || 'Tabla');
     d.appendChild(lbl);
+    // Interruptor de opacidad: ver la tabla sólida o semitransparente para
+    // comprobar que tapa justo el bloque de precios de debajo.
+    const oj = document.createElement('button');
+    oj.type = 'button'; oj.className = 'zona-tabla-ojo'; oj.textContent = '👁';
+    oj.title = 'Ver la tabla sólida / semitransparente para comprobar qué tapa';
+    oj.onclick = (ev) => { ev.stopPropagation(); d.classList.toggle('translucida'); };
+    d.appendChild(oj);
     const x = document.createElement('button');
     x.type = 'button'; x.textContent = '✕'; x.className = 'zona-recuadro-del';
     x.onclick = async (ev) => { ev.stopPropagation(); if (!confirm('¿Quitar esta tabla de la lámina? (sigue en la biblioteca)')) return; try { await api('/api/lamina-tabla/' + a.id, { method: 'DELETE' }); renderTablasEnLienzo(sheetId, catalogId); } catch (e) { alert(e.message); } };

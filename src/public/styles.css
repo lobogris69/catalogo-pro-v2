@@ -3363,16 +3363,52 @@ body.con-banner-update {
   pointer-events: none;   /* el interior deja pasar clics a las zonas de debajo */
 }
 /* Se arrastra por la barra de título; se estira por las asas; ✕ para quitar. */
+/* Asa de arrastre: compacta y semitransparente, para no tapar la tabla que ahora
+   se ve dentro de la caja (antes ocupaba todo el ancho y cubria su cabecera). */
 .zona-tabla-lbl {
-  position: absolute; top: 0; left: 0; right: 0;
-  background: #0369a1; color: #fff;
+  position: absolute; top: 0; left: 0;
+  max-width: 62%;
+  background: rgba(3, 105, 161, 0.82); color: #fff;
   font-size: 11px; font-weight: 700;
-  padding: 4px 8px; border-radius: 0;
+  padding: 3px 8px; border-radius: 0 0 6px 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   pointer-events: auto; cursor: move;
 }
+.zona-tabla-lbl:hover { background: #0369a1; }
 .zona-tabla-ov .zona-recuadro-asa { border-color: #0ea5e9; pointer-events: auto; }
 .zona-tabla-ov .zona-recuadro-del { pointer-events: auto; }
+
+/* La TABLA DE VERDAD dentro de la caja: se ve tal como se va a pegar mientras se
+   mueve y se estira, así se comprueba a la vez que es la tabla correcta y que
+   cubre el bloque de precios de debajo. Se ancla arriba-izquierda y conserva su
+   proporción (igual que al pegarla: ancho del hueco, alto el que le salga). */
+.zona-tabla-img {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%;
+  height: auto;
+  max-height: 100%;
+  object-fit: contain;
+  object-position: top left;
+  background: #fff;
+  pointer-events: none;
+  user-select: none;
+}
+/* 👁 alterna sólida / semitransparente para ver qué hay debajo */
+.zona-tabla-ov.translucida .zona-tabla-img { opacity: 0.45; }
+.zona-tabla-ojo {
+  position: absolute;
+  top: 0; right: 26px;
+  width: 24px; height: 24px;
+  border: 0; border-radius: 0;
+  background: #0369a1; color: #fff;
+  font-size: 13px; line-height: 24px; padding: 0;
+  cursor: pointer; pointer-events: auto;
+  z-index: 3;
+}
+.zona-tabla-ojo:hover { background: #075985; }
+.zona-tabla-ov.translucida .zona-tabla-ojo { background: #b45309; }
+.zona-tabla-lbl, .zona-tabla-ov .zona-recuadro-del { z-index: 3; }
 
 /* MODO DIBUJAR RECUADRO: solo se dibuja. Zonas y recuadros se atenúan y se hacen
    inertes a propósito (si no, arrastrar sobre una zona la movería en vez de dibujar).
