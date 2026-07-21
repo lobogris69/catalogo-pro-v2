@@ -225,6 +225,14 @@ app.use(compression({
     return compression.filter(req, res);
   }
 }));
+// Última petición atendida. Solo sirve para que, si el proceso se cae, el log
+// diga QUÉ se estaba haciendo: sin esto un 502 es imposible de rastrear.
+let _ultimaPeticion = '(ninguna)';
+app.use((req, _res, next) => {
+  if (req.path !== '/api/health') _ultimaPeticion = `${req.method} ${req.path} @ ${new Date().toISOString()}`;
+  next();
+});
+
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
@@ -7292,17 +7300,29 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
       // vieja por la derecha. Si sobra alto, se ve: el usuario ajusta el hueco.
       let fin = tb;
       const m = await sharp(tb).metadata();
-      const th = m.height || 0;
-      // Único límite real: no salirse de la lámina (si no, sharp falla al pegar).
-      if (by + th > H) fin = await sharp(tb).extract({ left: 0, top: 0, width: m.width || bw, height: Math.max(1, H - by) }).png().toBuffer();
-      tablasComposites.push({ input: fin, left: bx, top: by });
+      const tw0 = m.width || bw, th0 = m.height || 0;
+      // La tabla NUNCA puede salirse de la lámina: sharp lanza al componer una
+      // capa que se sale, y eso tumbaba la petición entera. Se recorta a lo que
+      // quepa, en los DOS ejes (antes solo se miraba el alto).
+      const maxW = Math.max(1, W - bx), maxH = Math.max(1, H - by);
+      if (tw0 > maxW || th0 > maxH) {
+        fin = await sharp(tb).extract({ left: 0, top: 0, width: Math.min(tw0, maxW), height: Math.min(th0, maxH) }).png().toBuffer();
+      }
+      if (bx < W && by < H) tablasComposites.push({ input: fin, left: bx, top: by });
     } catch (e) { /* si falla el render de una tabla, seguimos con el resto */ }
   }
 
   if (!els && !tablasComposites.length) return await sharp(abs).png().toBuffer(); // nada que recomponer
   const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">${els}</svg>`;
   const capas: sharp.OverlayOptions[] = [{ input: Buffer.from(svg), top: 0, left: 0 }, ...tablasComposites];
-  return await sharp(abs).composite(capas).png().toBuffer();
+  try {
+    return await sharp(abs).composite(capas).png().toBuffer();
+  } catch (e) {
+    // Si el montaje falla por lo que sea, MEJOR DEVOLVER LA LÁMINA ORIGINAL que
+    // reventar la petición: el comercial sigue trabajando y queda el aviso en log.
+    console.error('[recompose] Fallo montando la lámina ' + sheetId + ':', (e as Error).message);
+    return await sharp(abs).png().toBuffer();
+  }
 }
 
 // GET lamina recompuesta (PNG) con precios de hoy + ofertas. Para descargar/compartir.
@@ -10950,7 +10970,7 @@ app.post('/api/incidencias', verifyToken, upload.single('captura'), async (req: 
        texto.slice(0, 4000), req.file ? req.file.filename : null,
        String(req.body?.version || '').slice(0, 40), String(req.body?.pantalla || '').slice(0, 200),
        String(req.headers['user-agent'] || '').slice(0, 300)]);
-    avisarIncidenciaTelegram(r.rows[0]);   // best-effort, no bloquea la respuesta
+    avisarIncidenciaTelegram(r.rows[0]).catch(() => {});   // best-effort: nunca puede tumbar el proceso
     res.json({ success: true, incidencia: { id: r.rows[0].id } });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -11062,14 +11082,28 @@ app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
 // o pool roto). Recuperacion rapida (~3-5s) y consistente.
 // ============================================================================
 process.on('uncaughtException', (err) => {
-  console.error('[FATAL uncaughtException]', err?.message, err?.stack);
+  console.error('[FATAL uncaughtException]', err?.message, err?.stack,
+    '| última petición:', _ultimaPeticion, '| memoria MB:', Math.round(process.memoryUsage().rss / 1048576));
   // Dar 1s a que los logs floten antes de salir
   setTimeout(() => process.exit(1), 1000).unref();
 });
+
+// unhandledRejection = casi siempre un .catch() olvidado en UNA petición. Antes
+// se mataba el proceso: un fallo puntual de un usuario dejaba a TODOS los
+// comerciales con Error 502. Ahora se registra con detalle (incluida la última
+// petición atendida, para poder localizarlo) y solo se reinicia si se repite,
+// que ahí sí huele a estado corrupto.
+let _rechazos = 0;
 process.on('unhandledRejection', (reason: any) => {
-  console.error('[FATAL unhandledRejection]', reason?.message || reason, reason?.stack);
-  setTimeout(() => process.exit(1), 1000).unref();
+  _rechazos++;
+  console.error(`[unhandledRejection #${_rechazos}]`, reason?.message || reason, reason?.stack,
+    '| última petición:', _ultimaPeticion, '| memoria MB:', Math.round(process.memoryUsage().rss / 1048576));
+  if (_rechazos >= 5) {
+    console.error('[FATAL] 5 promesas rechazadas sin capturar: reiniciando por seguridad.');
+    setTimeout(() => process.exit(1), 1000).unref();
+  }
 });
+setInterval(() => { _rechazos = 0; }, 10 * 60 * 1000).unref();   // se olvida cada 10 min
 
 // ============================================================================
 // ARRANQUE + GRACEFUL SHUTDOWN
