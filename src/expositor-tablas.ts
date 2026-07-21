@@ -189,6 +189,14 @@ function extraerHoja(ws: XLSX.WorkSheet): Extraida | null {
   }
   if (!filas.length) return null;
 
+  // La tabla ACABA en su fila "TOTAL": lo que el usuario apunta debajo (otro
+  // precio de trabajo, notas) no forma parte de ella. Solo se respeta contenido
+  // posterior si mas abajo empieza otra tabla (fila de cabeceras repetida).
+  const iTotal = filas.findIndex(f => f.tipo === 'total' && /^total/i.test(f.celdas.find(Boolean) || ''));
+  if (iTotal >= 0 && !filas.slice(iTotal + 1).some(f => f.tipo === 'cabecera')) {
+    filas.length = iTotal + 1;
+  }
+
   // QUE COLUMNAS FORMAN LA TABLA. La tabla la definen SUS CABECERAS, asi que una
   // columna entra solo si (1) tiene cabecera y (2) tiene datos. Con esto se caen
   // las dos cosas que el usuario veia como "columnas anadidas":
@@ -358,66 +366,85 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
   // pero solo si hay varias hojas y el nombre no es el generico de Excel.
   const nombreUtil = (t: string) => t && !/^(hoja|sheet)\s*\d*$/i.test(t.trim());
 
-  for (let nb = 0; nb < bloques.length; nb++) {
-    const { cabeceras, filas, numericas } = bloques[nb];
+  // --- PASO 1: calcular la disposicion de cada bloque -----------------------
+  // Regla de tamano: la tabla ocupa lo que OCUPA SU CONTENIDO. Una tabla pequena
+  // NO se estira al ancho pedido (dejaba huecos enormes entre columnas y ocupaba
+  // media lamina); una grande encoge la letra hasta caber. Compacto: la letra
+  // marca el alto de fila, sin aire de sobra, pero sin montar una fila en otra.
+  interface Layout { b: BloqueTabla; fs: number; pad: number; lineH: number; anchos: number[]; tw: number; centrar: boolean[]; }
+  const layouts: Layout[] = [];
+  for (const b of bloques) {
+    const { cabeceras, filas, numericas } = b;
     if (!cabeceras.length || !filas.length) continue;
-
-    // ANCHOS del bloque. Regla: no recortar NADA. Se mide lo que ocupa cada
-    // columna de verdad y, si no cabe, se REDUCE LA LETRA hasta que quepa.
-    // Las columnas numericas nunca se parten (el "€" no cae a otra linea).
+    // Centrado: numeros y tambien columnas de fichas cortas sin espacios
+    // ("5+5", "10+2", tallas) — lo que NO se centra es el texto largo
+    // (articulo, descripcion), que va a la izquierda.
+    const centrar = cabeceras.map((_, i) => {
+      if (numericas[i]) return true;
+      const vals = filas.filter(f => f.tipo === 'datos').map(f => f.celdas[i]).filter(Boolean);
+      return vals.length > 0 && vals.every(v => v.length <= 10 && !v.includes(' '));
+    });
     const medir = (tam: number) => cabeceras.map((h, i) => {
       let mx = anchoTexto(h, tam * 0.92);
       // Cuentan tambien subtotales y TOTAL (si no, salia "TOTA…").
       for (const f of filas) if (f.tipo !== 'seccion' && f.tipo !== 'cabecera') mx = Math.max(mx, anchoTexto(f.celdas[i] || '', tam));
-      return mx + tam * 1.4;
+      return mx + tam * 1.3;
     });
     let fs = fsBase;
-    let naturales = medir(fs);
-    let suma = naturales.reduce((a, b) => a + b, 0) || 1;
+    let anchos = medir(fs);
+    let suma = anchos.reduce((a, x) => a + x, 0) || 1;
     if (suma > cw) {
       fs = Math.max(9, fs * (cw / suma));
-      naturales = medir(fs);
-      suma = naturales.reduce((a, b) => a + b, 0) || 1;
+      anchos = medir(fs);
+      suma = anchos.reduce((a, x) => a + x, 0) || 1;
+      if (suma > cw) {
+        // Ni con la letra al minimo: las centradas conservan su ancho y el resto
+        // se reparte entre las de texto, que pueden ir a dos lineas.
+        const anchoFijo = anchos.reduce((a, x, i) => a + (centrar[i] ? x : 0), 0);
+        const resto = Math.max(cw * 0.25, cw - anchoFijo);
+        const sumaTxt = anchos.reduce((a, x, i) => a + (centrar[i] ? 0 : x), 0) || 1;
+        anchos = anchos.map((x, i) => centrar[i] ? x : (x / sumaTxt) * resto);
+        suma = Math.min(cw, anchos.reduce((a, x) => a + x, 0));
+      }
     }
-    const pad = Math.round(fs * 0.7);
-    const lineH = Math.round(fs * 1.35);
+    layouts.push({ b, fs, pad: Math.round(fs * 0.6), lineH: Math.round(fs * 1.22), anchos, tw: Math.ceil(suma), centrar });
+  }
+  if (!layouts.length) {
+    const vacio = await sharp({ create: { width: 300, height: 60, channels: 3, background: '#fff' } }).png().toBuffer();
+    return { buffer: vacio, width: 300, height: 60 };
+  }
+  // La imagen final mide lo que su tabla mas ancha, no el ancho pedido.
+  const Wout = Math.min(W, Math.max(...layouts.map(l => l.tw)) + M * 2);
 
-    let anchos: number[];
-    if (suma <= cw) {
-      anchos = naturales.map(x => (x / suma) * cw);
-    } else {
-      const anchoNum = naturales.reduce((a, x, i) => a + (numericas[i] ? x : 0), 0);
-      const resto = Math.max(cw * 0.25, cw - anchoNum);
-      const sumaTxt = naturales.reduce((a, x, i) => a + (numericas[i] ? 0 : x), 0) || 1;
-      anchos = naturales.map((x, i) => numericas[i] ? x * Math.min(1, cw / suma) : (x / sumaTxt) * resto);
-    }
+  // --- PASO 2: dibujar ------------------------------------------------------
+  for (let nb = 0; nb < layouts.length; nb++) {
+    const { b, fs, pad, lineH, anchos, tw, centrar } = layouts[nb];
+    const { cabeceras, filas, numericas } = b;
     const xs: number[] = []; let acc = M;
     for (const a of anchos) { xs.push(acc); acc += a; }
 
     const texto = (x: number, yy: number, s: string, o: { a?: string; b?: boolean; c?: string; sz?: number } = {}) =>
       `<text x="${x}" y="${yy}" font-family="${FUENTE}" font-weight="${o.b ? 700 : 400}" font-size="${o.sz || fs}" fill="${o.c || PLOMO}" text-anchor="${o.a || 'start'}">${esc(s)}</text>`;
-    // Numeros CENTRADOS en su columna (uds, bonificacion, precios, codigos);
-    // el texto (articulo, descripcion) a la izquierda.
-    const posX = (i: number, num: boolean) => num ? xs[i] + anchos[i] / 2 : xs[i] + pad;
-    const ancla = (num: boolean) => num ? 'middle' : 'start';
+    const posX = (i: number, c: boolean) => c ? xs[i] + anchos[i] / 2 : xs[i] + pad;
+    const ancla = (c: boolean) => c ? 'middle' : 'start';
 
-    if (bloques.length > 1 && nombreUtil(bloques[nb].titulo)) {
-      const h = Math.round(fs * 2.2);
-      els += `<rect x="${M}" y="${y + 3}" width="${cw}" height="${h - 3}" rx="5" fill="${BRAND}"/>`;
-      els += texto(M + pad, y + 3 + (h - 3) / 2 + fs * 0.35, bloques[nb].titulo, { b: true, c: '#fff', sz: Math.round(fs * 1.03) });
+    if (layouts.length > 1 && nombreUtil(b.titulo)) {
+      const h = Math.round(fs * 2.0);
+      els += `<rect x="${M}" y="${y + 3}" width="${tw}" height="${h - 3}" rx="5" fill="${BRAND}"/>`;
+      els += texto(M + pad, y + 3 + (h - 3) / 2 + fs * 0.35, b.titulo, { b: true, c: '#fff', sz: Math.round(fs * 1.03) });
       y += h + 2;
     }
 
     // Cabecera del Excel. Se dibuja arriba y, si el usuario la repite en cada
     // apartado, se vuelve a dibujar en ese sitio (fila de tipo 'cabecera').
     const lineasCab = cabeceras.map((h, i) => partirTexto(h, fs * 0.92, anchos[i] - pad * 2, 2));
-    const hCab = Math.max(...lineasCab.map(l => l.length)) * lineH + pad;
+    const hCab = Math.max(...lineasCab.map(l => l.length)) * lineH + Math.round(pad * 0.9);
     const pintarCabecera = () => {
-      els += `<rect x="${M}" y="${y}" width="${cw}" height="${hCab}" fill="${HEAD_BG}"/>`;
+      els += `<rect x="${M}" y="${y}" width="${tw}" height="${hCab}" fill="${HEAD_BG}"/>`;
       lineasCab.forEach((ls, i) => {
         ls.forEach((l, k) => {
-          els += texto(posX(i, numericas[i]), y + pad * 0.8 + (k + 1) * lineH - lineH * 0.25, l,
-            { b: true, c: BRAND2, a: ancla(numericas[i]), sz: Math.round(fs * 0.92) });
+          els += texto(posX(i, centrar[i]), y + pad * 0.6 + (k + 1) * lineH - lineH * 0.25, l,
+            { b: true, c: BRAND2, a: ancla(centrar[i]), sz: Math.round(fs * 0.92) });
         });
       });
       y += hCab;
@@ -433,34 +460,34 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
       if (f.tipo === 'cabecera') { pintarCabecera(); z = 0; return; }
       if (f.tipo === 'seccion') {
         const t = f.celdas.find(Boolean) || '';
-        const h = Math.round(fs * 2.2);
-        els += `<rect x="${M}" y="${y + 3}" width="${cw}" height="${h - 3}" rx="5" fill="${BRAND}"/>`;
-        els += texto(M + pad, y + 3 + (h - 3) / 2 + fs * 0.35, t, { b: true, c: '#fff', sz: Math.round(fs * 1.03) });
-        y += h + 2; z = 0;
+        const h = Math.round(fs * 2.0);
+        els += `<rect x="${M}" y="${y + 2}" width="${tw}" height="${h - 2}" rx="5" fill="${BRAND}"/>`;
+        els += texto(M + pad, y + 2 + (h - 2) / 2 + fs * 0.35, t, { b: true, c: '#fff', sz: Math.round(fs * 1.03) });
+        y += h + 1; z = 0;
         return;
       }
       const lineas = f.celdas.map((c, i) => partirTexto(c || '', fs, anchos[i] - pad * 2, numericas[i] ? 1 : 2));
-      const h = Math.max(...lineas.map(l => l.length)) * lineH + pad * 0.6;
+      const h = Math.max(...lineas.map(l => l.length)) * lineH + Math.round(pad * 0.5);
       const esTotal = f.tipo === 'total';
-      if (esTotal) els += `<rect x="${M}" y="${y}" width="${cw}" height="${h}" fill="#f7edf3"/>`;
-      else if (z % 2 === 1) els += `<rect x="${M}" y="${y}" width="${cw}" height="${h}" fill="${ZEBRA}"/>`;
+      if (esTotal) els += `<rect x="${M}" y="${y}" width="${tw}" height="${h}" fill="#f7edf3"/>`;
+      else if (z % 2 === 1) els += `<rect x="${M}" y="${y}" width="${tw}" height="${h}" fill="${ZEBRA}"/>`;
       lineas.forEach((ls, i) => {
         ls.forEach((l, k) => {
-          els += texto(posX(i, numericas[i]), y + pad * 0.3 + (k + 1) * lineH - lineH * 0.22, l,
-            { a: ancla(numericas[i]), b: esTotal, c: esTotal ? BRAND2 : PLOMO });
+          els += texto(posX(i, centrar[i]), y + pad * 0.25 + (k + 1) * lineH - lineH * 0.22, l,
+            { a: ancla(centrar[i]), b: esTotal, c: esTotal ? BRAND2 : PLOMO });
         });
       });
-      els += `<line x1="${M}" y1="${y + h}" x2="${M + cw}" y2="${y + h}" stroke="${esTotal ? BRAND : LINEA}" stroke-width="${esTotal ? 1.5 : 1}"/>`;
+      els += `<line x1="${M}" y1="${y + h}" x2="${M + tw}" y2="${y + h}" stroke="${esTotal ? BRAND : LINEA}" stroke-width="${esTotal ? 1.5 : 1}"/>`;
       y += h; z++;
     });
-    if (nb < bloques.length - 1) y += Math.round(fsBase * 1.3);   // aire entre hojas
+    if (nb < layouts.length - 1) y += Math.round(fsBase * 1.1);   // aire entre hojas
   }
   y += M;
 
   const H = Math.ceil(y);
-  const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#ffffff"/>${els}</svg>`;
+  const svg = `<svg width="${Wout}" height="${H}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#ffffff"/>${els}</svg>`;
   const buffer = await sharp(Buffer.from(svg)).png().toBuffer();
-  return { buffer, width: W, height: H };
+  return { buffer, width: Wout, height: H };
 }
 
 // Dibujo de las tablas guardadas con el formato antiguo (secciones/filas
