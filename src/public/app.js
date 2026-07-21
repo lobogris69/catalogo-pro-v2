@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v121 · 21 jul 2026';
+const APP_VERSION = 'v122 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -13024,7 +13024,11 @@ async function renderTablasEnLienzo(sheetId, catalogId) {
   asocs.forEach(a => {
     const d = document.createElement('div');
     d.className = 'zona-tabla-ov';
-    d.style.left = a.x + '%'; d.style.top = a.y + '%'; d.style.width = a.ancho + '%'; d.style.height = a.alto + '%';
+    // Sin alto fijo: la caja mide lo que mida la tabla que lleva dentro, que es
+    // exactamente lo que se va a pegar. Mientras carga la imagen se reserva el
+    // alto guardado para que no dé un salto.
+    d.style.left = a.x + '%'; d.style.top = a.y + '%'; d.style.width = a.ancho + '%';
+    d.style.minHeight = a.alto + '%';
     d.title = '📊 ' + (a.tabla_nombre || '') + ' · arrastra para mover · asas para estirar';
     // VISTA REAL dentro de la caja: se ve la tabla que se va a pegar mientras se
     // mueve y se estira, encima de lo que va a tapar. Asi se comprueba de una vez
@@ -13036,7 +13040,10 @@ async function renderTablasEnLienzo(sheetId, catalogId) {
     // tanto el ancho de la tabla) es proporcional al ancho del hueco, la tabla
     // ocupará la misma FRACCIÓN del hueco sea cual sea su tamaño real: así se ve
     // aquí exactamente lo que ocupará al pegarla, sin estirar.
-    prev.onload = () => { prev.style.width = Math.min(100, (prev.naturalWidth / 900) * 100).toFixed(1) + '%'; };
+    prev.onload = () => {
+      prev.style.width = Math.min(100, (prev.naturalWidth / 900) * 100).toFixed(1) + '%';
+      d.style.minHeight = '0';   // ya está la tabla: el alto de la caja es el suyo
+    };
     d.appendChild(prev);
     cargarPreviewTabla(a.tabla_id, prev);
     const lbl = document.createElement('span'); lbl.className = 'zona-tabla-lbl'; lbl.textContent = '📊 ' + (a.tabla_nombre || 'Tabla');
@@ -13070,6 +13077,12 @@ async function renderTablasEnLienzo(sheetId, catalogId) {
 }
 
 // Arrastrar/redimensionar el hueco de una tabla (guarda x/y/ancho/alto al soltar).
+// Alto (en % de la lámina) que ocupa de verdad la caja una vez dentro la tabla.
+function _altoRealCaja(d, wrap) {
+  const rw = wrap.getBoundingClientRect(), rd = d.getBoundingClientRect();
+  return rw.height ? Math.max(1, Math.min(100, rd.height / rw.height * 100)) : 10;
+}
+
 function _hacerTablaArrastrable(d, a, sheetId) {
   const wrap = document.getElementById('zonas-lienzo-wrap');
   if (!wrap) return;
@@ -13077,19 +13090,23 @@ function _hacerTablaArrastrable(d, a, sheetId) {
   const rel = (e) => { const r = wrap.getBoundingClientRect(); const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left; const cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top; return { x: cx / r.width * 100, y: cy / r.height * 100 }; };
   const move = (e) => {
     if (!st) return; e.preventDefault(); const p = rel(e); const dx = p.x - st.px, dy = p.y - st.py;
+    // El ALTO no se toca: la caja mide lo que mida la tabla (manda el ancho, que
+    // es lo que tiene que tapar). Antes se podía estirar el alto y no servía de
+    // nada: la tabla salía igual y la caja mentía sobre el resultado.
     if (st.modo === 'mover') { st.nx = Math.max(0, Math.min(100 - st.w0, st.x0 + dx)); st.ny = Math.max(0, Math.min(100 - st.h0, st.y0 + dy)); d.style.left = st.nx + '%'; d.style.top = st.ny + '%'; }
-    else if (st.modo === 'se') { st.nw = Math.max(5, Math.min(100 - st.x0, st.w0 + dx)); st.nh = Math.max(3, Math.min(100 - st.y0, st.h0 + dy)); d.style.width = st.nw + '%'; d.style.height = st.nh + '%'; }
-    else if (st.modo === 'nw') { st.nx = Math.max(0, Math.min(st.x0 + st.w0 - 5, st.x0 + dx)); st.ny = Math.max(0, Math.min(st.y0 + st.h0 - 3, st.y0 + dy)); st.nw = st.w0 + (st.x0 - st.nx); st.nh = st.h0 + (st.y0 - st.ny); d.style.left = st.nx + '%'; d.style.top = st.ny + '%'; d.style.width = st.nw + '%'; d.style.height = st.nh + '%'; }
+    else if (st.modo === 'se') { st.nw = Math.max(5, Math.min(100 - st.x0, st.w0 + dx)); d.style.width = st.nw + '%'; }
+    else if (st.modo === 'nw') { st.nx = Math.max(0, Math.min(st.x0 + st.w0 - 5, st.x0 + dx)); st.ny = Math.max(0, Math.min(100 - st.h0, st.y0 + dy)); st.nw = st.w0 + (st.x0 - st.nx); d.style.left = st.nx + '%'; d.style.top = st.ny + '%'; d.style.width = st.nw + '%'; }
   };
   const up = async () => {
     document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
     document.removeEventListener('touchmove', move); document.removeEventListener('touchend', up);
     if (!st) return; const s = st; st = null;
-    const changed = (s.nx != null && (Math.abs(s.nx - s.x0) > 0.05 || Math.abs(s.ny - s.y0) > 0.05)) || (s.nw != null && (Math.abs(s.nw - s.w0) > 0.05 || Math.abs(s.nh - s.h0) > 0.05));
+    const changed = (s.nx != null && (Math.abs(s.nx - s.x0) > 0.05 || Math.abs(s.ny - s.y0) > 0.05)) || (s.nw != null && Math.abs(s.nw - s.w0) > 0.05);
     if (!changed) return;
     const body = {};
     if (s.nx != null) { body.x = s.nx; body.y = s.ny; }
-    if (s.nw != null) { body.ancho = s.nw; body.alto = s.nh; }
+    // El alto que se guarda es el que ha quedado de verdad (lo marca la tabla).
+    if (s.nw != null) { body.ancho = s.nw; body.alto = _altoRealCaja(d, wrap); }
     try { await api('/api/lamina-tabla/' + a.id, { method: 'PUT', body }); if (body.x != null) { a.x = body.x; a.y = body.y; } if (body.ancho != null) { a.ancho = body.ancho; a.alto = body.alto; } }
     catch (e) { alert('No se pudo guardar: ' + e.message); renderTablasEnLienzo(sheetId, _zonasEditor.catalogId); }
   };
@@ -13124,7 +13141,7 @@ async function asociarTablaDesdeEditor(sheetId, catalogId) {
     <div style="max-height:220px;overflow:auto;border:1px solid var(--gris-borde);border-radius:8px;padding:6px;background:#fff;text-align:center">
       <img id="pick-tabla-prev" style="width:auto;max-width:100%;height:auto" alt="Cargando vista previa…">
     </div>
-    <div style="font-size:12px;color:var(--gris-texto);margin-top:8px">Aparecerá una caja azul: arrástrala sobre el bloque de precios y estírala con las esquinas hasta que lo tape.</div>
+    <div style="font-size:12px;color:var(--gris-texto);margin-top:8px">Aparecerá la tabla sobre la lámina: arrástrala sobre el bloque de precios viejo y ajusta su <b>ancho</b> con las esquinas hasta taparlo. El alto lo marca la propia tabla.</div>
     <div class="modal-acciones" style="margin-top:14px">
       <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
       <button type="button" class="btn btn-primary" id="pick-tabla-ok">Poner</button>

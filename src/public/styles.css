@@ -3357,6 +3357,7 @@ body.con-banner-update {
 .zonas-tablas-capa { position: absolute; inset: 0; pointer-events: none; z-index: 6; }
 .zona-tabla-ov {
   position: absolute;
+  height: auto;           /* el alto lo marca la tabla que lleva dentro */
   outline: 3px dashed #0ea5e9;
   background: rgba(14, 165, 233, 0.10);
   box-sizing: border-box;
@@ -3382,11 +3383,12 @@ body.con-banner-update {
    mueve y se estira, así se comprueba a la vez que es la tabla correcta y que
    cubre el bloque de precios de debajo. Se ancla arriba-izquierda y conserva su
    proporción (igual que al pegarla: ancho del hueco, alto el que le salga). */
+/* La imagen es el CONTENIDO de la caja (no va superpuesta): así la caja crece
+   con la tabla y lo que ves encuadrado es exactamente lo que se va a pegar. */
 .zona-tabla-img {
-  position: absolute;
-  top: 0; left: 0;
+  display: block;
   width: 100%;
-  height: auto;          /* alto REAL: si sobresale del hueco, se ve y se ajusta */
+  height: auto;
   background: #fff;
   pointer-events: none;
   user-select: none;
