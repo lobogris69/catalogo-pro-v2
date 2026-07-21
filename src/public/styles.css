@@ -3421,6 +3421,20 @@ body.con-banner-update {
   pointer-events: none !important;
   opacity: 0.35;
 }
+/* MODO COLOCAR TABLA: solo se toca la tabla. Zonas y cuadros de precio se
+   atenúan y se hacen inertes, para que no se creen ni se muevan por descuido.
+   Se marca el lienzo en azul para que SE VEA que el modo está puesto. */
+.zonas-lienzo-wrap.modo-tabla {
+  outline: 3px dashed #0ea5e9;
+  outline-offset: 2px;
+}
+.zonas-lienzo-wrap.modo-tabla .zona-rect,
+.zonas-lienzo-wrap.modo-tabla .zona-recuadro-ov {
+  pointer-events: none !important;
+  opacity: 0.3;
+}
+.zonas-lienzo-wrap.modo-tabla .zona-tabla-ov { outline-width: 4px; }
+
 .zona-recuadro-ov {
   position: absolute;
   outline: 2px solid #7c3aed;

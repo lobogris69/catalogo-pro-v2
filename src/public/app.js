@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v125 · 21 jul 2026';
+const APP_VERSION = 'v126 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12899,9 +12899,38 @@ async function irSiguienteSinPrecios() {
 }
 
 // Modo "dibujar recuadro de precio" a mano (para corregir lo que la IA no clavó).
+// MODO COLOCAR TABLA. Mismo interruptor que el de precios: mientras está puesto,
+// arrastrar por la lámina NO crea zonas ni cuadros de precio por descuido; solo
+// se mueve y estira la tabla. Las zonas y los cuadros se atenúan para que se VEA
+// que están desactivados a propósito.
+function toggleModoTabla(btn, forzar) {
+  const on = typeof forzar === 'boolean' ? forzar : !_zonasEditor.modoTabla;
+  _zonasEditor.modoTabla = on;
+  if (on && _zonasEditor.modoRecuadro) {          // los dos modos se excluyen
+    const bR = document.getElementById('btn-modo-recuadro');
+    toggleModoRecuadro(bR);
+  }
+  const b = btn || document.getElementById('btn-modo-tabla');
+  if (b) {
+    b.style.background = on ? '#0369a1' : '#e0f2fe';
+    b.style.color = on ? '#fff' : '#0369a1';
+    b.textContent = on ? '📊 Colocando tabla… (pulsa para salir)' : '📊 Colocar tabla';
+  }
+  const ayuda = document.getElementById('zonas-ayuda');
+  if (ayuda && on) ayuda.innerHTML = '📊 <b>MODO COLOCAR TABLA activo:</b> mueve la tabla y ajusta su <b>ancho</b> (separa columnas) y su <b>alto</b> (tamaño de letra) hasta tapar el bloque de precios viejo. Mientras esté activo <b>no se crean zonas ni cuadros de precio</b> aunque pulses fuera. Pulsa otra vez el botón para salir.';
+  else if (ayuda) ayuda.innerHTML = '✏️ <b>Arrastra</b> sobre la lámina para dibujar un rectángulo. Luego asígnale un producto en el panel derecho.';
+  const wrap = document.getElementById('zonas-lienzo-wrap');
+  if (wrap) {
+    wrap.classList.toggle('modo-tabla', on);
+    wrap.style.cursor = on ? 'default' : 'crosshair';
+  }
+}
+
 function toggleModoRecuadro(btn) {
   _zonasEditor.modoRecuadro = !_zonasEditor.modoRecuadro;
   const on = _zonasEditor.modoRecuadro;
+  // Los dos modos se excluyen: al activar dibujar precio, se sale de colocar tabla.
+  if (on && _zonasEditor.modoTabla) toggleModoTabla(null, false);
   if (btn) {
     btn.style.background = on ? '#7c3aed' : '#f3e8ff';
     btn.style.color = on ? '#fff' : '#7c3aed';
@@ -13367,7 +13396,11 @@ async function asociarTablaDesdeEditor(sheetId, catalogId) {
     const tid = Number(document.getElementById('pick-tabla').value);
     try {
       await api('/api/sheets/' + sheetId + '/tablas', { method: 'POST', body: { tabla_id: tid, x: 4, y: 15, ancho: 55, alto: 70 } });
-      m.remove(); await renderTablasEnLienzo(sheetId, catalogId);
+      m.remove();
+      await renderTablasEnLienzo(sheetId, catalogId);
+      // Se entra solo en modo colocar: es justo lo que toca hacer ahora, y evita
+      // crear zonas sueltas por descuido mientras se ajusta la tabla.
+      toggleModoTabla(null, true);
     } catch (e) { alert(e.message); }
   };
 }
@@ -13438,6 +13471,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
   _zonasEditor.catalogId = catalogId;
   _zonasEditor.zonaSeleccionadaId = null;
   _zonasEditor.modoRecuadro = false;
+  _zonasEditor.modoTabla = false;   // cada lámina empieza sin modos puestos
 
   // Cargar la lámina y sus zonas
   let sheet, zonas;
@@ -13476,6 +13510,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <button class="btn" id="btn-modo-recuadro" onclick="toggleModoRecuadro(this)" style="background:#f3e8ff;color:#7c3aed" title="Dibuja a mano una caja SOBRE UN PRECIO impreso de la lámina para taparlo y reescribirlo con el precio de hoy (si la IA lo olvidó o falló)">✏️ Dibujar cuadro de precio</button>
         <button class="btn" id="btn-borrar-recuadros" onclick="borrarTodosLosRecuadros(${sheet.id}, this)" style="background:#fee2e2;color:#b91c1c" title="Borra de golpe los recuadros de precio de esta lámina (por si la detección con IA no convence y quieres empezar de cero)">🗑️ Borrar precios</button>
         <button class="btn" id="btn-asociar-tabla" onclick="asociarTablaDesdeEditor(${sheet.id}, ${catalogId})" style="background:#e0f2fe;color:#0369a1;font-weight:700" title="Asocia una tabla de expositor (de la biblioteca) y colócala arrastrando sobre el hueco de precios">📊 Poner tabla</button>
+        <button class="btn" id="btn-modo-tabla" onclick="toggleModoTabla(this)" style="background:#e0f2fe;color:#0369a1" title="Mientras está puesto solo se mueve y ajusta la tabla: no se crean zonas ni cuadros de precio por descuido">📊 Colocar tabla</button>
         <button class="btn btn-secondary" onclick="verLaminaMontada(${sheet.id})" title="Ver la lámina con la tabla ya pegada, para comprobar si tapa bien el bloque de precios anterior">👁️ Ver montada</button>
         <button class="btn" id="btn-sig-sin-precios" onclick="irSiguienteSinPrecios()" style="background:#ede9fe;color:#6d28d9;font-weight:700" title="Cierra esta y abre directamente la siguiente lámina que tiene zonas pero aún no tiene precios asignados">⏭️ Siguiente sin precios${(() => { const n = _laminasPendientesPrecios().length; return n ? ' (' + n + ')' : ''; })()}</button>
         <button class="btn btn-secondary" onclick="cerrarEditorZonas()">Cerrar</button>
@@ -13638,6 +13673,9 @@ function montarLienzoZonas() {
   }
 
   function onDown(e) {
+    // MODO COLOCAR TABLA: no se dibuja NADA. Así no se crean zonas ni cuadros de
+    // precio por descuido al pulsar fuera de la tabla que se está colocando.
+    if (_zonasEditor.modoTabla) return;
     // Si se pulsa sobre una zona existente, no dibujar (se gestiona con su propio click).
     // EXCEPCIÓN: en modo recuadro sí dibujamos encima de la zona (el precio está dentro).
     if (!_zonasEditor.modoRecuadro && e.target.classList.contains('zona-rect')) return;
@@ -13777,6 +13815,8 @@ const _dragZona = { activo: false, zonaId: null, tipo: null, inicioX: 0, inicioY
 function onZonaMouseDown(e, zona) {
   // En modo recuadro no interactuamos con la zona: dejamos que el lienzo dibuje encima.
   if (_zonasEditor.modoRecuadro) return;
+  // En modo colocar tabla, las zonas no se tocan (ni se mueven por descuido).
+  if (_zonasEditor.modoTabla) return;
   // Click derecho o modificadores: ignorar
   if (e.button != null && e.button !== 0) return;
   e.stopPropagation();
