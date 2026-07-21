@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v114 · 21 jul 2026';
+const APP_VERSION = 'v115 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -5373,11 +5373,18 @@ async function actualizarTablaExcel(id, input) {
   if ($m) $m.textContent = '⏳ Leyendo Excel…';
   try {
     const d = await _enviarTabla(file, '/api/tablas/' + id, 'PUT');
-    if ($m) $m.textContent = d.total != null
-      ? `✅ Actualizada · ${d.n_filas} filas · TOTAL ${Number(d.total).toFixed(2).replace('.', ',')}€`
-      : '✅ Actualizada';
+    if ($m) {
+      if (d.aviso) {
+        // El Excel traia hojas nuevas: se explica que se ha hecho y NO se borra solo
+        $m.innerHTML = `<span style="color:#b45309">⚠️ ${escape(d.aviso)}</span>`;
+      } else {
+        $m.textContent = d.total != null
+          ? `✅ Actualizada · ${d.n_filas} filas · TOTAL ${Number(d.total).toFixed(2).replace('.', ',')}€`
+          : '✅ Actualizada';
+        setTimeout(() => { if ($m) $m.textContent = ''; }, 5000);
+      }
+    }
     cargarTablasAdmin();
-    setTimeout(() => { if ($m) $m.textContent = ''; }, 5000);
   } catch (e) { if ($m) $m.textContent = '❌ ' + e.message; }
 }
 

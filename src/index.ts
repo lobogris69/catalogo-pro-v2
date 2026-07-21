@@ -7283,6 +7283,26 @@ const uploadTablaMem = multer({
 });
 
 // Subir un Excel -> parsear -> guardar como tabla nueva.
+// Nombre generico de pestana: "Hoja1", "Sheet2", "Tabla 1", "1"... no sirve
+// para localizar la tabla luego y asociarla a su lamina.
+const pestanaGenerica = (t: string) => !t || /^(hoja|sheet|tabla|table)?\s*\d*$/i.test(t.trim());
+
+// Nombre LOGICO de una tabla, para que el usuario la encuentre despues:
+//   1) el nombre de la pestana, si el se lo puso ("Emuliquen");
+//   2) si la pestana es generica, el TITULO que el escribio dentro de la hoja
+//      ("EXPOSITOR PIE VP NATURITAS AMPOLLAS");
+//   3) en ultimo caso, archivo + primer producto de la hoja.
+function nombreLogicoBloque(b: { titulo: string; filas: any[] }, base: string, multi: boolean): string {
+  if (!pestanaGenerica(b.titulo)) return b.titulo;
+  const sec = b.filas.find((f: any) => f.tipo === 'seccion');
+  const tSec = sec && sec.celdas.find((c: string) => c);
+  if (tSec) return tSec;
+  if (!multi) return base;
+  const dato = b.filas.find((f: any) => f.tipo === 'datos');
+  const prod = (dato && dato.celdas.find((c: string) => c)) || b.titulo || 'hoja';
+  return `${base} - ${prod}`;
+}
+
 app.post('/api/tablas', verifyToken, requireRealAdmin, uploadTablaMem.single('archivo'), async (req: AuthRequest, res: Response) => {
   try {
     if (!req.file) { res.status(400).json({ success: false, error: 'Sube un archivo Excel (.xlsx)' }); return; }
@@ -7297,29 +7317,11 @@ app.post('/api/tablas', verifyToken, requireRealAdmin, uploadTablaMem.single('ar
       return;
     }
     const base = (req.body.nombre ? String(req.body.nombre) : req.file.originalname.replace(/\.(xlsx|xls)$/i, '')).trim();
-    // Nombre generico de pestana: "Hoja1", "Sheet2", "Tabla 1", "1"... no sirve
-    // para localizar la tabla luego y asociarla a su lamina.
-    const generica = (t: string) => !t || /^(hoja|sheet|tabla|table)?\s*\d*$/i.test(t.trim());
     const multi = bloques.length > 1;
-    // Nombre LOGICO de cada tabla, para que el usuario la encuentre despues:
-    //   1) el nombre de la pestana, si el se lo puso ("Emuliquen");
-    //   2) si la pestana es generica, el TITULO que el escribio dentro de la hoja
-    //      ("EXPOSITOR PIE VP NATURITAS AMPOLLAS");
-    //   3) en ultimo caso, archivo + primer producto de la hoja.
-    const nombreBloque = (b: { titulo: string; filas: any[] }): string => {
-      if (!generica(b.titulo)) return b.titulo;
-      const sec = b.filas.find((f: any) => f.tipo === 'seccion');
-      const tSec = sec && sec.celdas.find((c: string) => c);
-      if (tSec) return tSec;
-      if (!multi) return base;
-      const dato = b.filas.find((f: any) => f.tipo === 'datos');
-      const prod = (dato && dato.celdas.find((c: string) => c)) || b.titulo || 'hoja';
-      return `${base} - ${prod}`;
-    };
     const nuevas: string[] = [], actualizadas: string[] = [];
     const usados = new Set<string>();
     for (const b of bloques) {
-      let nombre = nombreBloque(b).slice(0, 150);
+      let nombre = nombreLogicoBloque(b, base, multi).slice(0, 150);
       // Dos hojas que resuelvan al mismo nombre dentro del MISMO archivo no deben
       // machacarse entre si: se numeran.
       let candidato = nombre, k = 2;
@@ -7396,19 +7398,45 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
         res.status(422).json({ success: false, error: 'No he podido leer la tabla, así que no toco la anterior. Esto es lo que he leído — ' + resumenExcel(req.file.buffer) });
         return;
       }
-      // Esta ruta actualiza UNA tabla concreta. Si el Excel trae varias hojas, se
-      // usa la hoja cuyo nombre coincide con el de la tabla; con una sola, esa.
+      // Esta ruta actualiza UNA tabla concreta. Si el Excel trae varias hojas:
+      //   - la hoja que se llame como la tabla es la suya;
+      //   - si ninguna coincide (el usuario ha partido su Excel en hojas nuevas),
+      //     esta tabla se actualiza con la PRIMERA y las demas se guardan como
+      //     tablas propias con nombre logico. Antes esto era un error que le
+      //     mandaba a otra pantalla: un callejon sin salida.
       let elegido = bloques[0];
+      let aviso: string | undefined;
       if (bloques.length > 1) {
         const act = await pool.query(`SELECT nombre FROM expositor_tabla WHERE id=$1`, [id]);
-        const nom = String(act.rows[0]?.nombre || '').toLowerCase();
-        const match = bloques.find(b => (b.titulo || '').toLowerCase() === nom);
-        if (!match) {
-          res.status(422).json({ success: false, error: `Este Excel tiene ${bloques.length} hojas (${bloques.map(b => b.titulo).join(', ')}) y ninguna se llama como esta tabla. Súbelo desde la zona general de arriba: allí cada hoja se guarda como su propia tabla.` });
-          return;
+        const nomAct = String(act.rows[0]?.nombre || '');
+        const match = bloques.find(b => (b.titulo || '').toLowerCase() === nomAct.toLowerCase());
+        if (match) {
+          elegido = match;
+        } else {
+          const base = req.file.originalname.replace(/\.(xlsx|xls)$/i, '').trim();
+          const extras: string[] = [];
+          const usados = new Set<string>([nomAct.toLowerCase()]);
+          for (const b of bloques.slice(1)) {
+            let nombre = nombreLogicoBloque(b, base, true).slice(0, 150);
+            let candidato = nombre, k = 2;
+            while (usados.has(candidato.toLowerCase())) candidato = `${nombre} (${k++})`;
+            nombre = candidato;
+            usados.add(nombre.toLowerCase());
+            const datosUno = JSON.stringify({ bloques: [b] });
+            const ex = await pool.query(`SELECT id FROM expositor_tabla WHERE LOWER(nombre)=LOWER($1)`, [nombre]);
+            if (ex.rows.length) {
+              await pool.query(`UPDATE expositor_tabla SET datos=$1, archivo=$2, updated_at=NOW() WHERE id=$3`,
+                [datosUno, req.file.originalname.slice(0, 200), ex.rows[0].id]);
+            } else {
+              await pool.query(`INSERT INTO expositor_tabla (nombre, datos, origen, archivo, creado_por) VALUES ($1,$2,'excel',$3,$4)`,
+                [nombre, datosUno, req.file.originalname.slice(0, 200), req.user?.id || null]);
+            }
+            extras.push(nombre);
+          }
+          aviso = `El Excel trae ${bloques.length} hojas: esta tabla se ha actualizado con la 1ª (${nombreLogicoBloque(bloques[0], base, true).slice(0, 80)}) y la${extras.length > 1 ? 's' : ''} otra${extras.length > 1 ? 's' : ''} se ha${extras.length > 1 ? 'n' : ''} guardado como tabla propia: ${extras.join(', ')}. Comprueba qué tabla va asociada a cada lámina.`;
         }
-        elegido = match;
       }
+      (req as any)._avisoTabla = aviso;
       calc = computarTabla({ bloques: [elegido] });
       sets.push(`datos=$${i++}`); vals.push(JSON.stringify({ bloques: [elegido] }));
       sets.push(`archivo=$${i++}`); vals.push(req.file.originalname.slice(0, 200));
@@ -7417,7 +7445,8 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
     sets.push('updated_at=NOW()'); vals.push(id);
     const r = await pool.query(`UPDATE expositor_tabla SET ${sets.join(', ')} WHERE id=$${vals.length} RETURNING id, nombre, updated_at`, vals);
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
-    res.json({ success: true, tabla: r.rows[0], n_filas: calc ? calc.n_filas : undefined, total: calc ? calc.total : undefined });
+    res.json({ success: true, tabla: r.rows[0], n_filas: calc ? calc.n_filas : undefined, total: calc ? calc.total : undefined,
+               aviso: (req as any)._avisoTabla });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
