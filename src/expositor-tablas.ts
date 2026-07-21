@@ -352,10 +352,11 @@ function partirTexto(s: string, fs: number, ancho: number, maxLineas: number): s
 const BRAND = '#d80a6b', BRAND2 = '#9a1259', PLOMO = '#3a2b33';
 const HEAD_BG = '#f3e3ec', ZEBRA = '#faf5f8', LINEA = '#ead9e3';
 
-// opts.fs = tamano de letra en px. Al pegar en una lamina se pasa un tamano
-// proporcional a LA LAMINA, no al hueco: asi ensanchar el hueco separa las
-// columnas pero NO agranda la letra ni el alto (estirar de lado, no en diagonal).
-export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: number; fondo?: string; fs?: number }): Promise<{ buffer: Buffer; width: number; height: number }> {
+// DOS EJES INDEPENDIENTES, como espera el usuario al colocar la tabla:
+//   - el ANCHO del hueco reparte las COLUMNAS (estirar de lado no toca la letra),
+//   - el ALTO del hueco decide el TAMANO DE LETRA (estirar hacia abajo agranda).
+// opts.alto = alto del hueco en px; opts.fs fuerza un tamano concreto de letra.
+export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: number; alto?: number; fondo?: string; fs?: number }): Promise<{ buffer: Buffer; width: number; height: number }> {
   const calc: any = computarTabla(datos);
   if (!calc.fiel) return renderLegado(calc, opts);   // tablas guardadas antes del cambio
 
@@ -369,7 +370,21 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
   }
 
   let y = M, els = '';
-  const fsBase = Math.max(5, Math.round(opts?.fs || W * 0.0145));
+  // Letra a partir del ALTO del hueco: se estima cuánto ocupa cada fila en
+  // función de la letra (cabecera ~1,76·fs, fila ~1,52·fs, banda de apartado
+  // ~2,0·fs) y se despeja la letra que hace que la tabla mida ese alto.
+  let fsPorAlto = 0;
+  if (opts?.alto && opts.alto > 20) {
+    let k = 0;
+    for (const b of bloques) {
+      if (!b.cabeceras.length || !b.filas.length) continue;
+      k += 1.76;                                   // cabecera de arriba
+      for (const f of b.filas) k += f.tipo === 'seccion' ? 2.1 : (f.tipo === 'cabecera' ? 1.76 : 1.52);
+      k += 1.1;                                    // aire entre bloques
+    }
+    if (k > 0) fsPorAlto = (opts.alto - 2 * M) / k;
+  }
+  const fsBase = Math.max(5, Math.round(opts?.fs || fsPorAlto || W * 0.0145));
   if (calc.titulo) {
     els += `<text x="${M}" y="${y + fsBase}" font-family="${FUENTE}" font-weight="700" font-size="${Math.round(fsBase * 1.4)}" fill="${BRAND2}">${esc(calc.titulo)}</text>`;
     y += Math.round(fsBase * 2.2);
