@@ -7262,9 +7262,15 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
       // ancho; si sobra alto, es sitio que él ha dibujado de más.
       const fondo = await colorFondoLamina(abs, W, H, bx, by, bw, bh);
       const { buffer: tb } = await renderTablaExpositor(row.datos, { width: bw, fondo });
-      // Encajar en el hueco: nunca más alta que el hueco (contain por altura).
-      let fin = tb; const m = await sharp(tb).metadata();
-      if ((m.height || 0) > bh) fin = await sharp(tb).resize({ width: bw, height: bh, fit: 'inside' }).png().toBuffer();
+      // MANDA EL ANCHO: la tabla se pega ocupando todo el ancho del hueco, que es
+      // lo que tiene que tapar. Antes, si salía más alta que el hueco se encogía
+      // entera (contain) y al encogerla se ESTRECHABA -> dejaba de cubrir la tabla
+      // vieja por la derecha. Si sobra alto, se ve: el usuario ajusta el hueco.
+      let fin = tb;
+      const m = await sharp(tb).metadata();
+      const th = m.height || 0;
+      // Único límite real: no salirse de la lámina (si no, sharp falla al pegar).
+      if (by + th > H) fin = await sharp(tb).extract({ left: 0, top: 0, width: m.width || bw, height: Math.max(1, H - by) }).png().toBuffer();
       tablasComposites.push({ input: fin, left: bx, top: by });
     } catch (e) { /* si falla el render de una tabla, seguimos con el resto */ }
   }

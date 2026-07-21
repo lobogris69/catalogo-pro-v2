@@ -3386,10 +3386,7 @@ body.con-banner-update {
   position: absolute;
   top: 0; left: 0;
   width: 100%;
-  height: auto;
-  max-height: 100%;
-  object-fit: contain;
-  object-position: top left;
+  height: auto;          /* alto REAL: si sobresale del hueco, se ve y se ajusta */
   background: #fff;
   pointer-events: none;
   user-select: none;
