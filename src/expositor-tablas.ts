@@ -153,11 +153,14 @@ function extraerHoja(ws: XLSX.WorkSheet): Extraida | null {
   const iDatos = bruto.findIndex(c => lleno(c) >= umbral);
   if (iDatos < 0) return null;
 
-  // La cabecera puede ocupar VARIAS filas ("Precio" / "Final"): se unen.
+  // La cabecera puede ocupar VARIAS filas ("Precio" / "Final"): se unen, pero
+  // SOLO sobre columnas que ya tienen cabecera principal. Si la celda cae en una
+  // columna sin cabecera es una NOTA AL MARGEN del usuario ("Descuento %  15"):
+  // fusionarla convertia su columna de trabajo en una columna "inventada".
   const cabeceras: string[] = [];
   for (let c = c0; c <= c1; c++) cabeceras.push(cabRow[c] || '');
   for (let k = 0; k < iDatos; k++) {
-    bruto[k].forEach((v, i) => { if (v) cabeceras[i] = (cabeceras[i] ? cabeceras[i] + ' ' : '') + v; });
+    bruto[k].forEach((v, i) => { if (v && cabeceras[i]) cabeceras[i] += ' ' + v; });
   }
 
   for (let k = iDatos; k < bruto.length; k++) {
@@ -174,7 +177,12 @@ function extraerHoja(ws: XLSX.WorkSheet): Extraida | null {
     let tipo: TipoFila;
     if (repes >= 2) tipo = 'cabecera';
     else if (/^(sub)?total/i.test(primero)) tipo = 'total';
-    else if (conTexto === 1) tipo = numericas[idxUnico] ? 'total' : 'seccion';
+    else if (conTexto === 1) {
+      // Celda unica: es un subtotal si su columna es numerica O si su contenido
+      // parece un importe ("317,16 €"); si no, es un titulo de apartado.
+      const pareceImporte = /^-?[\d.,]+\s*(€|%)?$/.test(primero);
+      tipo = (numericas[idxUnico] || pareceImporte) ? 'total' : 'seccion';
+    }
     else if (conTexto < umbral && celdas.some((v, i) => v && numericas[i])) tipo = 'total';
     else tipo = 'datos';
     filas.push({ tipo, celdas });

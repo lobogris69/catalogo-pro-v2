@@ -7297,13 +7297,35 @@ app.post('/api/tablas', verifyToken, requireRealAdmin, uploadTablaMem.single('ar
       return;
     }
     const base = (req.body.nombre ? String(req.body.nombre) : req.file.originalname.replace(/\.(xlsx|xls)$/i, '')).trim();
-    const generica = (t: string) => !t || /^(hoja|sheet)\s*\d*$/i.test(t.trim());
+    // Nombre generico de pestana: "Hoja1", "Sheet2", "Tabla 1", "1"... no sirve
+    // para localizar la tabla luego y asociarla a su lamina.
+    const generica = (t: string) => !t || /^(hoja|sheet|tabla|table)?\s*\d*$/i.test(t.trim());
     const multi = bloques.length > 1;
+    // Nombre LOGICO de cada tabla, para que el usuario la encuentre despues:
+    //   1) el nombre de la pestana, si el se lo puso ("Emuliquen");
+    //   2) si la pestana es generica, el TITULO que el escribio dentro de la hoja
+    //      ("EXPOSITOR PIE VP NATURITAS AMPOLLAS");
+    //   3) en ultimo caso, archivo + primer producto de la hoja.
+    const nombreBloque = (b: { titulo: string; filas: any[] }): string => {
+      if (!generica(b.titulo)) return b.titulo;
+      const sec = b.filas.find((f: any) => f.tipo === 'seccion');
+      const tSec = sec && sec.celdas.find((c: string) => c);
+      if (tSec) return tSec;
+      if (!multi) return base;
+      const dato = b.filas.find((f: any) => f.tipo === 'datos');
+      const prod = (dato && dato.celdas.find((c: string) => c)) || b.titulo || 'hoja';
+      return `${base} - ${prod}`;
+    };
     const nuevas: string[] = [], actualizadas: string[] = [];
+    const usados = new Set<string>();
     for (const b of bloques) {
-      const nombre = (multi
-        ? (generica(b.titulo) ? `${base} - ${b.titulo || 'hoja'}` : b.titulo)
-        : base).slice(0, 160);
+      let nombre = nombreBloque(b).slice(0, 150);
+      // Dos hojas que resuelvan al mismo nombre dentro del MISMO archivo no deben
+      // machacarse entre si: se numeran.
+      let candidato = nombre, k = 2;
+      while (usados.has(candidato.toLowerCase())) candidato = `${nombre} (${k++})`;
+      nombre = candidato;
+      usados.add(nombre.toLowerCase());
       const datosUno = JSON.stringify({ bloques: [b] });
       // Si ya existe una tabla con ese nombre se ACTUALIZA (re-subida de precios),
       // no se duplica. Asi el flujo de "soltar todos los Excel otra vez" funciona.
