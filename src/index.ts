@@ -7238,11 +7238,13 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
     const bw = Math.round(row.ancho / 100 * W), bh = Math.round(row.alto / 100 * H);
     if (bw < 10 || bh < 10) continue;
     try {
-      // La tabla se dibuja con el COLOR DE FONDO de la propia lámina: tapa del
-      // todo la tabla vieja (con fondo transparente se veía entre fila y fila) y
-      // se funde con la lámina en vez de ser un bloque blanco. Y solo ocupa lo
-      // que ocupa la tabla: nada sobresale tapando cosas suyas.
+      // El hueco que dibuja el usuario se tapa ENTERO (si no, asoma la tabla
+      // vieja por debajo) pero con el COLOR DE FONDO de su propia lámina, no con
+      // un blanco fijo: así el rectángulo no "canta" ni parece que tape cosas.
+      // La tabla se dibuja con ese mismo color de fondo, para que no se note la
+      // unión y para que tape del todo lo que hubiera debajo.
       const fondo = await colorFondoLamina(abs, W, H, bx, by, bw, bh);
+      els += `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="${fondo}"/>`;
       const { buffer: tb } = await renderTablaExpositor(row.datos, { width: bw, fondo });
       // Encajar en el hueco: nunca más alta que el hueco (contain por altura).
       let fin = tb; const m = await sharp(tb).metadata();
