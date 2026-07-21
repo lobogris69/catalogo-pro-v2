@@ -7146,14 +7146,26 @@ app.delete('/api/ofertas/:id', verifyToken, requireRealAdmin, async (req: AuthRe
 async function colorFondoLamina(abs: string, W: number, H: number, x: number, y: number, w: number, h: number): Promise<string> {
   const muestra = async (left: number, top: number, width: number, height: number) => {
     if (width < 2 || height < 2 || left < 0 || top < 0 || left + width > W || top + height > H) return null;
-    const px = await sharp(abs).extract({ left, top, width, height }).resize(1, 1, { fit: 'fill' }).raw().toBuffer();
+    // flatten: si la lámina tiene transparencia, sin esto el muestreo daba NEGRO
+    // (RGB 0,0,0 de un píxel transparente) y el fondo salía en negro.
+    const px = await sharp(abs).flatten({ background: '#ffffff' })
+      .extract({ left, top, width, height }).resize(1, 1, { fit: 'fill' }).raw().toBuffer();
     return px.length >= 3 ? `#${[px[0], px[1], px[2]].map(v => v.toString(16).padStart(2, '0')).join('')}` : null;
   };
   try {
     const franja = Math.max(3, Math.round(H * 0.004));
-    return (await muestra(x, Math.max(0, y - franja - 2), w, franja))      // encima
-        || (await muestra(Math.max(0, x - franja - 2), y, franja, h))      // a la izquierda
-        || '#ffffff';
+    // Se prueban las cuatro franjas de alrededor y se coge la MAS CLARA: la
+    // tabla vieja (texto oscuro) puede tocar alguna, y el fondo de una lámina
+    // comercial es siempre lo más claro de su entorno.
+    const cands = [
+      await muestra(x, Math.max(0, y - franja - 2), w, franja),                 // encima
+      await muestra(x, Math.min(H - franja - 1, y + h + 2), w, franja),         // debajo
+      await muestra(Math.max(0, x - franja - 2), y, franja, h),                 // izquierda
+      await muestra(Math.min(W - franja - 1, x + w + 2), y, franja, h),         // derecha
+    ].filter(Boolean) as string[];
+    if (!cands.length) return '#ffffff';
+    const luz = (c: string) => parseInt(c.slice(1, 3), 16) + parseInt(c.slice(3, 5), 16) + parseInt(c.slice(5, 7), 16);
+    return cands.sort((a, b) => luz(b) - luz(a))[0];
   } catch { return '#ffffff'; }
 }
 
@@ -7226,19 +7238,15 @@ async function recomponerLaminaHoy(sheetId: number, tarifa: number): Promise<Buf
     const bw = Math.round(row.ancho / 100 * W), bh = Math.round(row.alto / 100 * H);
     if (bw < 10 || bh < 10) continue;
     try {
-      const { buffer: tb } = await renderTablaExpositor(row.datos, { width: bw });
+      // La tabla se dibuja con el COLOR DE FONDO de la propia lámina: tapa del
+      // todo la tabla vieja (con fondo transparente se veía entre fila y fila) y
+      // se funde con la lámina en vez de ser un bloque blanco. Y solo ocupa lo
+      // que ocupa la tabla: nada sobresale tapando cosas suyas.
+      const fondo = await colorFondoLamina(abs, W, H, bx, by, bw, bh);
+      const { buffer: tb } = await renderTablaExpositor(row.datos, { width: bw, fondo });
       // Encajar en el hueco: nunca más alta que el hueco (contain por altura).
       let fin = tb; const m = await sharp(tb).metadata();
-      let tw = m.width || bw, th = m.height || bh;
-      if (th > bh) {
-        fin = await sharp(tb).resize({ width: bw, height: bh, fit: 'inside' }).png().toBuffer();
-        const m2 = await sharp(fin).metadata(); tw = m2.width || bw; th = m2.height || bh;
-      }
-      // El fondo que tapa la tabla vieja ocupa SOLO lo que ocupa la tabla nueva
-      // (antes se pintaba todo el hueco y sus bordes tapaban cosas de la lámina)
-      // y se pinta con el color de fondo de la propia lámina, no blanco fijo.
-      const fondo = await colorFondoLamina(abs, W, H, bx, by, tw, th);
-      els += `<rect x="${bx}" y="${by}" width="${tw}" height="${th}" fill="${fondo}"/>`;
+      if ((m.height || 0) > bh) fin = await sharp(tb).resize({ width: bw, height: bh, fit: 'inside' }).png().toBuffer();
       tablasComposites.push({ input: fin, left: bx, top: by });
     } catch (e) { /* si falla el render de una tabla, seguimos con el resto */ }
   }

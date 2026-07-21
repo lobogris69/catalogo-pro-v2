@@ -352,7 +352,7 @@ function partirTexto(s: string, fs: number, ancho: number, maxLineas: number): s
 const BRAND = '#d80a6b', BRAND2 = '#9a1259', PLOMO = '#3a2b33';
 const HEAD_BG = '#f3e3ec', ZEBRA = '#faf5f8', LINEA = '#ead9e3';
 
-export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: number }): Promise<{ buffer: Buffer; width: number; height: number }> {
+export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: number; fondo?: string }): Promise<{ buffer: Buffer; width: number; height: number }> {
   const calc: any = computarTabla(datos);
   if (!calc.fiel) return renderLegado(calc, opts);   // tablas guardadas antes del cambio
 
@@ -494,9 +494,13 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
   y += M;
 
   const H = Math.ceil(y);
-  // FONDO TRANSPARENTE: la tabla se pega sobre la lamina comercial y un fondo
-  // blanco de sobra tapaba cosas suyas. Solo pintan las bandas/cebra propias.
-  const svg = `<svg width="${Wout}" height="${H}" xmlns="http://www.w3.org/2000/svg">${els}</svg>`;
+  // FONDO. Sin `fondo` sale TRANSPARENTE (vista previa: no se pinta un blanco de
+  // sobra). Al pegarla en la lamina se pasa el color de fondo muestreado de la
+  // propia lamina: asi tapa la tabla vieja del todo (transparente dejaba verla
+  // entre fila y fila) y a la vez se funde con la lamina en vez de un bloque
+  // blanco. El fondo ocupa solo lo que ocupa la tabla.
+  const fondo = opts?.fondo ? `<rect width="100%" height="100%" fill="${opts.fondo}"/>` : '';
+  const svg = `<svg width="${Wout}" height="${H}" xmlns="http://www.w3.org/2000/svg">${fondo}${els}</svg>`;
   const buffer = await sharp(Buffer.from(svg)).png().toBuffer();
   return { buffer, width: Wout, height: H };
 }
