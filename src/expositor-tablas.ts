@@ -356,7 +356,7 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
   const calc: any = computarTabla(datos);
   if (!calc.fiel) return renderLegado(calc, opts);   // tablas guardadas antes del cambio
 
-  const W = Math.max(700, Math.min(1600, opts?.width || 1040));
+  const W = Math.max(200, Math.min(1600, opts?.width || 1040));   // se respeta el ancho pedido (el hueco): forzar un minimo de 700 hacia dibujar la tabla MAS ancha que el hueco
   const M = 24;
   const cw = W - M * 2;
   const bloques: BloqueTabla[] = calc.bloques || [];
@@ -399,13 +399,20 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
       for (const f of filas) if (f.tipo !== 'seccion' && f.tipo !== 'cabecera') mx = Math.max(mx, anchoTexto(f.celdas[i] || '', tam));
       return mx + tam * 1.3;
     });
+    // La tabla OCUPA EL HUECO que dibuja el usuario: se escala la letra hasta que
+    // el contenido mide justo el ancho del hueco. Antes solo se encogía si no
+    // cabía, así que una tabla de pocas columnas se quedaba en un 37% del hueco
+    // (pequeñita arriba a la izquierda) y el resto quedaba vacío. Ojo: esto NO
+    // separa las columnas — se agranda todo junto, columnas pegadas.
     let fs = fsBase;
     let anchos = medir(fs);
     let suma = anchos.reduce((a, x) => a + x, 0) || 1;
-    if (suma > cw) {
-      fs = Math.max(9, fs * (cw / suma));
+    for (let i = 0; i < 3 && Math.abs(suma - cw) > cw * 0.01; i++) {
+      fs = Math.max(6, Math.min(fsBase * 3, fs * (cw / suma)));
       anchos = medir(fs);
       suma = anchos.reduce((a, x) => a + x, 0) || 1;
+    }
+    {
       if (suma > cw) {
         // Ni con la letra al minimo: las centradas conservan su ancho y el resto
         // se reparte entre las de texto, que pueden ir a dos lineas.
@@ -509,7 +516,7 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
 // calculadas). Se mantiene para no romper las laminas ya montadas; al volver a
 // subir el Excel, la tabla pasa al formato fiel.
 async function renderLegado(calc: any, opts?: { width?: number }): Promise<{ buffer: Buffer; width: number; height: number }> {
-  const W = Math.max(700, Math.min(1600, opts?.width || 1040));
+  const W = Math.max(200, Math.min(1600, opts?.width || 1040));   // se respeta el ancho pedido (el hueco): forzar un minimo de 700 hacia dibujar la tabla MAS ancha que el hueco
   const M = 24, cw = W - M * 2;
   const fs = Math.round(W * 0.0145), rowH = Math.round(fs * 2.0);
   const eur = (v: any) => v == null ? '' : Number(v).toFixed(2).replace('.', ',') + '€';

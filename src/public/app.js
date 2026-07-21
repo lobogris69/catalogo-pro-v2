@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v118 · 21 jul 2026';
+const APP_VERSION = 'v119 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -1868,6 +1868,7 @@ function verLaminaMontada(sheetId) {
     <div class="modal-header"><h3>👁️ Lámina montada (precios de hoy)</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
     <div style="overflow:auto"><img style="width:100%;height:auto" alt="Generando…"></div></div>`;
   document.body.appendChild(m);
+  hacerDialogoArrastrable(m.querySelector('.modal-card'), m.querySelector('.modal-header'));
   const img = m.querySelector('img');
   const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
   fetch(API + '/api/sheets/' + sheetId + '/recompuesta?tarifa=1', { headers }).then(r => r.blob()).then(b => { img.src = URL.createObjectURL(b); }).catch(() => {});
@@ -5391,6 +5392,46 @@ async function actualizarTablaExcel(id, input) {
   } catch (e) { if ($m) $m.textContent = '❌ ' + e.message; }
 }
 
+// Hace ARRASTRABLE un diálogo por su título, para poder apartarlo cuando tapa lo
+// que estás mirando (p.ej. elegir la tabla viendo la lámina de debajo).
+function hacerDialogoArrastrable(caja, asa) {
+  if (!caja || !asa) return;
+  asa.style.cursor = 'move';
+  asa.title = (asa.title ? asa.title + ' · ' : '') + 'Arrastra para apartar esta ventana';
+  if (!asa.querySelector('.dlg-mover')) {
+    const p = document.createElement('span');
+    p.className = 'dlg-mover'; p.textContent = '⠿';
+    p.style.cssText = 'opacity:.45;font-size:14px;margin-right:6px;vertical-align:middle';
+    asa.insertBefore(p, asa.firstChild);
+  }
+  let st = null;
+  const punto = (e) => e.touches ? e.touches[0] : e;
+  const move = (e) => {
+    if (!st) return;
+    e.preventDefault();
+    const p = punto(e);
+    caja.style.left = (st.x0 + p.clientX - st.px) + 'px';
+    caja.style.top = (st.y0 + p.clientY - st.py) + 'px';
+  };
+  const up = () => {
+    st = null;
+    document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
+    document.removeEventListener('touchmove', move); document.removeEventListener('touchend', up);
+  };
+  asa.addEventListener('mousedown', (e) => {
+    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+    const r = caja.getBoundingClientRect();
+    // Se fija la posición actual antes de empezar a mover (estaba centrado por flex)
+    caja.style.position = 'fixed'; caja.style.margin = '0';
+    caja.style.left = r.left + 'px'; caja.style.top = r.top + 'px';
+    const p = punto(e);
+    st = { px: p.clientX, py: p.clientY, x0: r.left, y0: r.top };
+    e.preventDefault();
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
+    document.addEventListener('touchmove', move, { passive: false }); document.addEventListener('touchend', up);
+  });
+}
+
 // Carga la imagen de una tabla en un <img> (necesita token -> se trae como blob).
 async function cargarPreviewTabla(id, img) {
   if (!img || !id) return;
@@ -5423,6 +5464,7 @@ function verTablaExpositor(id, nombre) {
   </div>`;
   // La imagen necesita el token; la traemos como blob (no por src directo -> daría 401).
   document.body.appendChild(m);
+  hacerDialogoArrastrable(m.querySelector('.modal-card'), m.querySelector('.modal-header'));
   const img = m.querySelector('img');
   const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
   fetch(API + '/api/tablas/' + id + '/preview.png', { headers }).then(r => r.blob()).then(b => { img.src = URL.createObjectURL(b); }).catch(() => {});
@@ -13035,6 +13077,9 @@ async function asociarTablaDesdeEditor(sheetId, catalogId) {
       <button type="button" class="btn btn-primary" id="pick-tabla-ok">Poner</button>
     </div></div>`;
   document.body.appendChild(m);
+  // Se puede apartar arrastrando el título: así se ve la lámina de debajo
+  // mientras eliges la tabla.
+  hacerDialogoArrastrable(m.querySelector('.modal'), m.querySelector('h3'));
   const $sel = document.getElementById('pick-tabla');
   const $prev = document.getElementById('pick-tabla-prev');
   const pintarPrev = () => cargarPreviewTabla(Number($sel.value), $prev);
