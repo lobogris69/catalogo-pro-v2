@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v126 · 21 jul 2026';
+const APP_VERSION = 'v127 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -10598,6 +10598,13 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     abrirBusquedaGlobal();
   }
+  // ESCAPE = salida de emergencia de los modos del editor de zonas. Un modo
+  // activo desactiva media pantalla a propósito; si no se ve el botón, parece
+  // que la app se ha quedado colgada.
+  if (e.key === 'Escape' && typeof _zonasEditor === 'object' && _zonasEditor) {
+    if (_zonasEditor.modoTabla) { toggleModoTabla(document.getElementById('btn-modo-tabla'), false); }
+    else if (_zonasEditor.modoRecuadro) { toggleModoRecuadro(document.getElementById('btn-modo-recuadro')); }
+  }
 });
 
 // ----- CERRAR VISITA ACTIVA — abre primero el RESUMEN PRE-ENVÍO (M2/N2/O3) -----
@@ -12905,6 +12912,13 @@ async function irSiguienteSinPrecios() {
 // que están desactivados a propósito.
 function toggleModoTabla(btn, forzar) {
   const on = typeof forzar === 'boolean' ? forzar : !_zonasEditor.modoTabla;
+  // SIN TABLA no hay nada que colocar: entrar en el modo dejaba la pantalla
+  // bloqueada (no se crea nada y no hay tabla que mover). Se abre el selector.
+  if (on && !(_zonasEditor.tablas || []).length) {
+    _zonasEditor.modoTabla = false;
+    asociarTablaDesdeEditor(_zonasEditor.sheetId, _zonasEditor.catalogId);
+    return;
+  }
   _zonasEditor.modoTabla = on;
   if (on && _zonasEditor.modoRecuadro) {          // los dos modos se excluyen
     const bR = document.getElementById('btn-modo-recuadro');
@@ -12917,7 +12931,7 @@ function toggleModoTabla(btn, forzar) {
     b.textContent = on ? '📊 Colocando tabla… (pulsa para salir)' : '📊 Colocar tabla';
   }
   const ayuda = document.getElementById('zonas-ayuda');
-  if (ayuda && on) ayuda.innerHTML = '📊 <b>MODO COLOCAR TABLA activo:</b> mueve la tabla y ajusta su <b>ancho</b> (separa columnas) y su <b>alto</b> (tamaño de letra) hasta tapar el bloque de precios viejo. Mientras esté activo <b>no se crean zonas ni cuadros de precio</b> aunque pulses fuera. Pulsa otra vez el botón para salir.';
+  if (ayuda && on) ayuda.innerHTML = '📊 <b>MODO COLOCAR TABLA activo:</b> mueve la tabla y ajusta su <b>ancho</b> (separa columnas) y su <b>alto</b> (tamaño de letra) hasta tapar el bloque de precios viejo. Mientras esté activo <b>no se crean zonas ni cuadros de precio</b> aunque pulses fuera. Para salir: pulsa otra vez el botón o la tecla <b>ESC</b>.';
   else if (ayuda) ayuda.innerHTML = '✏️ <b>Arrastra</b> sobre la lámina para dibujar un rectángulo. Luego asígnale un producto en el panel derecho.';
   const wrap = document.getElementById('zonas-lienzo-wrap');
   if (wrap) {

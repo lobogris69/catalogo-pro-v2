@@ -3424,9 +3424,11 @@ body.con-banner-update {
 /* MODO COLOCAR TABLA: solo se toca la tabla. Zonas y cuadros de precio se
    atenúan y se hacen inertes, para que no se creen ni se muevan por descuido.
    Se marca el lienzo en azul para que SE VEA que el modo está puesto. */
+/* Marca sólida y pegada al borde: con línea DISCONTINUA parecía una "caja"
+   gigante dibujada sobre la lámina y despistaba. */
 .zonas-lienzo-wrap.modo-tabla {
-  outline: 3px dashed #0ea5e9;
-  outline-offset: 2px;
+  outline: 4px solid #0ea5e9;
+  outline-offset: 0;
 }
 .zonas-lienzo-wrap.modo-tabla .zona-rect,
 .zonas-lienzo-wrap.modo-tabla .zona-recuadro-ov {
