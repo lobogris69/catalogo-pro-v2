@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v128 · 22 jul 2026';
+const APP_VERSION = 'v129 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -13258,9 +13258,13 @@ async function renderTablasEnLienzo(sheetId, catalogId) {
   try { asocs = (await api('/api/sheets/' + sheetId + '/tablas')).tablas || []; } catch { asocs = []; }
   _zonasEditor.tablas = asocs;
   capa.innerHTML = '';
-  // Medidas del lienzo, para calcular la proporción real del hueco
-  const _w = document.getElementById('zonas-lienzo-wrap');
-  const wrapAncho = _w ? _w.clientWidth : 1, wrapAlto = _w ? _w.clientHeight : 1;
+  // La proporción del hueco se mide sobre la lámina: hay que esperar a que su
+  // imagen esté cargada o no se sabe cuánto mide (y la vista previa saldría con
+  // otra forma que la de verdad).
+  const imgLam = document.getElementById('zonas-lienzo-img');
+  if (asocs.length && imgLam && !imgLam.naturalWidth) {
+    await new Promise(r => { imgLam.addEventListener('load', r, { once: true }); setTimeout(r, 4000); });
+  }
   asocs.forEach(a => {
     const d = document.createElement('div');
     d.className = 'zona-tabla-ov';
@@ -13281,7 +13285,7 @@ async function renderTablasEnLienzo(sheetId, catalogId) {
     // aquí exactamente lo que ocupará al pegarla, sin estirar.
     prev.onload = null;   // la tabla llena la caja: no hay que ajustar nada
     d.appendChild(prev);
-    cargarPreviewTabla(a.tabla_id, prev, _propAltoHueco(a, wrapAncho, wrapAlto));
+    cargarPreviewTabla(a.tabla_id, prev, _propAltoHueco(a));
     const lbl = document.createElement('span'); lbl.className = 'zona-tabla-lbl'; lbl.textContent = '📊 ' + (a.tabla_nombre || 'Tabla');
     d.appendChild(lbl);
     // Interruptor de opacidad: ver la tabla sólida o semitransparente para
@@ -13315,9 +13319,15 @@ async function renderTablasEnLienzo(sheetId, catalogId) {
 // Arrastrar/redimensionar el hueco de una tabla (guarda x/y/ancho/alto al soltar).
 // Proporción alto/ancho del hueco en píxeles de la lámina. Se le pasa a la vista
 // previa para que use la misma letra y el mismo reparto de columnas que al pegar.
-function _propAltoHueco(a, wAncho, wAlto) {
-  const wpx = (a.ancho / 100) * (wAncho || 1), hpx = (a.alto / 100) * (wAlto || 1);
-  return wpx > 0 ? hpx / wpx : 0;
+function _propAltoHueco(a) {
+  // Se mide sobre la LÁMINA REAL (tamaño natural de su imagen), no sobre el
+  // contenedor: el contenedor puede tener otra proporción (márgenes, scroll) y
+  // entonces la vista previa se pedía con una forma distinta a la del hueco, que
+  // es justo lo que hacía que una vista y otra salieran desproporcionadas.
+  const img = document.getElementById('zonas-lienzo-img');
+  const W = (img && img.naturalWidth) || 0, H = (img && img.naturalHeight) || 0;
+  if (!W || !H || !a || !a.ancho) return 0;
+  return ((a.alto / 100) * H) / ((a.ancho / 100) * W);
 }
 
 // Alto (en % de la lámina) que ocupa de verdad la caja una vez dentro la tabla.
@@ -13356,7 +13366,7 @@ function _hacerTablaArrastrable(d, a, sheetId) {
         a.ancho = body.ancho; a.alto = body.alto;
         // Al cambiar el ancho, las columnas se separan (la letra no crece):
         // se vuelve a pedir la imagen para verlo tal cual quedará.
-        cargarPreviewTabla(a.tabla_id, d.querySelector('.zona-tabla-img'), _propAltoHueco(a, wrap.clientWidth, wrap.clientHeight));
+        cargarPreviewTabla(a.tabla_id, d.querySelector('.zona-tabla-img'), _propAltoHueco(a));
       }
     }
     catch (e) { alert('No se pudo guardar: ' + e.message); renderTablasEnLienzo(sheetId, _zonasEditor.catalogId); }
