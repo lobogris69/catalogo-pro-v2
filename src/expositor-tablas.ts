@@ -398,7 +398,12 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
   // NO se estira al ancho pedido (dejaba huecos enormes entre columnas y ocupaba
   // media lamina); una grande encoge la letra hasta caber. Compacto: la letra
   // marca el alto de fila, sin aire de sobra, pero sin montar una fila en otra.
-  interface Layout { b: BloqueTabla; fs: number; pad: number; lineH: number; anchos: number[]; tw: number; centrar: boolean[]; }
+  interface Layout { b: BloqueTabla; fs: number; pad: number; lineH: number; bandH: number; sep: number; anchos: number[]; tw: number; centrar: boolean[]; }
+  // Los layouts se construyen para un tamano de letra dado. Se hace en una
+  // funcion para poder REPETIRLO: se mide el alto que sale de verdad y se
+  // corrige la letra hasta clavar el alto del hueco (la estimacion inicial se
+  // quedaba corta y la tabla no llegaba a tapar la vieja por abajo).
+  const construirLayouts = (tamLetra: number, sep = 0): Layout[] => {
   const layouts: Layout[] = [];
   for (const b of bloques) {
     const { cabeceras, filas, numericas } = b;
@@ -421,7 +426,7 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
     // columnas, no agrandando la letra: por eso estirar de lado ensancha las
     // columnas y NO cambia el alto (antes todo crecía junto, en diagonal).
     // La letra solo se ENCOGE si el contenido no cabe de ninguna manera.
-    let fs = fsBase;
+    let fs = tamLetra;
     let naturales = medir(fs);
     let suma = naturales.reduce((a, x) => a + x, 0) || 1;
     if (suma > cw) {
@@ -432,7 +437,63 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
     // El ancho sobrante se reparte entre las columnas (proporcional a lo que
     // ocupa cada una), de modo que la tabla mide justo el ancho del hueco.
     const anchos = naturales.map(x => (x / suma) * cw);
-    layouts.push({ b, fs, pad: Math.round(fs * 0.6), lineH: Math.round(fs * 1.22), anchos, tw: Math.round(cw), centrar });
+    layouts.push({ b, fs, pad: Math.round(fs * 0.6), lineH: Math.round(fs * 1.22),
+                   bandH: Math.round(fs * 2.0), sep, anchos, tw: Math.round(cw), centrar });
+  }
+  return layouts;
+  };
+
+  // Alto que ocupara el dibujo con esos layouts. Replica EXACTAMENTE las alturas
+  // del bucle de pintado de mas abajo; si aquello cambia, esto tambien.
+  const medirLayouts = (ls: Layout[]): { alto: number; n: number } => {
+    let alto = M * 2; let n = 0;
+    if (calc.titulo) alto += Math.round(fsBase * 2.2);
+    ls.forEach((l, nb) => {
+      const { fs, pad, lineH, anchos, b } = l;
+      const lineasCab = b.cabeceras.map((h, i) => partirTexto(h, fs * 0.92, anchos[i] - pad * 2, 2));
+      const hCab = Math.max(...lineasCab.map(x => x.length)) * lineH + Math.round(pad * 0.9);
+      if (ls.length > 1 && nombreUtil(b.titulo)) { alto += l.bandH + 2 + l.sep; n++; }
+      const repite = b.filas.some(f => f.tipo === 'cabecera');
+      if (!(repite && b.filas[0] && b.filas[0].tipo === 'seccion')) { alto += hCab + l.sep; n++; }
+      for (const f of b.filas) {
+        if (f.tipo === 'cabecera') { alto += hCab + l.sep; n++; continue; }
+        if (f.tipo === 'seccion') { alto += l.bandH + 1 + l.sep; n++; continue; }
+        const lin = f.celdas.map((c, i) => partirTexto(c || '', fs, anchos[i] - pad * 2, b.numericas[i] ? 1 : 2));
+        alto += Math.max(...lin.map(x => x.length)) * lineH + Math.round(pad * 0.5) + l.sep; n++;
+      }
+      if (nb < ls.length - 1) alto += Math.round(fsBase * 1.1);
+    });
+    return { alto, n };
+  };
+  const altoPrevisto = (ls: Layout[]) => medirLayouts(ls).alto;
+
+  let layouts = construirLayouts(fsBase);
+  // Ajuste fino del alto: 3 pasadas bastan para clavarlo (o para quedarse en el
+  // maximo que permita el ancho, que es un limite fisico).
+  if (opts?.alto && opts.alto > 20 && layouts.length) {
+    for (let i = 0; i < 3; i++) {
+      const h = altoPrevisto(layouts);
+      if (Math.abs(h - opts.alto) <= Math.max(4, opts.alto * 0.02)) break;
+      const fsAct = layouts[0].fs;
+      const nuevo = Math.max(5, fsAct * ((opts.alto - M * 2) / Math.max(1, h - M * 2)));
+      if (Math.abs(nuevo - fsAct) < 0.3) break;
+      const cand = construirLayouts(nuevo);
+      // Si el ancho ya no da mas de si (la letra se encogio sola), se para.
+      if (Math.abs(cand[0].fs - fsAct) < 0.3) break;
+      layouts = cand;
+    }
+  }
+  // Si la letra ya no puede crecer (la frena el ancho) y aun sobra alto, se
+  // reparte ese alto SEPARANDO LAS FILAS, igual que el ancho sobrante separa las
+  // columnas. Asi la tabla cubre el hueco entero sin letras desproporcionadas.
+  if (opts?.alto && opts.alto > 20 && layouts.length) {
+    const m0 = medirLayouts(layouts);
+    if (m0.n > 0 && opts.alto > m0.alto) {
+      // Reparto EXACTO: el sobrante se divide entre las filas (puede ser
+      // fraccion de pixel). Escalar el alto de fila y redondear daba saltos.
+      const sep = Math.min(layouts[0].fs * 3.5, (opts.alto - m0.alto) / m0.n);
+      if (sep > 0.5) layouts = construirLayouts(layouts[0].fs, sep);
+    }
   }
   if (!layouts.length) {
     const vacio = await sharp({ create: { width: 300, height: 60, channels: 3, background: '#fff' } }).png().toBuffer();
@@ -443,7 +504,7 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
 
   // --- PASO 2: dibujar ------------------------------------------------------
   for (let nb = 0; nb < layouts.length; nb++) {
-    const { b, fs, pad, lineH, anchos, tw, centrar } = layouts[nb];
+    const { b, fs, pad, lineH, sep, anchos, tw, centrar } = layouts[nb];
     const { cabeceras, filas, numericas } = b;
     const xs: number[] = []; let acc = M;
     for (const a of anchos) { xs.push(acc); acc += a; }
@@ -454,7 +515,7 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
     const ancla = (c: boolean) => c ? 'middle' : 'start';
 
     if (layouts.length > 1 && nombreUtil(b.titulo)) {
-      const h = Math.round(fs * 2.0);
+      const h = layouts[nb].bandH + layouts[nb].sep;
       els += `<rect x="${M}" y="${y + 3}" width="${tw}" height="${h - 3}" rx="5" fill="${BRAND}"/>`;
       els += texto(M + pad, y + 3 + (h - 3) / 2 + fs * 0.35, b.titulo, { b: true, c: '#fff', sz: Math.round(fs * 1.03) });
       y += h + 2;
@@ -463,7 +524,7 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
     // Cabecera del Excel. Se dibuja arriba y, si el usuario la repite en cada
     // apartado, se vuelve a dibujar en ese sitio (fila de tipo 'cabecera').
     const lineasCab = cabeceras.map((h, i) => partirTexto(h, fs * 0.92, anchos[i] - pad * 2, 2));
-    const hCab = Math.max(...lineasCab.map(l => l.length)) * lineH + Math.round(pad * 0.9);
+    const hCab = Math.max(...lineasCab.map(l => l.length)) * lineH + Math.round(pad * 0.9) + sep;
     const pintarCabecera = () => {
       els += `<rect x="${M}" y="${y}" width="${tw}" height="${hCab}" fill="${HEAD_BG}"/>`;
       lineasCab.forEach((ls, i) => {
@@ -485,14 +546,14 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
       if (f.tipo === 'cabecera') { pintarCabecera(); z = 0; return; }
       if (f.tipo === 'seccion') {
         const t = f.celdas.find(Boolean) || '';
-        const h = Math.round(fs * 2.0);
+        const h = layouts[nb].bandH + layouts[nb].sep;
         els += `<rect x="${M}" y="${y + 2}" width="${tw}" height="${h - 2}" rx="5" fill="${BRAND}"/>`;
         els += texto(M + pad, y + 2 + (h - 2) / 2 + fs * 0.35, t, { b: true, c: '#fff', sz: Math.round(fs * 1.03) });
         y += h + 1; z = 0;
         return;
       }
       const lineas = f.celdas.map((c, i) => partirTexto(c || '', fs, anchos[i] - pad * 2, numericas[i] ? 1 : 2));
-      const h = Math.max(...lineas.map(l => l.length)) * lineH + Math.round(pad * 0.5);
+      const h = Math.max(...lineas.map(l => l.length)) * lineH + Math.round(pad * 0.5) + sep;
       const esTotal = f.tipo === 'total';
       if (esTotal) els += `<rect x="${M}" y="${y}" width="${tw}" height="${h}" fill="#f7edf3"/>`;
       else if (z % 2 === 1) els += `<rect x="${M}" y="${y}" width="${tw}" height="${h}" fill="${ZEBRA}"/>`;

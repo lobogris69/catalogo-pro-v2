@@ -3384,11 +3384,17 @@ body.con-banner-update {
    proporción (igual que al pegarla: ancho del hueco, alto el que le salga). */
 /* La imagen es el CONTENIDO de la caja (no va superpuesta): así la caja crece
    con la tabla y lo que ves encuadrado es exactamente lo que se va a pegar. */
+/* La tabla llena la caja, pero SIN DEFORMARSE: con height:100% a secas se
+   estiraba para cuadrar y el editor mentía (en la lámina salía más baja).
+   Con `contain` anclado arriba-izquierda, si no llega abajo SE VE el hueco que
+   queda, que es justo lo que hay que saber para ajustar. */
 .zona-tabla-img {
   position: absolute;
   top: 0; left: 0;
   width: 100%;
-  height: 100%;          /* la tabla llena la caja: el hueco manda en los 2 ejes */
+  height: 100%;
+  object-fit: contain;
+  object-position: top left;
   background: #fff;
   pointer-events: none;
   user-select: none;
