@@ -146,7 +146,13 @@ export function resumenExcel(buffer: Buffer): string {
         const primera = (rows.find(f => (f || []).some(c => txt(c))) || []).map(txt).filter(Boolean).slice(0, 8).join(' | ');
         return `"${n}": sin fila de cabeceras reconocible. Primera fila con texto: ${primera || '(vacía)'}`;
       }
-      return `"${n}": cabeceras en la fila ${cab.fila + 1} → ${Object.keys(cab.mapa).join(', ')}; 0 filas de producto debajo`;
+      const letra = (i: number) => String.fromCharCode(65 + i);
+      const cols = Object.keys(cab.mapa).map(k => `${k}=col ${letra(cab.mapa[k])}`).join(', ');
+      const faltan = ['producto', 'cn', 'uds', 'pvl', 'dto'].filter(k => cab.mapa[k] === undefined);
+      const nFilas = cuentaFilas(leerConMapa(rows, cab.fila, cab.mapa));
+      return `"${n}": cabeceras en la fila ${cab.fila + 1} (${cols})` +
+        (faltan.length ? `; NO encuentro la columna de: ${faltan.join(', ')}` : '') +
+        `; ${nFilas} filas de producto leídas`;
     });
     return partes.join(' · ');
   } catch { return ''; }
