@@ -127,15 +127,37 @@ function extraerHoja(ws: XLSX.WorkSheet): Extraida | null {
     }
     break;
   }
+  // Se recogen en bruto todas las filas por debajo de la cabecera.
+  const bruto: string[][] = [];
   let vacias = 0;
   for (let r = rCab + 1; r < rows.length; r++) {
     const f = rows[r] || [];
     const fc = crudos[r] || [];
     const celdas: string[] = [];
     for (let c = c0; c <= c1; c++) celdas.push(aEspanol(f[c] || '', fc[c]));
-    const conTexto = celdas.filter(Boolean).length;
-    if (!conTexto) { if (++vacias > 8) break; continue; }
+    if (!celdas.some(Boolean)) { if (++vacias > 8) break; bruto.push(celdas); continue; }
     vacias = 0;
+    bruto.push(celdas);
+  }
+  const lleno = (c: string[]) => c.filter(Boolean).length;
+  const maxLleno = Math.max(1, ...bruto.map(lleno));
+  // Primera fila de DATOS de verdad. Lo de arriba (p.ej. "Final | Descuento % | 20")
+  // es continuacion de la cabecera o una nota suelta del usuario, NO una fila.
+  const umbral = Math.max(2, Math.ceil(maxLleno * 0.5));
+  const iDatos = bruto.findIndex(c => lleno(c) >= umbral);
+  if (iDatos < 0) return null;
+
+  // La cabecera puede ocupar VARIAS filas ("Precio" / "Final"): se unen.
+  const cabeceras: string[] = [];
+  for (let c = c0; c <= c1; c++) cabeceras.push(cabRow[c] || '');
+  for (let k = 0; k < iDatos; k++) {
+    bruto[k].forEach((v, i) => { if (v) cabeceras[i] = (cabeceras[i] ? cabeceras[i] + ' ' : '') + v; });
+  }
+
+  for (let k = iDatos; k < bruto.length; k++) {
+    const celdas = bruto[k];
+    const conTexto = lleno(celdas);
+    if (!conTexto) continue;
     const primero = celdas.find(Boolean) || '';
     // El usuario repite la fila de cabeceras en cada apartado: se marca como tal
     // para volver a dibujarla ahi, no para colarla como si fuera un producto.
@@ -147,21 +169,29 @@ function extraerHoja(ws: XLSX.WorkSheet): Extraida | null {
     if (repes >= 2) tipo = 'cabecera';
     else if (/^(sub)?total/i.test(primero)) tipo = 'total';
     else if (conTexto === 1) tipo = numericas[idxUnico] ? 'total' : 'seccion';
+    else if (conTexto < umbral && celdas.some((v, i) => v && numericas[i])) tipo = 'total';
     else tipo = 'datos';
     filas.push({ tipo, celdas });
   }
   if (!filas.length) return null;
 
-  // Quitar columnas totalmente vacias (las que el usuario usa de separacion).
-  const cabeceras: string[] = [];
-  for (let c = c0; c <= c1; c++) cabeceras.push(cabRow[c] || '');
+  // QUE COLUMNAS FORMAN LA TABLA. La tabla la definen SUS CABECERAS, asi que una
+  // columna entra solo si (1) tiene cabecera y (2) tiene datos. Con esto se caen
+  // las dos cosas que el usuario veia como "columnas anadidas":
+  //   - sus notas al margen ("Descuento %  15"), que tienen cabecera pero no datos,
+  //   - sus columnas de trabajo sin cabecera al final de la hoja (Ganeshi).
   const util: number[] = [];
   for (let i = 0; i < nCols; i++) {
-    if (cabeceras[i] || filas.some(f => f.celdas[i])) util.push(i);
+    if (cabeceras[i] && filas.some(f => f.tipo === 'datos' && f.celdas[i])) util.push(i);
   }
+  if (!util.length) return null;
+  const recortadas = filas
+    .map(f => ({ tipo: f.tipo, celdas: util.map(i => f.celdas[i]) }))
+    // Una fila que se queda sin nada al quitar esas columnas ya no pinta nada.
+    .filter(f => f.tipo === 'cabecera' || f.celdas.some(Boolean));
   return {
     cabeceras: util.map(i => cabeceras[i]),
-    filas: filas.map(f => ({ tipo: f.tipo, celdas: util.map(i => f.celdas[i]) })),
+    filas: recortadas,
     numericas: util.map(i => numericas[i]),
   };
 }
@@ -288,9 +318,6 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
   const W = Math.max(700, Math.min(1600, opts?.width || 1040));
   const M = 24;
   const cw = W - M * 2;
-  const fs = Math.round(W * 0.0145);
-  const pad = Math.round(fs * 0.7);
-  const lineH = Math.round(fs * 1.35);
   const cabeceras: string[] = calc.cabeceras;
   const filas: FilaFiel[] = calc.filas;
   const numericas: boolean[] = datos.numericas || cabeceras.map(() => false);
@@ -300,17 +327,38 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
     return { buffer: vacio, width: W, height: 60 };
   }
 
-  // Anchos: proporcionales al contenido real de cada columna (con tope, para que
-  // una descripcion larga no se coma toda la tabla), repartiendo el 100% del ancho.
-  const naturales = cabeceras.map((h, i) => {
-    let mx = anchoTexto(h, fs * 0.92);
-    // Se miden tambien las filas de subtotal/TOTAL: si no, la palabra "TOTAL"
-    // no cabia en su columna y salia recortada ("TOTA…").
-    for (const f of filas) if (f.tipo === 'datos' || f.tipo === 'total') mx = Math.max(mx, anchoTexto(f.celdas[i] || '', fs));
-    return Math.min(mx, cw * 0.42) + pad * 2;
+  // ANCHOS. Regla: no recortar NADA. Se mide lo que ocupa cada columna de verdad
+  // (cabecera + todas sus celdas) y, si no cabe, se REDUCE LA LETRA hasta que
+  // quepa. Solo si aun asi no entra se parte en 2 lineas la columna de texto mas
+  // larga. Las columnas numericas nunca se parten: por eso el "€" caia solo.
+  const medir = (tam: number) => cabeceras.map((h, i) => {
+    let mx = anchoTexto(h, tam * 0.92);
+    // Cuentan tambien subtotales y TOTAL (si no, salia "TOTA…").
+    for (const f of filas) if (f.tipo !== 'seccion' && f.tipo !== 'cabecera') mx = Math.max(mx, anchoTexto(f.celdas[i] || '', tam));
+    return mx + tam * 1.4;   // margen interior proporcional a la letra
   });
-  const suma = naturales.reduce((a, b) => a + b, 0) || 1;
-  const anchos = naturales.map(x => (x / suma) * cw);
+  let fs = Math.round(W * 0.0145);
+  let naturales = medir(fs);
+  let suma = naturales.reduce((a, b) => a + b, 0) || 1;
+  if (suma > cw) {                       // no cabe: se encoge la letra
+    fs = Math.max(9, fs * (cw / suma));
+    naturales = medir(fs);
+    suma = naturales.reduce((a, b) => a + b, 0) || 1;
+  }
+  const pad = Math.round(fs * 0.7);
+  const lineH = Math.round(fs * 1.35);
+
+  let anchos: number[];
+  if (suma <= cw) {
+    anchos = naturales.map(x => (x / suma) * cw);   // sobra sitio: se reparte
+  } else {
+    // Ni con la letra al minimo: las numericas conservan su ancho entero y el
+    // resto se reparte entre las de texto, que si pueden ir a dos lineas.
+    const anchoNum = naturales.reduce((a, x, i) => a + (numericas[i] ? x : 0), 0);
+    const resto = Math.max(cw * 0.25, cw - anchoNum);
+    const sumaTxt = naturales.reduce((a, x, i) => a + (numericas[i] ? 0 : x), 0) || 1;
+    anchos = naturales.map((x, i) => numericas[i] ? x * Math.min(1, cw / suma) : (x / sumaTxt) * resto);
+  }
   const xs: number[] = []; let acc = M;
   for (const a of anchos) { xs.push(acc); acc += a; }
 
@@ -355,7 +403,7 @@ export async function renderTablaExpositor(datos: DatosTabla, opts?: { width?: n
       y += h + 2; z = 0;
       return;
     }
-    const lineas = f.celdas.map((c, i) => partirTexto(c || '', fs, anchos[i] - pad * 2, 2));
+    const lineas = f.celdas.map((c, i) => partirTexto(c || "", fs, anchos[i] - pad * 2, numericas[i] ? 1 : 2));
     const h = Math.max(...lineas.map(l => l.length)) * lineH + pad * 0.6;
     const esTotal = f.tipo === 'total';
     if (esTotal) els += `<rect x="${M}" y="${y}" width="${cw}" height="${h}" fill="#f7edf3"/>`;
