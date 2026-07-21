@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v109 · 21 jul 2026';
+const APP_VERSION = 'v110 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -5286,10 +5286,8 @@ async function cargarTablasAdmin() {
       <div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--gris-borde);border-radius:8px;margin-bottom:8px">
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:13px">${escape(t.nombre)}</div>
-          <div style="font-size:12px;color:var(--gris-texto)">${t.n_secciones} secciones · ${t.n_filas} productos · ${
-            t.total == null
-              ? '<span title="El Excel no trae columna de unidades: es una lista de precios, sin importes ni total">tarifa de precios</span>'
-              : 'TOTAL ' + Number(t.total).toFixed(2).replace('.', ',') + '€'
+          <div style="font-size:12px;color:var(--gris-texto)">${t.n_filas} filas${t.n_columnas ? ' · ' + t.n_columnas + ' columnas' : ''}${t.n_secciones ? ' · ' + t.n_secciones + ' apartados' : ''}${
+            t.total != null ? ' · TOTAL ' + Number(t.total).toFixed(2).replace('.', ',') + '€ <span title="Tabla del formato antiguo: vuelve a subir el Excel para que se refleje tal cual">(formato antiguo)</span>' : ''
           } · actualizada ${f(t.updated_at)}</div>
         </div>
         <button class="btn btn-secondary btn-pequeno" onclick="verTablaExpositor(${t.id}, '${escape((t.nombre || '').replace(/'/g, "\\'"))}')">👁️ Ver</button>

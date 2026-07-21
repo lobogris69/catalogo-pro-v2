@@ -7287,20 +7287,11 @@ app.post('/api/tablas', verifyToken, requireRealAdmin, uploadTablaMem.single('ar
   try {
     if (!req.file) { res.status(400).json({ success: false, error: 'Sube un archivo Excel (.xlsx)' }); return; }
     const datos = parseExcelTabla(req.file.buffer);
-    if (!datos.secciones.length) {
-      res.status(422).json({ success: false, error: 'No se reconocieron filas de productos. Necesita una fila de cabeceras con al menos "Producto" (o "C.N.") y "pvl" (o "Precio"). Esto es lo que he leído — ' + resumenExcel(req.file.buffer) });
-      return;
-    }
     const calc = computarTabla(datos);
-    // Cortafuegos: si el TOTAL sale 0 es que las columnas leidas no son las buenas
-    // (paso con los Leukoplast: se tomo el C.N. como precio y las uds quedaron a 0).
-    // Antes se guardaba la tabla con datos basura sin avisar. Ahora se rechaza.
-    // Cortafuegos: lo que valida la lectura son los PRECIOS (en una tarifa sin
-    // unidades no hay importes). Si todos los precios salen 0, las columnas leidas
-    // no son las buenas y no se guarda nada (paso con los Leukoplast: se tomo el
-    // C.N. como precio). Antes se guardaba basura sin avisar.
-    if (!calc.suma_precios) {
-      res.status(422).json({ success: false, error: `He leído ${calc.n_filas} productos pero TODOS los precios salen 0 €, así que las columnas que estoy leyendo no son las correctas. No guardo la tabla para no meter precios falsos. Esto es lo que he leído — ` + resumenExcel(req.file.buffer) });
+    // La tabla se guarda TAL CUAL viene del Excel (no se calcula nada), asi que lo
+    // unico que hay que comprobar es que se haya podido leer algo.
+    if (!calc.n_filas) {
+      res.status(422).json({ success: false, error: 'No he podido leer la tabla: necesito una fila de cabeceras y filas por debajo. Esto es lo que he leído — ' + resumenExcel(req.file.buffer) });
       return;
     }
     const nombre = (req.body.nombre ? String(req.body.nombre) : req.file.originalname.replace(/\.(xlsx|xls)$/i, '')).slice(0, 160);
@@ -7318,7 +7309,8 @@ app.get('/api/tablas', verifyToken, requireRealAdmin, async (req: AuthRequest, r
     const r = await pool.query(`SELECT id, nombre, datos, archivo, updated_at FROM expositor_tabla ORDER BY updated_at DESC`);
     const tablas = r.rows.map((t: any) => {
       const c = computarTabla(t.datos);
-      return { id: t.id, nombre: t.nombre, archivo: t.archivo, updated_at: t.updated_at, n_filas: c.n_filas, n_secciones: c.secciones.length, total: c.total };
+      return { id: t.id, nombre: t.nombre, archivo: t.archivo, updated_at: t.updated_at,
+               n_filas: c.n_filas, n_secciones: c.n_secciones, n_columnas: (c as any).n_columnas || null, total: c.total };
     });
     res.json({ success: true, tablas });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
@@ -7355,10 +7347,9 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
     if (req.body.nombre !== undefined) { sets.push(`nombre=$${i++}`); vals.push(String(req.body.nombre).slice(0, 160)); }
     if (req.file) {
       const datos = parseExcelTabla(req.file.buffer);
-      if (!datos.secciones.length) { res.status(422).json({ success: false, error: 'No se reconocieron filas de productos. Esto es lo que he leído — ' + resumenExcel(req.file.buffer) }); return; }
       calc = computarTabla(datos);
-      if (!calc.suma_precios) {
-        res.status(422).json({ success: false, error: `He leído ${calc.n_filas} productos pero TODOS los precios salen 0 €: las columnas que leo no son las correctas. No toco la tabla anterior. Esto es lo que he leído — ` + resumenExcel(req.file.buffer) });
+      if (!calc.n_filas) {
+        res.status(422).json({ success: false, error: 'No he podido leer la tabla, así que no toco la anterior. Esto es lo que he leído — ' + resumenExcel(req.file.buffer) });
         return;
       }
       sets.push(`datos=$${i++}`); vals.push(JSON.stringify(datos));
