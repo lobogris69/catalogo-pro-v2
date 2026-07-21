@@ -7287,19 +7287,41 @@ app.post('/api/tablas', verifyToken, requireRealAdmin, uploadTablaMem.single('ar
   try {
     if (!req.file) { res.status(400).json({ success: false, error: 'Sube un archivo Excel (.xlsx)' }); return; }
     const datos = parseExcelTabla(req.file.buffer);
-    const calc = computarTabla(datos);
-    // La tabla se guarda TAL CUAL viene del Excel (no se calcula nada), asi que lo
-    // unico que hay que comprobar es que se haya podido leer algo.
-    if (!calc.n_filas) {
-      res.status(422).json({ success: false, error: 'No he podido leer la tabla: necesito una fila de cabeceras y filas por debajo. Esto es lo que he leído — ' + resumenExcel(req.file.buffer) });
+    // CADA HOJA del Excel se guarda como una tabla INDEPENDIENTE de la biblioteca
+    // (pedido del usuario: cada hoja pertenece a una lamina distinta). El nombre
+    // de la tabla es el de la pestana; si el libro solo tiene una hoja o el nombre
+    // es el generico "Hoja1", se usa el nombre del archivo.
+    const bloques = (datos.bloques || []).filter(b => b.filas.some(f => f.tipo === 'datos'));
+    if (!bloques.length) {
+      res.status(422).json({ success: false, error: 'No he podido leer ninguna tabla: necesito una fila de cabeceras y filas por debajo. Esto es lo que he leído — ' + resumenExcel(req.file.buffer) });
       return;
     }
-    const nombre = (req.body.nombre ? String(req.body.nombre) : req.file.originalname.replace(/\.(xlsx|xls)$/i, '')).slice(0, 160);
-    const r = await pool.query(
-      `INSERT INTO expositor_tabla (nombre, datos, origen, archivo, creado_por)
-       VALUES ($1,$2,'excel',$3,$4) RETURNING id, nombre, updated_at`,
-      [nombre, JSON.stringify(datos), req.file.originalname.slice(0, 200), req.user?.id || null]);
-    res.json({ success: true, tabla: r.rows[0], n_filas: calc.n_filas, total: calc.total });
+    const base = (req.body.nombre ? String(req.body.nombre) : req.file.originalname.replace(/\.(xlsx|xls)$/i, '')).trim();
+    const generica = (t: string) => !t || /^(hoja|sheet)\s*\d*$/i.test(t.trim());
+    const multi = bloques.length > 1;
+    const nuevas: string[] = [], actualizadas: string[] = [];
+    for (const b of bloques) {
+      const nombre = (multi
+        ? (generica(b.titulo) ? `${base} - ${b.titulo || 'hoja'}` : b.titulo)
+        : base).slice(0, 160);
+      const datosUno = JSON.stringify({ bloques: [b] });
+      // Si ya existe una tabla con ese nombre se ACTUALIZA (re-subida de precios),
+      // no se duplica. Asi el flujo de "soltar todos los Excel otra vez" funciona.
+      const ex = await pool.query(`SELECT id FROM expositor_tabla WHERE LOWER(nombre)=LOWER($1)`, [nombre]);
+      if (ex.rows.length) {
+        await pool.query(`UPDATE expositor_tabla SET datos=$1, archivo=$2, updated_at=NOW() WHERE id=$3`,
+          [datosUno, req.file.originalname.slice(0, 200), ex.rows[0].id]);
+        actualizadas.push(nombre);
+      } else {
+        await pool.query(
+          `INSERT INTO expositor_tabla (nombre, datos, origen, archivo, creado_por) VALUES ($1,$2,'excel',$3,$4)`,
+          [nombre, datosUno, req.file.originalname.slice(0, 200), req.user?.id || null]);
+        nuevas.push(nombre);
+      }
+    }
+    const primera = computarTabla({ bloques: [bloques[0]] });
+    res.json({ success: true, nuevas, actualizadas, n_tablas: nuevas.length + actualizadas.length,
+               tabla: { nombre: nuevas[0] || actualizadas[0] }, n_filas: primera.n_filas, total: primera.total });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
@@ -7347,12 +7369,26 @@ app.put('/api/tablas/:id', verifyToken, requireRealAdmin, uploadTablaMem.single(
     if (req.body.nombre !== undefined) { sets.push(`nombre=$${i++}`); vals.push(String(req.body.nombre).slice(0, 160)); }
     if (req.file) {
       const datos = parseExcelTabla(req.file.buffer);
-      calc = computarTabla(datos);
-      if (!calc.n_filas) {
+      const bloques = (datos.bloques || []).filter(b => b.filas.some(f => f.tipo === 'datos'));
+      if (!bloques.length) {
         res.status(422).json({ success: false, error: 'No he podido leer la tabla, así que no toco la anterior. Esto es lo que he leído — ' + resumenExcel(req.file.buffer) });
         return;
       }
-      sets.push(`datos=$${i++}`); vals.push(JSON.stringify(datos));
+      // Esta ruta actualiza UNA tabla concreta. Si el Excel trae varias hojas, se
+      // usa la hoja cuyo nombre coincide con el de la tabla; con una sola, esa.
+      let elegido = bloques[0];
+      if (bloques.length > 1) {
+        const act = await pool.query(`SELECT nombre FROM expositor_tabla WHERE id=$1`, [id]);
+        const nom = String(act.rows[0]?.nombre || '').toLowerCase();
+        const match = bloques.find(b => (b.titulo || '').toLowerCase() === nom);
+        if (!match) {
+          res.status(422).json({ success: false, error: `Este Excel tiene ${bloques.length} hojas (${bloques.map(b => b.titulo).join(', ')}) y ninguna se llama como esta tabla. Súbelo desde la zona general de arriba: allí cada hoja se guarda como su propia tabla.` });
+          return;
+        }
+        elegido = match;
+      }
+      calc = computarTabla({ bloques: [elegido] });
+      sets.push(`datos=$${i++}`); vals.push(JSON.stringify({ bloques: [elegido] }));
       sets.push(`archivo=$${i++}`); vals.push(req.file.originalname.slice(0, 200));
     }
     if (!sets.length) { res.status(400).json({ success: false, error: 'Nada que actualizar' }); return; }

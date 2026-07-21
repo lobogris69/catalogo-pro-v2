@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v111 · 21 jul 2026';
+const APP_VERSION = 'v112 · 21 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -5109,7 +5109,7 @@ async function renderConfiguracion() {
                 <input type="file" accept=".xlsx,.xls" multiple style="display:none"
                        onchange="subirTablasExcel(this.files); this.value='';">
               </label>
-              <small style="color:var(--gris-texto)">Si el nombre coincide con una tabla que ya existe, se actualiza esa (no se duplica).</small>
+              <small style="color:var(--gris-texto)">Un Excel con varias hojas crea <b>una tabla por hoja</b> (con el nombre de la pestaña), para asociar cada una a su lámina. Si el nombre ya existe, se actualiza esa (no se duplica).</small>
             </div>
             <div id="tablas-msg" style="font-size:12px;color:var(--gris-texto);margin-top:8px"></div>
           </div>
@@ -5319,22 +5319,17 @@ async function subirTablasExcel(lista) {
     if ($m) $m.innerHTML = '<span style="color:#b91c1c">❌ Ningún archivo Excel (.xlsx / .xls) en lo que has soltado.</span>';
     return;
   }
-  let porNombre = {};
-  try {
-    ((await api('/api/tablas')).tablas || []).forEach(t => { porNombre[String(t.nombre).trim().toLowerCase()] = t.id; });
-  } catch (_) { /* si falla el listado, se suben todas como nuevas */ }
-
+  // El servidor reparte cada Excel en una tabla POR HOJA (con el nombre de la
+  // pestaña) y actualiza las que ya existan con ese nombre. Aquí solo se envía.
   const nuevas = [], actualizadas = [], fallos = [];
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     const base = f.name.replace(/\.(xlsx|xls)$/i, '').trim();
-    const clave = base.toLowerCase();
-    const existeId = porNombre[clave];
     if ($m) $m.innerHTML = `⏳ Subiendo <b>${i + 1} de ${files.length}</b> · ${escape(f.name)}`;
     try {
-      const d = await _enviarTabla(f, existeId ? '/api/tablas/' + existeId : '/api/tablas', existeId ? 'PUT' : 'POST');
-      if (existeId) actualizadas.push(base);
-      else { nuevas.push(base); if (d.tabla && d.tabla.id) porNombre[clave] = d.tabla.id; }
+      const d = await _enviarTabla(f, '/api/tablas', 'POST');
+      nuevas.push(...(d.nuevas || []));
+      actualizadas.push(...(d.actualizadas || []));
     } catch (e) {
       fallos.push(base + ' → ' + e.message);
     }
