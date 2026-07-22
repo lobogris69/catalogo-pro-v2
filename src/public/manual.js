@@ -199,6 +199,24 @@ const MANUAL_ADMIN = [
     ojo: ['Si un producto sale sin precio en la lámina, casi siempre es que en Sage no tiene tarifa: mira la ficha del producto antes de tocar la lámina.']
   },
   {
+    id: 'pendientes-alta',
+    icono: '⏳',
+    titulo: 'Producto que aún no existe en Sage (pendiente de alta)',
+    para: 'Montar la lámina de un producto nuevo antes de que administración le dé el alta, sin quedarte a medias ni duplicar códigos después.',
+    pasos: [
+      'En el editor de zonas, al asignar producto, pulsa <b>⏳ ¿No existe todavía? Producto pendiente de alta</b>.',
+      'Pon el <b>nombre</b> y lo que sepas: <b>PVL, PVP, coste y oferta</b> (y el código nacional <b>si lo tienes</b>). Son justo los datos que administración necesita para darlo de alta.',
+      'Se crea un producto <b>provisional</b> con código temporal (PEND-3) y queda asignado a la zona. La lámina ya funciona: el comercial puede pedirlo y el precio se pinta con el PVL que has puesto.',
+      'En <b>📦 Productos → ⏳ Pendientes de alta</b> ves todo lo que estás esperando, con las láminas donde se usa. Desde ahí, <b>✉️ Enviar la lista a administración</b> les manda la tabla por email.',
+      'Cuando lo den de alta y llegue por la sincronización de Sage: si pusiste el código nacional, te aparece <b>✅ Ya está de alta: enlazar</b>. Si no lo pusiste, <b>🔗 Enlazar con…</b> y lo buscas por nombre o código.',
+      'Al enlazar, el código real sustituye al provisional <b>en todas las láminas y en los pedidos ya anotados</b>, y el provisional desaparece.'
+    ],
+    ojo: [
+      'En la lista de láminas verás <b>⏳ N sin dar de alta</b>: es el aviso de que esa lámina va con productos provisionales.',
+      'No uses <b>+ Nuevo (expositor/promo)</b> para esto: ese tipo es para cosas que <b>nunca</b> estarán en Sage (expositores, promos). Si lo usas para un producto que sí van a dar de alta, acabarás con dos productos para lo mismo.'
+    ]
+  },
+  {
     id: 'clientes',
     icono: '🏥',
     titulo: 'Clientes, planning y mapa',

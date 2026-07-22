@@ -604,6 +604,18 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS num_socio VARCHAR(60);  -- numero de socio del cliente
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS referencia VARCHAR(120); -- referencia suelta tecleada a mano (expositor, no esta en Sage)
 
+      -- PRODUCTO PENDIENTE DE ALTA: Fernando hace las laminas ANTES de que administracion
+      -- de de alta el producto en Sage. Sin esto habia que inventarse un producto
+      -- "comercial" (que es para expositores/promos que nunca estaran en Sage) y luego
+      -- cambiarlo zona por zona. El provisional guarda ya los datos que administracion
+      -- necesita para el alta (PVL, PVP, coste, oferta) y se ENLAZA al real de un clic.
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS pendiente_alta BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS precio_coste DECIMAL(10,2);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS oferta_texto VARCHAR(200);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS pendiente_desde TIMESTAMP;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS pendiente_solicitante VARCHAR(150);
+      CREATE INDEX IF NOT EXISTS idx_products_pendiente ON products(pendiente_alta) WHERE pendiente_alta = TRUE;
+
       -- Zona con REF. DE MODELO: expositores (bisuteria, pendientes...) donde TODOS los
       -- articulos estan dados de alta en Sage como UN SOLO codigo porque valen lo mismo,
       -- pero cada modelo lleva su numero impreso en la lamina (1094, 1443...). La zona
@@ -1747,6 +1759,18 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
           s.ultimo_cambio_tipo = mapaCam[s.id]?.ultimo_tipo || null;
         });
       } catch (_) { /* si falla la auditoría, la rejilla sigue funcionando igual */ }
+      // ¿Cuántas zonas de cada lámina apuntan a un producto PENDIENTE DE ALTA?
+      // Es lo que enciende el distintivo "⏳ falta dar de alta" en la lista.
+      try {
+        const pendR = await pool.query(
+          `SELECT z.sheet_id, COUNT(*)::int AS n
+             FROM sheet_zones z JOIN products p ON p.id = z.product_id
+            WHERE z.sheet_id = ANY($1::int[]) AND p.pendiente_alta = TRUE
+            GROUP BY z.sheet_id`, [sheetIds]);
+        const mapaPend: any = {};
+        pendR.rows.forEach((x: any) => { mapaPend[x.sheet_id] = x.n; });
+        sheetsRows.forEach((s: any) => { s.num_pendientes_alta = mapaPend[s.id] || 0; });
+      } catch (_) { /* idem */ }
       const catsR = await pool.query(`
         SELECT sc.sheet_id, c.id, c.nombre, c.color
         FROM sheet_categorias sc
@@ -9662,6 +9686,147 @@ app.get('/api/products/:id', verifyToken, async (req: AuthRequest, res: Response
 
 // POST crear producto (manual, típicamente expositores tipo 'comercial')
 // FASE 2.b': sugerir el siguiente código EXP-XXXX libre (para crear producto al vuelo)
+// ============================================================================
+// PRODUCTOS PENDIENTES DE ALTA
+// Fernando monta la lamina ANTES de que administracion de de alta el producto en
+// Sage. El provisional deja la zona operativa y guarda de paso los datos que
+// administracion necesita para el alta (PVL, PVP, coste, oferta). Cuando el
+// producto real aparece, se ENLAZA de un clic y el provisional desaparece.
+// ============================================================================
+
+// Crear un provisional. El codigo se genera solo (PEND-n): el real lo pone Sage.
+app.post('/api/products/pendiente', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const b = req.body || {};
+    const nombre = String(b.nombre || '').trim();
+    if (!nombre) { res.status(400).json({ success: false, error: 'El nombre es obligatorio' }); return; }
+    const cn = b.ean ? String(b.ean).replace(/\D/g, '') : null;
+    // Si ya existe en Sage con ese CN, no tiene sentido crear un provisional.
+    if (cn) {
+      const ya = await pool.query(
+        `SELECT id, codigo, nombre FROM products
+          WHERE pendiente_alta = FALSE AND (codigo = $1 OR ean = $1 OR codigo_alt_1 = $1) LIMIT 1`, [cn]);
+      if (ya.rows.length) {
+        res.status(409).json({ success: false, error: 'Ese código nacional ya existe: ' + ya.rows[0].codigo + ' · ' + ya.rows[0].nombre, product: ya.rows[0] });
+        return;
+      }
+    }
+    const seq = await pool.query(`SELECT COALESCE(MAX(SUBSTRING(codigo FROM 6)::int), 0) + 1 AS n
+                                    FROM products WHERE codigo ~ '^PEND-[0-9]+$'`);
+    const codigo = 'PEND-' + seq.rows[0].n;
+    const num = (v: any) => (v != null && v !== '' ? Number(v) : null);
+    const r = await pool.query(
+      `INSERT INTO products (codigo, nombre, ean, precio_pvp, precio_pvf, precio_coste, oferta_texto,
+                             tipo, notas_admin, pendiente_alta, pendiente_desde, pendiente_solicitante)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'comercial',$8,TRUE,NOW(),$9) RETURNING *`,
+      [codigo, nombre, cn, num(b.precio_pvp), num(b.precio_pvf), num(b.precio_coste),
+       b.oferta_texto ? String(b.oferta_texto).trim().substring(0, 200) : null,
+       b.notas_admin || null, req.user?.name || null]);
+    res.json({ success: true, product: r.rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Lista de pendientes + en que laminas se usa cada uno + si su CN YA existe en Sage
+// (eso ultimo es el aviso "ya te lo han dado de alta, enlazalo").
+app.get('/api/products/pendientes', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `SELECT p.*,
+              COALESCE(json_agg(json_build_object('sheet_id', s.id, 'titulo', s.titulo,
+                                                  'catalog_id', s.catalog_id, 'orden', s.orden))
+                       FILTER (WHERE s.id IS NOT NULL), '[]') AS laminas
+         FROM products p
+         LEFT JOIN sheet_zones z ON z.product_id = p.id
+         LEFT JOIN sheets s ON s.id = z.sheet_id
+        WHERE p.pendiente_alta = TRUE
+        GROUP BY p.id
+        ORDER BY p.pendiente_desde DESC NULLS LAST, p.id DESC`);
+    // Para los que tienen CN: ¿existe ya el real en Sage?
+    const conCN = r.rows.filter((p: any) => p.ean);
+    let sugerencias: any = {};
+    if (conCN.length) {
+      const cns = conCN.map((p: any) => String(p.ean));
+      const s = await pool.query(
+        `SELECT id, codigo, nombre, ean, codigo_alt_1 FROM products
+          WHERE pendiente_alta = FALSE
+            AND (codigo = ANY($1::text[]) OR ean = ANY($1::text[]) OR codigo_alt_1 = ANY($1::text[]))`, [cns]);
+      conCN.forEach((p: any) => {
+        const m = s.rows.find((x: any) => [x.codigo, x.ean, x.codigo_alt_1].includes(String(p.ean)));
+        if (m) sugerencias[p.id] = m;
+      });
+    }
+    res.json({ success: true, pendientes: r.rows, sugerencias, total: r.rows.length });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// ENLAZAR: sustituye el provisional por el producto REAL en todas las zonas y en las
+// lineas de pedido ya anotadas, y borra el provisional. Todo o nada (transaccion).
+app.post('/api/products/:id/enlazar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const pendId = Number(req.params.id);
+    const realId = Number(req.body?.product_id);
+    if (!Number.isInteger(realId) || realId <= 0) { res.status(400).json({ success: false, error: 'Falta el producto real' }); return; }
+    if (pendId === realId) { res.status(400).json({ success: false, error: 'Son el mismo producto' }); return; }
+    const p = await client.query(`SELECT id, nombre, pendiente_alta FROM products WHERE id=$1`, [pendId]);
+    if (!p.rows.length || !p.rows[0].pendiente_alta) { res.status(404).json({ success: false, error: 'No es un producto pendiente' }); return; }
+    const real = await client.query(`SELECT id, codigo, nombre FROM products WHERE id=$1 AND pendiente_alta=FALSE`, [realId]);
+    if (!real.rows.length) { res.status(404).json({ success: false, error: 'Producto real no encontrado' }); return; }
+    await client.query('BEGIN');
+    const z = await client.query(`UPDATE sheet_zones SET product_id=$1, updated_at=NOW() WHERE product_id=$2 RETURNING sheet_id`, [realId, pendId]);
+    const a = await client.query(`UPDATE annotations SET product_id=$1 WHERE product_id=$2 RETURNING id`, [realId, pendId]);
+    await client.query(`DELETE FROM products WHERE id=$1`, [pendId]);
+    await client.query('COMMIT');
+    // Queda constancia en el historial de cada lamina afectada
+    const sheets = Array.from(new Set(z.rows.map((x: any) => x.sheet_id)));
+    for (const sid of sheets) {
+      await logSheetChangeAgrupado('updated_zonas', Number(sid), { id: req.user?.id, name: req.user?.name },
+        'producto de alta: ' + real.rows[0].codigo);
+    }
+    res.json({ success: true, zonas: z.rowCount || 0, lineas: a.rowCount || 0, laminas: sheets.length, producto: real.rows[0] });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    res.status(500).json({ success: false, error: (e as Error).message });
+  } finally { client.release(); }
+});
+
+// Enviar a administracion la lista de altas que hacen falta.
+app.post('/api/products/pendientes/enviar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`SELECT * FROM products WHERE pendiente_alta = TRUE ORDER BY pendiente_desde`);
+    if (!r.rows.length) { res.status(400).json({ success: false, error: 'No hay productos pendientes de alta' }); return; }
+    const cfg = await leerEmailConfig();
+    const destinos = (req.body?.emails
+      ? String(req.body.emails).split(',')
+      : (cfg.oficina_emails || '').split(',')).map(s => s.trim()).filter(Boolean);
+    if (!destinos.length) { res.status(400).json({ success: false, error: 'No hay emails de oficina configurados (⚙️ Configuración → Emails de oficina)' }); return; }
+    const eur = (v: any) => (v != null ? Number(v).toFixed(2) + ' €' : '—');
+    const html = `
+      <h2 style="font-family:Arial">Altas de producto pendientes · CatalogPRO</h2>
+      <p style="font-family:Arial;font-size:14px">Estos productos ya están en las láminas y necesitan alta en Sage:</p>
+      <table style="border-collapse:collapse;font-family:Arial;font-size:13px" border="1" cellpadding="6">
+        <tr style="background:#f3f4f6"><th>Producto</th><th>Cód. nacional</th><th>PVL</th><th>PVP</th><th>Coste</th><th>Oferta</th><th>Notas</th></tr>
+        ${r.rows.map((p: any) => `<tr>
+          <td><b>${escapeHtml(p.nombre)}</b></td>
+          <td>${escapeHtml(p.ean || '—')}</td>
+          <td>${eur(p.precio_pvf)}</td><td>${eur(p.precio_pvp)}</td><td>${eur(p.precio_coste)}</td>
+          <td>${escapeHtml(p.oferta_texto || '—')}</td>
+          <td>${escapeHtml(p.notas_admin || '')}</td>
+        </tr>`).join('')}
+      </table>
+      <p style="font-family:Arial;font-size:12px;color:#666">Cuando estén dados de alta y lleguen por la sincronización, se enlazan solos con las láminas.</p>`;
+    const enviados: any[] = [];
+    for (const email of destinos) {
+      const r2 = await enviarEmailConRedireccion({
+        rol: 'oficina', destinatarioReal: email,
+        asunto: 'Altas de producto pendientes (' + r.rows.length + ')', html
+      });
+      enviados.push({ email, ...r2 });
+    }
+    res.json({ success: true, enviados, total: r.rows.length });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
 app.post('/api/products', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const { codigo, nombre, descripcion, ean, precio_pvp, precio_pvf, categoria, familia, marca, tipo, notas_admin } = req.body;

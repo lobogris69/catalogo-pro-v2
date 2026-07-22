@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v138 · 22 jul 2026';
+const APP_VERSION = 'v139 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -789,6 +789,7 @@ async function renderEditorCatalogo(id) {
                             ? `<span class="lamina-estado-zonas auto">🤖 Auto · sin revisar (${s.num_zonas})</span>`
                             : `<span class="lamina-estado-zonas none">⚪ Sin zonas</span>`)
                     ) : ''}
+                    ${esAdmin && s.num_pendientes_alta > 0 ? `<span class="lamina-estado-precios pend" title="Tiene ${s.num_pendientes_alta} producto(s) provisionales: administración aún no les ha dado el alta en Sage" onclick="event.stopPropagation();abrirPendientesDeAlta()" style="cursor:pointer">⏳ ${s.num_pendientes_alta} sin dar de alta</span>` : ''}
                     ${esAdmin ? _badgeCambio(s) : ''}
                     ${esAdmin ? (
                       s.num_tablas > 0
@@ -12203,6 +12204,7 @@ async function renderListaProductos() {
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <button class="btn btn-secondary btn-pequeno" onclick="abrirModalImportarProductos()">📊 Importar Excel Sage</button>${ayuda('Sube el Excel exportado de Sage. Detecta productos nuevos, cambios de precio y bajas. Muestra un resumen ANTES de aplicar para que revises los cambios. Idempotente: puedes subir el mismo Excel varias veces sin duplicar.')}
           <button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoProducto()">+ Nuevo (expositor/promo)</button>${ayuda('Crea productos manuales que no vienen del Excel de Sage (expositores, promociones internas, etc).')}
+          <button class="btn btn-pequeno" id="btn-pendientes-alta" style="background:#f5f3ff;color:#6d28d9;font-weight:700" onclick="abrirPendientesDeAlta()">⏳ Pendientes de alta</button>${ayuda('Productos que ya están en las láminas pero que administración todavía no ha dado de alta en Sage. Desde ahí puedes mandarles la lista y, cuando estén dados de alta, enlazarlos de un clic.')}
         </div>
       </div>
 
@@ -14332,6 +14334,7 @@ function renderListaZonas() {
         <label style="font-size:13px">${sel.product_id ? '🔄 Cambiar producto' : '➕ Asignar producto suelto'}</label>
         <div style="font-size:11px;color:#6b7280;margin:2px 0 6px">Escribe el nombre o código y <b>elígelo de la lista</b> que aparece.</div>
         <div id="zona-ac-contenedor"></div>
+        <button class="btn" style="width:100%;margin-top:8px;background:#7c3aed;color:#fff;padding:8px;font-size:12px;font-weight:700" onclick="abrirPendienteAlta('${String(sel.id).replace(/'/g, "\\'")}')" title="El producto aún no existe en Sage: créalo provisional con sus precios y sigue montando la lámina">⏳ ¿No existe todavía? Producto pendiente de alta</button>
       </div>
       <div class="form-group" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px">
         <label style="font-size:13px;font-weight:600">🔖 Ref. del modelo (nº impreso en la lámina)</label>
@@ -14940,6 +14943,159 @@ async function quitarVarianteComision(zoneId, idx) {
   } catch (err) {
     alert('Error quitando variante: ' + err.message);
   }
+}
+
+// ===== PRODUCTOS PENDIENTES DE ALTA =====
+// Las láminas se montan ANTES de que administración dé de alta el producto. Aquí se
+// crea un provisional con los datos que Fernando sí conoce (PVL, PVP, coste, oferta),
+// que son justo los que administración necesita para el alta.
+async function abrirPendienteAlta(zoneId) {
+  zoneId = await _persistirZonaSiPropuesta(zoneId);
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:520px">
+    <h3 style="margin-top:0">⏳ Producto pendiente de alta</h3>
+    <div style="background:#f5f3ff;border:1px solid #ddd6fe;color:#5b21b6;font-size:12px;padding:8px 10px;border-radius:8px;margin-bottom:12px">
+      Lo creo como <b>provisional</b> para que puedas seguir montando la lámina. Cuando administración lo dé de alta en Sage, se sustituye por el código real en todas sus láminas de un clic.
+    </div>
+    <div class="form-group"><label>Nombre del producto *</label>
+      <input type="text" id="pa-nombre" placeholder="ej: CAMALEON SERUM VITAMINA C 30 ml" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d1d5db;border-radius:8px"></div>
+    <div class="form-group"><label>Código nacional <span style="color:#9ca3af;font-weight:400">(si lo tienes)</span></label>
+      <input type="text" id="pa-cn" placeholder="ej: 2059856" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d1d5db;border-radius:8px">
+      <div style="font-size:11px;color:#6b7280;margin-top:4px">Si lo pones, en cuanto aparezca en Sage te avisaré para enlazarlo.</div></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <div class="form-group" style="flex:1;min-width:110px"><label>PVL (farmacia)</label>
+        <input type="number" step="0.01" id="pa-pvf" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d1d5db;border-radius:8px"></div>
+      <div class="form-group" style="flex:1;min-width:110px"><label>PVP (público)</label>
+        <input type="number" step="0.01" id="pa-pvp" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d1d5db;border-radius:8px"></div>
+      <div class="form-group" style="flex:1;min-width:110px"><label>Coste</label>
+        <input type="number" step="0.01" id="pa-coste" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d1d5db;border-radius:8px"></div>
+    </div>
+    <div class="form-group"><label>Oferta</label>
+      <input type="text" id="pa-oferta" placeholder="ej: 3+1, -15% lanzamiento" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d1d5db;border-radius:8px"></div>
+    <div class="form-group"><label>Notas para administración</label>
+      <textarea id="pa-notas" rows="2" placeholder="lo que necesiten saber para el alta" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #d1d5db;border-radius:8px"></textarea></div>
+    <div id="pa-msg"></div>
+    <div class="modal-acciones">
+      <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+      <button type="button" class="btn btn-primary" id="pa-ok">Crear y asignar a la zona</button>
+    </div></div>`;
+  document.body.appendChild(m);
+  document.getElementById('pa-nombre').focus();
+  document.getElementById('pa-ok').onclick = async () => {
+    const $msg = document.getElementById('pa-msg');
+    const nombre = document.getElementById('pa-nombre').value.trim();
+    if (!nombre) { $msg.innerHTML = `<div class="error-msg">Ponle un nombre.</div>`; return; }
+    try {
+      const r = await api('/api/products/pendiente', { method: 'POST', body: {
+        nombre,
+        ean: document.getElementById('pa-cn').value.trim(),
+        precio_pvf: document.getElementById('pa-pvf').value,
+        precio_pvp: document.getElementById('pa-pvp').value,
+        precio_coste: document.getElementById('pa-coste').value,
+        oferta_texto: document.getElementById('pa-oferta').value.trim(),
+        notas_admin: document.getElementById('pa-notas').value.trim()
+      }});
+      await api('/api/zones/' + zoneId, { method: 'PUT', body: { product_id: r.product.id } });
+      const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+      if (sel) {
+        sel.product_id = r.product.id;
+        sel.producto_codigo = r.product.codigo;
+        sel.producto_nombre = r.product.nombre;
+        sel.producto_pvf = r.product.precio_pvf;
+        sel.pendiente_alta = true;
+      }
+      m.remove();
+      renderZonasEnCapa();
+      renderListaZonas();
+      mostrarNotificacionOnline('⏳ Provisional creado y asignado: ' + r.product.nombre, '#7c3aed');
+    } catch (e) {
+      $msg.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`;
+    }
+  };
+}
+
+// Pantalla de control: qué altas estoy esperando, avisar a administración y enlazar.
+async function abrirPendientesDeAlta() {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:780px"><h3 style="margin-top:0">⏳ Productos pendientes de alta</h3><div class="loading">Cargando…</div></div>`;
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+  try {
+    const r = await api('/api/products/pendientes');
+    const eur = v => (v != null ? Number(v).toFixed(2) + ' €' : '—');
+    const filas = (r.pendientes || []).map(p => {
+      const sug = (r.sugerencias || {})[p.id];
+      const lams = (p.laminas || []).map(l => (l.orden ? l.orden + ' · ' : '') + (l.titulo || '')).join(' · ') || 'sin usar todavía';
+      return `<tr style="border-bottom:1px solid var(--gris-borde)">
+        <td style="padding:8px">
+          <b>${escape(p.nombre)}</b><br>
+          <span style="font-size:11px;color:var(--gris-texto)">${escape(p.codigo)}${p.ean ? ' · CN ' + escape(p.ean) : ' · sin CN'} · desde ${new Date(p.pendiente_desde || p.created_at).toLocaleDateString('es-ES')}</span><br>
+          <span style="font-size:11px;color:var(--gris-texto)">📄 ${escape(lams)}</span>
+        </td>
+        <td style="padding:8px;font-size:12px;white-space:nowrap">PVL ${eur(p.precio_pvf)}<br>PVP ${eur(p.precio_pvp)}<br>Coste ${eur(p.precio_coste)}</td>
+        <td style="padding:8px;font-size:12px">${escape(p.oferta_texto || '—')}</td>
+        <td style="padding:8px;white-space:nowrap">
+          ${sug ? `<button class="btn btn-pequeno btn-primary" onclick="enlazarPendiente(${p.id}, ${sug.id}, '${escape(sug.codigo).replace(/'/g, "\\'")}')" title="Ya existe en Sage con ese código nacional">✅ Ya está de alta: enlazar ${escape(sug.codigo)}</button>`
+                : `<button class="btn btn-pequeno btn-secondary" onclick="buscarRealParaPendiente(${p.id})">🔗 Enlazar con…</button>`}
+        </td>
+      </tr>`;
+    }).join('');
+    m.querySelector('.modal').innerHTML = `
+      <h3 style="margin-top:0">⏳ Productos pendientes de alta (${r.total})</h3>
+      ${r.total ? `
+        <div style="max-height:420px;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="text-align:left;border-bottom:2px solid var(--gris-borde)">
+            <th style="padding:8px">Producto y dónde se usa</th><th style="padding:8px">Precios</th><th style="padding:8px">Oferta</th><th style="padding:8px"></th>
+          </tr></thead><tbody>${filas}</tbody></table></div>
+        <div class="modal-acciones" style="margin-top:14px">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+          <button type="button" class="btn btn-primary" onclick="enviarPendientesAOficina(this)">✉️ Enviar la lista a administración</button>
+        </div>`
+      : `<p style="color:var(--gris-texto)">No hay ningún producto esperando alta. 👌</p>
+         <div class="modal-acciones"><button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`}`;
+  } catch (e) {
+    m.querySelector('.modal').innerHTML = `<h3 style="margin-top:0">⏳ Pendientes de alta</h3><div class="error-msg">${escape(e.message)}</div>
+      <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
+  }
+}
+
+async function enlazarPendiente(pendId, realId, codigo) {
+  if (!confirm('¿Sustituir el provisional por ' + codigo + ' en todas sus láminas y pedidos?\n\nEl provisional desaparece.')) return;
+  try {
+    const r = await api('/api/products/' + pendId + '/enlazar', { method: 'POST', body: { product_id: realId } });
+    mostrarNotificacionOnline('🔗 Enlazado: ' + r.zonas + ' zonas en ' + r.laminas + ' láminas' + (r.lineas ? ' y ' + r.lineas + ' líneas de pedido' : ''), '#16a34a');
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirPendientesDeAlta();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// Enlazar a mano cuando no había código nacional: se busca el producto real de Sage.
+async function buscarRealParaPendiente(pendId) {
+  const q = prompt('Escribe el código o el nombre del producto ya dado de alta en Sage:');
+  if (!q || !q.trim()) return;
+  try {
+    const r = await api('/api/products?q=' + encodeURIComponent(q.trim()) + '&limit=10');
+    const lista = (r.products || r.productos || []).filter(p => !p.pendiente_alta);
+    if (!lista.length) { alert('No he encontrado ningún producto con eso.'); return; }
+    const texto = lista.map((p, i) => (i + 1) + ') ' + p.codigo + ' · ' + p.nombre).join('\n');
+    const sel = prompt('¿Cuál es?\n\n' + texto + '\n\nEscribe el número:');
+    const idx = parseInt(sel, 10) - 1;
+    if (!(idx >= 0 && idx < lista.length)) return;
+    await enlazarPendiente(pendId, lista[idx].id, lista[idx].codigo);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function enviarPendientesAOficina(btn) {
+  if (!confirm('¿Enviar la lista de altas pendientes a los emails de oficina?')) return;
+  btn.disabled = true;
+  try {
+    const r = await api('/api/products/pendientes/enviar', { method: 'POST', body: {} });
+    const ok = (r.enviados || []).filter(e => e.ok).length;
+    alert('Enviado a ' + ok + ' de ' + (r.enviados || []).length + ' destinatarios (' + r.total + ' productos).');
+  } catch (e) { alert('Error: ' + e.message); }
+  btn.disabled = false;
 }
 
 // Guarda el nº de modelo impreso de la zona. Va en su propio campo (ref_modelo) y no
