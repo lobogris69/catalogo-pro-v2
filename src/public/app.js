@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v137 · 22 jul 2026';
+const APP_VERSION = 'v138 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -13897,6 +13897,14 @@ async function borrarTodasLasZonas(sheetId, boton) {
   if (!confirm('¿Borrar las ' + n + ' zonas de esta lámina de golpe?\n\nÚtil cuando un expositor grande se detectó como muchas zonas pero en realidad es un solo producto. Los productos NO se borran, solo las zonas.')) return;
   const orig = boton ? boton.textContent : '';
   if (boton) { boton.disabled = true; boton.textContent = '⏳ Borrando…'; }
+  // Copia de seguridad ANTES de borrar: este botón se lleva por delante el trabajo de
+  // una lámina entera y no había forma de volver atrás (se perdieron 16 zonas reales
+  // el 22 jul 2026). Con la copia, el aviso de deshacer las vuelve a crear igual.
+  const copia = (_zonasEditor.zonas || []).map(z => ({
+    x: z.x, y: z.y, ancho: z.ancho, alto: z.alto,
+    product_id: z.product_id || null, etiqueta: z.etiqueta || null,
+    familia_ref: z.familia_ref || null, ref_modelo: z.ref_modelo || null
+  }));
   try {
     await api('/api/sheets/' + sheetId + '/zones', { method: 'DELETE' });
     _zonasEditor.zonas = [];
@@ -13904,7 +13912,22 @@ async function borrarTodasLasZonas(sheetId, boton) {
     renderZonasEnCapa();
     renderListaZonas();
     actualizarContadorZonas();
-    mostrarNotificacionOnline('🗑️ ' + n + ' zonas borradas', '#6b7280');
+    toastDeshacer('🗑 ' + n + (n === 1 ? ' zona borrada' : ' zonas borradas'), async () => {
+      await api('/api/sheets/' + sheetId + '/save-zones', { method: 'POST', body: { zonas: copia } });
+      // Las refs de modelo van en su propio campo: save-zones no las guarda.
+      const r = await api('/api/sheets/' + sheetId + '/zones');
+      const nuevas = r.zones || [];
+      for (let i = 0; i < nuevas.length; i++) {
+        if (copia[i] && copia[i].ref_modelo) {
+          await api('/api/zones/' + nuevas[i].id, { method: 'PUT', body: { ref_modelo: copia[i].ref_modelo } });
+        }
+      }
+      _zonasEditor.zonas = (await api('/api/sheets/' + sheetId + '/zones')).zones || [];
+      renderZonasEnCapa();
+      renderListaZonas();
+      actualizarContadorZonas();
+      mostrarNotificacionOnline('↩️ Zonas restauradas', '#16a34a');
+    });
   } catch (err) {
     alert('Error borrando zonas: ' + err.message);
   } finally {
