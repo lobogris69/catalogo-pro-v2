@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v139 · 22 jul 2026';
+const APP_VERSION = 'v140 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -252,6 +252,8 @@ async function renderApp() {
   }
 
   const esAdmin = rolEfectivo() === 'admin';
+  // Administración (rol 'oficina'): solo consulta el catálogo y su parte de la coordinación.
+  const esOficina = !!(user && user.role === 'oficina');
   const adminReal = esAdminReal();
   const impersonando = !!impersonating && user && user.role === 'admin';
 
@@ -298,15 +300,16 @@ async function renderApp() {
       <div class="navtabs">
         ${esAdmin ? `<button class="navtab ${appState.vista === 'dashboard' ? 'navtab-activa' : ''}" onclick="irA('dashboard')">🏠 Dashboard</button>` : ''}
         <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
-        <button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>
-        <button class="navtab ${appState.vista === 'planning' ? 'navtab-activa' : ''}" onclick="irA('planning')">🗓️ Planning</button>
-        <button class="navtab ${appState.vista === 'aula' ? 'navtab-activa' : ''}" onclick="irA('aula')">🎓 Aula</button>
-        <button class="navtab ${appState.vista === 'mapa' ? 'navtab-activa' : ''}" onclick="irA('mapa')">🗺️ Mapa</button>
+        ${esOficina ? '' : `<button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>`}
+        ${esOficina ? '' : `<button class="navtab ${appState.vista === 'planning' ? 'navtab-activa' : ''}" onclick="irA('planning')">🗓️ Planning</button>`}
+        ${esOficina ? '' : `<button class="navtab ${appState.vista === 'aula' ? 'navtab-activa' : ''}" onclick="irA('aula')">🎓 Aula</button>`}
+        ${esOficina ? '' : `<button class="navtab ${appState.vista === 'mapa' ? 'navtab-activa' : ''}" onclick="irA('mapa')">🗺️ Mapa</button>`}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'productos' ? 'navtab-activa' : ''}" onclick="irA('productos')">📦 Productos</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'configuracion' ? 'navtab-activa' : ''}" onclick="irA('configuracion')">⚙️ Configuración</button>` : ''}
-        <button class="navtab ${appState.vista === 'pedidos-guardados' ? 'navtab-activa' : ''}" onclick="irA('pedidos-guardados')" title="Pedidos guardados localmente">📁 Mis pedidos</button>
+        ${esOficina ? '' : `<button class="navtab ${appState.vista === 'pedidos-guardados' ? 'navtab-activa' : ''}" onclick="irA('pedidos-guardados')" title="Pedidos guardados localmente">📁 Mis pedidos</button>`}
+        ${(esAdmin || esOficina) ? `<button class="navtab ${appState.vista === 'coordinacion' ? 'navtab-activa' : ''}" onclick="irA('coordinacion')" title="Altas de producto y cambios que hay que reflejar en Sage">🔄 Coordinación</button>` : ''}
         <button class="navtab ${appState.vista === 'manual' ? 'navtab-activa' : ''}" onclick="irA('manual')" title="${esAdmin ? 'Manual de instrucciones: todos los procesos paso a paso' : 'Ayuda rápida para el día a día'}">${esAdmin ? '📖 Manual' : '❓ Ayuda'}</button>
         <button class="navtab navtab-lupa" onclick="abrirBusquedaGlobal()" title="Buscar (Ctrl+K)" style="margin-left:auto">🔍</button>
         <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')">⚙️ Mi cuenta</button>
@@ -349,6 +352,10 @@ function routerVista() {
   }
   if (appState.vista === 'aula') {
     renderAula();
+    return;
+  }
+  if (appState.vista === 'coordinacion') {
+    renderCoordinacion();
     return;
   }
   // Manual / ayuda: contenido estático (manual.js), funciona también sin cobertura
@@ -2581,6 +2588,7 @@ function abrirModalNuevoUsuario() {
           <label>Rol</label>
           <select id="u-role">
             <option value="sales">Comercial</option>
+            <option value="oficina">Oficina / administración (solo consulta)</option>
             <option value="admin">Administrador</option>
           </select>
         </div>
@@ -2644,6 +2652,7 @@ async function editarUsuario(id) {
             <label>Rol</label>
             <select id="eu-role" ${u.id === user.id ? 'disabled' : ''}>
               <option value="sales" ${u.role === 'sales' ? 'selected' : ''}>Comercial</option>
+              <option value="oficina" ${u.role === 'oficina' ? 'selected' : ''}>Oficina / administración (solo consulta)</option>
               <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Administrador</option>
             </select>
             ${u.id === user.id ? '<div style="font-size:11px;color:var(--gris-texto);margin-top:4px">No puedes cambiar tu propio rol.</div>' : ''}
@@ -14943,6 +14952,127 @@ async function quitarVarianteComision(zoneId, idx) {
   } catch (err) {
     alert('Error quitando variante: ' + err.message);
   }
+}
+
+// ===== COORDINACIÓN CON ADMINISTRACIÓN =====
+// La misma pantalla para los dos lados: administración escribe los códigos que asigna
+// y marca lo que ya ha pasado a Sage; Fernando ve en qué punto está cada cosa.
+async function renderCoordinacion() {
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando coordinación…</div></div>`;
+  try {
+    // Antes de pintar: repescar altas cuyo código ya llegó por la sincronización
+    try { await api('/api/coordinacion/repescar', { method: 'POST', body: {} }); } catch (_) {}
+    const r = await api('/api/coordinacion');
+    const esOficina = r.soy === 'oficina';
+    const eur = v => (v != null ? Number(v).toFixed(2) + ' €' : '—');
+    const altas = (r.altas || []).map(a => {
+      const lams = (a.laminas || []).map(l => (l.orden ? l.orden + ' · ' : '') + (l.titulo || '')).join(' · ') || '—';
+      const dias = Math.floor((Date.now() - new Date(a.pendiente_desde || Date.now()).getTime()) / 86400000);
+      return `<tr style="border-bottom:1px solid var(--gris-borde)${dias >= 7 && !a.codigo_asignado ? ';background:#fef2f2' : ''}">
+        <td style="padding:8px">
+          <b>${escape(a.nombre)}</b>${dias >= 7 && !a.codigo_asignado ? ` <span style="color:#b91c1c;font-size:11px">⏰ ${dias} días esperando</span>` : ''}<br>
+          <span style="font-size:11px;color:var(--gris-texto)">${a.ean ? 'CN ' + escape(a.ean) : 'sin código nacional'} · 📄 ${escape(lams)}</span>
+          ${a.notas_admin ? `<br><span style="font-size:11px;color:var(--gris-texto)">📝 ${escape(a.notas_admin)}</span>` : ''}
+        </td>
+        <td style="padding:8px;font-size:12px;white-space:nowrap">PVL ${eur(a.precio_pvf)}<br>PVP ${eur(a.precio_pvp)}<br>Coste ${eur(a.precio_coste)}</td>
+        <td style="padding:8px;font-size:12px">${escape(a.oferta_texto || '—')}</td>
+        <td style="padding:8px;white-space:nowrap">
+          ${a.codigo_asignado
+            ? `<span style="color:#16a34a;font-weight:700">✅ ${escape(a.codigo_asignado)}</span><br>
+               <span style="font-size:11px;color:var(--gris-texto)">${escape(a.codigo_asignado_por || '')} · esperando a Sage</span>`
+            : `<div style="display:flex;gap:4px">
+                 <input type="text" id="cod-${a.id}" placeholder="código asignado" style="width:120px;padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">
+                 <button class="btn btn-pequeno btn-primary" onclick="asignarCodigoAlta(${a.id})">Guardar</button>
+               </div>`}
+        </td>
+      </tr>`;
+    }).join('');
+    const cambios = (r.cambios || []).map(c => `<tr style="border-bottom:1px solid var(--gris-borde)">
+        <td style="padding:8px"><b>${c.orden || ''} ${escape(c.titulo || 'Sin título')}</b><br>
+          <span style="font-size:11px;color:var(--gris-texto)">${escape(c.catalogo || '')} · ${(c.tipos || []).map(t => _TIPOS_CAMBIO[t] || t).join(', ')}</span></td>
+        <td style="padding:8px;font-size:12px;white-space:nowrap">${new Date(c.ultimo_cambio).toLocaleDateString('es-ES')}</td>
+        <td style="padding:8px;white-space:nowrap">
+          <button class="btn btn-pequeno btn-secondary" onclick="marcarCambioHecho(${c.sheet_id}, this)">✅ Ya está en Sage</button>
+        </td>
+      </tr>`).join('');
+    $v.innerHTML = `
+      <div class="contenedor">
+        <h2 style="margin-bottom:2px">🔄 Coordinación ${esOficina ? 'con Fernando' : 'con administración'}</h2>
+        <p style="color:var(--gris-texto);font-size:13px;margin-top:0">
+          ${esOficina
+            ? 'Lo que hace falta de vuestra parte. Al escribir el código, se pone solo en las láminas: nadie lo teclea dos veces.'
+            : 'En qué punto está cada cosa. Administración escribe aquí los códigos que asigna y marca lo que ya ha pasado a Sage.'}
+        </p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin:14px 0">
+          <div class="editor-panel" style="flex:1;min-width:170px;text-align:center">
+            <div style="font-size:26px;font-weight:700;color:${r.resumen.altas_sin_codigo ? '#b45309' : '#16a34a'}">${r.resumen.altas_sin_codigo}</div>
+            <div style="font-size:12px;color:var(--gris-texto)">altas sin código</div></div>
+          <div class="editor-panel" style="flex:1;min-width:170px;text-align:center">
+            <div style="font-size:26px;font-weight:700;color:#0369a1">${r.resumen.altas_con_codigo}</div>
+            <div style="font-size:12px;color:var(--gris-texto)">con código, esperando a Sage</div></div>
+          <div class="editor-panel" style="flex:1;min-width:170px;text-align:center">
+            <div style="font-size:26px;font-weight:700;color:${r.resumen.cambios_pendientes ? '#b45309' : '#16a34a'}">${r.resumen.cambios_pendientes}</div>
+            <div style="font-size:12px;color:var(--gris-texto)">láminas por actualizar en Sage</div></div>
+        </div>
+
+        <div class="editor-panel">
+          <h3 style="margin-top:0">🆕 Altas de producto (${(r.altas || []).length})</h3>
+          ${altas ? `<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead><tr style="text-align:left;border-bottom:2px solid var(--gris-borde)">
+                <th style="padding:8px">Producto y dónde va</th><th style="padding:8px">Precios</th><th style="padding:8px">Oferta</th><th style="padding:8px">Código asignado</th>
+              </tr></thead><tbody>${altas}</tbody></table></div>`
+            : `<p style="color:var(--gris-texto)">Ninguna alta pendiente. 👌</p>`}
+        </div>
+
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">✏️ Láminas cambiadas por reflejar en Sage (${(r.cambios || []).length})</h3>
+          ${cambios ? `<div style="max-height:420px;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead><tr style="text-align:left;border-bottom:2px solid var(--gris-borde)">
+                <th style="padding:8px">Lámina</th><th style="padding:8px">Cambiada</th><th style="padding:8px"></th>
+              </tr></thead><tbody>${cambios}</tbody></table></div>`
+            : `<p style="color:var(--gris-texto)">Todo al día. 👌</p>`}
+        </div>
+
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">📬 Últimos avisos enviados</h3>
+          ${(r.avisos || []).length ? `<ul style="font-size:13px;padding-left:20px;margin:0">
+            ${r.avisos.map(a => `<li style="margin-bottom:6px">
+              <b>${escape(a.catalog_name || '')} v${a.version_number}</b> · ${new Date(a.created_at).toLocaleString('es-ES')}
+              ${a.notas ? `<br><span style="color:var(--gris-texto)">${escape(a.notas)}</span>` : ''}
+              <br><span style="font-size:11px;color:${a.visto_at ? '#16a34a' : '#b45309'}">
+                ${a.visto_at ? '👁 visto por ' + escape(a.visto_por || '') + ' el ' + new Date(a.visto_at).toLocaleDateString('es-ES') : '⏳ sin abrir todavía'}
+              </span></li>`).join('')}</ul>` : `<p style="color:var(--gris-texto)">Todavía no se ha enviado ninguno.</p>`}
+        </div>
+      </div>`;
+    // Dejar constancia de que administración lo ha abierto
+    if (esOficina && (r.avisos || []).length && !r.avisos[0].visto_at) {
+      api('/api/coordinacion/avisos/' + r.avisos[0].id + '/visto', { method: 'POST', body: {} }).catch(() => {});
+    }
+  } catch (e) {
+    $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(e.message)}</div></div>`;
+  }
+}
+
+async function asignarCodigoAlta(pendId) {
+  const inp = document.getElementById('cod-' + pendId);
+  const codigo = (inp ? inp.value : '').trim();
+  if (!codigo) { alert('Escribe el código asignado.'); return; }
+  try {
+    const r = await api('/api/coordinacion/altas/' + pendId + '/codigo', { method: 'POST', body: { codigo } });
+    mostrarNotificacionOnline(r.enlazado
+      ? '✅ ' + codigo + ' enlazado en ' + r.enlazado.laminas + ' lámina(s)'
+      : '✅ ' + codigo + ' guardado · se enlazará solo al llegar de Sage', '#16a34a');
+    renderCoordinacion();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function marcarCambioHecho(sheetId, btn) {
+  btn.disabled = true;
+  try {
+    await api('/api/coordinacion/cambios/' + sheetId + '/hecho', { method: 'POST', body: {} });
+    renderCoordinacion();
+  } catch (e) { alert('Error: ' + e.message); btn.disabled = false; }
 }
 
 // ===== PRODUCTOS PENDIENTES DE ALTA =====

@@ -186,6 +186,23 @@ const MANUAL_ADMIN = [
     ojo: ['Mientras estás en "Ver como", no puedes tocar la administración: es a propósito.']
   },
   {
+    id: 'coordinacion',
+    icono: '🔄',
+    titulo: 'Coordinación con administración (circuito cerrado)',
+    para: 'Que administración sepa siempre qué has cambiado y qué altas necesitas, y que tú te enteres en cuanto asignan un código. Sin llamadas ni correos sueltos.',
+    pasos: [
+      'Dales de alta en <b>👥 Comerciales</b> con el rol <b>Oficina / administración (solo consulta)</b>. Con eso ven los catálogos en su tablet o PC —solo para consultar, no hacen visitas ni pedidos— y su pantalla <b>🔄 Coordinación</b>.',
+      'Cada vez que <b>cierras versión</b> de un catálogo les llega un aviso con lo que cambia y <b>lo que hace falta de su parte</b>: las altas que esperas y las láminas que tienen que reflejar en Sage. Si cierras varias versiones seguidas, se agrupa en un solo aviso.',
+      'Ellos entran en <b>🔄 Coordinación</b> y ahí: escriben el <b>código que han asignado</b> a cada alta y marcan las láminas como <b>✅ Ya está en Sage</b>.',
+      'En cuanto escriben el código, si el producto ya está sincronizado se <b>enlaza solo</b> en todas tus láminas y pedidos. Si aún no ha llegado de Sage, queda guardado y se enlaza en cuanto llegue. <b>Tú no tecleas códigos.</b>',
+      'A ti te llega el aviso <b>por Telegram</b> (el mismo bot de las incidencias) y lo ves en tu propia pantalla de Coordinación.'
+    ],
+    ojo: [
+      'Las altas que llevan <b>más de 7 días</b> sin código salen marcadas en rojo, para que se vea lo que se está atascando.',
+      'Queda registrado quién respondió y cuándo, y si abrieron el aviso o no. Se acabó el "eso ya te lo dije".'
+    ]
+  },
+  {
     id: 'productos',
     icono: '📦',
     titulo: 'Productos: Sage, expositores y promociones',

@@ -604,6 +604,42 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS num_socio VARCHAR(60);  -- numero de socio del cliente
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS referencia VARCHAR(120); -- referencia suelta tecleada a mano (expositor, no esta en Sage)
 
+      -- ROL 'oficina': administracion. Consulta el catalogo en su tablet/PC (solo ver,
+      -- no hace visitas ni pedidos) y gestiona su parte de la coordinacion: dar de alta
+      -- los codigos que pide Fernando y actualizar en Sage lo que el ha cambiado.
+      ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+      ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','sales','oficina'));
+
+      -- Cada aviso a administracion: "esta version del catalogo trae esto y hay que
+      -- hacer esto". Cierra el circuito: ellos responden y queda registrado quien y cuando.
+      CREATE TABLE IF NOT EXISTS coordinacion_avisos (
+        id            SERIAL PRIMARY KEY,
+        catalog_id    INTEGER REFERENCES catalogs(id) ON DELETE CASCADE,
+        catalog_name  VARCHAR(255),
+        version_number INTEGER,
+        notas         TEXT,                    -- que cambio en esta version (lo que escribe Fernando)
+        n_altas       INTEGER NOT NULL DEFAULT 0,
+        n_cambios     INTEGER NOT NULL DEFAULT 0,
+        creado_por    VARCHAR(150),
+        created_at    TIMESTAMP DEFAULT NOW(),
+        visto_at      TIMESTAMP,               -- cuando administracion lo abrio
+        visto_por     VARCHAR(150),
+        cerrado_at    TIMESTAMP                -- cuando dieron todo por hecho
+      );
+      CREATE INDEX IF NOT EXISTS idx_coord_avisos_fecha ON coordinacion_avisos(created_at DESC);
+
+      -- Codigo que administracion asigna a un producto pendiente. Se guarda aunque el
+      -- producto todavia no haya llegado por la sincronizacion de Sage: en cuanto llegue,
+      -- se enlaza solo. Asi Fernando no teclea codigos (que es donde entran las erratas).
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS codigo_asignado VARCHAR(50);
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS codigo_asignado_at TIMESTAMP;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS codigo_asignado_por VARCHAR(150);
+
+      -- Lamina cambiada que administracion tiene que reflejar en Sage. Se marca hecha
+      -- desde su pantalla y Fernando lo ve al momento.
+      ALTER TABLE sheets ADD COLUMN IF NOT EXISTS sage_actualizado_at TIMESTAMP;
+      ALTER TABLE sheets ADD COLUMN IF NOT EXISTS sage_actualizado_por VARCHAR(150);
+
       -- PRODUCTO PENDIENTE DE ALTA: Fernando hace las laminas ANTES de que administracion
       -- de de alta el producto en Sage. Sin esto habia que inventarse un producto
       -- "comercial" (que es para expositores/promos que nunca estaran en Sage) y luego
@@ -1374,7 +1410,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v139-pendientes-alta-22jul',
+      build: 'v140-coordinacion-22jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1451,7 +1487,7 @@ app.post('/api/users', verifyToken, requireRealAdmin, async (req: AuthRequest, r
       res.status(400).json({ success: false, error: 'Faltan campos obligatorios' });
       return;
     }
-    if (!['admin','sales'].includes(role)) {
+    if (!['admin','sales','oficina'].includes(role)) {
       res.status(400).json({ success: false, error: 'Rol invalido' });
       return;
     }
@@ -1484,7 +1520,7 @@ app.put('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequest
       res.status(400).json({ success: false, error: 'Nombre, email y rol son obligatorios' });
       return;
     }
-    if (!['admin','sales'].includes(role)) {
+    if (!['admin','sales','oficina'].includes(role)) {
       res.status(400).json({ success: false, error: 'Rol invalido' });
       return;
     }
@@ -1662,6 +1698,21 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
         WHERE ca.user_id = $1 AND c.estado != 'archivado'
         ORDER BY c.updated_at DESC
       `, [req.user.id]);
+    }
+    // Administracion (rol 'oficina') consulta TODOS los catalogos vivos: no se les
+    // asigna nada porque no venden, lo usan como ayuda para atender al telefono.
+    if (req.user.role === 'oficina') {
+      r = await pool.query(`
+        SELECT c.*,
+          CASE
+            WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
+            ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
+          END AS sheet_count,
+          (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name
+        FROM catalogs c
+        WHERE c.estado != 'archivado'
+        ORDER BY c.updated_at DESC
+      `);
     }
     res.json({ success: true, catalogs: r.rows });
   } catch (e) {
@@ -2254,6 +2305,11 @@ app.post('/api/catalogs/:id/close-version', verifyToken, requireRealAdmin, async
         'ok'
       ]
     );
+
+    // Administracion se entera de que hay version nueva Y de lo que les toca hacer.
+    // Best-effort y sin await: cerrar version no puede fallar porque el correo falle.
+    avisarAdministracionDeVersion(id, versionACerrar, (notas_version || '').toString().trim() || null,
+      req.user?.name || null).catch(() => {});
 
     // Incrementar la versión "viva" del catálogo
     await pool.query(
@@ -4442,6 +4498,10 @@ function isEffectiveSales(req: AuthRequest): boolean {
 app.post('/api/visits/start', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     // Admin real (sin impersonar) NO puede hacer visitas: bloqueado a nivel backend
+    if (req.user?.role === 'oficina') {
+      res.status(403).json({ success: false, error: 'Tu cuenta es de consulta: puedes ver los catálogos, pero no hacer visitas ni pedidos.' });
+      return;
+    }
     if (req.user?.role === 'admin') {
       res.status(403).json({ success: false, error: 'Como administrador no puedes hacer visitas. Usa "Ver como" o entra con cuenta comercial.' });
       return;
@@ -9669,6 +9729,235 @@ app.get('/api/products', verifyToken, async (req: AuthRequest, res: Response) =>
 
 // GET un producto por id
 // ============================================================================
+// COORDINACION CON ADMINISTRACION
+// Circuito cerrado: al cerrar version de un catalogo, administracion recibe el aviso
+// con lo que cambia y lo que tienen que hacer (dar de alta codigos / actualizar Sage).
+// Ellos responden desde su propia pantalla y Fernando se entera al momento.
+// ============================================================================
+
+const soloConsulta = (req: AuthRequest) => req.user?.role === 'oficina';
+const puedeCoordinar = (req: AuthRequest) => req.user?.role === 'admin' || req.user?.role === 'oficina';
+
+// Aviso a Fernando por Telegram cuando administracion responde (mismo bot que las
+// incidencias: ya esta configurado y probado).
+async function avisarCoordinacionTelegram(texto: string): Promise<void> {
+  const token = process.env.INCIDENCIAS_BOT_TOKEN, chat = process.env.INCIDENCIAS_CHAT_ID;
+  if (!token || !chat) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text: '🔄 ' + texto, parse_mode: 'Markdown' }),
+    });
+  } catch (e) { console.error('[coordinacion] Telegram:', (e as Error).message); }
+}
+
+// EL PANEL: lo que espera cada parte. Lo ven los dos lados, cada uno con su verbo.
+app.get('/api/coordinacion', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!puedeCoordinar(req)) { res.status(403).json({ success: false, error: 'Sin acceso' }); return; }
+    // 1) Altas: productos provisionales. Si ya tienen codigo asignado, estan esperando
+    //    a que la sincronizacion de Sage los traiga (o a que Fernando los revise).
+    const altas = await pool.query(
+      `SELECT p.id, p.nombre, p.ean, p.precio_pvf, p.precio_pvp, p.precio_coste, p.oferta_texto,
+              p.notas_admin, p.pendiente_desde, p.codigo_asignado, p.codigo_asignado_at, p.codigo_asignado_por,
+              COALESCE(json_agg(json_build_object('sheet_id', s.id, 'titulo', s.titulo, 'orden', s.orden))
+                       FILTER (WHERE s.id IS NOT NULL), '[]') AS laminas
+         FROM products p
+         LEFT JOIN sheet_zones z ON z.product_id = p.id
+         LEFT JOIN sheets s ON s.id = z.sheet_id
+        WHERE p.pendiente_alta = TRUE
+        GROUP BY p.id ORDER BY p.pendiente_desde`);
+    // 2) Cambios en laminas que administracion aun no ha reflejado en Sage.
+    const cambios = await pool.query(
+      `SELECT s.id AS sheet_id, s.titulo, s.orden, s.catalog_id, c.name AS catalogo,
+              MAX(a.created_at) AS ultimo_cambio,
+              ARRAY_AGG(DISTINCT a.tipo_cambio) AS tipos
+         FROM sheet_audit_log a
+         JOIN sheets s ON s.id = a.sheet_id
+         JOIN catalogs c ON c.id = s.catalog_id
+        WHERE a.tipo_cambio IN ('updated_image','updated_meta','updated_precios','updated_tablas')
+          AND a.created_at > NOW() - INTERVAL '60 days'
+          AND (s.sage_actualizado_at IS NULL OR a.created_at > s.sage_actualizado_at)
+        GROUP BY s.id, s.titulo, s.orden, s.catalog_id, c.name
+        ORDER BY MAX(a.created_at) DESC LIMIT 200`);
+    const avisos = await pool.query(
+      `SELECT * FROM coordinacion_avisos ORDER BY created_at DESC LIMIT 20`);
+    res.json({
+      success: true,
+      soy: soloConsulta(req) ? 'oficina' : 'admin',
+      altas: altas.rows,
+      cambios: cambios.rows,
+      avisos: avisos.rows,
+      resumen: {
+        altas_sin_codigo: altas.rows.filter((a: any) => !a.codigo_asignado).length,
+        altas_con_codigo: altas.rows.filter((a: any) => a.codigo_asignado).length,
+        cambios_pendientes: cambios.rows.length
+      }
+    });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Administracion escribe el CODIGO que le han asignado al producto. Si ese codigo ya
+// existe en la base (ya sincronizado desde Sage), se enlaza en el acto; si todavia no,
+// se guarda y se enlazara solo cuando llegue. Fernando no teclea codigos nunca.
+app.post('/api/coordinacion/altas/:id/codigo', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!puedeCoordinar(req)) { res.status(403).json({ success: false, error: 'Sin acceso' }); return; }
+    const pendId = Number(req.params.id);
+    const codigo = String(req.body?.codigo || '').trim();
+    if (!codigo) { res.status(400).json({ success: false, error: 'Escribe el código asignado' }); return; }
+    const p = await pool.query(`SELECT id, nombre FROM products WHERE id=$1 AND pendiente_alta=TRUE`, [pendId]);
+    if (!p.rows.length) { res.status(404).json({ success: false, error: 'Ese producto ya no está pendiente' }); return; }
+    await pool.query(
+      `UPDATE products SET codigo_asignado=$1, codigo_asignado_at=NOW(), codigo_asignado_por=$2 WHERE id=$3`,
+      [codigo, req.user?.name || null, pendId]);
+    // ¿Existe ya el real? -> enlazar ahora mismo
+    const real = await pool.query(
+      `SELECT id, codigo, nombre FROM products
+        WHERE pendiente_alta=FALSE AND (codigo=$1 OR ean=$1 OR codigo_alt_1=$1) LIMIT 1`, [codigo]);
+    let enlazado = null;
+    if (real.rows.length) enlazado = await enlazarPendiente(pendId, real.rows[0].id, req.user?.name || 'administración');
+    avisarCoordinacionTelegram(
+      `*${req.user?.name || 'Administración'}* ha asignado el código *${codigo}* a "${p.rows[0].nombre}"` +
+      (enlazado ? `\nYa enlazado en ${enlazado.laminas} lámina(s): en la tablet sale el código bueno.`
+                : `\nQueda a la espera de que llegue por la sincronización de Sage.`)).catch(() => {});
+    res.json({ success: true, codigo, enlazado });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Sustituye el provisional por el real en zonas y pedidos. Usado por el enlace manual,
+// por la asignacion de codigo y por el repesca automatico tras sincronizar con Sage.
+async function enlazarPendiente(pendId: number, realId: number, quien: string): Promise<any> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const z = await client.query(`UPDATE sheet_zones SET product_id=$1, updated_at=NOW() WHERE product_id=$2 RETURNING sheet_id`, [realId, pendId]);
+    const a = await client.query(`UPDATE annotations SET product_id=$1 WHERE product_id=$2 RETURNING id`, [realId, pendId]);
+    await client.query(`DELETE FROM products WHERE id=$1`, [pendId]);
+    await client.query('COMMIT');
+    const sheets = Array.from(new Set(z.rows.map((x: any) => x.sheet_id)));
+    for (const sid of sheets) {
+      await logSheetChangeAgrupado('updated_zonas', Number(sid), { name: quien }, 'alta de producto enlazada');
+    }
+    return { zonas: z.rowCount || 0, lineas: a.rowCount || 0, laminas: sheets.length };
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw e;
+  } finally { client.release(); }
+}
+
+// Repesca: productos con codigo asignado cuyo real YA esta en la base (llego por Sage).
+// Se llama al abrir la coordinacion y despues de cada sincronizacion.
+app.post('/api/coordinacion/repescar', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!puedeCoordinar(req)) { res.status(403).json({ success: false, error: 'Sin acceso' }); return; }
+    const cand = await pool.query(
+      `SELECT p.id, p.nombre, p.codigo_asignado, r.id AS real_id, r.codigo
+         FROM products p
+         JOIN products r ON r.pendiente_alta = FALSE
+           AND (r.codigo = p.codigo_asignado OR r.ean = p.codigo_asignado OR r.codigo_alt_1 = p.codigo_asignado)
+        WHERE p.pendiente_alta = TRUE AND p.codigo_asignado IS NOT NULL`);
+    const hechos: any[] = [];
+    for (const c of cand.rows) {
+      const r = await enlazarPendiente(c.id, c.real_id, req.user?.name || 'sistema');
+      hechos.push({ nombre: c.nombre, codigo: c.codigo, ...r });
+    }
+    if (hechos.length) {
+      avisarCoordinacionTelegram(`${hechos.length} alta(s) ya en Sage y enlazadas solas:\n` +
+        hechos.map(h => `• ${h.codigo} · ${h.nombre}`).join('\n')).catch(() => {});
+    }
+    res.json({ success: true, enlazados: hechos });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Administracion marca una lamina como "ya actualizada en Sage".
+app.post('/api/coordinacion/cambios/:sheetId/hecho', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!puedeCoordinar(req)) { res.status(403).json({ success: false, error: 'Sin acceso' }); return; }
+    const sheetId = Number(req.params.sheetId);
+    const r = await pool.query(
+      `UPDATE sheets SET sage_actualizado_at=NOW(), sage_actualizado_por=$1 WHERE id=$2 RETURNING titulo`,
+      [req.user?.name || null, sheetId]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Lámina no encontrada' }); return; }
+    if (soloConsulta(req)) {
+      avisarCoordinacionTelegram(`*${req.user?.name}* ha actualizado en Sage: ${r.rows[0].titulo}`).catch(() => {});
+    }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Administracion abre el aviso -> queda constancia de que lo han visto.
+app.post('/api/coordinacion/avisos/:id/visto', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!puedeCoordinar(req)) { res.status(403).json({ success: false, error: 'Sin acceso' }); return; }
+    await pool.query(
+      `UPDATE coordinacion_avisos SET visto_at = COALESCE(visto_at, NOW()), visto_por = COALESCE(visto_por, $1) WHERE id=$2`,
+      [req.user?.name || null, Number(req.params.id)]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Se dispara al CERRAR VERSION. Agrupa los cierres seguidos: si ya hubo un aviso de ese
+// catalogo hace menos de 30 min, se actualiza en vez de mandar otro (cerrar tres
+// versiones seguidas no puede suponer tres correos).
+const VENTANA_AVISO_MIN = 30;
+
+async function avisarAdministracionDeVersion(catalogId: number, versionNumber: number,
+                                             notas: string | null, actor: string | null): Promise<void> {
+  try {
+    const cat = (await pool.query(`SELECT name FROM catalogs WHERE id=$1`, [catalogId])).rows[0];
+    const nAltas = Number((await pool.query(`SELECT COUNT(*)::int n FROM products WHERE pendiente_alta=TRUE`)).rows[0].n);
+    const nCambios = Number((await pool.query(
+      `SELECT COUNT(DISTINCT a.sheet_id)::int n FROM sheet_audit_log a JOIN sheets s ON s.id=a.sheet_id
+        WHERE a.catalog_id=$1 AND a.tipo_cambio <> 'deleted'
+          AND (s.sage_actualizado_at IS NULL OR a.created_at > s.sage_actualizado_at)`, [catalogId])).rows[0].n);
+
+    const previo = await pool.query(
+      `SELECT id FROM coordinacion_avisos WHERE catalog_id=$1 AND created_at > NOW() - ($2 || ' minutes')::interval
+        ORDER BY created_at DESC LIMIT 1`, [catalogId, String(VENTANA_AVISO_MIN)]);
+    if (previo.rows.length) {
+      await pool.query(
+        `UPDATE coordinacion_avisos SET version_number=$1, notas=$2, n_altas=$3, n_cambios=$4, created_at=NOW() WHERE id=$5`,
+        [versionNumber, notas, nAltas, nCambios, previo.rows[0].id]);
+      return;   // agrupado: ni correo nuevo ni aviso duplicado
+    }
+    await pool.query(
+      `INSERT INTO coordinacion_avisos (catalog_id, catalog_name, version_number, notas, n_altas, n_cambios, creado_por)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [catalogId, cat?.name || null, versionNumber, notas, nAltas, nCambios, actor]);
+
+    // Email a administracion (los usuarios con rol oficina + los emails de oficina)
+    const users = await pool.query(`SELECT email FROM users WHERE role='oficina' AND is_active=TRUE`);
+    const cfg = await leerEmailConfig();
+    const extra = (cfg.oficina_emails || '').split(',').map(s => s.trim()).filter(Boolean);
+    const destinos = Array.from(new Set([...users.rows.map((u: any) => u.email), ...extra]));
+    if (!destinos.length) return;
+    const html = `
+      <h2 style="font-family:Arial">📚 ${escapeHtml(cat?.name || 'Catálogo')} · versión ${versionNumber}</h2>
+      ${notas ? `<p style="font-family:Arial;font-size:14px"><b>Qué cambia:</b> ${escapeHtml(notas)}</p>` : ''}
+      <p style="font-family:Arial;font-size:14px">
+        Ya está disponible en vuestra tablet para consultar.<br><br>
+        <b>Lo que hace falta de vuestra parte:</b><br>
+        ${nAltas ? `🆕 <b>${nAltas}</b> producto(s) esperando alta (con sus precios y ofertas).<br>` : ''}
+        ${nCambios ? `✏️ <b>${nCambios}</b> lámina(s) modificadas que hay que reflejar en Sage.<br>` : ''}
+        ${(!nAltas && !nCambios) ? 'Nada pendiente: solo es información.' : ''}
+      </p>
+      <p style="font-family:Arial;font-size:14px">
+        Entrad en la app → <b>🔄 Coordinación</b>: ahí ponéis el código que asignéis a cada alta
+        y marcáis las láminas que vais actualizando. Fernando lo ve al momento y no hay que teclear códigos dos veces.
+      </p>`;
+    for (const email of destinos) {
+      await enviarEmailConRedireccion({
+        rol: 'oficina', destinatarioReal: email,
+        asunto: `${cat?.name || 'Catálogo'} v${versionNumber}` +
+                ((nAltas || nCambios) ? ` · ${nAltas + nCambios} cosa(s) pendientes` : ''),
+        html
+      });
+    }
+  } catch (e) { console.error('[coordinacion] aviso de version:', (e as Error).message); }
+}
+
+// ============================================================================
 // PRODUCTOS PENDIENTES DE ALTA
 // Fernando monta la lamina ANTES de que administracion de de alta el producto en
 // Sage. El provisional deja la zona operativa y guarda de paso los datos que
@@ -9744,35 +10033,20 @@ app.get('/api/products/pendientes', verifyToken, requireRealAdmin, async (_req: 
 // ENLAZAR: sustituye el provisional por el producto REAL en todas las zonas y en las
 // lineas de pedido ya anotadas, y borra el provisional. Todo o nada (transaccion).
 app.post('/api/products/:id/enlazar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
-  const client = await pool.connect();
   try {
     const pendId = Number(req.params.id);
     const realId = Number(req.body?.product_id);
     if (!Number.isInteger(realId) || realId <= 0) { res.status(400).json({ success: false, error: 'Falta el producto real' }); return; }
     if (pendId === realId) { res.status(400).json({ success: false, error: 'Son el mismo producto' }); return; }
-    const p = await client.query(`SELECT id, nombre, pendiente_alta FROM products WHERE id=$1`, [pendId]);
-    if (!p.rows.length || !p.rows[0].pendiente_alta) { res.status(404).json({ success: false, error: 'No es un producto pendiente' }); return; }
-    const real = await client.query(`SELECT id, codigo, nombre FROM products WHERE id=$1 AND pendiente_alta=FALSE`, [realId]);
+    const p = await pool.query(`SELECT id FROM products WHERE id=$1 AND pendiente_alta=TRUE`, [pendId]);
+    if (!p.rows.length) { res.status(404).json({ success: false, error: 'No es un producto pendiente' }); return; }
+    const real = await pool.query(`SELECT id, codigo, nombre FROM products WHERE id=$1 AND pendiente_alta=FALSE`, [realId]);
     if (!real.rows.length) { res.status(404).json({ success: false, error: 'Producto real no encontrado' }); return; }
-    await client.query('BEGIN');
-    const z = await client.query(`UPDATE sheet_zones SET product_id=$1, updated_at=NOW() WHERE product_id=$2 RETURNING sheet_id`, [realId, pendId]);
-    const a = await client.query(`UPDATE annotations SET product_id=$1 WHERE product_id=$2 RETURNING id`, [realId, pendId]);
-    await client.query(`DELETE FROM products WHERE id=$1`, [pendId]);
-    await client.query('COMMIT');
-    // Queda constancia en el historial de cada lamina afectada
-    const sheets = Array.from(new Set(z.rows.map((x: any) => x.sheet_id)));
-    for (const sid of sheets) {
-      await logSheetChangeAgrupado('updated_zonas', Number(sid), { id: req.user?.id, name: req.user?.name },
-        'producto de alta: ' + real.rows[0].codigo);
-    }
-    res.json({ success: true, zonas: z.rowCount || 0, lineas: a.rowCount || 0, laminas: sheets.length, producto: real.rows[0] });
-  } catch (e) {
-    try { await client.query('ROLLBACK'); } catch (_) {}
-    res.status(500).json({ success: false, error: (e as Error).message });
-  } finally { client.release(); }
+    const r = await enlazarPendiente(pendId, realId, req.user?.name || 'admin');
+    res.json({ success: true, ...r, producto: real.rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
-// Enviar a administracion la lista de altas que hacen falta.
 app.post('/api/products/pendientes/enviar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const r = await pool.query(`SELECT * FROM products WHERE pendiente_alta = TRUE ORDER BY pendiente_desde`);
