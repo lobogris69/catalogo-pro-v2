@@ -9665,27 +9665,6 @@ app.get('/api/products', verifyToken, async (req: AuthRequest, res: Response) =>
 });
 
 // GET un producto por id
-app.get('/api/products/:id', verifyToken, async (req: AuthRequest, res: Response) => {
-  try {
-    const id = Number(req.params.id);
-    const r = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
-    if (r.rows.length === 0) {
-      res.status(404).json({ success: false, error: 'Producto no encontrado' });
-      return;
-    }
-    // Histórico de precios
-    const h = await pool.query(
-      'SELECT * FROM product_price_history WHERE product_id = $1 ORDER BY changed_at DESC LIMIT 50',
-      [id]
-    );
-    res.json({ success: true, product: r.rows[0], price_history: h.rows });
-  } catch (e) {
-    res.status(500).json({ success: false, error: (e as Error).message });
-  }
-});
-
-// POST crear producto (manual, típicamente expositores tipo 'comercial')
-// FASE 2.b': sugerir el siguiente código EXP-XXXX libre (para crear producto al vuelo)
 // ============================================================================
 // PRODUCTOS PENDIENTES DE ALTA
 // Fernando monta la lamina ANTES de que administracion de de alta el producto en
@@ -9827,6 +9806,27 @@ app.post('/api/products/pendientes/enviar', verifyToken, requireRealAdmin, async
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
+app.get('/api/products/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
+    if (r.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Producto no encontrado' });
+      return;
+    }
+    // Histórico de precios
+    const h = await pool.query(
+      'SELECT * FROM product_price_history WHERE product_id = $1 ORDER BY changed_at DESC LIMIT 50',
+      [id]
+    );
+    res.json({ success: true, product: r.rows[0], price_history: h.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// POST crear producto (manual, típicamente expositores tipo 'comercial')
+// FASE 2.b': sugerir el siguiente código EXP-XXXX libre (para crear producto al vuelo)
 app.post('/api/products', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const { codigo, nombre, descripcion, ean, precio_pvp, precio_pvf, categoria, familia, marca, tipo, notas_admin } = req.body;
