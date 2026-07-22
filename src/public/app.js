@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v133 · 22 jul 2026';
+const APP_VERSION = 'v134 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -261,6 +261,7 @@ async function renderApp() {
         ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'configuracion' ? 'navtab-activa' : ''}" onclick="irA('configuracion')">⚙️ Configuración</button>` : ''}
         <button class="navtab ${appState.vista === 'pedidos-guardados' ? 'navtab-activa' : ''}" onclick="irA('pedidos-guardados')" title="Pedidos guardados localmente">📁 Mis pedidos</button>
+        <button class="navtab ${appState.vista === 'manual' ? 'navtab-activa' : ''}" onclick="irA('manual')" title="${esAdmin ? 'Manual de instrucciones: todos los procesos paso a paso' : 'Ayuda rápida para el día a día'}">${esAdmin ? '📖 Manual' : '❓ Ayuda'}</button>
         <button class="navtab navtab-lupa" onclick="abrirBusquedaGlobal()" title="Buscar (Ctrl+K)" style="margin-left:auto">🔍</button>
         <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')">⚙️ Mi cuenta</button>
       </div>
@@ -302,6 +303,11 @@ function routerVista() {
   }
   if (appState.vista === 'aula') {
     renderAula();
+    return;
+  }
+  // Manual / ayuda: contenido estático (manual.js), funciona también sin cobertura
+  if (appState.vista === 'manual') {
+    renderManual();
     return;
   }
   if (appState.vista === 'pedidos-guardados') {
