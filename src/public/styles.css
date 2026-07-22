@@ -3297,6 +3297,14 @@ body.con-banner-update {
   color: #fff;
   flex-shrink: 0;
 }
+/* Los .btn son width:100% por defecto (pensados para formularios). En la barra
+   del editor de zonas van en fila, así que aquí miden lo que mida su texto: sin
+   esto, al permitir el salto de línea cada botón se comía una fila entera. */
+.zonas-editor-header .btn {
+  width: auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .zonas-contador {
   background: #374151;
   color: #fff;
