@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v131 · 22 jul 2026';
+const APP_VERSION = 'v132 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3685,6 +3685,7 @@ async function pulsarZonaComercial(zona) {
           </span>
           <b>${escape(zona.producto_codigo || '')}</b>
           <div style="font-size:13px;color:#374151;margin-top:2px">${escape(zona.producto_nombre || '')}</div>
+          ${zona.ref_modelo ? `<div style="font-size:13px;font-weight:700;color:#1d4ed8;margin-top:2px">ref. ${escape(zona.ref_modelo)}</div>` : ''}
           ${pvf !== null ? `<div style="font-size:12px;color:#6b7280;margin-top:2px">PVF ${pvf.toFixed(2)}€</div>` : ''}
         `}
       </div>
@@ -3891,8 +3892,13 @@ async function pulsarZonaComercial(zona) {
     const codFinal = skuSel ? (skuSel.codigo || '') : (zona.producto_codigo || '');
     const nomFinal = skuSel ? (skuSel.nombre || '') : (zona.producto_nombre || '');
     const prodIdFinal = skuSel ? skuSel.product_id : zona.product_id;
-    // Montar el texto_libre automático: "6 uds · 1243441 NOMBRE [· nota]"
+    // Montar el texto_libre automático: "6 uds · 1243441 NOMBRE [ref. 1094] [· nota]"
+    // ref. = nº del modelo impreso en la lámina, para expositores donde TODOS los
+    // artículos comparten un único código en Sage (pendientes, bisutería...): sin él
+    // la oficina no sabe cuál servir.
+    const refModelo = !skuSel && zona.ref_modelo ? String(zona.ref_modelo).trim() : '';
     let texto = cantidad + ' uds · ' + codFinal + ' ' + nomFinal;
+    if (refModelo) texto += ' ref. ' + refModelo;
     if (notaExtra) texto += ' · ' + notaExtra;
     try {
       if (anotExistente) {
@@ -3912,6 +3918,7 @@ async function pulsarZonaComercial(zona) {
             product_id: prodIdFinal,
             cantidad,
             zone_id: zona.id,
+            referencia: refModelo || null,   // el nº del modelo, además de dentro del texto
             pos_x: (zona.x + zona.ancho / 2) / 100,  // centro de la zona como pin
             pos_y: (zona.y + zona.alto / 2) / 100
           }
@@ -10842,8 +10849,13 @@ function renderResumenPreEnvio() {
       // Reconstruir el texto_libre con la nueva cantidad
       const codigo = anot.producto_codigo || '';
       const nombre = anot.producto_nombre || '';
+      // Se conservan la ref. del modelo y la nota: el texto viejo es
+      // "N uds · COD NOMBRE[ ref. X][ · nota]", así que todo lo que va tras el
+      // segundo " · " es la nota. Antes se perdían las dos al cambiar cantidad.
+      const notaVieja = String(anot.texto_libre || '').split(' · ').slice(2).join(' · ');
       let texto = nuevaCant + ' uds · ' + codigo + ' ' + nombre;
-      // mantener notas extra del texto_libre antiguo (lo que iba tras " · " adicional)
+      if (anot.referencia) texto += ' ref. ' + anot.referencia;
+      if (notaVieja) texto += ' · ' + notaVieja;
       try {
         await api('/api/annotations/' + anotId, {
           method: 'PUT',
@@ -13998,6 +14010,7 @@ function renderListaZonas() {
                     : z.link_catalog_id
                       ? `<span style="color:#2563eb">🔗 Enlace: ${escape(z.link_catalog_nombre || ('catálogo #' + z.link_catalog_id))}</span>`
                       : '<span style="color:#f59e0b">⚠️ Sin producto asignado</span>'}
+              ${z.ref_modelo ? `<span style="color:#1d4ed8;font-weight:700" title="Nº de modelo impreso: va en la línea del pedido"> · ref. ${escape(z.ref_modelo)}</span>` : ''}
               ${z.permite_sueltas ? '<span style="color:#0d9488" title="Permite referencias sueltas (expositor)"> · 🕶️ sueltas</span>' : ''}
             </span>
           </div>
@@ -14051,6 +14064,13 @@ function renderListaZonas() {
         <label style="font-size:13px">${sel.product_id ? '🔄 Cambiar producto' : '➕ Asignar producto suelto'}</label>
         <div style="font-size:11px;color:#6b7280;margin:2px 0 6px">Escribe el nombre o código y <b>elígelo de la lista</b> que aparece.</div>
         <div id="zona-ac-contenedor"></div>
+      </div>
+      <div class="form-group" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px">
+        <label style="font-size:13px;font-weight:600">🔖 Ref. del modelo (nº impreso en la lámina)</label>
+        <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Para expositores donde <b>todos los artículos van con un único código en Sage</b> porque valen lo mismo (pendientes, bisutería…). Pon aquí el número impreso de <b>este</b> modelo: la línea del pedido saldrá como <b>3 uds · CÓDIGO NOMBRE ref. 1094</b>, para que la oficina sepa cuál servir.</div>
+        <input type="text" id="refmod-${sel.id}" value="${escape(sel.ref_modelo || '').replace(/"/g, '&quot;')}" placeholder="ej: 1094" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
+        <button class="btn" style="width:auto;flex:0 0 auto;background:#2563eb;color:#fff;padding:7px 12px;font-size:12px" onclick="guardarRefModeloZona('${String(sel.id).replace(/'/g, "\\'")}')">Guardar ref.</button>
+        ${sel.product_id ? `<button class="btn" style="width:100%;margin-top:8px;background:#1d4ed8;color:#fff;padding:8px;font-size:12px;font-weight:700" onclick="aplicarProductoATodasLasZonas('${String(sel.id).replace(/'/g, "\\'")}')" title="Pone este mismo producto en todas las zonas de la lámina que aún no tienen ninguno">📌 Poner este producto en TODAS las zonas de la lámina</button>` : ''}
       </div>
     ` : ''}
     ${(!sel.es_comision && !sel.link_catalog_id) ? `
@@ -14652,6 +14672,44 @@ async function quitarVarianteComision(zoneId, idx) {
   } catch (err) {
     alert('Error quitando variante: ' + err.message);
   }
+}
+
+// Guarda el nº de modelo impreso de la zona. Va en su propio campo (ref_modelo) y no
+// en `etiqueta`, que ya está ocupada por otros tipos de zona (comisión, familia, IA).
+async function guardarRefModeloZona(zoneId) {
+  try {
+    zoneId = await _persistirZonaSiPropuesta(zoneId);
+    const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+    if (!sel) return;
+    const inp = document.getElementById('refmod-' + zoneId) || document.getElementById('refmod-' + sel.id);
+    const val = (inp ? inp.value : '').trim();
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { ref_modelo: val || null } });
+    sel.ref_modelo = val || null;
+    renderListaZonas();
+    mostrarNotificacionOnline(val ? '🔖 Ref. del modelo: ' + val : 'Ref. del modelo quitada', '#2563eb');
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+// Expositor de un solo código en Sage: asigna ese producto a todas las zonas de la
+// lámina que aún no tienen ninguno (no toca familias, comisión ni enlaces).
+async function aplicarProductoATodasLasZonas(zoneId) {
+  const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
+  if (!sel || !sel.product_id) return;
+  const sinProd = _zonasEditor.zonas.filter(z => !z.product_id && !z.familia_ref && !z.es_comision && !z.link_catalog_id).length;
+  if (!sinProd) { alert('Todas las zonas de esta lámina ya tienen producto.'); return; }
+  if (!confirm('¿Poner ' + (sel.producto_codigo || '') + ' ' + (sel.producto_nombre || '') +
+               ' en las ' + sinProd + ' zonas que aún no tienen producto?\n\nNo se tocan las familias, las de comisión ni los enlaces.')) return;
+  try {
+    const r = await api('/api/sheets/' + _zonasEditor.sheetId + '/zones/aplicar-producto', {
+      method: 'POST', body: { product_id: sel.product_id, solo_vacias: true }
+    });
+    const rz = await api('/api/sheets/' + _zonasEditor.sheetId + '/zones');
+    _zonasEditor.zonas = rz.zones || [];
+    renderZonasEnCapa();
+    renderListaZonas();
+    actualizarContadorZonas();
+    mostrarNotificacionOnline('📌 Producto puesto en ' + (r.actualizadas || 0) + ' zonas', '#1d4ed8');
+  } catch (err) { alert('Error: ' + err.message); }
 }
 
 // Activa/desactiva las "referencias sueltas" (expositor) en una zona. Es una

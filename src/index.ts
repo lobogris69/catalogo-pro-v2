@@ -564,6 +564,15 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS num_socio VARCHAR(60);  -- numero de socio del cliente
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS referencia VARCHAR(120); -- referencia suelta tecleada a mano (expositor, no esta en Sage)
 
+      -- Zona con REF. DE MODELO: expositores (bisuteria, pendientes...) donde TODOS los
+      -- articulos estan dados de alta en Sage como UN SOLO codigo porque valen lo mismo,
+      -- pero cada modelo lleva su numero impreso en la lamina (1094, 1443...). La zona
+      -- apunta al CN unico (product_id) y guarda aqui el numero del modelo, que viaja en
+      -- la linea del pedido ("3 uds - 1243441 PENDIENTE MIMILO ref. 1094") para que la
+      -- oficina sepa QUE servir. Campo propio y no la columna etiqueta porque esa ya esta ocupada
+      -- (nombre en zonas de comision, modelo en familias, descripcion de la IA).
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS ref_modelo VARCHAR(60);
+
       -- Zona-ENLACE: en vez de un producto, una zona puede ser un enlace a OTRO catalogo
       -- (ej. desde el catalogo general saltar al especifico de BSN y volver).
       ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS link_catalog_id INTEGER REFERENCES catalogs(id) ON DELETE SET NULL;
@@ -10080,7 +10089,7 @@ app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req
 app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const zoneId = Number(req.params.zoneId);
-    const { x, y, ancho, alto, product_id, etiqueta, familia_ref, familia_skus, es_comision, comision_variantes, link_catalog_id, link_sheet_id, link_label, link_back_sheet_id, permite_sueltas } = req.body;
+    const { x, y, ancho, alto, product_id, etiqueta, ref_modelo, familia_ref, familia_skus, es_comision, comision_variantes, link_catalog_id, link_sheet_id, link_label, link_back_sheet_id, permite_sueltas } = req.body;
     // Construir SET dinámico solo con los campos enviados
     const sets: string[] = [];
     const vals: any[] = [];
@@ -10091,6 +10100,11 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
     if (alto !== undefined)     { sets.push(`alto = $${i++}`); vals.push(alto); }
     if (product_id !== undefined) { sets.push(`product_id = $${i++}`); vals.push(product_id || null); }
     if (etiqueta !== undefined) { sets.push(`etiqueta = $${i++}`); vals.push(etiqueta || null); }
+    // Nº de modelo impreso en la lámina (expositor con un solo código en Sage)
+    if (ref_modelo !== undefined) {
+      const rm = ref_modelo ? String(ref_modelo).trim().substring(0, 60) : null;
+      sets.push(`ref_modelo = $${i++}`); vals.push(rm);
+    }
     // Los cuatro tipos (producto Sage / familia / comision / enlace) son mutuamente excluyentes.
     if (familia_ref !== undefined) {
       const fr = familia_ref ? String(familia_ref).trim().substring(0, 120) : null;
@@ -10182,6 +10196,35 @@ app.post('/api/sheets/:id/aprobar-zonas', verifyToken, requireRealAdmin, async (
     );
     if (r.rows.length === 0) { res.status(404).json({ success: false, error: 'Lamina no encontrada' }); return; }
     res.json({ success: true, sheet: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Asignar el MISMO producto a todas las zonas de la lamina (expositor de un solo codigo
+// en Sage: pendientes, bisuteria...). Asi no hay que repetir la misma busqueda 16 veces.
+// solo_vacias=true (por defecto) respeta las zonas que ya tienen producto o son de otro tipo.
+app.post('/api/sheets/:sheetId/zones/aplicar-producto', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.sheetId);
+    const productId = Number(req.body?.product_id);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      res.status(400).json({ success: false, error: 'product_id obligatorio' });
+      return;
+    }
+    const soloVacias = req.body?.solo_vacias !== false;
+    const p = await pool.query(`SELECT id FROM products WHERE id = $1`, [productId]);
+    if (!p.rows.length) { res.status(404).json({ success: false, error: 'Producto no encontrado' }); return; }
+    // Nunca se tocan familia / comision / enlace: son tipos de zona excluyentes.
+    const r = await pool.query(`
+      UPDATE sheet_zones SET product_id = $1, updated_at = NOW()
+       WHERE sheet_id = $2
+         AND familia_ref IS NULL AND familia_skus IS NULL
+         AND COALESCE(es_comision, FALSE) = FALSE
+         AND link_catalog_id IS NULL
+         ${soloVacias ? 'AND product_id IS NULL' : ''}
+       RETURNING id`, [productId, sheetId]);
+    res.json({ success: true, actualizadas: r.rowCount || 0 });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
