@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v135 · 22 jul 2026';
+const APP_VERSION = 'v136 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -73,6 +73,19 @@ function nombreEfectivo() {
 // Cerrojo para no repetir el aviso de "sesión caducada" una vez por petición fallida.
 let _sesionCaducadaAvisada = false;
 
+// Cuando se despliega una versión nueva, el servidor se reinicia unos segundos y
+// TODO lo que se pulse en ese hueco falla (502/503/504 de Railway, o la petición
+// ni sale). No es culpa de lo que estuvieras haciendo, así que en vez de soltar un
+// "Error 502" por la cara, se reintenta solo una vez y, si sigue sin ir, se dice
+// en cristiano lo que pasa. Nace de un "error al añadir una segunda tabla" que
+// resultó ser justo el reinicio de un despliegue (22 jul 2026).
+const _ESPERA_REINICIO_MS = 2500;
+const _msgServidorReiniciando = 'El servidor se está reiniciando (suele ser una actualización de la app). Espera unos segundos y vuelve a intentarlo: no se ha perdido nada.';
+
+function _esCorteDeServicio(status) {
+  return status === 502 || status === 503 || status === 504;
+}
+
 function api(endpoint, options = {}) {
   const headers = options.headers || {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -84,7 +97,12 @@ function api(endpoint, options = {}) {
     headers['Content-Type'] = 'application/json';
     if (typeof options.body !== 'string') options.body = JSON.stringify(options.body);
   }
-  return fetch(API + endpoint, { ...options, headers })
+  // Solo se reintenta la LECTURA (GET). Un POST/PUT/DELETE que devuelve 502 puede
+  // haber llegado igualmente al servidor: reintentarlo crearía la cosa dos veces.
+  const metodo = (options.method || 'GET').toUpperCase();
+  const sePuedeReintentar = metodo === 'GET';
+
+  const lanzar = () => fetch(API + endpoint, { ...options, headers })
     .then(async r => {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -103,10 +121,28 @@ function api(endpoint, options = {}) {
           }
           throw new Error('Sesión caducada');
         }
+        if (_esCorteDeServicio(r.status)) {
+          const err = new Error(data.error || _msgServidorReiniciando);
+          err._corte = true;
+          throw err;
+        }
         throw new Error(data.error || `Error ${r.status}`);
       }
       return data;
     });
+
+  return lanzar().catch(err => {
+    // Si el contenedor está caído del todo, la petición ni sale (TypeError). Con el
+    // navegador ONLINE eso es el servidor, no la cobertura: mismo trato. Si estamos
+    // offline de verdad no se toca nada, que de eso ya se encargan los planes B.
+    if (err instanceof TypeError && navigator.onLine) {
+      const e2 = new Error(_msgServidorReiniciando);
+      e2._corte = true;
+      err = e2;
+    }
+    if (!err || !err._corte || !sePuedeReintentar) throw err;
+    return new Promise(res => setTimeout(res, _ESPERA_REINICIO_MS)).then(lanzar);
+  });
 }
 
 function escape(s) {
@@ -13491,6 +13527,8 @@ async function asociarTablaDesdeEditor(sheetId, catalogId, hueco) {
       const h = hueco || { x: 4, y: 15, ancho: 55, alto: 70 };
       await api('/api/sheets/' + sheetId + '/tablas', { method: 'POST', body: { tabla_id: tid, x: h.x, y: h.y, ancho: h.ancho, alto: h.alto } });
       m.remove();
+      // Se recarga desde el servidor: si algo hubiera fallado a medias, aquí se ve
+      // la verdad (las tablas que hay de verdad en la lámina), no lo que creíamos.
       await renderTablasEnLienzo(sheetId, catalogId);
       // Se entra solo en modo colocar: es justo lo que toca hacer ahora, y evita
       // crear zonas sueltas por descuido mientras se ajusta la tabla.
