@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v140 · 22 jul 2026';
+const APP_VERSION = 'v141 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -15034,6 +15034,21 @@ async function renderCoordinacion() {
             : `<p style="color:var(--gris-texto)">Todo al día. 👌</p>`}
         </div>
 
+        ${esOficina ? '' : `
+          <div class="editor-panel" style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <div style="flex:1;min-width:240px;font-size:13px">
+              <b>⏰ Recordatorio de lo atascado</b><br>
+              <span style="color:var(--gris-texto);font-size:12px">Sale solo, como mucho una vez al día, y únicamente si algo lleva más de <b id="coord-dias-txt">7</b> días esperando. Aquí puedes forzarlo.</span>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <label style="font-size:12px;color:var(--gris-texto)">Avisar a partir de</label>
+              <input type="number" id="coord-dias" min="1" max="90" value="7" style="width:70px;padding:6px;border:1px solid #d1d5db;border-radius:6px">
+              <span style="font-size:12px;color:var(--gris-texto)">días</span>
+              <button class="btn btn-pequeno btn-secondary" onclick="guardarDiasAtasco(this)">Guardar</button>
+              <button class="btn btn-pequeno btn-primary" onclick="enviarRecordatorioCoordinacion(this)">📨 Enviar recordatorio ahora</button>
+            </div>
+          </div>`}
+
         <div class="editor-panel" style="margin-top:14px">
           <h3 style="margin-top:0">📬 Últimos avisos enviados</h3>
           ${(r.avisos || []).length ? `<ul style="font-size:13px;padding-left:20px;margin:0">
@@ -15045,6 +15060,15 @@ async function renderCoordinacion() {
               </span></li>`).join('')}</ul>` : `<p style="color:var(--gris-texto)">Todavía no se ha enviado ninguno.</p>`}
         </div>
       </div>`;
+    // Días de atasco configurados (solo lo toca Fernando)
+    if (!esOficina) {
+      try {
+        const c = await api('/api/config');
+        const d = (c.config || {}).coordinacion_dias_aviso || '7';
+        const inp = document.getElementById('coord-dias'); if (inp) inp.value = d;
+        const txt = document.getElementById('coord-dias-txt'); if (txt) txt.textContent = d;
+      } catch (_) {}
+    }
     // Dejar constancia de que administración lo ha abierto
     if (esOficina && (r.avisos || []).length && !r.avisos[0].visto_at) {
       api('/api/coordinacion/avisos/' + r.avisos[0].id + '/visto', { method: 'POST', body: {} }).catch(() => {});
@@ -15052,6 +15076,28 @@ async function renderCoordinacion() {
   } catch (e) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(e.message)}</div></div>`;
   }
+}
+
+async function guardarDiasAtasco(btn) {
+  const d = document.getElementById('coord-dias').value;
+  btn.disabled = true;
+  try {
+    await api('/api/config', { method: 'PUT', body: { coordinacion_dias_aviso: d } });
+    const txt = document.getElementById('coord-dias-txt'); if (txt) txt.textContent = d;
+    mostrarNotificacionOnline('⏰ Avisaré a partir de ' + d + ' días', '#16a34a');
+  } catch (e) { alert('Error: ' + e.message); }
+  btn.disabled = false;
+}
+
+async function enviarRecordatorioCoordinacion(btn) {
+  btn.disabled = true;
+  try {
+    const r = await api('/api/coordinacion/recordatorio', { method: 'POST', body: {} });
+    alert(r.enviado
+      ? 'Recordatorio enviado a ' + r.destinos + ' destinatario(s): ' + r.altas + ' alta(s) y ' + r.laminas + ' lámina(s) con más de ' + r.dias + ' días.'
+      : 'No se ha enviado nada: ' + r.motivo + '.');
+  } catch (e) { alert('Error: ' + e.message); }
+  btn.disabled = false;
 }
 
 async function asignarCodigoAlta(pendId) {

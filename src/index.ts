@@ -1410,7 +1410,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v140-coordinacion-22jul',
+      build: 'v141-recordatorios-22jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -6748,6 +6748,13 @@ app.put('/api/config', verifyToken, requireRealAdmin, async (req: AuthRequest, r
       await pool.query(`INSERT INTO app_config (clave, valor, updated_at) VALUES ('num_tarifas',$1,NOW())
         ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`, [String(n)]);
     }
+    // A partir de cuántos días se considera "atascado" y se recuerda a administración.
+    if (req.body.coordinacion_dias_aviso !== undefined) {
+      const d = parseInt(String(req.body.coordinacion_dias_aviso), 10);
+      if (!Number.isInteger(d) || d < 1 || d > 90) { res.status(400).json({ success: false, error: 'Los días deben estar entre 1 y 90' }); return; }
+      await pool.query(`INSERT INTO app_config (clave, valor, updated_at) VALUES ('coordinacion_dias_aviso',$1,NOW())
+        ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`, [String(d)]);
+    }
     // Duración de la sesión (horas). Solo afecta a los inicios de sesión NUEVOS:
     // los tokens ya repartidos conservan la caducidad con la que se firmaron.
     if (req.body.sesion_horas !== undefined) {
@@ -9894,6 +9901,91 @@ app.post('/api/coordinacion/avisos/:id/visto', verifyToken, async (req: AuthRequ
       `UPDATE coordinacion_avisos SET visto_at = COALESCE(visto_at, NOW()), visto_por = COALESCE(visto_por, $1) WHERE id=$2`,
       [req.user?.name || null, Number(req.params.id)]);
     res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// RECORDATORIO DE LO ATASCADO. Lo que lleva demasiados dias esperando no puede
+// depender de que alguien se acuerde: se avisa solo, como maximo una vez al dia y
+// solo si de verdad hay algo atascado (si no, es ruido y dejan de leerlo).
+const DIAS_ATASCO_DEFECTO = 7;
+
+async function diasAtascoConfig(): Promise<number> {
+  try {
+    const r = await pool.query(`SELECT valor FROM app_config WHERE clave='coordinacion_dias_aviso'`);
+    const n = parseInt(r.rows[0]?.valor || String(DIAS_ATASCO_DEFECTO), 10);
+    return (Number.isInteger(n) && n >= 1 && n <= 90) ? n : DIAS_ATASCO_DEFECTO;
+  } catch { return DIAS_ATASCO_DEFECTO; }
+}
+
+async function recordatorioCoordinacion(forzado: boolean): Promise<any> {
+  const dias = await diasAtascoConfig();
+  const altas = await pool.query(
+    `SELECT nombre, ean, precio_pvf, pendiente_desde,
+            EXTRACT(DAY FROM NOW() - pendiente_desde)::int AS dias
+       FROM products
+      WHERE pendiente_alta = TRUE AND codigo_asignado IS NULL
+        AND pendiente_desde < NOW() - ($1 || ' days')::interval
+      ORDER BY pendiente_desde`, [String(dias)]);
+  const laminas = await pool.query(
+    `SELECT s.titulo, s.orden, MAX(a.created_at) AS ultimo,
+            EXTRACT(DAY FROM NOW() - MAX(a.created_at))::int AS dias
+       FROM sheet_audit_log a JOIN sheets s ON s.id = a.sheet_id
+      WHERE a.tipo_cambio IN ('updated_image','updated_meta','updated_precios','updated_tablas')
+        AND (s.sage_actualizado_at IS NULL OR a.created_at > s.sage_actualizado_at)
+      GROUP BY s.id, s.titulo, s.orden
+     HAVING MAX(a.created_at) < NOW() - ($1 || ' days')::interval
+      ORDER BY MAX(a.created_at) LIMIT 60`, [String(dias)]);
+
+  if (!altas.rows.length && !laminas.rows.length) return { enviado: false, motivo: 'nada atascado', dias };
+
+  if (!forzado) {
+    const ult = await pool.query(`SELECT valor FROM app_config WHERE clave='coordinacion_recordatorio_at'`);
+    const ultimo = ult.rows[0]?.valor ? new Date(ult.rows[0].valor).getTime() : 0;
+    if (Date.now() - ultimo < 20 * 3600 * 1000) return { enviado: false, motivo: 'ya se aviso hoy', dias };
+  }
+
+  const users = await pool.query(`SELECT email FROM users WHERE role='oficina' AND is_active=TRUE`);
+  const cfg = await leerEmailConfig();
+  const extra = (cfg.oficina_emails || '').split(',').map(s => s.trim()).filter(Boolean);
+  const destinos = Array.from(new Set([...users.rows.map((u: any) => u.email), ...extra]));
+  if (!destinos.length) return { enviado: false, motivo: 'sin destinatarios', dias };
+
+  const html = `
+    <h2 style="font-family:Arial">⏰ Recordatorio · lleva más de ${dias} días esperando</h2>
+    ${altas.rows.length ? `
+      <h3 style="font-family:Arial;font-size:15px">🆕 Altas de producto sin código (${altas.rows.length})</h3>
+      <ul style="font-family:Arial;font-size:13px">
+        ${altas.rows.map((a: any) => `<li><b>${escapeHtml(a.nombre)}</b>${a.ean ? ' · CN ' + escapeHtml(a.ean) : ''} — <b>${a.dias} días</b></li>`).join('')}
+      </ul>` : ''}
+    ${laminas.rows.length ? `
+      <h3 style="font-family:Arial;font-size:15px">✏️ Láminas cambiadas sin reflejar en Sage (${laminas.rows.length})</h3>
+      <ul style="font-family:Arial;font-size:13px">
+        ${laminas.rows.map((l: any) => `<li>${l.orden ? l.orden + ' · ' : ''}${escapeHtml(l.titulo || '')} — <b>${l.dias} días</b></li>`).join('')}
+      </ul>` : ''}
+    <p style="font-family:Arial;font-size:13px">Se resuelve en la app → <b>🔄 Coordinación</b>.</p>`;
+  for (const email of destinos) {
+    await enviarEmailConRedireccion({
+      rol: 'oficina', destinatarioReal: email,
+      asunto: `⏰ Pendiente desde hace más de ${dias} días (${altas.rows.length + laminas.rows.length})`, html
+    });
+  }
+  await pool.query(
+    `INSERT INTO app_config (clave, valor, updated_at) VALUES ('coordinacion_recordatorio_at', $1, NOW())
+     ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, updated_at = NOW()`, [new Date().toISOString()]);
+  avisarCoordinacionTelegram(
+    `Recordatorio enviado a administración: ${altas.rows.length} alta(s) y ${laminas.rows.length} lámina(s) llevan más de ${dias} días.`).catch(() => {});
+  return { enviado: true, altas: altas.rows.length, laminas: laminas.rows.length, destinos: destinos.length, dias };
+}
+
+// Cada 6 h se mira si hay algo atascado; el propio recordatorio no se repite antes de
+// 20 h, asi que en la practica sale como mucho uno al dia.
+setInterval(() => { recordatorioCoordinacion(false).catch(() => {}); }, 6 * 3600 * 1000).unref();
+
+// Y a mano, desde la pantalla de coordinacion.
+app.post('/api/coordinacion/recordatorio', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await recordatorioCoordinacion(true);
+    res.json({ success: true, ...r });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

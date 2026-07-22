@@ -195,7 +195,8 @@ const MANUAL_ADMIN = [
       'Cada vez que <b>cierras versión</b> de un catálogo les llega un aviso con lo que cambia y <b>lo que hace falta de su parte</b>: las altas que esperas y las láminas que tienen que reflejar en Sage. Si cierras varias versiones seguidas, se agrupa en un solo aviso.',
       'Ellos entran en <b>🔄 Coordinación</b> y ahí: escriben el <b>código que han asignado</b> a cada alta y marcan las láminas como <b>✅ Ya está en Sage</b>.',
       'En cuanto escriben el código, si el producto ya está sincronizado se <b>enlaza solo</b> en todas tus láminas y pedidos. Si aún no ha llegado de Sage, queda guardado y se enlaza en cuanto llegue. <b>Tú no tecleas códigos.</b>',
-      'A ti te llega el aviso <b>por Telegram</b> (el mismo bot de las incidencias) y lo ves en tu propia pantalla de Coordinación.'
+      'A ti te llega el aviso <b>por Telegram</b> (el mismo bot de las incidencias) y lo ves en tu propia pantalla de Coordinación.',
+      '<b>Lo que se atasca se recuerda solo:</b> si algo lleva más de los días que marques (7 por defecto) sin código o sin reflejar en Sage, les sale un email de recordatorio. Como mucho uno al día, y solo si de verdad hay algo parado. Puedes cambiar los días o forzar el envío desde 🔄 Coordinación.'
     ],
     ojo: [
       'Las altas que llevan <b>más de 7 días</b> sin código salen marcadas en rojo, para que se vea lo que se está atascando.',
