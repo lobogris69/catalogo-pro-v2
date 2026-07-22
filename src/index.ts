@@ -1410,7 +1410,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v141-recordatorios-22jul',
+      build: 'v142-ficha-lamina-22jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -9874,6 +9874,47 @@ app.post('/api/coordinacion/repescar', verifyToken, async (req: AuthRequest, res
         hechos.map(h => `• ${h.codigo} · ${h.nombre}`).join('\n')).catch(() => {});
     }
     res.json({ success: true, enlazados: hechos });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// FICHA DE LA LAMINA PARA ADMINISTRACION: la lamina en grande + todo lo que tienen
+// que reflejar en Sage (codigos, precios, ofertas, tablas) y que ha cambiado.
+// Sin esto veian "lamina 214 cambiada" y tenian que adivinar que tocar.
+app.get('/api/coordinacion/lamina/:sheetId', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!puedeCoordinar(req)) { res.status(403).json({ success: false, error: 'Sin acceso' }); return; }
+    const sheetId = Number(req.params.sheetId);
+    const s = await pool.query(
+      `SELECT s.id, s.titulo, s.orden, s.imagen_path, s.miniatura_path, s.catalog_id,
+              s.sage_actualizado_at, s.sage_actualizado_por, c.name AS catalogo
+         FROM sheets s LEFT JOIN catalogs c ON c.id = s.catalog_id WHERE s.id = $1`, [sheetId]);
+    if (!s.rows.length) { res.status(404).json({ success: false, error: 'Lámina no encontrada' }); return; }
+
+    // Que lleva la lamina AHORA: es lo que tiene que estar en Sage.
+    const zonas = await pool.query(
+      `SELECT z.ref_modelo, z.etiqueta, z.es_comision,
+              p.codigo, p.nombre, p.precio_pvf, p.precio_pvp, p.oferta_texto,
+              p.pendiente_alta, p.codigo_asignado
+         FROM sheet_zones z LEFT JOIN products p ON p.id = z.product_id
+        WHERE z.sheet_id = $1 ORDER BY z.orden, z.id`, [sheetId]);
+    const tablas = await pool.query(
+      `SELECT t.nombre FROM lamina_tabla lt JOIN expositor_tabla t ON t.id = lt.tabla_id
+        WHERE lt.sheet_id = $1 AND lt.deleted_at IS NULL AND t.deleted_at IS NULL`, [sheetId]);
+    const nRecuadros = (await pool.query(
+      `SELECT COUNT(*)::int n FROM lamina_recuadro WHERE sheet_id = $1`, [sheetId])).rows[0].n;
+    // Historial reciente: el detalle de los cambios de datos lleva antes/ahora.
+    const cambios = await pool.query(
+      `SELECT tipo_cambio, campos_json, actor_name, created_at FROM sheet_audit_log
+        WHERE sheet_id = $1 ORDER BY created_at DESC LIMIT 15`, [sheetId]);
+
+    res.json({
+      success: true,
+      lamina: s.rows[0],
+      productos: zonas.rows,
+      tablas: tablas.rows.map((t: any) => t.nombre),
+      n_recuadros_precio: nRecuadros,
+      cambios: cambios.rows
+    });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

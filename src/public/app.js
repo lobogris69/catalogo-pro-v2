@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v141 · 22 jul 2026';
+const APP_VERSION = 'v142 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -14967,12 +14967,15 @@ async function renderCoordinacion() {
     const esOficina = r.soy === 'oficina';
     const eur = v => (v != null ? Number(v).toFixed(2) + ' €' : '—');
     const altas = (r.altas || []).map(a => {
-      const lams = (a.laminas || []).map(l => (l.orden ? l.orden + ' · ' : '') + (l.titulo || '')).join(' · ') || '—';
+      // Cada lámina es pulsable: administración ve dónde va ese producto nuevo.
+      const lams = (a.laminas || []).map(l =>
+        `<a href="#" onclick="event.preventDefault();verLaminaCoordinacion(${l.sheet_id})" style="color:var(--brand)">${escape((l.orden ? l.orden + ' · ' : '') + (l.titulo || ''))}</a>`
+      ).join(' · ') || '—';
       const dias = Math.floor((Date.now() - new Date(a.pendiente_desde || Date.now()).getTime()) / 86400000);
       return `<tr style="border-bottom:1px solid var(--gris-borde)${dias >= 7 && !a.codigo_asignado ? ';background:#fef2f2' : ''}">
         <td style="padding:8px">
           <b>${escape(a.nombre)}</b>${dias >= 7 && !a.codigo_asignado ? ` <span style="color:#b91c1c;font-size:11px">⏰ ${dias} días esperando</span>` : ''}<br>
-          <span style="font-size:11px;color:var(--gris-texto)">${a.ean ? 'CN ' + escape(a.ean) : 'sin código nacional'} · 📄 ${escape(lams)}</span>
+          <span style="font-size:11px;color:var(--gris-texto)">${a.ean ? 'CN ' + escape(a.ean) : 'sin código nacional'} · 📄 ${lams}</span>
           ${a.notas_admin ? `<br><span style="font-size:11px;color:var(--gris-texto)">📝 ${escape(a.notas_admin)}</span>` : ''}
         </td>
         <td style="padding:8px;font-size:12px;white-space:nowrap">PVL ${eur(a.precio_pvf)}<br>PVP ${eur(a.precio_pvp)}<br>Coste ${eur(a.precio_coste)}</td>
@@ -14993,6 +14996,7 @@ async function renderCoordinacion() {
           <span style="font-size:11px;color:var(--gris-texto)">${escape(c.catalogo || '')} · ${(c.tipos || []).map(t => _TIPOS_CAMBIO[t] || t).join(', ')}</span></td>
         <td style="padding:8px;font-size:12px;white-space:nowrap">${new Date(c.ultimo_cambio).toLocaleDateString('es-ES')}</td>
         <td style="padding:8px;white-space:nowrap">
+          <button class="btn btn-pequeno" style="background:#e0f2fe;color:#0369a1" onclick="verLaminaCoordinacion(${c.sheet_id})">👁 Ver lámina y qué cambiar</button>
           <button class="btn btn-pequeno btn-secondary" onclick="marcarCambioHecho(${c.sheet_id}, this)">✅ Ya está en Sage</button>
         </td>
       </tr>`).join('');
@@ -15111,6 +15115,66 @@ async function asignarCodigoAlta(pendId) {
       : '✅ ' + codigo + ' guardado · se enlazará solo al llegar de Sage', '#16a34a');
     renderCoordinacion();
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+// La lámina en grande + la ficha de lo que debe reflejarse en Sage. Es lo que evita
+// que administración tenga que adivinar qué tocar a partir de "lámina 214 cambiada".
+async function verLaminaCoordinacion(sheetId) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:1000px"><h3 style="margin-top:0">Cargando lámina…</h3></div>`;
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+  try {
+    const r = await api('/api/coordinacion/lamina/' + sheetId);
+    const L = r.lamina;
+    const eur = v => (v != null ? Number(v).toFixed(2) + ' €' : '—');
+    const prods = (r.productos || []).map(p => `<tr style="border-bottom:1px solid var(--gris-borde)">
+        <td style="padding:6px 8px">${p.codigo ? `<b>${escape(p.codigo)}</b>` : (p.es_comision ? '<i>comisión</i>' : '<i>sin producto</i>')}
+          ${p.pendiente_alta ? ` <span style="color:#7c3aed;font-weight:700">⏳ pendiente de alta${p.codigo_asignado ? ' · código ' + escape(p.codigo_asignado) : ''}</span>` : ''}</td>
+        <td style="padding:6px 8px">${escape(p.nombre || p.etiqueta || '')}${p.ref_modelo ? ` <span style="color:#1d4ed8">ref. ${escape(p.ref_modelo)}</span>` : ''}</td>
+        <td style="padding:6px 8px;white-space:nowrap">${eur(p.precio_pvf)}</td>
+        <td style="padding:6px 8px;white-space:nowrap">${eur(p.precio_pvp)}</td>
+        <td style="padding:6px 8px">${escape(p.oferta_texto || '—')}</td>
+      </tr>`).join('');
+    const hist = (r.cambios || []).slice(0, 6).map(c => {
+      const det = c.campos_json && !c.campos_json.n
+        ? Object.entries(c.campos_json).map(([k, v]) => `${k}: <s>${escape(String(v.antes ?? ''))}</s> → <b>${escape(String(v.ahora ?? ''))}</b>`).join('; ')
+        : (c.campos_json && c.campos_json.ultimo ? escape(c.campos_json.ultimo) : '');
+      return `<li>${_TIPOS_CAMBIO[c.tipo_cambio] || c.tipo_cambio} · ${new Date(c.created_at).toLocaleDateString('es-ES')} ${escape(c.actor_name || '')}${det ? `<br><span style="font-size:11px;color:var(--gris-texto)">${det}</span>` : ''}</li>`;
+    }).join('');
+    m.querySelector('.modal').innerHTML = `
+      <h3 style="margin-top:0">${escape(L.orden ? L.orden + ' · ' : '')}${escape(L.titulo || 'Lámina')}</h3>
+      <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">${escape(L.catalogo || '')}${L.sage_actualizado_at ? ` · ✅ marcada como actualizada en Sage el ${new Date(L.sage_actualizado_at).toLocaleDateString('es-ES')} por ${escape(L.sage_actualizado_por || '')}` : ''}</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div style="flex:1;min-width:280px;max-width:420px">
+          <img src="${escape(vurl(L.imagen_path, L))}" style="width:100%;border:1px solid var(--gris-borde);border-radius:8px;cursor:zoom-in"
+               onclick="abrirLightbox('${escape(vurl(L.imagen_path, L))}', '${escape((L.titulo || '').replace(/'/g, "\'"))}', ${L.orden || 0})" alt="">
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Pulsa la imagen para verla a pantalla completa</div>
+        </div>
+        <div style="flex:2;min-width:320px">
+          <h4 style="margin:0 0 6px">Lo que lleva esta lámina (debe coincidir con Sage)</h4>
+          ${prods ? `<div style="max-height:260px;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr style="text-align:left;border-bottom:2px solid var(--gris-borde)">
+                <th style="padding:6px 8px">Código</th><th style="padding:6px 8px">Producto</th><th style="padding:6px 8px">PVL</th><th style="padding:6px 8px">PVP</th><th style="padding:6px 8px">Oferta</th>
+              </tr></thead><tbody>${prods}</tbody></table></div>`
+            : `<p style="color:var(--gris-texto);font-size:13px">Esta lámina no tiene productos marcados.</p>`}
+          <div style="font-size:12px;color:var(--gris-texto);margin-top:8px">
+            ${r.n_recuadros_precio ? `💶 ${r.n_recuadros_precio} precio(s) reescritos sobre la lámina. ` : ''}
+            ${(r.tablas || []).length ? `📊 Tabla(s): ${escape(r.tablas.join(', '))}.` : ''}
+          </div>
+          <h4 style="margin:14px 0 6px">Últimos cambios</h4>
+          <ul style="font-size:12px;padding-left:18px;margin:0">${hist || '<li>Sin cambios registrados.</li>'}</ul>
+        </div>
+      </div>
+      <div class="modal-acciones" style="margin-top:14px">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+        ${L.sage_actualizado_at ? '' : `<button type="button" class="btn btn-primary" onclick="marcarCambioHecho(${L.id}, this);this.closest('.modal-bg').remove()">✅ Ya está en Sage</button>`}
+      </div>`;
+  } catch (e) {
+    m.querySelector('.modal').innerHTML = `<div class="error-msg">${escape(e.message)}</div>
+      <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
+  }
 }
 
 async function marcarCambioHecho(sheetId, btn) {
