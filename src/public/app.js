@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v136 · 22 jul 2026';
+const APP_VERSION = 'v137 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -763,6 +763,9 @@ async function renderEditorCatalogo(id) {
                 <button onclick="insertarHojaEnBlanco(null, ${id})" class="btn btn-pequeno btn-secondary" title="Insertar una hoja en blanco al principio del catálogo">📄➕ Hoja al principio</button>
                 <input type="text" id="filtro-laminas" placeholder="🔍 Filtrar (número o palabra)..."
                        style="flex:1; min-width:200px; padding:8px 12px; border:1px solid var(--gris-borde); border-radius:8px; font-size:13px; font-family:inherit; outline:none;">
+                <button class="btn btn-pequeno btn-secondary" id="btn-filtro-semana" onclick="filtrarPorCambios('semana', this)" title="Solo las láminas tocadas en los últimos 7 días">🔄 Cambiadas esta semana</button>
+                <button class="btn btn-pequeno btn-secondary" id="btn-filtro-pend" onclick="filtrarPorCambios('pendientes', this)" title="Las que se han tocado DESPUÉS de darlas por revisadas: hay que volver a mirarlas">⚠️ Pendientes de repasar</button>
+                <button class="btn btn-pequeno" style="background:#ede9fe;color:#6d28d9" onclick="abrirParteDeCambios(${id})" title="Parte de todo lo modificado en los últimos días, imprimible">🗓️ Parte de cambios</button>
               ` : ''}
             </div>
             <div id="laminas-lista">
@@ -773,7 +776,7 @@ async function renderEditorCatalogo(id) {
                   `<span class="lamina-cat-chip" style="background:${escape(c.color || '#cc007a')}20;color:${escape(c.color || '#cc007a')};border:1px solid ${escape(c.color || '#cc007a')}40">${escape(c.nombre)}</span>`
                 ).join('');
                 return `
-                <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${idx + 1}" ${esAdmin ? 'draggable="true"' : ''}>
+                <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${idx + 1}" data-cambio="${s.ultimo_cambio || ''}" data-pendiente="${_pendienteRepaso(s) ? '1' : '0'}" ${esAdmin ? 'draggable="true"' : ''}>
                   ${esAdmin ? `<div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>` : ''}
                   <div class="lamina-numero">${idx + 1}</div>
                   <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
@@ -786,6 +789,7 @@ async function renderEditorCatalogo(id) {
                             ? `<span class="lamina-estado-zonas auto">🤖 Auto · sin revisar (${s.num_zonas})</span>`
                             : `<span class="lamina-estado-zonas none">⚪ Sin zonas</span>`)
                     ) : ''}
+                    ${esAdmin ? _badgeCambio(s) : ''}
                     ${esAdmin ? (
                       s.num_tablas > 0
                         ? `<span class="lamina-estado-precios tabla" title="Lleva una tabla de expositor: se pega y se actualiza al cambiar el Excel">📊 Tabla dinámica</span>`
@@ -1624,6 +1628,155 @@ async function guardarTagsLamina(sheetId) {
 }
 
 // ===== FILTRAR LAMINAS EN EL EDITOR =====
+// ===== CONTROL DE CAMBIOS DE LAS LÁMINAS =====
+// "Pendiente de repasar" = se ha tocado DESPUÉS de darla por revisada. Ese es el caso
+// que importa: la diste por buena y luego cambió, así que tu revisión ya no vale.
+function _pendienteRepaso(s) {
+  return !!(s.zonas_aprobadas_at && s.ultimo_cambio &&
+            new Date(s.ultimo_cambio) > new Date(s.zonas_aprobadas_at));
+}
+
+function _haceCuanto(iso) {
+  if (!iso) return '';
+  const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (min < 1) return 'ahora mismo';
+  if (min < 60) return 'hace ' + min + ' min';
+  const h = Math.floor(min / 60);
+  if (h < 24) return 'hace ' + h + ' h';
+  const d = Math.floor(h / 24);
+  if (d === 1) return 'ayer';
+  if (d < 30) return 'hace ' + d + ' días';
+  return new Date(iso).toLocaleDateString('es-ES');
+}
+
+const _TIPOS_CAMBIO = {
+  created: '📄 creada',
+  updated_image: '🖼️ imagen sustituida',
+  updated_meta: '✏️ título / categorías',
+  updated_zonas: '🎯 zonas de producto',
+  updated_precios: '💶 cuadros de precio',
+  updated_tablas: '📊 tabla de expositor',
+  deleted: '🗑️ borrada'
+};
+
+function _badgeCambio(s) {
+  if (!s.ultimo_cambio) return '';
+  const cuando = _haceCuanto(s.ultimo_cambio);
+  const qué = _TIPOS_CAMBIO[s.ultimo_cambio_tipo] || 'cambio';
+  if (_pendienteRepaso(s)) {
+    return `<span class="lamina-estado-cambio pend" onclick="event.stopPropagation();abrirHistorialLamina(${s.id})"
+      title="Se modificó después de darla por revisada: conviene volver a mirarla. Pulsa para ver el historial.">🔄 Cambiada tras revisarla · ${cuando}</span>`;
+  }
+  return `<span class="lamina-estado-cambio" onclick="event.stopPropagation();abrirHistorialLamina(${s.id})"
+    title="Último cambio: ${escape(qué)}. Pulsa para ver el historial completo.">🕒 ${cuando}</span>`;
+}
+
+// Historial de una lámina: qué se le ha hecho, cuándo y quién.
+async function abrirHistorialLamina(sheetId) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:560px"><h3 style="margin-top:0">🕒 Historial de la lámina</h3><div class="loading">Cargando…</div></div>`;
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+  try {
+    const r = await api('/api/sheets/' + sheetId + '/historial');
+    const filas = (r.cambios || []).map(c => {
+      const n = c.campos_json && c.campos_json.n ? ` <span style="color:var(--gris-texto)">(${c.campos_json.n} ${c.campos_json.n === 1 ? 'cambio' : 'cambios'})</span>` : '';
+      const f = new Date(c.created_at);
+      return `<li style="margin-bottom:8px">
+        <b>${_TIPOS_CAMBIO[c.tipo_cambio] || c.tipo_cambio}</b>${n}<br>
+        <span style="font-size:12px;color:var(--gris-texto)">${f.toLocaleDateString('es-ES')} ${f.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })} · ${escape(c.actor_name || '—')} · ${_haceCuanto(c.created_at)}</span>
+      </li>`;
+    }).join('');
+    m.querySelector('.modal').innerHTML = `
+      <h3 style="margin-top:0">🕒 ${escape(r.titulo || 'Lámina')}</h3>
+      <div style="font-size:12px;color:var(--gris-texto);margin-bottom:12px">
+        Creada el ${new Date(r.creada_at).toLocaleDateString('es-ES')}
+        ${r.revisada_at ? ` · ✅ revisada el ${new Date(r.revisada_at).toLocaleDateString('es-ES')}` : ' · ⚪ sin revisar'}
+      </div>
+      ${filas ? `<ul style="max-height:340px;overflow:auto;padding-left:20px;margin:0">${filas}</ul>`
+              : `<p style="color:var(--gris-texto)">No hay cambios registrados. El registro empezó a guardar las zonas, los precios y las tablas en la v137: lo anterior a eso no aparece.</p>`}
+      <div class="modal-acciones" style="margin-top:14px">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      </div>`;
+  } catch (e) {
+    m.querySelector('.modal').innerHTML = `<h3 style="margin-top:0">🕒 Historial</h3><div class="error-msg">${escape(e.message)}</div>
+      <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
+  }
+}
+
+// Filtros rápidos de la rejilla. Se comportan como interruptores: volver a pulsar quita.
+let _filtroCambios = '';
+function filtrarPorCambios(cual, btn) {
+  _filtroCambios = (_filtroCambios === cual) ? '' : cual;
+  ['btn-filtro-semana', 'btn-filtro-pend'].forEach(id => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    const activo = (id === 'btn-filtro-semana' && _filtroCambios === 'semana') ||
+                   (id === 'btn-filtro-pend' && _filtroCambios === 'pendientes');
+    b.style.background = activo ? '#6d28d9' : '';
+    b.style.color = activo ? '#fff' : '';
+  });
+  const hace7 = Date.now() - 7 * 24 * 3600 * 1000;
+  let n = 0;
+  document.querySelectorAll('#laminas-lista .lamina-fila').forEach(fila => {
+    let ok = true;
+    if (_filtroCambios === 'semana') {
+      const c = fila.dataset.cambio;
+      ok = !!c && new Date(c).getTime() > hace7;
+    } else if (_filtroCambios === 'pendientes') {
+      ok = fila.dataset.pendiente === '1';
+    }
+    fila.style.display = ok ? '' : 'none';
+    if (ok) n++;
+  });
+  if (_filtroCambios) mostrarNotificacionOnline(n + (n === 1 ? ' lámina' : ' láminas'), '#6d28d9');
+}
+
+// Parte de cambios: lo tocado en los últimos días, para el repaso semanal. Imprimible.
+async function abrirParteDeCambios(catalogId, dias) {
+  dias = dias || 7;
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:720px"><h3 style="margin-top:0">🗓️ Parte de cambios</h3><div class="loading">Cargando…</div></div>`;
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+  try {
+    const r = await api('/api/catalogs/' + catalogId + '/cambios?dias=' + dias);
+    const filas = (r.cambios || []).map(c => {
+      const tipos = (c.tipos || []).map(t => _TIPOS_CAMBIO[t] || t).join(', ');
+      const f = new Date(c.ultimo_cambio);
+      return `<tr${c.pendiente ? ' style="background:#fffbeb"' : ''}>
+        <td style="padding:6px 8px;white-space:nowrap">${c.orden || '—'}</td>
+        <td style="padding:6px 8px">${escape(c.titulo || 'Sin título')}${c.pendiente ? ' <b style="color:#b45309">⚠️ repasar</b>' : ''}</td>
+        <td style="padding:6px 8px;font-size:12px">${escape(tipos)}</td>
+        <td style="padding:6px 8px;font-size:12px;white-space:nowrap">${f.toLocaleDateString('es-ES')} ${f.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</td>
+      </tr>`;
+    }).join('');
+    m.querySelector('.modal').innerHTML = `
+      <h3 style="margin-top:0">🗓️ Parte de cambios · últimos ${r.dias} días</h3>
+      <div style="margin-bottom:10px;font-size:13px">
+        <b>${r.total}</b> lámina${r.total === 1 ? '' : 's'} modificada${r.total === 1 ? '' : 's'}
+        ${r.pendientes ? ` · <b style="color:#b45309">${r.pendientes} pendiente${r.pendientes === 1 ? '' : 's'} de repasar</b>` : ' · todas repasadas'}
+        <span style="float:right">
+          ${[7, 15, 30].map(d => `<button class="btn btn-pequeno ${d === r.dias ? 'btn-primary' : 'btn-secondary'}" style="margin-left:4px" onclick="this.closest('.modal-bg').remove();abrirParteDeCambios(${catalogId},${d})">${d} días</button>`).join('')}
+        </span>
+      </div>
+      ${filas ? `<div style="max-height:420px;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="text-align:left;border-bottom:2px solid var(--gris-borde)">
+            <th style="padding:6px 8px">#</th><th style="padding:6px 8px">Lámina</th><th style="padding:6px 8px">Qué se tocó</th><th style="padding:6px 8px">Último cambio</th>
+          </tr></thead><tbody>${filas}</tbody></table></div>`
+        : `<p style="color:var(--gris-texto)">No se ha modificado ninguna lámina en este periodo.</p>`}
+      <div class="modal-acciones" style="margin-top:14px">
+        <button type="button" class="btn btn-secondary" onclick="window.print()">🖨️ Imprimir</button>
+        <button type="button" class="btn btn-primary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      </div>`;
+  } catch (e) {
+    m.querySelector('.modal').innerHTML = `<h3 style="margin-top:0">🗓️ Parte de cambios</h3><div class="error-msg">${escape(e.message)}</div>
+      <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
+  }
+}
+
 function filtrarLaminasEditor(texto) {
   const t = texto.trim().toLowerCase();
   const numero = parseInt(t);

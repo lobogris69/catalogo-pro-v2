@@ -145,6 +145,23 @@ const MANUAL_ADMIN = [
     ojo: ['Es el repaso recomendado justo antes de cerrar versión.']
   },
   {
+    id: 'control-cambios',
+    icono: '🕒',
+    titulo: 'Control de lo que vas modificando (parte semanal)',
+    para: 'Saber qué láminas has tocado y cuáles hay que volver a repasar. Pensado para el repaso del viernes.',
+    pasos: [
+      'En la lista de láminas, cada una lleva un tercer distintivo con <b>cuándo se tocó por última vez</b> ("🕒 hace 3 días").',
+      'Si se modificó <b>después</b> de que la dieras por revisada, el distintivo se pone en ámbar: <b>🔄 Cambiada tras revisarla</b>. Eso significa que tu revisión ya no vale y conviene mirarla otra vez.',
+      'Pulsa el distintivo y verás el <b>historial</b> de esa lámina: qué se cambió (imagen, título, zonas, precios o tabla), cuándo y quién.',
+      'Con <b>🔄 Cambiadas esta semana</b> dejas en la lista solo lo tocado en los últimos 7 días; con <b>⚠️ Pendientes de repasar</b>, solo las que cambiaron tras revisarlas. Se comportan como interruptores: vuelve a pulsar para quitarlos.',
+      '<b>🗓️ Parte de cambios</b> abre el resumen del periodo (7, 15 o 30 días) con una línea por lámina y qué se tocó en cada una. Se puede imprimir.'
+    ],
+    ojo: [
+      'El registro guarda cambios de <b>imagen, datos, zonas, cuadros de precio y tablas</b>. Lo anterior a la v137 no aparece porque entonces solo se anotaban la imagen y los datos.',
+      'Si trabajas un rato seguido en la misma lámina no salen 40 líneas: los cambios del mismo tipo se agrupan en una con su contador.'
+    ]
+  },
+  {
     id: 'version',
     icono: '📌',
     titulo: 'Cerrar versión y avisar a los comerciales',

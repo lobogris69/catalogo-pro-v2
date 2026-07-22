@@ -103,8 +103,11 @@ function borrarUploadSeguro(rutaWeb: string | null | undefined): void {
 // AUDIT LOG de laminas (no lanza si falla; nunca debe romper la operacion)
 // tipo_cambio: 'created' | 'updated_image' | 'updated_meta' | 'deleted'
 // ============================================================================
+type TipoCambioSheet = 'created' | 'updated_image' | 'updated_meta' | 'deleted'
+  | 'updated_zonas' | 'updated_precios' | 'updated_tablas';
+
 async function logSheetChange(
-  tipoCambio: 'created' | 'updated_image' | 'updated_meta' | 'deleted',
+  tipoCambio: TipoCambioSheet,
   sheetId: number | null,
   catalogId: number | null,
   titulo: string | null,
@@ -136,6 +139,43 @@ async function logSheetChange(
     );
   } catch (e: any) {
     console.warn('[audit-log] no se pudo registrar cambio:', e.message);
+  }
+}
+
+// Trabajar las zonas de una lamina son DECENAS de peticiones (arrastrar un recuadro
+// son varias, y una deteccion con IA otras tantas). Si cada una dejara su linea, el
+// historial no habria quien lo leyera. Asi que los cambios del mismo tipo sobre la
+// misma lamina se AGRUPAN en una sola linea mientras sigas trabajando en ella: se le
+// refresca la fecha y se le suma un contador. Pasada la ventana, empieza linea nueva.
+const VENTANA_AGRUPAR_MIN = 30;
+
+async function logSheetChangeAgrupado(
+  tipoCambio: 'updated_zonas' | 'updated_precios' | 'updated_tablas',
+  sheetId: number,
+  actor: { id?: number; name?: string } | null,
+  detalle?: string
+): Promise<void> {
+  try {
+    const s = await pool.query('SELECT catalog_id, titulo FROM sheets WHERE id = $1', [sheetId]);
+    if (!s.rows.length) return;
+    const previa = await pool.query(
+      `SELECT id, campos_json FROM sheet_audit_log
+        WHERE sheet_id = $1 AND tipo_cambio = $2
+          AND created_at > NOW() - ($3 || ' minutes')::interval
+        ORDER BY created_at DESC LIMIT 1`,
+      [sheetId, tipoCambio, String(VENTANA_AGRUPAR_MIN)]);
+    if (previa.rows.length) {
+      const c = previa.rows[0].campos_json || {};
+      const n = (Number(c.n) || 1) + 1;
+      await pool.query(
+        `UPDATE sheet_audit_log SET created_at = NOW(), campos_json = $1 WHERE id = $2`,
+        [JSON.stringify({ ...c, n, ultimo: detalle || c.ultimo || null }), previa.rows[0].id]);
+      return;
+    }
+    await logSheetChange(tipoCambio, sheetId, s.rows[0].catalog_id, s.rows[0].titulo,
+      { n: 1, ultimo: detalle || null }, actor);
+  } catch (e: any) {
+    console.warn('[audit-log] no se pudo agrupar cambio:', e.message);
   }
 }
 
@@ -1120,6 +1160,13 @@ async function initDB(): Promise<void> {
         actor_name    VARCHAR(150),
         created_at    TIMESTAMP DEFAULT NOW()
       );
+      -- Tipos nuevos (jul 2026): hasta ahora solo se registraba la imagen y los datos
+      -- de la lamina, asi que "modificada" mentia si lo que tocabas eran las zonas, los
+      -- cuadros de precio o las tablas. El CHECK original no los admitia.
+      ALTER TABLE sheet_audit_log DROP CONSTRAINT IF EXISTS sheet_audit_log_tipo_cambio_check;
+      ALTER TABLE sheet_audit_log ADD CONSTRAINT sheet_audit_log_tipo_cambio_check
+        CHECK (tipo_cambio IN ('created','updated_image','updated_meta','deleted',
+                               'updated_zonas','updated_precios','updated_tablas'));
       CREATE INDEX IF NOT EXISTS idx_sheet_audit_catalog ON sheet_audit_log(catalog_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_sheet_audit_sheet ON sheet_audit_log(sheet_id);
       CREATE INDEX IF NOT EXISTS idx_sheet_audit_created ON sheet_audit_log(created_at DESC);
@@ -1684,6 +1731,22 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
     // Enriquecer cada lámina con sus categorías asignadas (para mostrar chips en editor admin)
     if (sheetsRows.length > 0) {
       const sheetIds = sheetsRows.map((s: any) => s.id);
+      // Ultimo cambio de cada lamina (para el distintivo "cambiada tras revisarla" y el
+      // filtro "cambiadas esta semana"). Una sola consulta para todas: nada de N+1.
+      try {
+        const camR = await pool.query(
+          `SELECT sheet_id, MAX(created_at) AS ultimo_cambio,
+                  (ARRAY_AGG(tipo_cambio ORDER BY created_at DESC))[1] AS ultimo_tipo
+             FROM sheet_audit_log
+            WHERE sheet_id = ANY($1::int[]) AND tipo_cambio <> 'deleted'
+            GROUP BY sheet_id`, [sheetIds]);
+        const mapaCam: any = {};
+        camR.rows.forEach((x: any) => { mapaCam[x.sheet_id] = x; });
+        sheetsRows.forEach((s: any) => {
+          s.ultimo_cambio = mapaCam[s.id]?.ultimo_cambio || null;
+          s.ultimo_cambio_tipo = mapaCam[s.id]?.ultimo_tipo || null;
+        });
+      } catch (_) { /* si falla la auditoría, la rejilla sigue funcionando igual */ }
       const catsR = await pool.query(`
         SELECT sc.sheet_id, c.id, c.nombre, c.color
         FROM sheet_categorias sc
@@ -6788,6 +6851,7 @@ app.post('/api/sheets/:sheetId/recuadros', verifyToken, requireRealAdmin, async 
     const ph = allVals.map((_, i) => '$' + (i + 1)).join(',');
     const r = await pool.query(
       `INSERT INTO lamina_recuadro (${allCols.join(',')}) VALUES (${ph}) RETURNING *`, allVals);
+    logSheetChangeAgrupado('updated_precios', sheetId, { id: req.user?.id, name: req.user?.name }, 'cuadro de precio añadido');
     res.json({ success: true, recuadro: r.rows[0] });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -6804,6 +6868,7 @@ app.put('/api/recuadros/:id', verifyToken, requireRealAdmin, async (req: AuthReq
     const r = await pool.query(
       `UPDATE lamina_recuadro SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`, vals);
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrado' }); return; }
+    logSheetChangeAgrupado('updated_precios', r.rows[0].sheet_id, { id: req.user?.id, name: req.user?.name }, 'cuadro de precio editado');
     res.json({ success: true, recuadro: r.rows[0] });
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
 });
@@ -6818,6 +6883,7 @@ app.delete('/api/sheets/:id/recuadros', verifyToken, requireRealAdmin, async (re
     const r = soloIA
       ? await pool.query(`DELETE FROM lamina_recuadro WHERE sheet_id=$1 AND origen='ia'`, [sheetId])
       : await pool.query(`DELETE FROM lamina_recuadro WHERE sheet_id=$1`, [sheetId]);
+    if (r.rowCount) logSheetChangeAgrupado('updated_precios', sheetId, { id: req.user?.id, name: req.user?.name }, 'borrados los cuadros de precio (' + r.rowCount + ')');
     res.json({ success: true, borrados: r.rowCount || 0 });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -6886,8 +6952,9 @@ app.put('/api/sheets/:id/precios-modo', verifyToken, requireRealAdmin, async (re
 // DELETE recuadro (admin real).
 app.delete('/api/recuadros/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query(`DELETE FROM lamina_recuadro WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    const r = await pool.query(`DELETE FROM lamina_recuadro WHERE id=$1 RETURNING id, sheet_id`, [Number(req.params.id)]);
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrado' }); return; }
+    logSheetChangeAgrupado('updated_precios', r.rows[0].sheet_id, { id: req.user?.id, name: req.user?.name }, 'cuadro de precio borrado');
     res.json({ success: true });
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
 });
@@ -7643,6 +7710,7 @@ app.post('/api/sheets/:sheetId/tablas', verifyToken, requireRealAdmin, async (re
     // Asociar una tabla = querer automatizar esta lamina -> quitar la exclusion (si la tenia),
     // que es contradictoria (excluida = no se toca nada, y la tabla justamente la toca).
     await pool.query(`UPDATE sheets SET precios_excluida=FALSE WHERE id=$1 AND precios_excluida=TRUE`, [Number(req.params.sheetId)]);
+    logSheetChangeAgrupado('updated_tablas', Number(req.params.sheetId), { id: req.user?.id, name: req.user?.name }, 'tabla de expositor añadida');
     res.json({ success: true, asociacion: r.rows[0] });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -7655,6 +7723,7 @@ app.put('/api/lamina-tabla/:id', verifyToken, requireRealAdmin, async (req: Auth
     if (!sets.length) { res.status(400).json({ success: false, error: 'nada que actualizar' }); return; }
     sets.push('updated_at=NOW()'); vals.push(Number(req.params.id));
     const r = await pool.query(`UPDATE lamina_tabla SET ${sets.join(', ')} WHERE id=$${vals.length} RETURNING *`, vals);
+    if (r.rows.length) logSheetChangeAgrupado('updated_tablas', r.rows[0].sheet_id, { id: req.user?.id, name: req.user?.name }, 'tabla de expositor recolocada');
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
     res.json({ success: true, asociacion: r.rows[0] });
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
@@ -7662,7 +7731,8 @@ app.put('/api/lamina-tabla/:id', verifyToken, requireRealAdmin, async (req: Auth
 // DELETE quitar la tabla de la lámina.
 app.delete('/api/lamina-tabla/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query(`UPDATE lamina_tabla SET deleted_at=NOW() WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [Number(req.params.id)]);
+    const r = await pool.query(`UPDATE lamina_tabla SET deleted_at=NOW() WHERE id=$1 AND deleted_at IS NULL RETURNING id, sheet_id`, [Number(req.params.id)]);
+    if (r.rows.length) logSheetChangeAgrupado('updated_tablas', r.rows[0].sheet_id, { id: req.user?.id, name: req.user?.name }, 'tabla de expositor quitada');
     if (!r.rows.length) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
     res.json({ success: true });
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
@@ -10101,6 +10171,7 @@ app.post('/api/sheets/:sheetId/zones', verifyToken, requireRealAdmin, async (req
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
     `, [sheetId, product_id || null, x, y, ancho, alto, etiqueta || null, orden]);
+    logSheetChangeAgrupado('updated_zonas', sheetId, { id: req.user?.id, name: req.user?.name }, 'zona añadida');
     res.json({ success: true, zone: r.rows[0] });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
@@ -10200,6 +10271,7 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
       res.status(404).json({ success: false, error: 'Zona no encontrada' });
       return;
     }
+    logSheetChangeAgrupado('updated_zonas', r.rows[0].sheet_id, { id: req.user?.id, name: req.user?.name }, 'zona editada');
     res.json({ success: true, zone: r.rows[0] });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
@@ -10221,6 +10293,55 @@ app.post('/api/sheets/:id/aprobar-zonas', verifyToken, requireRealAdmin, async (
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
+});
+
+// HISTORIAL de una lamina: todo lo que se le ha hecho, de lo mas reciente a lo mas
+// antiguo. Es lo que se abre al pulsar el distintivo de estado en la rejilla.
+app.get('/api/sheets/:id/historial', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.id);
+    const s = await pool.query(`SELECT titulo, created_at, zonas_aprobadas_at FROM sheets WHERE id=$1`, [sheetId]);
+    if (!s.rows.length) { res.status(404).json({ success: false, error: 'Lámina no encontrada' }); return; }
+    const r = await pool.query(
+      `SELECT id, tipo_cambio, campos_json, actor_name, created_at
+         FROM sheet_audit_log WHERE sheet_id = $1
+        ORDER BY created_at DESC LIMIT 100`, [sheetId]);
+    res.json({
+      success: true,
+      titulo: s.rows[0].titulo,
+      creada_at: s.rows[0].created_at,
+      revisada_at: s.rows[0].zonas_aprobadas_at,
+      cambios: r.rows
+    });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// CAMBIOS RECIENTES de un catalogo (por defecto 7 dias): el "parte semanal" de lo que
+// se ha tocado. Una linea por lamina con su ultimo cambio y si esta pendiente de repasar.
+app.get('/api/catalogs/:id/cambios', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.id);
+    const dias = Math.max(1, Math.min(365, parseInt(String(req.query.dias || '7'), 10) || 7));
+    const r = await pool.query(
+      `SELECT a.sheet_id, s.orden, s.titulo, s.zonas_aprobadas_at,
+              MAX(a.created_at) AS ultimo_cambio,
+              ARRAY_AGG(DISTINCT a.tipo_cambio) AS tipos,
+              COUNT(*)::int AS n_cambios,
+              MAX(a.actor_name) AS actor
+         FROM sheet_audit_log a
+         JOIN sheets s ON s.id = a.sheet_id
+        WHERE a.catalog_id = $1
+          AND a.created_at > NOW() - ($2 || ' days')::interval
+          AND a.tipo_cambio <> 'deleted'
+        GROUP BY a.sheet_id, s.orden, s.titulo, s.zonas_aprobadas_at
+        ORDER BY MAX(a.created_at) DESC`, [catalogId, String(dias)]);
+    const filas = r.rows.map((x: any) => ({
+      ...x,
+      // "pendiente de repasar" = se tocó DESPUÉS de darla por revisada (o nunca se revisó)
+      pendiente: !x.zonas_aprobadas_at || new Date(x.ultimo_cambio) > new Date(x.zonas_aprobadas_at)
+    }));
+    res.json({ success: true, dias, cambios: filas, total: filas.length, pendientes: filas.filter(f => f.pendiente).length });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 // Asignar el MISMO producto a todas las zonas de la lamina (expositor de un solo codigo
@@ -10256,7 +10377,9 @@ app.post('/api/sheets/:sheetId/zones/aplicar-producto', verifyToken, requireReal
 app.delete('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const zoneId = Number(req.params.zoneId);
+    const z = await pool.query(`SELECT sheet_id FROM sheet_zones WHERE id = $1`, [zoneId]);
     const r = await pool.query(`DELETE FROM sheet_zones WHERE id = $1`, [zoneId]);
+    if (z.rows.length) logSheetChangeAgrupado('updated_zonas', z.rows[0].sheet_id, { id: req.user?.id, name: req.user?.name }, 'zona borrada');
     res.json({ success: true, borrada: (r.rowCount || 0) > 0 });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
@@ -10269,6 +10392,7 @@ app.delete('/api/sheets/:id/zones', verifyToken, requireRealAdmin, async (req: A
   try {
     const sheetId = Number(req.params.id);
     const r = await pool.query(`DELETE FROM sheet_zones WHERE sheet_id = $1`, [sheetId]);
+    if (r.rowCount) logSheetChangeAgrupado('updated_zonas', sheetId, { id: req.user?.id, name: req.user?.name }, 'borradas todas las zonas (' + r.rowCount + ')');
     res.json({ success: true, borradas: r.rowCount || 0 });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
