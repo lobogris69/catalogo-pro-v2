@@ -790,6 +790,9 @@ async function initDB(): Promise<void> {
         updated_at TIMESTAMP DEFAULT NOW()
       );
       INSERT INTO app_config (clave, valor) VALUES ('num_tarifas', '1') ON CONFLICT (clave) DO NOTHING;
+      -- Horas que dura la sesion antes de pedir la contrasena otra vez. Configurable
+      -- desde el panel: 8h obligaba a los comerciales a re-entrar a media jornada.
+      INSERT INTO app_config (clave, valor) VALUES ('sesion_horas', '168') ON CONFLICT (clave) DO NOTHING;
 
       -- Cambios de precio PROGRAMADOS con fecha de entrada en vigor. El "precio de hoy"
       -- de un producto+tarifa = la fila con fecha_vigencia <= hoy más reciente; si no hay,
@@ -1361,7 +1364,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role, name: user.name, sage_commercial_code: user.sage_commercial_code },
       JWT_SECRET,
-      { expiresIn: '8h' }
+      { expiresIn: (await sesionHorasConfig()) * 3600 }   // en segundos: el tipo de jwt no admite "Nh" dinámico
     );
     res.json({ success: true, token, user: { id: user.id, email: user.email, role: user.role, name: user.name } });
   } catch (e) {
@@ -6516,6 +6519,17 @@ async function numTarifasConfig(): Promise<number> {
   } catch { return 1; }
 }
 
+// Horas que dura la sesion antes de volver a pedir la contrasena. Lo fija el admin.
+// Rango 1..720 (30 dias): por debajo de 1h es inusable y por encima de un mes deja
+// de tener sentido como medida de seguridad.
+async function sesionHorasConfig(): Promise<number> {
+  try {
+    const r = await pool.query(`SELECT valor FROM app_config WHERE clave='sesion_horas'`);
+    const n = parseInt(r.rows[0]?.valor || '168', 10);
+    return (Number.isInteger(n) && n >= 1 && n <= 720) ? n : 168;
+  } catch { return 168; }
+}
+
 // INTERRUPTOR MAESTRO de precios dinámicos. Si se apaga, las láminas se ven y se
 // exportan TAL CUAL (como siempre): no se reescribe ningún precio ni se pinta la capa
 // en vivo. Los recuadros NO se borran: siguen ahí para cuando se vuelva a encender.
@@ -6583,6 +6597,14 @@ app.put('/api/config', verifyToken, requireRealAdmin, async (req: AuthRequest, r
       if (!Number.isInteger(n) || n < 1 || n > 3) { res.status(400).json({ success: false, error: 'num_tarifas debe ser 1..3 por ahora' }); return; }
       await pool.query(`INSERT INTO app_config (clave, valor, updated_at) VALUES ('num_tarifas',$1,NOW())
         ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`, [String(n)]);
+    }
+    // Duración de la sesión (horas). Solo afecta a los inicios de sesión NUEVOS:
+    // los tokens ya repartidos conservan la caducidad con la que se firmaron.
+    if (req.body.sesion_horas !== undefined) {
+      const h = parseInt(String(req.body.sesion_horas), 10);
+      if (!Number.isInteger(h) || h < 1 || h > 720) { res.status(400).json({ success: false, error: 'sesion_horas debe ser 1..720 (máx. 30 días)' }); return; }
+      await pool.query(`INSERT INTO app_config (clave, valor, updated_at) VALUES ('sesion_horas',$1,NOW())
+        ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor, updated_at=NOW()`, [String(h)]);
     }
     // Interruptor maestro de precios dinámicos (volver a la lámina original al instante).
     if (req.body.precios_dinamicos_activo !== undefined) {

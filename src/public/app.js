@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v134 · 22 jul 2026';
+const APP_VERSION = 'v135 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -70,6 +70,9 @@ function nombreEfectivo() {
   return user ? user.name : '';
 }
 
+// Cerrojo para no repetir el aviso de "sesión caducada" una vez por petición fallida.
+let _sesionCaducadaAvisada = false;
+
 function api(endpoint, options = {}) {
   const headers = options.headers || {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -88,10 +91,16 @@ function api(endpoint, options = {}) {
         // Cualquier 401 = sesión no válida/caducada → logout limpio y aviso claro,
         // en vez de un "no autorizado" críptico en medio de cualquier pantalla.
         if (r.status === 401) {
-          setTimeout(() => {
-            alert('Tu sesión ha caducado. Vuelve a iniciar sesión.');
-            logout();
-          }, 0);
+          // Una pantalla lanza VARIAS peticiones a la vez, así que al caducar la
+          // sesión fallaban todas y salía un aviso por cada una (había que aceptar
+          // dos y tres veces). Con el cerrojo, se avisa UNA sola vez.
+          if (!_sesionCaducadaAvisada) {
+            _sesionCaducadaAvisada = true;
+            setTimeout(() => {
+              alert('Tu sesión ha caducado. Vuelve a iniciar sesión.');
+              logout();
+            }, 0);
+          }
           throw new Error('Sesión caducada');
         }
         throw new Error(data.error || `Error ${r.status}`);
@@ -139,6 +148,7 @@ function logout() {
   appState.clienteActual = null;
   appState.visitaVerId = null;
   window._visitaCargada = false;
+  _sesionCaducadaAvisada = false;   // al volver a entrar, el aviso puede salir otra vez
   render();
 }
 
@@ -5171,6 +5181,26 @@ async function renderConfiguracion() {
           </div>
         </div>
 
+        <!-- BLOQUE: duración de la sesión -->
+        <div class="editor-panel" style="margin-top:14px">
+          <h3 style="margin-top:0">🔐 Duración de la sesión
+            ${ayuda('Cuánto tiempo puede estar alguien sin volver a escribir su contraseña. Cuanto más largo, más cómodo para los comerciales; cuanto más corto, más seguro si pierden el móvil. El cambio afecta a los inicios de sesión NUEVOS: quien ya está dentro conserva la caducidad que tenía.', 'izq')}
+          </h3>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div class="form-group" style="margin:0"><label>Pedir la contraseña cada</label>
+              <select id="cfg-sesion-horas" style="padding:8px;border:1px solid #d1d5db;border-radius:6px">
+                <option value="8">8 horas (una jornada)</option>
+                <option value="24">1 día</option>
+                <option value="72">3 días</option>
+                <option value="168">7 días (recomendado)</option>
+                <option value="336">15 días</option>
+                <option value="720">30 días (máximo)</option>
+              </select></div>
+            <button class="btn btn-primary btn-pequeno" onclick="guardarSesionHoras(this)">Guardar</button>
+            <span id="cfg-sesion-msg" style="font-size:12px;color:var(--gris-texto)"></span>
+          </div>
+        </div>
+
         <!-- BLOQUE: IA Tags -->
         <div class="editor-panel" style="margin-top:14px">
           <h3 style="margin-top:0">🤖 Tags automáticos con IA
@@ -5944,7 +5974,22 @@ async function cargarConfigPreciosAdmin() {
     const tam = document.getElementById('cfg-precio-tam');
     if (sel && c.precio_fuente) sel.value = c.precio_fuente;
     if (tam && c.precio_tam_factor) tam.value = c.precio_tam_factor;
+    const ses = document.getElementById('cfg-sesion-horas');
+    if (ses && c.sesion_horas) ses.value = String(c.sesion_horas);
   } catch (e) { /* usa valores por defecto del select */ }
+}
+
+// Cada cuánto hay que volver a escribir la contraseña. Solo afecta a los inicios
+// de sesión nuevos: el token que ya tiene alguien caduca cuando le tocaba.
+async function guardarSesionHoras(btn) {
+  const $msg = document.getElementById('cfg-sesion-msg');
+  const horas = document.getElementById('cfg-sesion-horas').value;
+  btn.disabled = true;
+  try {
+    await api('/api/config', { method: 'PUT', body: { sesion_horas: horas } });
+    if ($msg) { $msg.textContent = '✅ Guardado (se aplica en el próximo inicio de sesión)'; setTimeout(() => { $msg.textContent = ''; }, 4000); }
+  } catch (e) { if ($msg) $msg.textContent = 'Error: ' + e.message; }
+  btn.disabled = false;
 }
 
 async function guardarConfigPreciosAdmin(btn) {

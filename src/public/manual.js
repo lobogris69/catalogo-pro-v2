@@ -269,6 +269,21 @@ const MANUAL_ADMIN = [
     ojo: ['Antes de una campaña, mira SIEMPRE en qué modo estás.']
   },
   {
+    id: 'sesion',
+    icono: '🔐',
+    titulo: 'Cada cuánto se pide la contraseña',
+    para: 'Decidir cuánto dura la sesión antes de que la app vuelva a pedir la contraseña.',
+    pasos: [
+      '<b>⚙️ Configuración → 🔐 Duración de la sesión</b>.',
+      'Elige el tiempo: desde <b>8 horas</b> (una jornada) hasta <b>30 días</b>. Lo normal para trabajar cómodo son <b>7 días</b>.',
+      'Guarda. El cambio se aplica en los <b>próximos inicios de sesión</b>: quien ya está dentro conserva la caducidad que tenía hasta que vuelva a entrar.'
+    ],
+    ojo: [
+      'Cuanto más largo, más cómodo para los comerciales; cuanto más corto, más protegido si se pierde un móvil.',
+      'Si un comercial pierde el teléfono, cámbiale la contraseña en <b>👥 Comerciales</b>: eso corta el acceso sin esperar a que caduque.'
+    ]
+  },
+  {
     id: 'mantenimiento',
     icono: '🩺',
     titulo: 'Si algo va mal (mantenimiento)',
