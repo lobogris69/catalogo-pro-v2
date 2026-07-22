@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v132 · 22 jul 2026';
+const APP_VERSION = 'v133 · 22 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3896,7 +3896,10 @@ async function pulsarZonaComercial(zona) {
     // ref. = nº del modelo impreso en la lámina, para expositores donde TODOS los
     // artículos comparten un único código en Sage (pendientes, bisutería...): sin él
     // la oficina no sabe cuál servir.
-    const refModelo = !skuSel && zona.ref_modelo ? String(zona.ref_modelo).trim() : '';
+    // OJO: en zona simple skuSel NO es nulo (lleva el producto), solo lo es en familias
+    // sin resolver. La condición correcta es "no es familia": en una familia el propio
+    // SKU ya distingue la variante y la ref. del modelo no pinta nada.
+    const refModelo = (!esFamilia && zona.ref_modelo) ? String(zona.ref_modelo).trim() : '';
     let texto = cantidad + ' uds · ' + codFinal + ' ' + nomFinal;
     if (refModelo) texto += ' ref. ' + refModelo;
     if (notaExtra) texto += ' · ' + notaExtra;
