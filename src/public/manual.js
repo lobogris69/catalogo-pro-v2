@@ -163,7 +163,8 @@ const MANUAL_ADMIN = [
       'Excepción: en las zonas de <b>comisión</b> (Lainco, Sawes) hay que escribir el <b>laboratorio</b> en su casilla, porque ahí el nombre que se guarda es el del producto, no el del laboratorio. Sin eso, esa zona no se puede vetar por territorio.',
       'Durante la visita, la app mira <b>dónde está la farmacia</b> y oculta esas láminas. En Navarra las ve; en Aragón, no. El comercial no tiene que acordarse de nada.',
       'La zona de cada farmacia sale, por este orden: la que le hayas fijado a mano, su <b>código postal</b>, o su provincia. Si no se sabe, el comercial la elige <b>una vez</b> durante la visita y queda guardada.',
-      'Con <b>🧭 Deducir zona de los clientes que faltan</b> se rellenan de golpe los que ya tengan código postal o provincia.'
+      'Con <b>🧭 Deducir zona de los clientes que faltan</b> se rellenan de golpe los que ya tengan código postal o provincia.',
+      '<b>Cada comercial ve solo sus zonas.</b> En <b>👥 Comerciales → 🗂️ Carteras y zonas</b>: ahí le añades <b>varias carteras de Sage</b> (si lleva la suya y la de otra persona, ve los clientes de las dos) y puedes <b>fijar qué zonas ve</b>. Si no fijas ninguna, se deducen de sus clientes.'
     ],
     ojo: [
       'Esto va por <b>zona</b>, no por comercial: es lo que permite que el mismo comercial lleve dos territorios con reglas distintas.',

@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v153 · 23 jul 2026';
+const APP_VERSION = 'v154 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -2619,6 +2619,7 @@ async function renderListaComerciales() {
           <div class="comercial-card-acciones">
             <button class="btn btn-pequeno btn-secondary" onclick="editarUsuario(${u.id})" title="Editar">✏️ Editar</button>
             <button class="btn btn-pequeno btn-secondary" onclick="cambiarContraseñaUsuario(${u.id}, '${escape(u.name)}')" title="Cambiar contraseña">🔑 Contraseña</button>
+            ${u.role === 'sales' ? `<button class="btn btn-pequeno" style="background:#eff6ff;color:#1d4ed8" onclick="abrirCarterasComercial(${u.id}, '${escape(u.name).replace(/'/g, "\'")}')" title="Códigos de Sage que lleva y zonas que ve">🗂️ Carteras y zonas</button>` : ''}
             ${!esYo ? `<button class="btn btn-pequeno btn-danger" onclick="desactivarUsuario(${u.id}, '${escape(u.name)}')" title="${u.is_active ? 'Desactivar' : 'Ya inactivo'}" ${!u.is_active ? 'disabled' : ''}>🗑️</button>` : ''}
           </div>
         </div>
@@ -15198,6 +15199,106 @@ async function quitarVarianteComision(zoneId, idx) {
   } catch (err) {
     alert('Error quitando variante: ' + err.message);
   }
+}
+
+// ===== CARTERAS Y ZONAS DE UN COMERCIAL =====
+// Un comercial puede llevar VARIAS carteras de Sage (la suya y la de otra persona), y
+// las zonas que ve pueden fijarse a mano: cuatro clientes mal asignados en Sage no
+// deben hacerle aparecer un territorio en el que no trabaja.
+async function abrirCarterasComercial(userId, nombre) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:620px"><h3 style="margin-top:0">🗂️ ${escape(nombre)}</h3><div class="loading">Cargando…</div></div>`;
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+  try {
+    const r = await api('/api/users/' + userId + '/carteras');
+    const cods = (r.codigos || []).map(c => `<tr style="border-bottom:1px solid var(--gris-borde)">
+        <td style="padding:6px 8px"><b>${escape(c.codigo)}</b> ${c.etiqueta ? `<span style="font-size:11px;color:var(--gris-texto)">· ${escape(c.etiqueta)}</span>` : ''}</td>
+        <td style="padding:6px 8px;text-align:right"><button class="btn btn-pequeno btn-danger" onclick="borrarCarteraComercial(${c.id}, ${userId}, '${escape(nombre).replace(/'/g, "\\'")}')">✕</button></td>
+      </tr>`).join('');
+    const zonas = (r.zonas || []).map(z => `<label style="display:flex;align-items:center;gap:8px;padding:5px 0;cursor:pointer">
+        <input type="checkbox" class="cz-zona" value="${z.id}" ${z.asignada ? 'checked' : ''}>
+        <span>${escape(z.nombre)} <span style="font-size:11px;color:var(--gris-texto)">· ${z.n_clientes} cliente(s) suyos</span></span>
+      </label>`).join('');
+    m.querySelector('.modal').innerHTML = `
+      <h3 style="margin-top:0">🗂️ ${escape(nombre)}</h3>
+      <div class="editor-panel" style="margin-bottom:12px">
+        <h4 style="margin:0 0 4px">Carteras de Sage que lleva</h4>
+        <div style="font-size:12px;color:var(--gris-texto);margin-bottom:8px">
+          Sus clientes son los de <b>todos</b> estos códigos. Añade aquí la cartera de otra persona si la lleva él.
+        </div>
+        ${cods ? `<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px"><tbody>${cods}</tbody></table>`
+               : `<div style="font-size:13px;color:#b45309;margin-bottom:8px">Sin códigos: no verá ningún cliente.</div>`}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end">
+          <div class="form-group" style="margin:0;flex:1;min-width:150px"><label style="font-size:12px">Código</label>
+            <select id="cc-codigo" style="width:100%;padding:7px;border:1px solid #d1d5db;border-radius:6px">
+              ${(r.codigos_disponibles || []).map(d => `<option value="${escape(d.codigo)}">${escape(d.codigo)} · ${d.n} clientes</option>`).join('')}
+            </select></div>
+          <div class="form-group" style="margin:0;flex:1;min-width:140px"><label style="font-size:12px">Etiqueta</label>
+            <input type="text" id="cc-etiqueta" placeholder="ej: cartera de María" style="width:100%;padding:7px;border:1px solid #d1d5db;border-radius:6px"></div>
+          <button class="btn btn-primary btn-pequeno" onclick="anadirCarteraComercial(${userId}, '${escape(nombre).replace(/'/g, "\\'")}')">+ Añadir</button>
+        </div>
+      </div>
+      <div class="editor-panel">
+        <h4 style="margin:0 0 4px">Zonas que ve en el mapa</h4>
+        <div style="font-size:12px;color:var(--gris-texto);margin-bottom:8px">
+          ${r.zonas_fijadas
+            ? 'Fijadas a mano: solo verá las marcadas.'
+            : 'Ahora se deducen de sus clientes. Si marcas alguna, mandarán las marcadas (útil cuando Sage le asigna clientes sueltos en zonas que no trabaja).'}
+        </div>
+        ${zonas}
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-pequeno" onclick="guardarZonasComercial(${userId}, '${escape(nombre).replace(/'/g, "\\'")}')">Guardar zonas</button>
+          <button class="btn btn-secondary btn-pequeno" onclick="limpiarZonasComercial(${userId}, '${escape(nombre).replace(/'/g, "\\'")}')">Volver a deducirlas de sus clientes</button>
+        </div>
+      </div>
+      <div class="modal-acciones" style="margin-top:14px">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      </div>`;
+  } catch (e) {
+    m.querySelector('.modal').innerHTML = `<div class="error-msg">${escape(e.message)}</div>
+      <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
+  }
+}
+
+async function anadirCarteraComercial(userId, nombre) {
+  const cod = document.getElementById('cc-codigo')?.value;
+  if (!cod) { alert('No hay códigos disponibles.'); return; }
+  try {
+    await api('/api/users/' + userId + '/carteras', {
+      method: 'POST', body: { codigo: cod, etiqueta: document.getElementById('cc-etiqueta')?.value || '' }
+    });
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirCarterasComercial(userId, nombre);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function borrarCarteraComercial(id, userId, nombre) {
+  if (!confirm('¿Quitarle esta cartera?\n\nDejará de ver esos clientes.')) return;
+  try {
+    await api('/api/users/carteras/' + id, { method: 'DELETE' });
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirCarterasComercial(userId, nombre);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function guardarZonasComercial(userId, nombre) {
+  const ids = Array.from(document.querySelectorAll('.cz-zona:checked')).map(x => Number(x.value));
+  try {
+    const r = await api('/api/users/' + userId + '/zonas', { method: 'PUT', body: { zona_ids: ids } });
+    mostrarNotificacionOnline(r.zonas ? '📍 Verá ' + r.zonas + ' zona(s)' : '📍 Vuelven a deducirse de sus clientes', '#16a34a');
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirCarterasComercial(userId, nombre);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function limpiarZonasComercial(userId, nombre) {
+  try {
+    await api('/api/users/' + userId + '/zonas', { method: 'PUT', body: { zona_ids: [] } });
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirCarterasComercial(userId, nombre);
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 // ===== ZONAS DE VENTA =====

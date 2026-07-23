@@ -609,6 +609,35 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS bonificacion VARCHAR(60);   -- "3+1", "12+2"
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS oferta_texto VARCHAR(120);  -- etiqueta de la campana aplicada
 
+      -- VARIOS CODIGOS DE SAGE POR COMERCIAL. Un comercial puede llevar mas de una
+      -- cartera (Eva lleva la suya y ademas la de otra persona en Navarra), y con un
+      -- solo codigo (sage_commercial_code) se le quedaba fuera media zona.
+      CREATE TABLE IF NOT EXISTS user_sage_codes (
+        id         SERIAL PRIMARY KEY,
+        user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        codigo     VARCHAR(20) NOT NULL,
+        etiqueta   VARCHAR(80),          -- "cartera de María", para acordarse
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, codigo)
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_sage_codes ON user_sage_codes(user_id);
+      -- El codigo que ya tenia cada usuario pasa a ser el primero de su lista.
+      INSERT INTO user_sage_codes (user_id, codigo, etiqueta)
+        SELECT id, sage_commercial_code, 'principal' FROM users
+         WHERE sage_commercial_code IS NOT NULL AND TRIM(sage_commercial_code) <> ''
+        ON CONFLICT (user_id, codigo) DO NOTHING;
+
+      -- ZONAS QUE LLEVA CADA COMERCIAL. Si se define, MANDA sobre lo que se deduzca de
+      -- los clientes: cuatro clientes sueltos mal asignados en Sage no deben hacer que
+      -- le aparezca una zona en la que no trabaja.
+      CREATE TABLE IF NOT EXISTS user_zonas (
+        id       SERIAL PRIMARY KEY,
+        user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        zona_id  INTEGER NOT NULL REFERENCES zonas_venta(id) ON DELETE CASCADE,
+        UNIQUE(user_id, zona_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_zonas ON user_zonas(user_id);
+
       -- ===== ZONAS DE VENTA =====
       -- La restriccion de "esto aqui no se puede vender" es del TERRITORIO, no del
       -- comercial: Eva lleva Navarra y Rioja, y un laboratorio puede venderse en una
@@ -1508,7 +1537,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v153-zonas-por-comercial-23jul',
+      build: 'v154-carteras-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2974,6 +3003,81 @@ async function laminasRestringidasEnZona(zonaId: number): Promise<number[]> {
   return (await restriccionesEnZona(zonaId)).laminas;
 }
 
+// ============================================================================
+// CARTERAS Y ZONAS DE CADA COMERCIAL
+// Un comercial puede llevar VARIAS carteras de Sage (la suya y la de otra persona),
+// y las zonas que trabaja de verdad no siempre coinciden con lo que sale de los datos:
+// cuatro clientes mal asignados no deben hacerle aparecer una zona entera.
+// ============================================================================
+app.get('/api/users/:id/carteras', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = Number(req.params.id);
+    const codigos = await pool.query(
+      `SELECT id, codigo, etiqueta FROM user_sage_codes WHERE user_id = $1 ORDER BY id`, [uid]);
+    const zonas = await pool.query(
+      `SELECT z.id, z.nombre,
+              (SELECT 1 FROM user_zonas uz WHERE uz.user_id = $1 AND uz.zona_id = z.id) AS asignada,
+              (SELECT COUNT(*)::int FROM clients c
+                WHERE c.zona_id = z.id AND c.is_active = TRUE
+                  AND c.commercial_code = ANY(
+                    SELECT codigo FROM user_sage_codes WHERE user_id = $1
+                    UNION SELECT sage_commercial_code FROM users WHERE id = $1
+                  )) AS n_clientes
+         FROM zonas_venta z ORDER BY z.orden, z.nombre`, [uid]);
+    // Todos los codigos que existen en los clientes, para elegir de una lista real.
+    const disponibles = await pool.query(
+      `SELECT commercial_code AS codigo, COUNT(*)::int AS n
+         FROM clients WHERE is_active = TRUE AND commercial_code IS NOT NULL AND TRIM(commercial_code) <> ''
+        GROUP BY commercial_code ORDER BY COUNT(*) DESC`);
+    res.json({
+      success: true,
+      codigos: codigos.rows,
+      zonas: zonas.rows.map((z: any) => ({ ...z, asignada: !!z.asignada })),
+      zonas_fijadas: zonas.rows.some((z: any) => z.asignada),
+      codigos_disponibles: disponibles.rows
+    });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+app.post('/api/users/:id/carteras', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = Number(req.params.id);
+    const codigo = String(req.body?.codigo || '').trim();
+    if (!codigo) { res.status(400).json({ success: false, error: 'Falta el código' }); return; }
+    await pool.query(
+      `INSERT INTO user_sage_codes (user_id, codigo, etiqueta) VALUES ($1,$2,$3)
+       ON CONFLICT (user_id, codigo) DO UPDATE SET etiqueta = EXCLUDED.etiqueta`,
+      [uid, codigo.substring(0, 20), (req.body?.etiqueta || '').toString().substring(0, 80) || null]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+app.delete('/api/users/carteras/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    await pool.query(`DELETE FROM user_sage_codes WHERE id = $1`, [Number(req.params.id)]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Fijar QUE zonas ve un comercial. Lista vacia = volver a deducirlas de sus clientes.
+app.put('/api/users/:id/zonas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const uid = Number(req.params.id);
+    const ids = Array.isArray(req.body?.zona_ids) ? req.body.zona_ids.map((x: any) => Number(x)).filter(Boolean) : [];
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM user_zonas WHERE user_id = $1`, [uid]);
+    for (const z of ids) {
+      await client.query(`INSERT INTO user_zonas (user_id, zona_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [uid, z]);
+    }
+    await client.query('COMMIT');
+    res.json({ success: true, zonas: ids.length });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    res.status(500).json({ success: false, error: (e as Error).message });
+  } finally { client.release(); }
+});
+
 // LISTA DE LABORATORIOS. No hay que darlos de alta a mano: salen del proveedor que
 // trae Sage en cada producto. Y ademas los COMISIONISTAS (Lainco, Sawes), que no estan
 // en Sage y viven en el nombre de las zonas de comision.
@@ -3000,20 +3104,27 @@ app.get('/api/zonas', verifyToken, async (req: AuthRequest, res: Response) => {
     // la que no trabaja). El admin las ve todas, y ?todas=true las fuerza para cuando
     // hay que ASIGNAR zona a una farmacia nueva.
     const soloSuyas = isEffectiveSales(req) && String(req.query.todas || '') !== 'true';
-    let ccode: string | null = null;
+    let ccodes: string[] | null = null;
+    let fijadas: number[] = [];
     if (soloSuyas) {
-      const u = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [effectiveUserId(req)]);
-      ccode = u.rows[0]?.sage_commercial_code || null;
-      if (!ccode) { res.json({ success: true, zonas: [] }); return; }
+      const uid = effectiveUserId(req);
+      ccodes = await codigosSageDe(uid);
+      if (!ccodes.length) { res.json({ success: true, zonas: [] }); return; }
+      // Si el admin le ha FIJADO las zonas, mandan esas: cuatro clientes mal asignados
+      // en Sage no deben hacerle aparecer un territorio en el que no trabaja.
+      const f = await pool.query(`SELECT zona_id FROM user_zonas WHERE user_id = $1`, [uid]);
+      fijadas = f.rows.map((x: any) => Number(x.zona_id));
     }
     const z = await pool.query(
       `SELECT z.*,
               (SELECT COUNT(*)::int FROM clients c
                 WHERE c.zona_id = z.id AND c.is_active = TRUE
-                  AND ($1::text IS NULL OR c.commercial_code = $1)) AS n_clientes,
+                  AND ($1::text[] IS NULL OR c.commercial_code = ANY($1::text[]))) AS n_clientes,
               (SELECT COUNT(*)::int FROM zona_restricciones r WHERE r.zona_id = z.id) AS n_restricciones
-         FROM zonas_venta z ORDER BY z.orden, z.nombre`, [ccode]);
-    const zonas = soloSuyas ? z.rows.filter((x: any) => Number(x.n_clientes) > 0) : z.rows;
+         FROM zonas_venta z ORDER BY z.orden, z.nombre`, [ccodes]);
+    const zonas = !soloSuyas ? z.rows
+      : fijadas.length ? z.rows.filter((x: any) => fijadas.includes(Number(x.id)))
+      : z.rows.filter((x: any) => Number(x.n_clientes) > 0);
     res.json({ success: true, zonas });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -5061,6 +5172,18 @@ function effectiveUserId(req: AuthRequest): number {
 }
 
 // Helper: determinar si el rol efectivo es comercial
+// TODOS los codigos de Sage de un comercial (puede llevar varias carteras: la suya y
+// la de otra persona en otra zona). Devuelve [] si no tiene ninguno.
+async function codigosSageDe(userId: number): Promise<string[]> {
+  const r = await pool.query(
+    `SELECT codigo FROM user_sage_codes WHERE user_id = $1
+      UNION
+     SELECT sage_commercial_code FROM users
+      WHERE id = $1 AND sage_commercial_code IS NOT NULL AND TRIM(sage_commercial_code) <> ''`,
+    [userId]);
+  return r.rows.map((x: any) => String(x.codigo)).filter(Boolean);
+}
+
 function isEffectiveSales(req: AuthRequest): boolean {
   return req.user!.role === 'sales';
 }
@@ -5232,11 +5355,10 @@ app.get('/api/sync/my-clients', verifyToken, async (req: AuthRequest, res: Respo
 
     if (isEffectiveSales(req)) {
       // Comercial: solo sus clientes asignados (por commercial_code)
-      const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
-      const ccode = uR.rows[0]?.sage_commercial_code;
-      if (!ccode) { res.json({ success: true, clientes: [] }); return; }
-      params.push(String(ccode));
-      whereClause += ` AND c.commercial_code = $${params.length}`;
+      const ccodes = await codigosSageDe(userId);
+      if (!ccodes.length) { res.json({ success: true, clientes: [] }); return; }
+      params.push(ccodes);
+      whereClause += ` AND c.commercial_code = ANY($${params.length}::text[])`;
     }
 
     const r = await pool.query(
@@ -5394,13 +5516,12 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
     const params: any[] = [];
 
     if (isEffectiveSales(req)) {
-      const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
-      const ccode = uR.rows[0]?.sage_commercial_code;
-      if (!ccode) {
+      const ccodes = await codigosSageDe(userId);
+      if (!ccodes.length) {
         res.json({ success: true, clientes: [], total: 0, config: { cicloDefault, ventanaProxima, ventanaUrgente } });
         return;
       }
-      params.push(String(ccode));
+      params.push(ccodes);
       comercialFilterClause = ` AND c.commercial_code = $${params.length}`;
     } else {
       const adminCom = String(req.query.comercial || '').trim();
@@ -5522,11 +5643,10 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
 
       // Filtro por comercial (mismas reglas que la query principal)
       if (isEffectiveSales(req)) {
-        const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
-        const ccode = uR.rows[0]?.sage_commercial_code;
-        if (ccode) {
-          cComClause = ` AND c.commercial_code = $${cIdx++}`;
-          cParams.push(String(ccode));
+        const ccodes = await codigosSageDe(userId);
+        if (ccodes.length) {
+          cComClause = ` AND c.commercial_code = ANY($${cIdx++}::text[])`;
+          cParams.push(ccodes);
         }
       } else {
         const adminCom = String(req.query.comercial || '').trim();
@@ -5644,11 +5764,10 @@ app.get('/api/planning/filtros', verifyToken, async (req: AuthRequest, res: Resp
     let where = `WHERE c.is_active = TRUE`;
     const params: any[] = [];
     if (isEffectiveSales(req)) {
-      const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
-      const ccode = uR.rows[0]?.sage_commercial_code;
-      if (!ccode) { res.json({ success: true, provincias: [], municipios: [], comerciales: [] }); return; }
-      where += ` AND c.commercial_code = $1`;
-      params.push(String(ccode));
+      const ccodes = await codigosSageDe(userId);
+      if (!ccodes.length) { res.json({ success: true, provincias: [], municipios: [], comerciales: [] }); return; }
+      where += ` AND c.commercial_code = ANY($1::text[])`;
+      params.push(ccodes);
     }
     const provR = await pool.query(`SELECT DISTINCT provincia FROM clients c ${where} AND provincia IS NOT NULL AND provincia <> '' ORDER BY provincia`, params);
     const muniR = await pool.query(`SELECT DISTINCT municipio FROM clients c ${where} AND municipio IS NOT NULL AND municipio <> '' ORDER BY municipio`, params);
@@ -8733,11 +8852,10 @@ app.get('/api/map/clients', verifyToken, async (req: AuthRequest, res: Response)
     const params: any[] = [];
     let comercialFilter = '';
     if (isEffectiveSales(req)) {
-      const uR = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [userId]);
-      const ccode = uR.rows[0]?.sage_commercial_code;
-      if (!ccode) { res.json({ success: true, clientes: [] }); return; }
-      params.push(String(ccode));
-      comercialFilter = ` AND c.commercial_code = $${params.length}`;
+      const ccodes = await codigosSageDe(userId);
+      if (!ccodes.length) { res.json({ success: true, clientes: [] }); return; }
+      params.push(ccodes);
+      comercialFilter = ` AND c.commercial_code = ANY($${params.length}::text[])`;
     }
 
     // Bbox filter (cuando "cerca de aquí" envía un area de mapa)
