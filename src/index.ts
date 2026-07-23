@@ -1570,7 +1570,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v157-cliente-nuevo-23jul',
+      build: 'v158-borrar-ficha-nueva-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -3085,15 +3085,45 @@ app.post('/api/clients/nuevo-desde-visita', verifyToken, async (req: AuthRequest
        txt(b.numero_cuenta, 50), sageTemp, codigos[0] || null, req.user?.name || null, txt(b.notas, 2000)]);
 
     // Zona: se deduce del CP para que entre en el mapa y en las reglas por territorio.
+    // Se refleja en lo que se devuelve, o el frontend cree que se ha quedado sin zona.
     try {
       const z = await zonaDeCliente(Number(r.rows[0].id));
-      if (z) await pool.query(`UPDATE clients SET zona_id = $1 WHERE id = $2`, [z.id, r.rows[0].id]);
+      if (z) {
+        await pool.query(`UPDATE clients SET zona_id = $1 WHERE id = $2`, [z.id, r.rows[0].id]);
+        r.rows[0].zona_id = z.id;
+        r.rows[0].zona_nombre = z.nombre;
+      }
     } catch (_) {}
 
     avisarCoordinacionTelegram(
       `*${req.user?.name || 'Un comercial'}* ha dado de alta un cliente NUEVO: ${razon}` +
       `\nHay que crearlo en Sage y asignarlo a su comercial.`).catch(() => {});
     res.json({ success: true, cliente: r.rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Borrar una ficha creada por error desde la calle. Solo se permite si la creo un
+// comercial (is_new_from_visit) y NO tiene visitas: asi no se puede borrar nunca un
+// cliente de Sage ni perder historial. Lo normal es equivocarse al teclear y querer
+// empezar de cero.
+app.delete('/api/clients/:id/nuevo-desde-visita', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const c = await pool.query(
+      `SELECT c.razon_social, c.is_new_from_visit, c.sage_code,
+              (SELECT COUNT(*)::int FROM visits v WHERE v.client_id = c.id) AS n_visitas
+         FROM clients c WHERE c.id = $1`, [id]);
+    if (!c.rows.length) { res.status(404).json({ success: false, error: 'Cliente no encontrado' }); return; }
+    if (!c.rows[0].is_new_from_visit) {
+      res.status(400).json({ success: false, error: 'Solo se pueden borrar las fichas creadas desde una visita, no las que vienen de Sage' });
+      return;
+    }
+    if (Number(c.rows[0].n_visitas) > 0) {
+      res.status(400).json({ success: false, error: 'Tiene visitas: no se borra para no perder el historial. Márcalo como "no lo visito".' });
+      return;
+    }
+    await pool.query(`DELETE FROM clients WHERE id = $1`, [id]);
+    res.json({ success: true, borrado: c.rows[0].razon_social });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
