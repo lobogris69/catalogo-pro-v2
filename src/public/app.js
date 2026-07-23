@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v152 · 23 jul 2026';
+const APP_VERSION = 'v153 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -2934,7 +2934,7 @@ let _visorZona = null, _visorOcultasPorZona = 0, _visorZonaDesconocida = null, _
 // datos se completan solos con el uso, sin esperar a que Sage traiga los códigos postales.
 async function elegirZonaCliente(clientId) {
   try {
-    const r = await api('/api/zonas');
+    const r = await api('/api/zonas?todas=true');
     const zonas = r.zonas || [];
     if (!zonas.length) { alert('No hay zonas configuradas.'); return; }
     const texto = zonas.map((z, i) => (i + 1) + ') ' + z.nombre).join('\n');

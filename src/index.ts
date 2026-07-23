@@ -1508,7 +1508,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v152-mapa-bajas-zona-23jul',
+      build: 'v153-zonas-por-comercial-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2993,13 +2993,28 @@ app.get('/api/laboratorios', verifyToken, requireRealAdmin, async (_req: AuthReq
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
-app.get('/api/zonas', verifyToken, async (_req: AuthRequest, res: Response) => {
+app.get('/api/zonas', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
+    // A un COMERCIAL solo le interesan las zonas donde tiene clientes asignados por su
+    // codigo de Sage: enseñarle las cinco es ruido (nunca va a filtrar por una zona en
+    // la que no trabaja). El admin las ve todas, y ?todas=true las fuerza para cuando
+    // hay que ASIGNAR zona a una farmacia nueva.
+    const soloSuyas = isEffectiveSales(req) && String(req.query.todas || '') !== 'true';
+    let ccode: string | null = null;
+    if (soloSuyas) {
+      const u = await pool.query(`SELECT sage_commercial_code FROM users WHERE id = $1`, [effectiveUserId(req)]);
+      ccode = u.rows[0]?.sage_commercial_code || null;
+      if (!ccode) { res.json({ success: true, zonas: [] }); return; }
+    }
     const z = await pool.query(
-      `SELECT z.*, (SELECT COUNT(*)::int FROM clients c WHERE c.zona_id = z.id) AS n_clientes,
+      `SELECT z.*,
+              (SELECT COUNT(*)::int FROM clients c
+                WHERE c.zona_id = z.id AND c.is_active = TRUE
+                  AND ($1::text IS NULL OR c.commercial_code = $1)) AS n_clientes,
               (SELECT COUNT(*)::int FROM zona_restricciones r WHERE r.zona_id = z.id) AS n_restricciones
-         FROM zonas_venta z ORDER BY z.orden, z.nombre`);
-    res.json({ success: true, zonas: z.rows });
+         FROM zonas_venta z ORDER BY z.orden, z.nombre`, [ccode]);
+    const zonas = soloSuyas ? z.rows.filter((x: any) => Number(x.n_clientes) > 0) : z.rows;
+    res.json({ success: true, zonas });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
