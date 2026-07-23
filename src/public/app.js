@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v150 · 23 jul 2026';
+const APP_VERSION = 'v151 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -4100,6 +4100,9 @@ async function pulsarZonaComercial(zona) {
     </div>
   `;
   document.body.appendChild(modal);
+  // En la tablet este cuadro tapa justo las condiciones que hay que leer en la lámina:
+  // se aparta arrastrándolo desde cualquier borde (no hace falta acertar en el título).
+  hacerDialogoArrastrable(modal.querySelector('.modal-card'), modal.querySelector('.modal-header'), true);
 
   const $cant = modal.querySelector('#zona-cantidad');
   const $subtotal = modal.querySelector('#zona-subtotal');
@@ -4449,6 +4452,7 @@ async function pulsarZonaComision(zona) {
     </div>
   `;
   document.body.appendChild(modal);
+  hacerDialogoArrastrable(modal.querySelector('.modal-card'), modal.querySelector('.modal-header'), true);
 
   modal.querySelector('#com-guardar').addEventListener('click', async () => {
     const $msg = modal.querySelector('#com-msg');
@@ -4513,6 +4517,7 @@ function pulsarZonaSueltas(zona) {
   modal.dataset.sheetId = String(sheetId);
   document.body.appendChild(modal);
   renderModalSueltas();
+  hacerDialogoArrastrable(modal.querySelector('.modal-card'), modal.querySelector('.modal-header'), true);
   setTimeout(() => { const r = document.getElementById('suelta-ref'); if (r) r.focus(); }, 60);
 }
 
@@ -6010,7 +6015,12 @@ function toastDeshacer(texto, alDeshacer) {
 
 // Hace ARRASTRABLE un diálogo por su título, para poder apartarlo cuando tapa lo
 // que estás mirando (p.ej. elegir la tabla viendo la lámina de debajo).
-function hacerDialogoArrastrable(caja, asa) {
+// caja: el diálogo. asa: por dónde se agarra (la cabecera).
+// todoElCuadro=true -> se puede arrastrar desde CUALQUIER parte del cuadro (bordes,
+// esquinas, fondo), menos desde los campos y botones. En la tablet, el cuadro de anotar
+// tapa justo las condiciones que el comercial necesita leer de la lámina, y con dedos
+// no siempre se acierta en la barra del título.
+function hacerDialogoArrastrable(caja, asa, todoElCuadro) {
   if (!caja || !asa) return;
   asa.style.cursor = 'move';
   asa.title = (asa.title ? asa.title + ' · ' : '') + 'Arrastra para apartar esta ventana';
@@ -6034,8 +6044,10 @@ function hacerDialogoArrastrable(caja, asa) {
     document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up);
     document.removeEventListener('touchmove', move); document.removeEventListener('touchend', up);
   };
-  asa.addEventListener('mousedown', (e) => {
-    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+  // No se arrastra desde lo que hay que poder tocar: campos, botones, enlaces, listas.
+  const esControl = (el) => !!(el && el.closest && el.closest('input,select,textarea,button,a,label,.fam-chip,.chip-tipo'));
+  const empezar = (e) => {
+    if (esControl(e.target)) return;
     const r = caja.getBoundingClientRect();
     // Se fija la posición actual antes de empezar a mover (estaba centrado por flex)
     caja.style.position = 'fixed'; caja.style.margin = '0';
@@ -6045,7 +6057,21 @@ function hacerDialogoArrastrable(caja, asa) {
     e.preventDefault();
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
     document.addEventListener('touchmove', move, { passive: false }); document.addEventListener('touchend', up);
-  });
+  };
+  const donde = todoElCuadro ? caja : asa;
+  if (todoElCuadro) {
+    caja.style.cursor = 'move';
+    caja.title = 'Arrastra el cuadro desde cualquier borde para apartarlo';
+    // Pista visible: en la tablet nadie descubre que se puede mover si no se dice.
+    if (!caja.querySelector('.dlg-pista-mover')) {
+      const pista = document.createElement('div');
+      pista.className = 'dlg-pista-mover';
+      pista.textContent = '⠿ arrastra este cuadro si te tapa la lámina';
+      caja.appendChild(pista);
+    }
+  }
+  donde.addEventListener('mousedown', empezar);
+  donde.addEventListener('touchstart', empezar, { passive: false });
 }
 
 // Carga la imagen de una tabla en un <img> (necesita token -> se trae como blob).

@@ -433,7 +433,10 @@ const MANUAL_COMERCIAL = [
       'Si el producto tiene <b>variantes</b> (color, graduación), elígelas ahí mismo.',
       'Si ves <b>ref. 1094</b> en azul, es el número de ese modelo concreto: se manda solo, no tienes que apuntarlo.'
     ],
-    ojo: ['Puedes añadir una nota a cualquier línea (por ejemplo "urgente" o "para el jueves").']
+    ojo: [
+      'Puedes añadir una nota a cualquier línea (por ejemplo "urgente" o "para el jueves").',
+      'Si el cuadro de anotar te tapa las condiciones de la lámina, <b>arrástralo desde cualquier borde</b> y apártalo. No hace falta acertar en la barra del título.'
+    ]
   },
   {
     id: 'c-expositores',

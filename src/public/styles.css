@@ -3589,6 +3589,13 @@ body.con-banner-update {
   background: rgba(22, 163, 74, 0.18);
   border-width: 3px;
 }
+/* Pista de que el cuadro se puede apartar. Va al pie del diálogo: en la tablet nadie
+   descubre que se mueve si no se le dice. */
+.dlg-pista-mover {
+  font-size: 11px; color: var(--gris-texto); text-align: center;
+  padding: 6px 0 2px; opacity: .7; user-select: none; pointer-events: none;
+}
+
 /* Producto que no se vende en la zona de esta farmacia, dentro de una lámina mixta:
    la lámina se enseña, pero ese producto queda marcado y no se puede anotar. */
 .visor-zona-vetada {
