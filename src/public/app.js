@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v172 · 23 jul 2026';
+const APP_VERSION = 'v173 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12204,8 +12204,20 @@ async function vAnotar(body) {
     return r.annotation;
   }
   const previas = await CpDB.listarAnotacionesDeVisitaOffline(appState.visitaActiva.local_id);
+  // Sin red no hay a quién preguntarle el nombre ni el precio del producto: se copian
+  // de la zona que acaba de tocar. Si no, el repaso antes de enviar sale con guiones.
+  let datosProducto = {};
+  if (body.product_id && typeof _zonasComercial !== 'undefined') {
+    const z = (_zonasComercial || []).find(x => Number(x.product_id) === Number(body.product_id));
+    if (z) datosProducto = {
+      producto_codigo: z.producto_codigo,
+      producto_nombre: z.producto_nombre,
+      producto_pvf: z.producto_pvf
+    };
+  }
   return await CpDB.crearAnotacionOffline({
     ...body,
+    ...datosProducto,
     id: _nuevoIdLocal(),
     visit_local_id: appState.visitaActiva.local_id,
     orden_en_visita: previas.length + 1
