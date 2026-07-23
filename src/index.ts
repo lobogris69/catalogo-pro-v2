@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v161-clientes-visibles-23jul',
+      build: 'v162-sin-bajas-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -4812,6 +4812,12 @@ app.get('/api/clients', verifyToken, async (req: AuthRequest, res: Response) => 
     let filtroVisibles = '';
     if (isEffectiveSales(req)) {
       filtroVisibles = await filtroClientesVisibles(effectiveUserId(req), params, 'c');
+      // BAJAS: Sage no las desactiva, arrastra el estado en el NOMBRE ("- BAJA - FARMACIA X",
+      // "ANULADO"). Al comercial no le sirven de nada y encima le salen las PRIMERAS de la
+      // lista (empiezan por guion). Mismo criterio que el mapa.
+      if (String(req.query.incluir_bajas || '') !== 'true') {
+        filtroVisibles += ` AND c.razon_social !~* '^[[:space:]]*-?[[:space:]]*(baja|anulad)'`;
+      }
     } else if (commercial) {
       whereParts.push(`commercial_code = $${params.length + 1}`);
       params.push(commercial);
