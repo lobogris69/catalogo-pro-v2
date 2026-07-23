@@ -164,7 +164,8 @@ const MANUAL_ADMIN = [
       'Durante la visita, la app mira <b>dónde está la farmacia</b> y oculta esas láminas. En Navarra las ve; en Aragón, no. El comercial no tiene que acordarse de nada.',
       'La zona de cada farmacia sale, por este orden: la que le hayas fijado a mano, su <b>código postal</b>, o su provincia. Si no se sabe, el comercial la elige <b>una vez</b> durante la visita y queda guardada.',
       'Con <b>🧭 Deducir zona de los clientes que faltan</b> se rellenan de golpe los que ya tengan código postal o provincia.',
-      '<b>Cada comercial ve solo sus zonas.</b> En <b>👥 Comerciales → 🗂️ Carteras y zonas</b>: ahí le añades <b>varias carteras de Sage</b> (si lleva la suya y la de otra persona, ve los clientes de las dos) y puedes <b>fijar qué zonas ve</b>. Si no fijas ninguna, se deducen de sus clientes.'
+      '<b>Cada comercial ve solo sus zonas.</b> En <b>👥 Comerciales → 🗂️ Carteras y zonas</b>: ahí le añades <b>varias carteras de Sage</b> (si lleva la suya y la de otra persona, ve los clientes de las dos) y puedes <b>fijar qué zonas ve</b>. Si no fijas ninguna, se deducen de sus clientes.',
+      '<b>Zona compartida entre dos comerciales:</b> en cada zona asignada eliges el alcance — <b>solo sus clientes</b>, <b>toda la zona</b>, o <b>toda la zona menos ciertos códigos</b>. Ejemplo real: a Fernando le das Navarra <i>toda la zona</i>, y a Eva Navarra <i>toda menos el código de Fernando</i>: así Eva ve Navarra sin pisarle su cartera.'
     ],
     ojo: [
       'Esto va por <b>zona</b>, no por comercial: es lo que permite que el mismo comercial lleve dos territorios con reglas distintas.',

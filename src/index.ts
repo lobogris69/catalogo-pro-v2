@@ -638,6 +638,18 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_user_zonas ON user_zonas(user_id);
 
+      -- ALCANCE de cada zona asignada. Una zona puede estar COMPARTIDA entre dos
+      -- comerciales: Fernando lleva Navarra ENTERA y Eva trabaja tambien en Navarra
+      -- pero solo con lo que NO es de Fernando.
+      --   propios        -> en esa zona ve solo sus clientes (por sus codigos de Sage)
+      --   todos          -> ve TODOS los clientes de la zona, lleven el codigo que lleven
+      --   todos_excepto  -> ve todos los de la zona MENOS los codigos que se excluyan
+      ALTER TABLE user_zonas ADD COLUMN IF NOT EXISTS alcance VARCHAR(16) NOT NULL DEFAULT 'propios';
+      ALTER TABLE user_zonas ADD COLUMN IF NOT EXISTS excluir_codigos TEXT;   -- "2,10"
+      ALTER TABLE user_zonas DROP CONSTRAINT IF EXISTS user_zonas_alcance_check;
+      ALTER TABLE user_zonas ADD CONSTRAINT user_zonas_alcance_check
+        CHECK (alcance IN ('propios','todos','todos_excepto'));
+
       -- ===== ZONAS DE VENTA =====
       -- La restriccion de "esto aqui no se puede vender" es del TERRITORIO, no del
       -- comercial: Eva lleva Navarra y Rioja, y un laboratorio puede venderse en una
@@ -1537,7 +1549,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v154-carteras-23jul',
+      build: 'v155-zona-compartida-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -3017,6 +3029,9 @@ app.get('/api/users/:id/carteras', verifyToken, requireRealAdmin, async (req: Au
     const zonas = await pool.query(
       `SELECT z.id, z.nombre,
               (SELECT 1 FROM user_zonas uz WHERE uz.user_id = $1 AND uz.zona_id = z.id) AS asignada,
+              (SELECT uz.alcance FROM user_zonas uz WHERE uz.user_id = $1 AND uz.zona_id = z.id) AS alcance,
+              (SELECT uz.excluir_codigos FROM user_zonas uz WHERE uz.user_id = $1 AND uz.zona_id = z.id) AS excluir_codigos,
+              (SELECT COUNT(*)::int FROM clients c2 WHERE c2.zona_id = z.id AND c2.is_active = TRUE) AS n_zona_total,
               (SELECT COUNT(*)::int FROM clients c
                 WHERE c.zona_id = z.id AND c.is_active = TRUE
                   AND c.commercial_code = ANY(
@@ -3064,14 +3079,26 @@ app.put('/api/users/:id/zonas', verifyToken, requireRealAdmin, async (req: AuthR
   const client = await pool.connect();
   try {
     const uid = Number(req.params.id);
-    const ids = Array.isArray(req.body?.zona_ids) ? req.body.zona_ids.map((x: any) => Number(x)).filter(Boolean) : [];
+    // zonas: [{zona_id, alcance, excluir_codigos}] — o zona_ids simple (todo 'propios')
+    const lista: any[] = Array.isArray(req.body?.zonas)
+      ? req.body.zonas
+      : (Array.isArray(req.body?.zona_ids) ? req.body.zona_ids.map((z: any) => ({ zona_id: Number(z) })) : []);
     await client.query('BEGIN');
     await client.query(`DELETE FROM user_zonas WHERE user_id = $1`, [uid]);
-    for (const z of ids) {
-      await client.query(`INSERT INTO user_zonas (user_id, zona_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [uid, z]);
+    for (const z of lista) {
+      const zid = Number(z.zona_id);
+      if (!zid) continue;
+      const alcance = ['propios', 'todos', 'todos_excepto'].includes(z.alcance) ? z.alcance : 'propios';
+      const exc = alcance === 'todos_excepto'
+        ? String(z.excluir_codigos || '').split(',').map((x: string) => x.trim()).filter(Boolean).join(',')
+        : null;
+      await client.query(
+        `INSERT INTO user_zonas (user_id, zona_id, alcance, excluir_codigos) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (user_id, zona_id) DO UPDATE SET alcance = EXCLUDED.alcance, excluir_codigos = EXCLUDED.excluir_codigos`,
+        [uid, zid, alcance, exc || null]);
     }
     await client.query('COMMIT');
-    res.json({ success: true, zonas: ids.length });
+    res.json({ success: true, zonas: lista.length });
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     res.status(500).json({ success: false, error: (e as Error).message });
@@ -5184,6 +5211,40 @@ async function codigosSageDe(userId: number): Promise<string[]> {
   return r.rows.map((x: any) => String(x.codigo)).filter(Boolean);
 }
 
+// QUE CLIENTES VE UN COMERCIAL. Antes era solo "los de mi codigo de Sage"; ahora se
+// suman las zonas que lleve asignadas, que pueden estar COMPARTIDAS:
+//   Fernando -> Navarra 'todos'                    (toda Navarra, lleve el codigo que lleve)
+//   Eva      -> Navarra 'todos_excepto' [2]        (Navarra MENOS la cartera de Fernando)
+// Devuelve el trozo de SQL (" AND (...)") y va empujando en `params` lo que necesite.
+async function filtroClientesVisibles(userId: number, params: any[], alias = 'c'): Promise<string> {
+  const codigos = await codigosSageDe(userId);
+  const zonas = await pool.query(
+    `SELECT zona_id, alcance, excluir_codigos FROM user_zonas WHERE user_id = $1`, [userId]);
+  const ors: string[] = [];
+  if (codigos.length) {
+    params.push(codigos);
+    ors.push(`${alias}.commercial_code = ANY($${params.length}::text[])`);
+  }
+  for (const z of zonas.rows) {
+    if (z.alcance === 'todos') {
+      params.push(Number(z.zona_id));
+      ors.push(`${alias}.zona_id = $${params.length}`);
+    } else if (z.alcance === 'todos_excepto') {
+      params.push(Number(z.zona_id));
+      const pZona = params.length;
+      const exc = String(z.excluir_codigos || '').split(',').map(x => x.trim()).filter(Boolean);
+      if (exc.length) {
+        params.push(exc);
+        ors.push(`(${alias}.zona_id = $${pZona} AND (${alias}.commercial_code IS NULL OR ${alias}.commercial_code <> ALL($${params.length}::text[])))`);
+      } else {
+        ors.push(`${alias}.zona_id = $${pZona}`);
+      }
+    }
+  }
+  // Sin codigos ni zonas no ve ningun cliente (mejor eso que verlos todos).
+  return ors.length ? ` AND (${ors.join(' OR ')})` : ' AND FALSE';
+}
+
 function isEffectiveSales(req: AuthRequest): boolean {
   return req.user!.role === 'sales';
 }
@@ -5355,10 +5416,7 @@ app.get('/api/sync/my-clients', verifyToken, async (req: AuthRequest, res: Respo
 
     if (isEffectiveSales(req)) {
       // Comercial: solo sus clientes asignados (por commercial_code)
-      const ccodes = await codigosSageDe(userId);
-      if (!ccodes.length) { res.json({ success: true, clientes: [] }); return; }
-      params.push(ccodes);
-      whereClause += ` AND c.commercial_code = ANY($${params.length}::text[])`;
+      whereClause += await filtroClientesVisibles(userId, params);
     }
 
     const r = await pool.query(
@@ -5516,13 +5574,7 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
     const params: any[] = [];
 
     if (isEffectiveSales(req)) {
-      const ccodes = await codigosSageDe(userId);
-      if (!ccodes.length) {
-        res.json({ success: true, clientes: [], total: 0, config: { cicloDefault, ventanaProxima, ventanaUrgente } });
-        return;
-      }
-      params.push(ccodes);
-      comercialFilterClause = ` AND c.commercial_code = $${params.length}`;
+      comercialFilterClause = await filtroClientesVisibles(userId, params);
     } else {
       const adminCom = String(req.query.comercial || '').trim();
       if (adminCom) {
@@ -5643,11 +5695,8 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
 
       // Filtro por comercial (mismas reglas que la query principal)
       if (isEffectiveSales(req)) {
-        const ccodes = await codigosSageDe(userId);
-        if (ccodes.length) {
-          cComClause = ` AND c.commercial_code = ANY($${cIdx++}::text[])`;
-          cParams.push(ccodes);
-        }
+        cComClause = await filtroClientesVisibles(userId, cParams);
+        cIdx = cParams.length + 1;
       } else {
         const adminCom = String(req.query.comercial || '').trim();
         if (adminCom) {
@@ -5764,10 +5813,7 @@ app.get('/api/planning/filtros', verifyToken, async (req: AuthRequest, res: Resp
     let where = `WHERE c.is_active = TRUE`;
     const params: any[] = [];
     if (isEffectiveSales(req)) {
-      const ccodes = await codigosSageDe(userId);
-      if (!ccodes.length) { res.json({ success: true, provincias: [], municipios: [], comerciales: [] }); return; }
-      where += ` AND c.commercial_code = ANY($1::text[])`;
-      params.push(ccodes);
+      where += await filtroClientesVisibles(userId, params);
     }
     const provR = await pool.query(`SELECT DISTINCT provincia FROM clients c ${where} AND provincia IS NOT NULL AND provincia <> '' ORDER BY provincia`, params);
     const muniR = await pool.query(`SELECT DISTINCT municipio FROM clients c ${where} AND municipio IS NOT NULL AND municipio <> '' ORDER BY municipio`, params);
@@ -8852,10 +8898,7 @@ app.get('/api/map/clients', verifyToken, async (req: AuthRequest, res: Response)
     const params: any[] = [];
     let comercialFilter = '';
     if (isEffectiveSales(req)) {
-      const ccodes = await codigosSageDe(userId);
-      if (!ccodes.length) { res.json({ success: true, clientes: [] }); return; }
-      params.push(ccodes);
-      comercialFilter = ` AND c.commercial_code = ANY($${params.length}::text[])`;
+      comercialFilter = await filtroClientesVisibles(userId, params);
     }
 
     // Bbox filter (cuando "cerca de aquí" envía un area de mapa)

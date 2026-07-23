@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v154 · 23 jul 2026';
+const APP_VERSION = 'v155 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -15217,10 +15217,32 @@ async function abrirCarterasComercial(userId, nombre) {
         <td style="padding:6px 8px"><b>${escape(c.codigo)}</b> ${c.etiqueta ? `<span style="font-size:11px;color:var(--gris-texto)">· ${escape(c.etiqueta)}</span>` : ''}</td>
         <td style="padding:6px 8px;text-align:right"><button class="btn btn-pequeno btn-danger" onclick="borrarCarteraComercial(${c.id}, ${userId}, '${escape(nombre).replace(/'/g, "\\'")}')">✕</button></td>
       </tr>`).join('');
-    const zonas = (r.zonas || []).map(z => `<label style="display:flex;align-items:center;gap:8px;padding:5px 0;cursor:pointer">
-        <input type="checkbox" class="cz-zona" value="${z.id}" ${z.asignada ? 'checked' : ''}>
-        <span>${escape(z.nombre)} <span style="font-size:11px;color:var(--gris-texto)">· ${z.n_clientes} cliente(s) suyos</span></span>
-      </label>`).join('');
+    const otros = (r.codigos_disponibles || []).map(d => d.codigo);
+    const zonas = (r.zonas || []).map(z => {
+      const alc = z.alcance || 'propios';
+      const exc = String(z.excluir_codigos || '');
+      return `<div style="border-bottom:1px solid var(--gris-borde);padding:8px 0">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" class="cz-zona" data-zona="${z.id}" ${z.asignada ? 'checked' : ''}
+                 onchange="this.closest('div').querySelector('.cz-detalle').style.display=this.checked?'':'none'">
+          <b>${escape(z.nombre)}</b>
+          <span style="font-size:11px;color:var(--gris-texto)">· ${z.n_clientes} suyos de ${z.n_zona_total} en la zona</span>
+        </label>
+        <div class="cz-detalle" style="${z.asignada ? '' : 'display:none;'}margin:6px 0 0 26px">
+          <select class="cz-alcance" data-zona="${z.id}" style="padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px"
+                  onchange="this.closest('.cz-detalle').querySelector('.cz-exc').style.display=this.value==='todos_excepto'?'':'none'">
+            <option value="propios" ${alc === 'propios' ? 'selected' : ''}>Solo sus clientes (por su código)</option>
+            <option value="todos" ${alc === 'todos' ? 'selected' : ''}>TODA la zona (lleve el código que lleve)</option>
+            <option value="todos_excepto" ${alc === 'todos_excepto' ? 'selected' : ''}>Toda la zona MENOS ciertos códigos</option>
+          </select>
+          <span class="cz-exc" style="${alc === 'todos_excepto' ? '' : 'display:none;'}margin-left:6px">
+            <input type="text" class="cz-excluir" data-zona="${z.id}" value="${escape(exc)}" placeholder="códigos a excluir, ej: 2"
+                   style="width:170px;padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">
+            <span style="font-size:11px;color:var(--gris-texto)">(${escape(otros.slice(0, 6).join(', '))}…)</span>
+          </span>
+        </div>
+      </div>`;
+    }).join('');
     m.querySelector('.modal').innerHTML = `
       <h3 style="margin-top:0">🗂️ ${escape(nombre)}</h3>
       <div class="editor-panel" style="margin-bottom:12px">
@@ -15245,7 +15267,8 @@ async function abrirCarterasComercial(userId, nombre) {
         <div style="font-size:12px;color:var(--gris-texto);margin-bottom:8px">
           ${r.zonas_fijadas
             ? 'Fijadas a mano: solo verá las marcadas.'
-            : 'Ahora se deducen de sus clientes. Si marcas alguna, mandarán las marcadas (útil cuando Sage le asigna clientes sueltos en zonas que no trabaja).'}
+            : 'Ahora se deducen de sus clientes. Si marcas alguna, mandarán las marcadas.'}
+          <br>Una zona puede estar <b>compartida</b>: a uno le das <b>toda la zona</b> y a otro <b>toda la zona menos los códigos del primero</b>.
         </div>
         ${zonas}
         <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
@@ -15284,9 +15307,14 @@ async function borrarCarteraComercial(id, userId, nombre) {
 }
 
 async function guardarZonasComercial(userId, nombre) {
-  const ids = Array.from(document.querySelectorAll('.cz-zona:checked')).map(x => Number(x.value));
+  const zonas = Array.from(document.querySelectorAll('.cz-zona:checked')).map(chk => {
+    const zid = chk.dataset.zona;
+    const sel = document.querySelector('.cz-alcance[data-zona="' + zid + '"]');
+    const exc = document.querySelector('.cz-excluir[data-zona="' + zid + '"]');
+    return { zona_id: Number(zid), alcance: sel ? sel.value : 'propios', excluir_codigos: exc ? exc.value : '' };
+  });
   try {
-    const r = await api('/api/users/' + userId + '/zonas', { method: 'PUT', body: { zona_ids: ids } });
+    const r = await api('/api/users/' + userId + '/zonas', { method: 'PUT', body: { zonas } });
     mostrarNotificacionOnline(r.zonas ? '📍 Verá ' + r.zonas + ' zona(s)' : '📍 Vuelven a deducirse de sus clientes', '#16a34a');
     document.querySelectorAll('.modal-bg').forEach(x => x.remove());
     abrirCarterasComercial(userId, nombre);
