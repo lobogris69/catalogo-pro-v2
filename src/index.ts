@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v167-lamina-sin-nombre-23jul',
+      build: 'v168-backtesting-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -5540,6 +5540,25 @@ app.post('/api/visits/start', verifyToken, async (req: AuthRequest, res: Respons
       res.json({ success: true, visit: existing.rows[0], continued: true });
       return;
     }
+    // ¿HAY OTRA VISITA ABIERTA CON OTRO CLIENTE? Antes se creaba una segunda en
+    // silencio: el comercial se dejaba el pedido de la farmacia anterior a medias y sin
+    // enviar, y no se enteraba nadie. Ahora se avisa y decide él (forzar=true).
+    if (!req.body.forzar) {
+      const otra = await pool.query(
+        `SELECT v.id, v.client_id, c.razon_social,
+                (SELECT COUNT(*)::int FROM annotations a WHERE a.visit_id = v.id) AS lineas
+           FROM visits v LEFT JOIN clients c ON c.id = v.client_id
+          WHERE v.user_id = $1 AND v.status = 'draft'
+          ORDER BY v.created_at DESC LIMIT 1`, [userId]);
+      if (otra.rows.length > 0) {
+        res.status(409).json({
+          success: false,
+          error: 'Tienes una visita sin terminar en ' + (otra.rows[0].razon_social || 'otro cliente'),
+          visita_abierta: otra.rows[0]
+        });
+        return;
+      }
+    }
     // Crear nueva
     const cat = await pool.query(`SELECT version FROM catalogs WHERE id = $1`, [Number(catalog_id)]);
     const versionCat = cat.rows[0]?.version || 1;
@@ -9313,6 +9332,20 @@ app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, re
       res.status(400).json({ success: false, error: 'texto_libre obligatorio' });
       return;
     }
+    // CANTIDAD: una linea de pedido con 0 o con -5 unidades no significa nada y la
+    // oficina no puede facturarla. Se corta aqui, que es por donde entra todo.
+    if (req.body.cantidad !== undefined && req.body.cantidad !== null && req.body.cantidad !== '') {
+      const c = Number(req.body.cantidad);
+      if (!Number.isFinite(c) || c <= 0 || c > 99999) {
+        res.status(400).json({ success: false, error: 'La cantidad tiene que ser un número mayor que 0' });
+        return;
+      }
+    }
+    // Texto: un pegote de miles de caracteres revienta el PDF y el email de la oficina.
+    if (String(texto_libre).length > 500) {
+      res.status(400).json({ success: false, error: 'La anotación es demasiado larga (máximo 500 caracteres)' });
+      return;
+    }
     const tipoFinal = ['pedido','devolucion','nota'].includes(tipo) ? tipo : 'pedido';
 
     // B7: validar pos_x/pos_y si vienen (deben ser 0-1)
@@ -9348,6 +9381,15 @@ app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, re
     if (v.rows[0].status !== 'draft') {
       res.status(400).json({ success: false, error: 'No se pueden añadir anotaciones a una visita ya confirmada' });
       return;
+    }
+    // La lamina tiene que existir: si no, la BD devolvia su error de clave ajena en
+    // crudo ("violates foreign key constraint...") y el comercial no entendia nada.
+    if (sheet_id) {
+      const s = await pool.query('SELECT 1 FROM sheets WHERE id = $1', [Number(sheet_id)]);
+      if (!s.rows.length) {
+        res.status(400).json({ success: false, error: 'Esa lámina ya no existe: recarga el catálogo' });
+        return;
+      }
     }
     // Orden: max+1
     const maxR = await pool.query(
@@ -9404,6 +9446,17 @@ app.put('/api/annotations/:id', verifyToken, async (req: AuthRequest, res: Respo
     if (!texto_libre || !String(texto_libre).trim()) {
       res.status(400).json({ success: false, error: 'texto_libre obligatorio' });
       return;
+    }
+    if (String(texto_libre).length > 500) {
+      res.status(400).json({ success: false, error: 'La anotación es demasiado larga (máximo 500 caracteres)' });
+      return;
+    }
+    if (req.body.cantidad !== undefined && req.body.cantidad !== null && req.body.cantidad !== '') {
+      const c = Number(req.body.cantidad);
+      if (!Number.isFinite(c) || c <= 0 || c > 99999) {
+        res.status(400).json({ success: false, error: 'La cantidad tiene que ser un número mayor que 0' });
+        return;
+      }
     }
     // Check ownership via visit
     const a = await pool.query(`
@@ -9687,7 +9740,18 @@ async function cargarDatosVisitaCompleta(visitId: number) {
 // Genera el PDF de una visita como Buffer (para descarga o adjunto email)
 // verImportes=false por defecto: el PDF se adjunta al email de OFICINA y los importes
 // son un dato interno del comercial. El suyo se genera con verImportes=true.
+// Las fuentes estandar del PDF (WinAnsi) no tienen emojis: un 💊 en una nota salia
+// como "Ø=Ü" y ensuciaba el pedido que lee la oficina. Se quitan al imprimir; en la
+// app y en la base de datos el texto se conserva tal cual lo escribio el comercial.
+function _sinEmojis(s: any): string {
+  return String(s == null ? '' : s)
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 function generarPdfVisitaBuffer(visit: any, annotations: any[], verImportes = false): Promise<Buffer> {
+  annotations = (annotations || []).map((a: any) => ({ ...a, texto_libre: _sinEmojis(a.texto_libre) }));
   return new Promise((resolve, reject) => {
     try {
       const doc = new PDFDocumentLib({ size: 'A4', margin: 40 });
@@ -9783,7 +9847,11 @@ function generarPdfVisitaBuffer(visit: any, annotations: any[], verImportes = fa
             if (doc.y > 770) doc.addPage();
             const cant = a.cantidad || 0;
             const pvf = a.producto_pvf != null ? Number(a.producto_pvf) : null;
-            const sub = (pvf != null && cant) ? pvf * cant : null;
+            // El SUBTOTAL lleva el descuento aplicado. Antes salia el bruto: el comercial
+            // veia 2.332,80 € en una linea pactada al -10% que se factura a 2.099,52 €.
+            const dto = (a.descuento != null && a.descuento !== '') ? Number(a.descuento) : 0;
+            const bruto = (pvf != null && cant) ? pvf * cant : null;
+            const sub = bruto != null ? bruto * (1 - (dto || 0) / 100) : null;
             if (sub != null) totalGrupo += sub;
             const yR = doc.y;
             doc.font('Helvetica-Bold').fontSize(9).fillColor('#000').text(String(a.producto_codigo || '—'), colCod, yR, { width: 72 });
@@ -9795,13 +9863,21 @@ function generarPdfVisitaBuffer(visit: any, annotations: any[], verImportes = fa
             } else {
               doc.text(_condicionesLinea(a) || '—', colPvf, yR, { width: 170 });
             }
+            // Las condiciones pactadas van SIEMPRE, tambien con importes: son lo que el
+            // comercial tiene que recordar de esa linea (3+1, -10%…).
+            const cond = _condicionesLinea(a);
+            if (verImportes && cond) {
+              doc.font('Helvetica-Oblique').fontSize(7).fillColor('#b45309')
+                 .text(cond, colNom, doc.y, { width: 240 });
+              doc.fillColor('#000');
+            }
             doc.moveDown(0.5);
           });
           doc.strokeColor('#ddd').lineWidth(0.5).moveTo(x0, doc.y).lineTo(555, doc.y).stroke();
           doc.moveDown(0.2);
           if (verImportes) {
             doc.font('Helvetica-Bold').fontSize(9).fillColor(color)
-               .text('TOTAL PVF: ' + totalGrupo.toFixed(2) + '€', x0, doc.y, { width: 510, align: 'right' });
+               .text('TOTAL (dto. aplicado): ' + totalGrupo.toFixed(2) + '€', x0, doc.y, { width: 510, align: 'right' });
           }
           doc.fillColor('#000');
           doc.moveDown(0.5);

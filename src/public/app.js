@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v167 · 23 jul 2026';
+const APP_VERSION = 'v168 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -9971,10 +9971,22 @@ async function confirmarIniciarVisita(clientId, catalogId) {
   // Cerrar modal si está abierto
   document.querySelectorAll('.modal-bg').forEach(m => m.remove());
   try {
-    const r = await api('/api/visits/start', {
-      method: 'POST',
-      body: { client_id: clientId, catalog_id: catalogId }
-    });
+    try {
+      await api('/api/visits/start', {
+        method: 'POST',
+        body: { client_id: clientId, catalog_id: catalogId }
+      });
+    } catch (e) {
+      // 409: ya hay otra visita a medias con otro cliente. Se pregunta en vez de
+      // abrir una segunda en silencio y dejar la anterior olvidada sin enviar.
+      if (/sin terminar/i.test(e.message || '')) {
+        if (!confirm(e.message + '.\n\nSi continúas, esa visita se queda abierta tal cual y empiezas otra.\n\n¿Empezar la nueva visita?')) return;
+        await api('/api/visits/start', {
+          method: 'POST',
+          body: { client_id: clientId, catalog_id: catalogId, forzar: true }
+        });
+      } else throw e;
+    }
     // Refrescar la visita activa con datos completos
     const cur = await api('/api/visits/current');
     appState.visitaActiva = cur.visit || null;

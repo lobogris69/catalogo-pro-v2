@@ -17,6 +17,10 @@
    por encima, no una app aparte. Así un arreglo vale para los dos modos.
    ========================================================================== */
 
+// Lo que se esta anotando ahora mismo. Vive fuera del modal a proposito: el cuadro se
+// puede cerrar o solaparse con otro y el guardado no debe depender de encontrarlo.
+let _simpleZona = null, _simpleAnot = null, _simpleSheet = null;
+
 function esModoSimple() {
   // El usuario "efectivo": si el admin está viendo como un comercial, manda el flag
   // de ese comercial, no el suyo. Así se puede comprobar cómo le queda la app.
@@ -145,7 +149,18 @@ async function simpleEmpezarVisita(clientId, catalogId) {
   try {
     const cat = catalogId || await simpleCatalogoDelComercial();
     if (!cat) { alert('No tienes ningún catálogo asignado. Avisa a Fernando.'); renderSimpleInicio(); return; }
-    await api('/api/visits/start', { method: 'POST', body: { client_id: clientId, catalog_id: cat } });
+    try {
+      await api('/api/visits/start', { method: 'POST', body: { client_id: clientId, catalog_id: cat } });
+    } catch (e) {
+      // El servidor avisa de que hay otra visita a medias. Que decida él, en cristiano.
+      if (/sin terminar/i.test(e.message || '')) {
+        if (!confirm(e.message + '.\n\nSi sigues, esa visita se queda como está y empiezas una nueva.\n\n¿Empiezo la nueva?')) {
+          renderSimpleInicio();
+          return;
+        }
+        await api('/api/visits/start', { method: 'POST', body: { client_id: clientId, catalog_id: cat, forzar: true } });
+      } else throw e;
+    }
     // Igual que el flujo normal: releemos la visita para tener el nombre del cliente.
     const cur = await api('/api/visits/current');
     appState.visitaActiva = cur.visit || null;
@@ -263,6 +278,12 @@ function simpleModalProducto(zona, sheetId, anotExistente) {
   document.body.appendChild(m);
   m._zona = zona;
   m._anot = anotExistente;
+  // Además en variables: si por lo que sea hay otro cuadro abierto (el de cambiar de
+  // catálogo, por ejemplo), buscar el modal por clase cogía el equivocado y al guardar
+  // reventaba sin decir por qué.
+  _simpleZona = zona;
+  _simpleAnot = anotExistente;
+  _simpleSheet = sheetId;
   hacerDialogoArrastrable(m.querySelector('.simple-modal'), m.querySelector('.simple-modal-cab'), true);
 }
 
@@ -277,10 +298,10 @@ function simpleCantFija(v) {
 }
 
 async function simpleGuardarProducto(sheetId) {
+  const zona = _simpleZona, anot = _simpleAnot;
+  if (!zona) return;
   const m = document.querySelector('.simple-modal-bg');
-  if (!m) return;
-  const zona = m._zona, anot = m._anot;
-  const cant = Number(document.getElementById('simple-cant').textContent) || 1;
+  const cant = Number((document.getElementById('simple-cant') || {}).textContent) || 1;
   const cod = zona.producto_codigo || '';
   const nom = zona.producto_nombre || '';
   let texto = cant + ' uds · ' + cod + ' ' + nom;
@@ -299,7 +320,8 @@ async function simpleGuardarProducto(sheetId) {
         }
       });
     }
-    m.remove();
+    if (m) m.remove();
+    _simpleZona = null; _simpleAnot = null;
     await refrescarAnotacionesVisor(sheetId);
     simpleBarraPedido();
     simpleAviso('✔ ' + cant + ' uds añadidas');
