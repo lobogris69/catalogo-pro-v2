@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v155 · 23 jul 2026';
+const APP_VERSION = 'v156 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -8705,6 +8705,7 @@ async function renderMapa() {
           <input type="checkbox" id="mapa-bajas" ${_mapaState.incluirBajas ? 'checked' : ''} onchange="cambiarBajasMapa(this.checked)">
           ver bajas y anulados
         </label>
+        ${rolEfectivo() === 'admin' ? `<button class="btn btn-pequeno" style="background:#fef2f2;color:#b91c1c" onclick="abrirRevisionNoVisitar('')" title="Sage asigna clientes que no son de la ruta (clubs, tiendas...). Revísalos y quítalos del mapa.">🚷 Los que no visito</button>` : ''}
         <div class="mapa-info" id="mapa-info">Cargando…</div>
       </div>
 
@@ -15199,6 +15200,59 @@ async function quitarVarianteComision(zoneId, idx) {
   } catch (err) {
     alert('Error quitando variante: ' + err.message);
   }
+}
+
+// ===== CLIENTES QUE NO SE VISITAN =====
+// Sage le asigna al comercial clientes que no son de su ruta (clubs, tiendas,
+// academias) y no hay nada en los datos que los distinga: todos son categoría "CLI".
+// Se marcan a mano; la app solo PROPONE los que no parecen farmacia por el nombre.
+async function abrirRevisionNoVisitar(commercialCode) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:720px"><h3 style="margin-top:0">🚷 Clientes que quizá no visitas</h3><div class="loading">Buscando…</div></div>`;
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+  try {
+    const q = commercialCode ? '?commercial_code=' + encodeURIComponent(commercialCode) : '';
+    const r = await api('/api/clients/candidatos-no-visitar' + q);
+    const filas = (r.candidatos || []).map(c => `<tr style="border-bottom:1px solid var(--gris-borde)">
+        <td style="padding:5px 8px"><input type="checkbox" class="nv-chk" value="${c.id}"></td>
+        <td style="padding:5px 8px">${escape(c.razon_social)}</td>
+        <td style="padding:5px 8px;font-size:12px;color:var(--gris-texto)">${escape(c.municipio || '')} · ${escape(c.provincia || '')} · cód. ${escape(c.commercial_code || '—')}</td>
+      </tr>`).join('');
+    m.querySelector('.modal').innerHTML = `
+      <h3 style="margin-top:0">🚷 Clientes que quizá no visitas (${r.total})</h3>
+      <p style="font-size:13px;color:var(--gris-texto);margin-top:0">
+        Están asignados en Sage pero <b>su nombre no parece el de una farmacia</b>. Repásalos y marca los que
+        no son de tu ruta: desaparecerán del mapa y del planning. <b>No se borra nada</b> y se puede deshacer.
+      </p>
+      ${filas ? `
+        <div style="margin-bottom:8px">
+          <button class="btn btn-pequeno btn-secondary" onclick="document.querySelectorAll('.nv-chk').forEach(x=>x.checked=true)">Marcar todos</button>
+          <button class="btn btn-pequeno btn-secondary" onclick="document.querySelectorAll('.nv-chk').forEach(x=>x.checked=false)">Ninguno</button>
+        </div>
+        <div style="max-height:380px;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>${filas}</tbody></table></div>`
+        : `<p style="color:#16a34a">No hay ninguno: todos parecen farmacias. 👌</p>`}
+      <div class="modal-acciones" style="margin-top:14px">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+        ${filas ? `<button type="button" class="btn btn-primary" onclick="marcarNoVisitarLote(this)">🚷 No visito a los marcados</button>` : ''}
+      </div>`;
+  } catch (e) {
+    m.querySelector('.modal').innerHTML = `<div class="error-msg">${escape(e.message)}</div>
+      <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
+  }
+}
+
+async function marcarNoVisitarLote(btn) {
+  const ids = Array.from(document.querySelectorAll('.nv-chk:checked')).map(x => Number(x.value));
+  if (!ids.length) { alert('No has marcado ninguno.'); return; }
+  if (!confirm('¿Marcar ' + ids.length + ' cliente(s) como "no los visito"?\n\nDesaparecen del mapa y del planning. No se borra nada.')) return;
+  btn.disabled = true;
+  try {
+    const r = await api('/api/clients/no-visitar-lote', { method: 'POST', body: { ids, no_visitar: true } });
+    alert(r.actualizados + ' cliente(s) fuera del mapa y del planning.');
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+  } catch (e) { alert('Error: ' + e.message); btn.disabled = false; }
 }
 
 // ===== CARTERAS Y ZONAS DE UN COMERCIAL =====

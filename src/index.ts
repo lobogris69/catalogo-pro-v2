@@ -609,6 +609,14 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS bonificacion VARCHAR(60);   -- "3+1", "12+2"
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS oferta_texto VARCHAR(120);  -- etiqueta de la campana aplicada
 
+      -- CLIENTE QUE NO SE VISITA. Sage asigna al comercial clientes que no son de su
+      -- ruta (clubs deportivos, tiendas, academias... todos con categoria 'CLI', asi
+      -- que no hay forma de distinguirlos por los datos). Se marcan a mano y
+      -- desaparecen del mapa y del planning, sin borrar nada.
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS no_visitar BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS no_visitar_motivo VARCHAR(150);
+      CREATE INDEX IF NOT EXISTS idx_clients_no_visitar ON clients(no_visitar) WHERE no_visitar = TRUE;
+
       -- VARIOS CODIGOS DE SAGE POR COMERCIAL. Un comercial puede llevar mas de una
       -- cartera (Eva lleva la suya y ademas la de otra persona en Navarra), y con un
       -- solo codigo (sage_commercial_code) se le quedaba fuera media zona.
@@ -1549,7 +1557,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v155-zona-compartida-23jul',
+      build: 'v156-no-visitar-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -3014,6 +3022,64 @@ async function restriccionesEnZona(zonaId: number): Promise<{ laminas: number[];
 async function laminasRestringidasEnZona(zonaId: number): Promise<number[]> {
   return (await restriccionesEnZona(zonaId)).laminas;
 }
+
+// ============================================================================
+// CLIENTES QUE NO SE VISITAN
+// Sage asigna al comercial clientes que no son de su ruta. No hay nada en los datos
+// que los distinga (todos tienen categoria 'CLI'), asi que se marcan a mano. Para no
+// tener que revisar 2.000 fichas, la app propone los CANDIDATOS: los que no parecen
+// una farmacia por el nombre. La ultima palabra siempre es del usuario.
+// ============================================================================
+app.put('/api/clients/:id/no-visitar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const v = req.body?.no_visitar !== false;
+    const r = await pool.query(
+      `UPDATE clients SET no_visitar = $1, no_visitar_motivo = $2, updated_at = NOW()
+        WHERE id = $3 RETURNING razon_social`,
+      [v, v ? (req.body?.motivo || '').toString().slice(0, 150) || null : null, Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Cliente no encontrado' }); return; }
+    res.json({ success: true, no_visitar: v, cliente: r.rows[0].razon_social });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Candidatos a "no visitar": los que NO parecen farmacia por el nombre. Solo propone.
+app.get('/api/clients/candidatos-no-visitar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const params: any[] = [];
+    let filtro = '';
+    if (req.query.commercial_code) {
+      params.push(String(req.query.commercial_code));
+      filtro = ` AND c.commercial_code = $${params.length}`;
+    }
+    if (req.query.zona_id) {
+      params.push(Number(req.query.zona_id));
+      filtro += ` AND c.zona_id = $${params.length}`;
+    }
+    const r = await pool.query(
+      `SELECT c.id, c.razon_social, c.municipio, c.provincia, c.commercial_code, c.no_visitar
+         FROM clients c
+        WHERE c.is_active = TRUE AND c.no_visitar = FALSE
+          AND c.razon_social !~* '(farmacia|farmacéutic|farmaceutic|farm\\.|botica|parafarmacia|ortopedia|optica|óptica)'
+          AND c.razon_social !~* '^[[:space:]]*-?[[:space:]]*(baja|anulad)'
+          ${filtro}
+        ORDER BY c.provincia, c.razon_social LIMIT 500`, params);
+    res.json({ success: true, candidatos: r.rows, total: r.rows.length });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Marcar varios de golpe (tras revisarlos).
+app.post('/api/clients/no-visitar-lote', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((x: any) => Number(x)).filter(Boolean) : [];
+    if (!ids.length) { res.status(400).json({ success: false, error: 'No has elegido ninguno' }); return; }
+    const v = req.body?.no_visitar !== false;
+    const r = await pool.query(
+      `UPDATE clients SET no_visitar = $1, no_visitar_motivo = $2, updated_at = NOW()
+        WHERE id = ANY($3::int[]) RETURNING id`,
+      [v, v ? (req.body?.motivo || 'no es de mi ruta').toString().slice(0, 150) : null, ids]);
+    res.json({ success: true, actualizados: r.rowCount || 0 });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
 
 // ============================================================================
 // CARTERAS Y ZONAS DE CADA COMERCIAL
@@ -5242,7 +5308,10 @@ async function filtroClientesVisibles(userId: number, params: any[], alias = 'c'
     }
   }
   // Sin codigos ni zonas no ve ningun cliente (mejor eso que verlos todos).
-  return ors.length ? ` AND (${ors.join(' OR ')})` : ' AND FALSE';
+  if (!ors.length) return ' AND FALSE';
+  // Los marcados "no lo visito" nunca salen: son clientes que Sage le asigna pero que
+  // no son de su ruta (clubs, tiendas...).
+  return ` AND (${ors.join(' OR ')}) AND ${alias}.no_visitar = FALSE`;
 }
 
 function isEffectiveSales(req: AuthRequest): boolean {
@@ -8924,7 +8993,7 @@ app.get('/api/map/clients', verifyToken, async (req: AuthRequest, res: Response)
     // de pines que no va a visitar nunca. Se ocultan salvo que se pidan expresamente.
     const filtroBajas = String(req.query.incluir_bajas || '') === 'true'
       ? ''
-      : ` AND c.razon_social !~* '^[[:space:]]*-?[[:space:]]*(baja|anulad)'`;
+      : ` AND c.razon_social !~* '^[[:space:]]*-?[[:space:]]*(baja|anulad)' AND c.no_visitar = FALSE`;
 
     // Filtro por ZONA de venta (Navarra, Aragón…): centrarse en un territorio.
     let filtroZona = '';
