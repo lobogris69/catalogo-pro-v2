@@ -424,6 +424,24 @@ const MANUAL_ADMIN = [
       '<b>"La app va rara justo después de subir muchas cosas"</b> → espera un minuto y recarga: el servidor puede haberse reiniciado.'
     ],
     ojo: ['La app funciona sin cobertura para lo del comercial (catálogos descargados, clientes, planning y pedidos); la administración necesita conexión.']
+  },
+  {
+    id: 'modo-sencillo',
+    icono: '👶',
+    titulo: 'Modo sencillo para un comercial',
+    para: 'Para quien viene del visor de fotos y del talonario de papel y se agobia con la app entera.',
+    pasos: [
+      'Ve a <b>👥 Comerciales</b> y busca a la persona.',
+      'Pulsa el botón <b>👶 Modo sencillo</b>. Cuando está en verde, esa persona ve la app reducida.',
+      'A partir de ahí él solo ve: un botón gigante <b>EMPEZAR VISITA</b> → elegir la farmacia → el catálogo → tocar el producto → <b>+ / −</b> con números enormes → <b>TERMINAR</b> → <b>ENVIAR PEDIDO</b>.',
+      'Se le abre <b>solo su catálogo</b>: no elige, no hay pestañas, ni planning, ni mapa, ni aula.',
+      'Para devolverle la app completa, pulsa otra vez el mismo botón.'
+    ],
+    ojo: [
+      'El pedido que llega a la oficina es <b>exactamente el mismo</b>: mismas líneas, mismas bonificaciones, mismo PDF. Solo cambia cómo lo ve él.',
+      'Se puede quitar y poner cuando quieras: no se pierde nada de lo suyo.',
+      'Las familias (color/graduación) y los productos de comisión siguen abriendo su cuadro normal: ahí hay que elegir de verdad.'
+    ]
   }
 ];
 
@@ -457,6 +475,19 @@ const MANUAL_COMERCIAL = [
       'Puedes añadir una nota a cualquier línea (por ejemplo "urgente" o "para el jueves").',
       'Si el cuadro de anotar te tapa las condiciones de la lámina, <b>arrástralo desde cualquier borde</b> y apártalo. No hace falta acertar en la barra del título.'
     ]
+  },
+  {
+    id: 'c-sencillo',
+    icono: '👶',
+    titulo: 'Si tu app se ve "en grande"',
+    para: 'Algunos comerciales tienen activado el modo sencillo.',
+    pasos: [
+      'Pulsa el botón grande <b>EMPEZAR VISITA</b> y elige la farmacia de la lista (puedes escribir el nombre).',
+      'Se abre tu catálogo. Pasa láminas y <b>toca el producto</b> que te pidan.',
+      'Sube o baja las unidades con <b>+</b> y <b>−</b>, o pulsa 3, 6, 12 o 24. Luego <b>AÑADIR AL PEDIDO</b>.',
+      'Abajo ves siempre cuántos productos llevas. Al acabar pulsa <b>TERMINAR</b>, repasa la lista y pulsa <b>ENVIAR PEDIDO</b>.'
+    ],
+    ojo: ['Si te falta algo (planning, mapa…), pídele a Fernando que te quite el modo sencillo: es un solo botón.']
   },
   {
     id: 'c-cliente-nuevo',

@@ -5244,3 +5244,153 @@ body.con-banner-update {
   .backup-acciones { gap: 2px; }
   .backup-acciones button { padding: 6px 8px; font-size: 11px; }
 }
+
+/* ============================================================================
+   MODO SENCILLO — para los comerciales que vienen del papel.
+   Todo grande: se usa de pie, con una mano, dentro de una farmacia.
+   Objetivo de tamaño: ningún botón que se pulse por debajo de 56 px de alto.
+   ============================================================================ */
+.simple-pantalla {
+  min-height: calc(100vh - 60px);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 18px; padding: 24px 18px; box-sizing: border-box; text-align: center;
+}
+.simple-lista-pantalla { justify-content: flex-start; }
+.simple-saludo { font-size: 22px; color: var(--gris-texto); margin-bottom: 6px; }
+
+.simple-boton-gigante {
+  width: 100%; max-width: 460px; min-height: 130px;
+  border: none; border-radius: 22px; cursor: pointer;
+  background: var(--grad); color: #fff;
+  font-size: 26px; font-weight: 800; letter-spacing: .5px; font-family: inherit;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  box-shadow: 0 12px 28px -10px rgba(216,10,107,.7);
+}
+.simple-boton-gigante.verde { background: linear-gradient(135deg,#16a34a,#15803d); box-shadow: 0 12px 28px -10px rgba(22,163,74,.7); }
+.simple-boton-gigante:active { transform: scale(.98); }
+.simple-icono { font-size: 42px; line-height: 1; }
+
+.simple-boton-secundario {
+  width: 100%; max-width: 460px; min-height: 60px;
+  border: 2px solid var(--gris-borde-2); border-radius: 16px; cursor: pointer;
+  background: var(--surface); color: inherit; font-size: 17px; font-weight: 600; font-family: inherit;
+}
+.simple-aviso-visita {
+  background: #fef3c7; color: #92400e; border-radius: 16px; padding: 16px 20px;
+  font-size: 18px; line-height: 1.5; max-width: 460px; width: 100%;
+}
+
+/* Cabecera de las pantallas de lista */
+.simple-cabecera {
+  display: flex; align-items: center; gap: 12px; width: 100%; max-width: 560px;
+  font-size: 21px; font-weight: 700; margin-bottom: 4px;
+}
+.simple-atras {
+  width: 52px; height: 52px; border-radius: 14px; border: 2px solid var(--gris-borde-2);
+  background: var(--surface); color: inherit; font-size: 26px; cursor: pointer; flex: 0 0 auto;
+}
+.simple-buscador {
+  width: 100%; max-width: 560px; padding: 16px 18px; font-size: 19px;
+  border: 2px solid var(--gris-borde-2); border-radius: 16px;
+  background: var(--surface); color: inherit; box-sizing: border-box;
+}
+.simple-lista { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 10px; }
+.simple-item {
+  width: 100%; min-height: 74px; text-align: left; cursor: pointer;
+  border: 2px solid var(--gris-borde); border-radius: 16px; background: var(--surface);
+  padding: 12px 16px; display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  font-family: inherit; color: inherit;
+}
+.simple-item:active { border-color: var(--brand); }
+.simple-item-nombre { font-size: 18px; font-weight: 700; }
+.simple-item-sub { font-size: 14px; color: var(--gris-texto); }
+.simple-vacio { text-align: center; color: var(--gris-texto); font-size: 17px; padding: 30px 10px; }
+
+/* Barra fija del pedido durante la visita */
+.simple-barra {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 9000;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 16px; background: #111827; color: #fff;
+  box-shadow: 0 -6px 20px rgba(0,0,0,.28);
+}
+.simple-barra-cuenta { font-size: 19px; font-weight: 700; }
+.simple-barra-btn {
+  min-height: 56px; padding: 0 26px; border: none; border-radius: 14px;
+  background: #16a34a; color: #fff; font-size: 19px; font-weight: 800; cursor: pointer; font-family: inherit;
+}
+
+/* Modal de producto: contador enorme */
+.simple-modal-bg { align-items: flex-end; }
+.simple-modal {
+  width: 100%; max-width: 520px; margin: 0 auto; background: var(--surface);
+  border-radius: 24px 24px 0 0; padding: 22px 20px 26px;
+  display: flex; flex-direction: column; gap: 14px; box-sizing: border-box;
+}
+.simple-modal-cab { text-align: center; }
+.simple-modal-nombre { font-size: 21px; font-weight: 800; line-height: 1.3; }
+.simple-modal-ref { font-size: 16px; color: #1d4ed8; font-weight: 700; margin-top: 4px; }
+.simple-modal-precio { font-size: 17px; color: var(--gris-texto); margin-top: 4px; }
+.simple-contador { display: flex; align-items: center; justify-content: center; gap: 20px; }
+.simple-mas-menos {
+  width: 84px; height: 84px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--gris-borde); color: inherit; font-size: 44px; line-height: 1; font-family: inherit;
+}
+.simple-mas-menos:active { background: var(--brand); color: #fff; }
+.simple-cantidad { font-size: 60px; font-weight: 800; min-width: 110px; }
+.simple-rapidos { display: flex; gap: 10px; justify-content: center; }
+.simple-rapidos button {
+  min-width: 66px; min-height: 52px; border-radius: 14px; cursor: pointer;
+  border: 2px solid var(--gris-borde-2); background: var(--surface); color: inherit;
+  font-size: 19px; font-weight: 700; font-family: inherit;
+}
+.simple-anadir {
+  min-height: 78px; border: none; border-radius: 18px; cursor: pointer;
+  background: #16a34a; color: #fff; font-size: 23px; font-weight: 800; font-family: inherit;
+}
+.simple-quitar, .simple-cancelar {
+  min-height: 56px; border-radius: 14px; cursor: pointer; font-size: 17px; font-family: inherit;
+  border: 2px solid var(--gris-borde-2); background: var(--surface); color: inherit;
+}
+.simple-quitar { border-color: #fca5a5; color: #b91c1c; }
+
+/* Repaso del pedido */
+.simple-repaso-linea {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  border: 2px solid var(--gris-borde); border-radius: 16px; padding: 14px 16px; background: var(--surface);
+}
+.simple-repaso-nombre { font-size: 17px; font-weight: 700; }
+.simple-repaso-sub { font-size: 15px; color: var(--gris-texto); }
+.simple-repaso-quitar {
+  width: 54px; height: 54px; border-radius: 14px; cursor: pointer; font-size: 22px;
+  border: 2px solid #fca5a5; background: var(--surface); color: #b91c1c; flex: 0 0 auto;
+}
+.simple-abajo { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 12px; margin-top: 18px; }
+
+/* Confirmación */
+.simple-exito { font-size: 90px; line-height: 1; }
+.simple-exito-txt { font-size: 26px; font-weight: 800; line-height: 1.4; }
+.simple-exito-txt span { font-size: 17px; font-weight: 400; color: var(--gris-texto); }
+
+.simple-aviso {
+  position: fixed; left: 50%; top: 22%; transform: translateX(-50%); z-index: 9500;
+  background: #16a34a; color: #fff; font-size: 20px; font-weight: 700;
+  padding: 16px 28px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.3);
+}
+.simple-pie {
+  margin-top: auto; padding-top: 20px; display: flex; flex-direction: column;
+  align-items: center; gap: 8px; font-size: 12px; color: var(--gris-texto);
+}
+.simple-enlace {
+  border: none; background: none; color: var(--brand); font-size: 16px;
+  cursor: pointer; font-family: inherit; padding: 10px;
+}
+/* En modo sencillo el visor deja hueco a la barra del pedido */
+/* En modo sencillo desaparece todo lo que no sea el camino: pestañas, cabecera y
+   la barra de visita normal (aquí la sustituye la barra grande del pedido). */
+body.modo-simple .navtabs,
+body.modo-simple .topbar,
+body.modo-simple .banner-visita { display: none !important; }
+body.modo-simple { padding-bottom: 84px; }
+/* Botones del visor: nada por debajo de 56px, que se tocan con el dedo en la tablet */
+body.modo-simple .visor-nav button,
+body.modo-simple .visor-controles button { min-height: 56px; font-size: 17px; }

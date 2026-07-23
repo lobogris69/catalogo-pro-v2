@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v158 · 23 jul 2026';
+const APP_VERSION = 'v159 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -362,6 +362,20 @@ function alternarTema() {
 }
 
 function routerVista() {
+  // MODO SENCILLO: un solo camino. Solo se sale de aquí para ver el catálogo durante
+  // la visita, que es la única pantalla que se reutiliza tal cual.
+  if (esModoSimple()) {
+    document.body.classList.add('modo-simple');
+    if (appState.visitaActiva && appState.catalogoActual) {
+      renderVisorComercial(appState.catalogoActual);
+      setTimeout(simpleBarraPedido, 300);
+      return;
+    }
+    renderSimpleInicio();
+    return;
+  }
+  document.body.classList.remove('modo-simple');
+
   // I.2: vistas que NO funcionan offline (requieren API y no tienen cache offline)
   // Clientes y Planning SÍ funcionan offline (I.3 + I-Planning) leyendo desde IndexedDB
   const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion', 'productos', 'dashboard', 'aula'];
@@ -2623,6 +2637,7 @@ async function renderListaComerciales() {
             <button class="btn btn-pequeno btn-secondary" onclick="editarUsuario(${u.id})" title="Editar">✏️ Editar</button>
             <button class="btn btn-pequeno btn-secondary" onclick="cambiarContraseñaUsuario(${u.id}, '${escape(u.name)}')" title="Cambiar contraseña">🔑 Contraseña</button>
             ${u.role === 'sales' ? `<button class="btn btn-pequeno" style="background:#eff6ff;color:#1d4ed8" onclick="abrirCarterasComercial(${u.id}, '${escape(u.name).replace(/'/g, "\'")}')" title="Códigos de Sage que lleva y zonas que ve">🗂️ Carteras y zonas</button>` : ''}
+            ${u.role === 'sales' ? `<button class="btn btn-pequeno" style="background:${u.modo_simple ? '#16a34a' : '#f3f4f6'};color:${u.modo_simple ? '#fff' : '#374151'};font-weight:700" onclick="toggleModoSimple(${u.id}, ${!u.modo_simple})" title="Modo sencillo: la app se reduce a un solo camino guiado (empezar visita → catálogo → añadir → enviar). Para quien viene del papel.">${u.modo_simple ? '👶 Modo sencillo: SÍ' : '👶 Modo sencillo: no'}</button>` : ''}
             ${!esYo ? `<button class="btn btn-pequeno btn-danger" onclick="desactivarUsuario(${u.id}, '${escape(u.name)}')" title="${u.is_active ? 'Desactivar' : 'Ya inactivo'}" ${!u.is_active ? 'disabled' : ''}>🗑️</button>` : ''}
           </div>
         </div>
@@ -3970,6 +3985,12 @@ async function pulsarZonaComercial(zona) {
   let anotExistente = null;
   const anotsSheet = _anotacionesVisita[sheetId] || [];
   anotExistente = anotsSheet.find(a => a.zone_id === zona.id) || null;
+
+  // MODO SENCILLO: cuadro con contador gigante y un solo botón. Las familias y la
+  // comisión siguen con su cuadro normal: ahí hay que elegir de verdad.
+  if (esModoSimple() && !zona.familia_ref && !(zona.familia_skus || []).length) {
+    return simpleModalProducto(zona, sheetId, anotExistente);
+  }
 
   // Asegurar plantillas cargadas
   if (_plantillasCache === null) { await cargarPlantillas(); }
@@ -15335,6 +15356,23 @@ async function marcarNoVisitarLote(btn) {
 // Un comercial puede llevar VARIAS carteras de Sage (la suya y la de otra persona), y
 // las zonas que ve pueden fijarse a mano: cuatro clientes mal asignados en Sage no
 // deben hacerle aparecer un territorio en el que no trabaja.
+// Interruptor del modo sencillo. Se puede quitar y poner cuando se quiera: el
+// comercial no pierde nada, es solo cómo ve la app.
+async function toggleModoSimple(userId, activar) {
+  try {
+    const us = await api('/api/users');
+    const u = (us.users || []).find(x => x.id === userId);
+    if (!u) return;
+    await api('/api/users/' + userId, {
+      method: 'PUT',
+      body: { name: u.name, email: u.email, role: u.role, sage_commercial_code: u.sage_commercial_code,
+              is_active: u.is_active, modo_simple: activar }
+    });
+    mostrarNotificacionOnline(activar ? '👶 ' + u.name + ' verá la app en modo sencillo' : u.name + ' vuelve al modo normal', '#16a34a');
+    renderListaComerciales();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
 async function abrirCarterasComercial(userId, nombre) {
   const m = document.createElement('div');
   m.className = 'modal-bg';

@@ -609,6 +609,12 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS bonificacion VARCHAR(60);   -- "3+1", "12+2"
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS oferta_texto VARCHAR(120);  -- etiqueta de la campana aplicada
 
+      -- MODO SENCILLO. Dos de los comerciales vienen del visor de fotos y el talonario
+      -- de papel. Con el modo puesto, la app se reduce a un solo camino guiado:
+      -- EMPEZAR VISITA -> elegir farmacia -> catalogo a pantalla completa -> tocar
+      -- producto -> teclado grande de unidades -> ENVIAR PEDIDO. Nada mas.
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS modo_simple BOOLEAN NOT NULL DEFAULT FALSE;
+
       -- CLIENTE PENDIENTE DE ALTA. Una apertura nueva o una farmacia que aun no es
       -- cliente: el comercial la da de alta ALLI MISMO con todos los datos que necesita
       -- administracion (para que no tengan que llamar a pedirlos) y puede hacer la
@@ -1570,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v158-borrar-ficha-nueva-23jul',
+      build: 'v159-modo-sencillo-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1624,7 +1630,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
       JWT_SECRET,
       { expiresIn: (await sesionHorasConfig()) * 3600 }   // en segundos: el tipo de jwt no admite "Nh" dinámico
     );
-    res.json({ success: true, token, user: { id: user.id, email: user.email, role: user.role, name: user.name } });
+    res.json({ success: true, token, user: { id: user.id, email: user.email, role: user.role, name: user.name, modo_simple: !!user.modo_simple } });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
@@ -1635,7 +1641,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
 // ============================================================================
 app.get('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, is_active, created_at FROM users ORDER BY role, name');
+    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, modo_simple, is_active, created_at FROM users ORDER BY role, name');
     res.json({ success: true, users: r.rows });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -1690,9 +1696,11 @@ app.put('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequest
       return;
     }
     const r = await pool.query(
-      `UPDATE users SET name=$1, email=$2, role=$3, sage_commercial_code=$4, is_active=$5
-       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, is_active`,
-      [name.trim(), email.trim().toLowerCase(), role, sage_commercial_code ? String(sage_commercial_code).trim() : null, is_active !== false, id]
+      `UPDATE users SET name=$1, email=$2, role=$3, sage_commercial_code=$4, is_active=$5,
+              modo_simple = COALESCE($7, modo_simple)
+       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, modo_simple, is_active`,
+      [name.trim(), email.trim().toLowerCase(), role, sage_commercial_code ? String(sage_commercial_code).trim() : null, is_active !== false, id,
+       req.body.modo_simple === undefined ? null : !!req.body.modo_simple]
     );
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Usuario no encontrado' });
@@ -9184,6 +9192,26 @@ app.get('/api/map/clients', verifyToken, async (req: AuthRequest, res: Response)
 // Actualizar bumper de health
 
 // GET una visita concreta + sus anotaciones
+// GET mis ultimas visitas cerradas (modo sencillo: "Mis pedidos").
+// OJO: literal ANTES de /api/visits/:id o Express lo captura como id invalido.
+app.get('/api/visits/mias', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = effectiveUserId(req);
+    const limit = Math.min(Number(req.query.limit) || 30, 100);
+    const r = await pool.query(`
+      SELECT v.id, v.created_at, v.confirmed_at, v.status, c.razon_social AS cliente_nombre,
+             (SELECT COUNT(*) FROM annotations a WHERE a.visit_id = v.id) AS num_lineas
+      FROM visits v
+      LEFT JOIN clients c ON c.id = v.client_id
+      WHERE v.user_id = $1 AND v.status = 'confirmed'
+      ORDER BY COALESCE(v.confirmed_at, v.created_at) DESC
+      LIMIT $2`, [userId, limit]);
+    res.json({ success: true, visits: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
 app.get('/api/visits/:id', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
