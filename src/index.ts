@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v171-emails-al-sincronizar-23jul',
+      build: 'v174-editar-coste-oferta-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -11028,7 +11028,11 @@ app.get('/api/products', verifyToken, async (req: AuthRequest, res: Response) =>
     let orderSQL = 'ORDER BY nombre';
     if (q) {
       params.push(q); const pQ = params.length;
-      orderSQL = `ORDER BY GREATEST(similarity(LOWER(nombre), $${pQ}), word_similarity($${pQ}, LOWER(nombre))) DESC, LENGTH(nombre), nombre`;
+      // Si escribes un codigo entero (PEND-3, 193231...), ese va PRIMERO: buscar por
+      // codigo y que salgan cinco parecidos por delante es de locos.
+      orderSQL = `ORDER BY (LOWER(codigo) = $${pQ}) DESC,
+                           GREATEST(similarity(LOWER(nombre), $${pQ}), word_similarity($${pQ}, LOWER(nombre))) DESC,
+                           LENGTH(nombre), nombre`;
     }
 
     params.push(limit);
@@ -11597,6 +11601,13 @@ app.put('/api/products/:id', verifyToken, requireRealAdmin, async (req: AuthRequ
   try {
     const id = Number(req.params.id);
     const { codigo, nombre, descripcion, ean, precio_pvp, precio_pvf, categoria, familia, marca, notas_admin, activo } = req.body;
+    // Coste y oferta se piden al crear un producto PENDIENTE DE ALTA; si aqui no se
+    // pudieran editar, una errata al teclear el coste se quedaba para siempre.
+    const nuevoCoste = (req.body.precio_coste !== undefined && req.body.precio_coste !== null && req.body.precio_coste !== '')
+      ? Number(req.body.precio_coste) : null;
+    const nuevaOferta = req.body.oferta_texto !== undefined
+      ? (req.body.oferta_texto ? String(req.body.oferta_texto).trim().substring(0, 200) : null)
+      : undefined;
 
     // Cargar producto actual para detectar cambios de precio
     const actualR = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
@@ -11623,6 +11634,8 @@ app.put('/api/products/:id', verifyToken, requireRealAdmin, async (req: AuthRequ
          marca = $9,
          notas_admin = $10,
          activo = COALESCE($11, activo),
+         precio_coste = CASE WHEN $13::boolean THEN $14 ELSE precio_coste END,
+         oferta_texto = CASE WHEN $15::boolean THEN $16 ELSE oferta_texto END,
          updated_at = NOW()
        WHERE id = $12 RETURNING *`,
       [
@@ -11637,7 +11650,11 @@ app.put('/api/products/:id', verifyToken, requireRealAdmin, async (req: AuthRequ
         marca || null,
         notas_admin || null,
         typeof activo === 'boolean' ? activo : null,
-        id
+        id,
+        // Solo se tocan si el formulario los manda: así otros sitios que llaman a este
+        // endpoint sin esos campos no borran el coste ni la oferta sin querer.
+        req.body.precio_coste !== undefined, nuevoCoste,
+        nuevaOferta !== undefined, nuevaOferta === undefined ? null : nuevaOferta
       ]
     );
 

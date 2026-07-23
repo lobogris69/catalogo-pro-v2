@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v173 · 23 jul 2026';
+const APP_VERSION = 'v174 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12846,6 +12846,13 @@ async function abrirDetalleProducto(id) {
           <h3>${esExpositor ? '🎁' : '🏷️'} ${escape(p.nombre)} <span style="font-size:11px;color:#9ca3af;font-weight:400">✥ arrastra para mover</span></h3>
           <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
         </div>
+        ${p.pendiente_alta ? `
+          <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:#5b21b6">
+            ⏳ <b>Pendiente de alta en Sage.</b> Es un código provisional
+            ${p.pendiente_solicitante ? ' · lo pidió ' + escape(p.pendiente_solicitante) : ''}
+            ${p.pendiente_desde ? ' el ' + escape(new Date(p.pendiente_desde).toLocaleDateString('es-ES')) : ''}.
+            Aquí puedes corregir cualquier dato (coste, oferta, notas) mientras esperas el código real.
+          </div>` : ''}
         <div class="form-group">
           <label>Código ${esExpositor ? '(interno)' : 'Sage'}</label>
           <input type="text" id="prod-codigo" value="${escape(p.codigo)}" ${!esExpositor ? 'readonly' : ''}>
@@ -12869,7 +12876,7 @@ async function abrirDetalleProducto(id) {
             <input type="text" id="prod-marca" value="${escape(p.marca || '')}">
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
           <div class="form-group">
             <label>PVP (€)</label>
             <input type="number" step="0.01" id="prod-pvp" value="${p.precio_pvp || ''}">
@@ -12878,6 +12885,14 @@ async function abrirDetalleProducto(id) {
             <label>PVF / PVL (€)</label>
             <input type="number" step="0.01" id="prod-pvf" value="${p.precio_pvf || ''}">
           </div>
+          <div class="form-group">
+            <label>Coste (€) <span style="color:var(--gris-texto);font-weight:normal">interno</span></label>
+            <input type="number" step="0.01" id="prod-coste" value="${p.precio_coste || ''}">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Oferta <span style="color:var(--gris-texto);font-weight:normal">(ej: 3+1, -15% lanzamiento)</span></label>
+          <input type="text" id="prod-oferta" value="${escape(p.oferta_texto || '')}" placeholder="Sin oferta">
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div class="form-group">
@@ -12962,6 +12977,12 @@ async function guardarProducto(id) {
     };
     const $notas = document.getElementById('prod-notas-admin');
     if ($notas) body.notas_admin = $notas.value.trim() || null;
+    // Coste y oferta: van solo si el formulario los tiene, para no pisarlos desde
+    // otras pantallas que guardan el producto sin esos campos.
+    const $coste = document.getElementById('prod-coste');
+    if ($coste) body.precio_coste = $coste.value === '' ? null : $coste.value;
+    const $oferta = document.getElementById('prod-oferta');
+    if ($oferta) body.oferta_texto = $oferta.value.trim() || null;
     await api('/api/products/' + id, { method: 'PUT', body });
     // Si el editor de zonas está abierto, refrescar en el acto los datos de TODAS las
     // zonas que usan este producto (la panel derecha mostraba datos cacheados antiguos).
