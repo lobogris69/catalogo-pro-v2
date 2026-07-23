@@ -159,7 +159,8 @@ const MANUAL_ADMIN = [
     pasos: [
       'Las zonas son <b>Álava, Gipuzkoa, Vizcaya, Navarra y Aragón</b>. En el catálogo maestro: <b>📍 Zonas de venta</b>.',
       'En cada zona, <b>🚫 Qué no se vende aquí</b>: eliges el <b>laboratorio</b> y, si quieres, el motivo. Se declara <b>una sola vez</b> y vale para todos los comerciales, ahora y en el futuro.',
-      'Los laboratorios <b>salen solos</b>: la app sabe de quién es cada lámina por el proveedor que trae Sage en sus productos. Los comisionistas (Lainco, Sawes), que no están en Sage, salen de las zonas de comisión. No hay que etiquetar nada a mano.',
+      'Los laboratorios <b>salen solos</b>: la app sabe de quién es cada lámina por el proveedor que trae Sage en sus productos. No hay que etiquetar nada a mano.',
+      'Excepción: en las zonas de <b>comisión</b> (Lainco, Sawes) hay que escribir el <b>laboratorio</b> en su casilla, porque ahí el nombre que se guarda es el del producto, no el del laboratorio. Sin eso, esa zona no se puede vetar por territorio.',
       'Durante la visita, la app mira <b>dónde está la farmacia</b> y oculta esas láminas. En Navarra las ve; en Aragón, no. El comercial no tiene que acordarse de nada.',
       'La zona de cada farmacia sale, por este orden: la que le hayas fijado a mano, su <b>código postal</b>, o su provincia. Si no se sabe, el comercial la elige <b>una vez</b> durante la visita y queda guardada.',
       'Con <b>🧭 Deducir zona de los clientes que faltan</b> se rellenan de golpe los que ya tengan código postal o provincia.'

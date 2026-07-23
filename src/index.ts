@@ -744,6 +744,12 @@ async function initDB(): Promise<void> {
       -- (nombre en zonas de comision, modelo en familias, descripcion de la IA).
       ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS ref_modelo VARCHAR(60);
 
+      -- LABORATORIO de una zona de comision. En comision, la columna etiqueta lleva el NOMBRE
+      -- DEL PRODUCTO ("Dermovagisil 20 mg/g crema..."), no el laboratorio: por eso no
+      -- se podia saber que Lainco o Sawes eran los duenos. Campo propio y explicito.
+      ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS comision_laboratorio VARCHAR(150);
+      CREATE INDEX IF NOT EXISTS idx_zonas_comision_lab ON sheet_zones(comision_laboratorio) WHERE comision_laboratorio IS NOT NULL;
+
       -- Zona-ENLACE: en vez de un producto, una zona puede ser un enlace a OTRO catalogo
       -- (ej. desde el catalogo general saltar al especifico de BSN y volver).
       ALTER TABLE sheet_zones ADD COLUMN IF NOT EXISTS link_catalog_id INTEGER REFERENCES catalogs(id) ON DELETE SET NULL;
@@ -1493,7 +1499,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v148-laboratorios-23jul',
+      build: 'v149-comision-lab-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2925,23 +2931,24 @@ async function restriccionesEnZona(zonaId: number): Promise<{ laminas: number[];
   // 2) Laboratorios: hay que mirar lamina a lamina si es "pura" o mixta.
   const labs = restr.rows.map((r: any) => r.laboratorio).filter(Boolean);
   if (labs.length) {
+    const labsUp = labs.map((l: string) => String(l).trim().toUpperCase());
     const z = await pool.query(
       `SELECT z.id AS zone_id, z.sheet_id,
-              COALESCE(p.proveedor, CASE WHEN z.es_comision THEN z.etiqueta END) AS lab
+              UPPER(TRIM(COALESCE(p.proveedor, z.comision_laboratorio))) AS lab
          FROM sheet_zones z
          LEFT JOIN products p ON p.id = z.product_id
         WHERE z.sheet_id IN (
           SELECT DISTINCT z2.sheet_id FROM sheet_zones z2
           LEFT JOIN products p2 ON p2.id = z2.product_id
-           WHERE COALESCE(p2.proveedor, CASE WHEN z2.es_comision THEN z2.etiqueta END) = ANY($1::text[])
-        )`, [labs]);
+           WHERE UPPER(TRIM(COALESCE(p2.proveedor, z2.comision_laboratorio))) = ANY($1::text[])
+        )`, [labsUp]);
     const porLamina: Record<number, { total: number; vetadas: number[] }> = {};
     z.rows.forEach((x: any) => {
       const sid = Number(x.sheet_id);
       porLamina[sid] = porLamina[sid] || { total: 0, vetadas: [] };
       if (x.lab) {           // solo cuentan las zonas de las que se sabe el laboratorio
         porLamina[sid].total++;
-        if (labs.includes(x.lab)) porLamina[sid].vetadas.push(Number(x.zone_id));
+        if (labsUp.includes(x.lab)) porLamina[sid].vetadas.push(Number(x.zone_id));
       }
     });
     Object.entries(porLamina).forEach(([sid, d]) => {
@@ -2964,15 +2971,15 @@ async function laminasRestringidasEnZona(zonaId: number): Promise<number[]> {
 app.get('/api/laboratorios', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
   try {
     const r = await pool.query(
-      `SELECT lab, COUNT(DISTINCT sheet_id)::int AS n_laminas, SUM(comision)::int AS n_comision
+      `SELECT MIN(lab) AS lab, COUNT(DISTINCT sheet_id)::int AS n_laminas, SUM(comision)::int AS n_comision
          FROM (
-           SELECT COALESCE(p.proveedor, CASE WHEN z.es_comision THEN z.etiqueta END) AS lab,
+           SELECT COALESCE(p.proveedor, z.comision_laboratorio) AS lab,
                   z.sheet_id, (CASE WHEN z.es_comision THEN 1 ELSE 0 END) AS comision
              FROM sheet_zones z LEFT JOIN products p ON p.id = z.product_id
          ) t
         WHERE lab IS NOT NULL AND TRIM(lab) <> ''
           AND UPPER(lab) NOT LIKE '%PRODUCTOS ELIMINADOS%'
-        GROUP BY lab ORDER BY lab`);
+        GROUP BY UPPER(TRIM(lab)) ORDER BY MIN(lab)`);
     res.json({ success: true, laboratorios: r.rows });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -11333,6 +11340,10 @@ app.put('/api/zones/:zoneId', verifyToken, requireRealAdmin, async (req: AuthReq
     if (product_id !== undefined) { sets.push(`product_id = $${i++}`); vals.push(product_id || null); }
     if (etiqueta !== undefined) { sets.push(`etiqueta = $${i++}`); vals.push(etiqueta || null); }
     // Nº de modelo impreso en la lámina (expositor con un solo código en Sage)
+    if (req.body.comision_laboratorio !== undefined) {
+      const cl = req.body.comision_laboratorio ? String(req.body.comision_laboratorio).trim().substring(0, 150) : null;
+      sets.push(`comision_laboratorio = $${i++}`); vals.push(cl);
+    }
     if (ref_modelo !== undefined) {
       const rm = ref_modelo ? String(ref_modelo).trim().substring(0, 60) : null;
       sets.push(`ref_modelo = $${i++}`); vals.push(rm);

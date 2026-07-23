@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v148 · 23 jul 2026';
+const APP_VERSION = 'v149 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -14520,6 +14520,8 @@ function renderListaZonas() {
         <label style="font-size:13px;font-weight:600">🤝 ${sel.es_comision ? 'Editar' : 'Marcar como'} producto de comisión (Lainco…)</label>
         <div style="font-size:11px;color:#6b7280;margin:4px 0 6px">Productos que NO facturamos. El comercial anota unidades + descuento + almacén + nº socio.</div>
         <input type="text" id="com-nombre-${sel.id}" value="${escape(sel.etiqueta || '').replace(/"/g,'&quot;')}" placeholder="Nombre del producto (ej: Emulquien Laxante 230 ml)" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
+        <input type="text" id="com-lab-${sel.id}" value="${escape(sel.comision_laboratorio || '').replace(/"/g,'&quot;')}" placeholder="Laboratorio (ej: Lainco, Sawes)" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:6px">
+        <div style="font-size:11px;color:#6b7280;margin:-2px 0 6px">El <b>laboratorio</b> es lo que permite restringirlo por zonas. Sin él, esta zona no se puede vetar en un territorio.</div>
         <button class="btn" style="background:#ea580c;color:#fff;padding:7px 12px;font-size:12px" onclick="marcarComisionZona('${String(sel.id).replace(/'/g, "\\'")}')">${sel.es_comision ? 'Guardar nombre' : 'Marcar de comisión'}</button>
         ${sel.es_comision ? `
           <div style="margin-top:10px;border-top:1px dashed #fed7aa;padding-top:8px">
@@ -15045,9 +15047,12 @@ async function marcarComisionZona(zoneId) {
   if (!nombre) { alert('Escribe el nombre del producto de comisión.'); return; }
   try {
     zoneId = await _persistirZonaSiPropuesta(zoneId); // si es propuesta IA, crearla en BD primero
-    await api('/api/zones/' + zoneId, { method: 'PUT', body: { es_comision: true, etiqueta: nombre } });
+    // El laboratorio va aparte del nombre del producto: es lo que permite vetarlo por zonas.
+    const inpLab = document.getElementById('com-lab-' + zoneId);
+    const lab = inpLab ? inpLab.value.trim() : '';
+    await api('/api/zones/' + zoneId, { method: 'PUT', body: { es_comision: true, etiqueta: nombre, comision_laboratorio: lab || null } });
     const sel = _zonasEditor.zonas.find(z => String(z.id) === String(zoneId));
-    if (sel) { sel.es_comision = true; sel.etiqueta = nombre; sel.product_id = null; sel.familia_ref = null; sel.producto_codigo = null; sel.producto_nombre = null; }
+    if (sel) { sel.es_comision = true; sel.etiqueta = nombre; sel.comision_laboratorio = lab || null; sel.product_id = null; sel.familia_ref = null; sel.producto_codigo = null; sel.producto_nombre = null; }
     renderZonasEnCapa();
     renderListaZonas();
     mostrarNotificacionOnline('🤝 Producto de comisión: ' + nombre, '#ea580c');
