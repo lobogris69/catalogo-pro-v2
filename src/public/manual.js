@@ -363,6 +363,21 @@ const MANUAL_ADMIN = [
     ojo: ['Antes de una campaña, mira SIEMPRE en qué modo estás.']
   },
   {
+    id: 'importes',
+    icono: '💶',
+    titulo: 'Quién ve los importes del pedido',
+    para: 'Que el precio sea una herramienta del comercial y no un dato que se escapa al cliente o a la oficina.',
+    pasos: [
+      'Los <b>importes</b> (PVF y total) son un dato <b>interno del comercial</b>: le sirven para valorar el pedido sobre la marcha y para su estadística de lo que le compra cada cliente.',
+      'Al <b>cliente</b> y a la <b>oficina</b> no se les envían nunca, ni en el email ni en el PDF adjunto.',
+      'Lo que sí viaja en cada línea son las <b>unidades, la bonificación y el descuento</b> aplicados. Eso es lo que la oficina necesita para facturar.',
+      'Si prefieres que el comercial tampoco los vea: <b>⚙️ Configuración → 💶 Importes en el pedido</b> → "El comercial NO ve importes".'
+    ],
+    ojo: [
+      'La bonificación y el descuento se <b>congelan</b> en la línea al anotarla: si la campaña caduca mañana, lo que se pidió hoy con 3+1 se factura con 3+1.'
+    ]
+  },
+  {
     id: 'sesion',
     icono: '🔐',
     titulo: 'Cada cuánto se pide la contraseña',

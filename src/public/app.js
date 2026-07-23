@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v149 · 23 jul 2026';
+const APP_VERSION = 'v150 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -84,6 +84,30 @@ const _msgServidorReiniciando = 'El servidor se está reiniciando (suele ser una
 
 function _esCorteDeServicio(status) {
   return status === 502 || status === 503 || status === 504;
+}
+
+// ¿Puede el comercial ver importes? Es un dato INTERNO suyo (valoración del pedido y
+// estadística de su cliente); a oficina y cliente no se envían nunca. El admin puede
+// apagarlo desde Configuración.
+let _cfgImportes = null;
+function _verImportes() { return _cfgImportes !== '0'; }
+async function _cargarCfgImportes() {
+  if (_cfgImportes !== null) return;
+  try {
+    const r = await api('/api/email-config');
+    const c = (r.config || []).find(x => x.clave === 'importes_visibles_comercial');
+    _cfgImportes = c ? String(c.valor) : '1';
+  } catch (_) { _cfgImportes = '1'; }
+}
+
+// Lo que lleva aplicado la línea: bonificación y/o descuento. Es lo que necesita la
+// oficina para facturar (antes no viajaba en el pedido).
+function _condLinea(a) {
+  const t = [];
+  if (a.bonificacion) t.push(String(a.bonificacion));
+  if (a.descuento != null && a.descuento !== '') t.push('-' + Number(a.descuento) + '%');
+  if (a.oferta_texto && !t.length) t.push(String(a.oferta_texto));
+  return t.join(' · ');
 }
 
 function api(endpoint, options = {}) {
@@ -5318,6 +5342,17 @@ async function renderConfiguracion() {
             <label>Firma HTML al pie de los emails</label>
             <textarea id="cfg-firma_html" rows="3">${escape(cfg.firma_html && cfg.firma_html.valor || '')}</textarea>
           </div>
+          <div class="form-group" style="border-top:1px solid var(--gris-borde);padding-top:12px">
+            <label>💶 Importes en el pedido</label>
+            <select id="cfg-importes_visibles_comercial" style="width:100%;padding:9px;border:1px solid #d1d5db;border-radius:8px">
+              <option value="1" ${String(cfg.importes_visibles_comercial && cfg.importes_visibles_comercial.valor) !== '0' ? 'selected' : ''}>El comercial SÍ ve importes (valoración del pedido)</option>
+              <option value="0" ${String(cfg.importes_visibles_comercial && cfg.importes_visibles_comercial.valor) === '0' ? 'selected' : ''}>El comercial NO ve importes</option>
+            </select>
+            <small style="color:var(--gris-texto);display:block;margin-top:4px">
+              Los importes son un dato <b>interno</b> del comercial: le sirven para valorar el pedido y para su estadística de lo que le compra cada cliente.
+              <b>Al cliente y a la oficina no se les envían nunca</b>: ellos reciben las unidades con sus <b>bonificaciones y descuentos</b>, que es lo que hace falta para facturar.
+            </small>
+          </div>
         </div>
 
         <!-- BLOQUE 5: Planning de visitas -->
@@ -6604,6 +6639,7 @@ async function guardarConfiguracion() {
     'pruebas_email_comercial',
     'remitente_from',
     'firma_html',
+    'importes_visibles_comercial',
     'planning_ciclo_default',
     'planning_ventana_proxima_dias',
     'planning_ventana_urgente_dias'
@@ -11021,6 +11057,7 @@ async function cerrarVisitaActiva() {
 // Resumen pre-envío: tabla editable de productos + nota general + email cliente + opciones
 async function abrirResumenPreEnvio() {
   const visitId = appState.visitaActiva.id;
+  await _cargarCfgImportes();   // saber si este comercial ve importes
 
   // Recopilar TODAS las anotaciones de la visita desde memoria local
   let anotaciones = [];
@@ -11117,8 +11154,9 @@ function renderResumenPreEnvio() {
                 <th style="text-align:left">Código</th>
                 <th style="text-align:left">Producto</th>
                 <th style="width:80px;text-align:center">Cant</th>
-                <th style="width:90px;text-align:right">PVF</th>
-                <th style="width:100px;text-align:right">Subtotal</th>
+                <th style="width:110px">Bonif. / Dto.</th>
+                ${_verImportes() ? `<th style="width:90px;text-align:right">PVF</th>
+                <th style="width:100px;text-align:right">Subtotal</th>` : ''}
                 <th style="width:40px"></th>
               </tr>
             </thead>
@@ -11135,8 +11173,9 @@ function renderResumenPreEnvio() {
                       <input type="number" class="resumen-cant-input" min="1" value="${cant}" data-anot-id="${a.id}"
                              style="width:60px;padding:6px;border:1px solid #d1d5db;border-radius:6px;text-align:center;font-size:14px">
                     </td>
-                    <td style="text-align:right">${pvf != null ? pvf.toFixed(2) + '€' : '—'}</td>
-                    <td style="text-align:right;font-weight:600" class="resumen-subtotal-celda">${sub != null ? sub.toFixed(2) + '€' : '—'}</td>
+                    <td style="font-size:12px"><b>${escape(_condLinea(a)) || '<span style="color:#9ca3af">—</span>'}</b></td>
+                    ${_verImportes() ? `<td style="text-align:right">${pvf != null ? pvf.toFixed(2) + '€' : '—'}</td>
+                    <td style="text-align:right;font-weight:600" class="resumen-subtotal-celda">${sub != null ? sub.toFixed(2) + '€' : '—'}</td>` : ''}
                     <td style="text-align:center">
                       <button class="resumen-borrar-btn" data-anot-id="${a.id}" title="Quitar línea">🗑️</button>
                     </td>
@@ -11144,13 +11183,13 @@ function renderResumenPreEnvio() {
                 `;
               }).join('')}
             </tbody>
-            <tfoot>
+            ${_verImportes() ? `<tfoot>
               <tr>
-                <td colspan="4" style="text-align:right;font-weight:700;padding-top:10px">TOTAL PVF:</td>
+                <td colspan="4" style="text-align:right;font-weight:700;padding-top:10px">TOTAL PVF <span style="font-weight:400;font-size:11px;color:var(--gris-texto)">(solo para ti: no se envía a nadie)</span>:</td>
                 <td style="text-align:right;font-weight:700;color:#16a34a;font-size:15px;padding-top:10px" id="resumen-total">${totalPVF.toFixed(2)}€</td>
                 <td></td>
               </tr>
-            </tfoot>
+            </tfoot>` : ''}
           </table>
         </div>
       ` : ''}

@@ -603,6 +603,11 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS almacen VARCHAR(150);   -- almacen de envio (por pedido)
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS num_socio VARCHAR(60);  -- numero de socio del cliente
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS referencia VARCHAR(120); -- referencia suelta tecleada a mano (expositor, no esta en Sage)
+      -- OFERTA APLICADA A LA LINEA. Sin esto la oficina no puede facturar: veia
+      -- "12 uds de X" sin saber si llevaba 3+1 o un 15%. Se congela el texto en el
+      -- momento del pedido (la campana caduca, la linea del pedido no cambia).
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS bonificacion VARCHAR(60);   -- "3+1", "12+2"
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS oferta_texto VARCHAR(120);  -- etiqueta de la campana aplicada
 
       -- ===== ZONAS DE VENTA =====
       -- La restriccion de "esto aqui no se puede vender" es del TERRITORIO, no del
@@ -1418,6 +1423,10 @@ async function initDB(): Promise<void> {
       ['pruebas_email_comercial', '', 'Email donde llegan los emails "al comercial" en modo pruebas'],
       ['remitente_from', '"CatalogPRO LOMHIFAR" <f.ayllon66@gmail.com>', 'Remitente FROM de todos los emails enviados'],
       ['firma_html', '<p style="color:#888;font-size:12px">LOMHIFAR S.L. · Distribución parafarmacéutica</p>', 'Firma HTML al pie de los emails'],
+      // Los importes son un dato INTERNO del comercial (valoracion del pedido y su
+      // estadistica por cliente). A oficina y cliente no van nunca; aqui se decide si
+      // el comercial los ve o no.
+      ['importes_visibles_comercial', '1', 'El comercial ve importes (PVF/total) en su resumen y su PDF. 0 = no verlos'],
       // G - Planning/rutero
       ['planning_ciclo_default', '90', 'Ciclo de visita por defecto en días (se aplica a clientes sin ciclo propio)'],
       ['planning_ventana_proxima_dias', '15', 'Días ANTES del ciclo en que el cliente pasa a amarillo (próxima visita)'],
@@ -1499,7 +1508,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v149-comision-lab-23jul',
+      build: 'v150-importes-bonif-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -8888,10 +8897,26 @@ app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, re
     const numSocio = req.body.num_socio ? String(req.body.num_socio).trim().substring(0, 60) : null;
     // Referencia suelta tecleada a mano (expositor: gafa que no esta en Sage)
     const referencia = req.body.referencia ? String(req.body.referencia).trim().substring(0, 120) : null;
+    // OFERTA APLICADA: se CONGELA en la linea al anotarla. La campana caduca dentro de
+    // dos semanas, pero lo que se pidio ese dia con 3+1 se factura con 3+1. Sin esto la
+    // oficina no puede facturar: veia unidades sueltas sin bonificacion ni descuento.
+    let bonificacion = req.body.bonificacion ? String(req.body.bonificacion).trim().substring(0, 60) : null;
+    let ofertaTexto = req.body.oferta_texto ? String(req.body.oferta_texto).trim().substring(0, 120) : null;
+    let dtoFinal = descuento;
+    if (productId && !bonificacion && !ofertaTexto) {
+      try {
+        const of = (await ofertasVigentesLote([productId]))[productId];
+        if (of) {
+          ofertaTexto = String(of.label || of.texto || '').substring(0, 120) || null;
+          if (of.tipo === 'bonificacion') bonificacion = String(of.texto || of.label || '').substring(0, 60) || null;
+          if (of.tipo === 'descuento' && dtoFinal == null && of.valor != null) dtoFinal = Number(of.valor);
+        }
+      } catch (_) { /* si falla la oferta, la linea se guarda igual */ }
+    }
     const r = await pool.query(
-      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio, referencia)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
-      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, descuento, almacen, numSocio, referencia]
+      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio, referencia, bonificacion, oferta_texto)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`,
+      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, dtoFinal, almacen, numSocio, referencia, bonificacion, ofertaTexto]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {
@@ -9184,7 +9209,9 @@ async function cargarDatosVisitaCompleta(visitId: number) {
 }
 
 // Genera el PDF de una visita como Buffer (para descarga o adjunto email)
-function generarPdfVisitaBuffer(visit: any, annotations: any[]): Promise<Buffer> {
+// verImportes=false por defecto: el PDF se adjunta al email de OFICINA y los importes
+// son un dato interno del comercial. El suyo se genera con verImportes=true.
+function generarPdfVisitaBuffer(visit: any, annotations: any[], verImportes = false): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
       const doc = new PDFDocumentLib({ size: 'A4', margin: 40 });
@@ -9264,8 +9291,13 @@ function generarPdfVisitaBuffer(visit: any, annotations: any[]): Promise<Buffer>
           doc.text('CÓDIGO', colCod, yH);
           doc.text('PRODUCTO', colNom, yH);
           doc.text('CANT', colCant, yH);
-          doc.text('PVF', colPvf, yH);
-          doc.text('SUBTOTAL', colSub, yH);
+          if (verImportes) {
+            doc.text('PVF', colPvf, yH);
+            doc.text('SUBTOTAL', colSub, yH);
+          } else {
+            // Sin importes queda sitio de sobra para lo que SÍ necesita la oficina.
+            doc.text('BONIF. / DTO.', colPvf, yH);
+          }
           doc.moveDown(0.2);
           doc.strokeColor('#ddd').lineWidth(0.5).moveTo(x0, doc.y).lineTo(555, doc.y).stroke();
           doc.moveDown(0.2);
@@ -9281,14 +9313,20 @@ function generarPdfVisitaBuffer(visit: any, annotations: any[]): Promise<Buffer>
             doc.font('Helvetica-Bold').fontSize(9).fillColor('#000').text(String(a.producto_codigo || '—'), colCod, yR, { width: 72 });
             doc.font('Helvetica').fontSize(8).text(String(a.producto_nombre || '').substring(0, 60), colNom, yR, { width: 240 });
             doc.fontSize(9).text(cant ? String(cant) : '—', colCant, yR, { width: 50 });
-            doc.text(pvf != null ? pvf.toFixed(2) + '€' : '—', colPvf, yR, { width: 75 });
-            doc.text(sub != null ? sub.toFixed(2) + '€' : '—', colSub, yR, { width: 95 });
+            if (verImportes) {
+              doc.text(pvf != null ? pvf.toFixed(2) + '€' : '—', colPvf, yR, { width: 75 });
+              doc.text(sub != null ? sub.toFixed(2) + '€' : '—', colSub, yR, { width: 95 });
+            } else {
+              doc.text(_condicionesLinea(a) || '—', colPvf, yR, { width: 170 });
+            }
             doc.moveDown(0.5);
           });
           doc.strokeColor('#ddd').lineWidth(0.5).moveTo(x0, doc.y).lineTo(555, doc.y).stroke();
           doc.moveDown(0.2);
-          doc.font('Helvetica-Bold').fontSize(9).fillColor(color)
-             .text('TOTAL PVF: ' + totalGrupo.toFixed(2) + '€', x0, doc.y, { width: 510, align: 'right' });
+          if (verImportes) {
+            doc.font('Helvetica-Bold').fontSize(9).fillColor(color)
+               .text('TOTAL PVF: ' + totalGrupo.toFixed(2) + '€', x0, doc.y, { width: 510, align: 'right' });
+          }
           doc.fillColor('#000');
           doc.moveDown(0.5);
         }
@@ -9360,7 +9398,11 @@ app.get('/api/visits/:id/pdf', verifyToken, async (req: AuthRequest, res: Respon
       res.status(403).json({ success: false, error: 'No tienes acceso a esta visita' });
       return;
     }
-    const buffer = await generarPdfVisitaBuffer(visit, annotations);
+    // Copia del comercial: lleva importes para su valoracion, salvo que el admin los
+    // haya apagado en Configuracion.
+    const cfgImp = await leerEmailConfig();
+    const buffer = await generarPdfVisitaBuffer(visit, annotations,
+      String(cfgImp.importes_visibles_comercial || '1') !== '0');
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${nombrePdfVisita(visit)}"`);
     res.end(buffer);
@@ -9529,7 +9571,21 @@ async function enviarEmailConRedireccion(opts: {
 }
 
 // Plantillas HTML
+// Texto de lo que lleva aplicado la linea: es lo que la oficina necesita para facturar.
+function _condicionesLinea(a: any): string {
+  const t: string[] = [];
+  if (a.bonificacion) t.push(String(a.bonificacion));
+  if (a.descuento != null && a.descuento !== '') t.push('-' + Number(a.descuento) + '%');
+  if (a.oferta_texto && !t.length) t.push(String(a.oferta_texto));
+  return t.join(' · ');
+}
+
 function plantillaEmailOficina(visit: any, annotations: any[], cfg: Record<string,string>): string {
+  // Los IMPORTES son un dato INTERNO del comercial (valoracion aproximada del pedido y
+  // estadistica de lo que le compra cada cliente). Ni el cliente ni la oficina los
+  // reciben NUNCA: la oficina factura con sus propias tarifas, y lo que necesita para
+  // hacerlo son las BONIFICACIONES y DESCUENTOS, no el PVF.
+  const verImportes = false;
   const fecha = visit.confirmed_at ? new Date(visit.confirmed_at).toLocaleString('es-ES') : new Date(visit.created_at).toLocaleString('es-ES');
   const peds = annotations.filter((a: any) => a.tipo === 'pedido');
   const devs = annotations.filter((a: any) => a.tipo === 'devolucion');
@@ -9550,8 +9606,9 @@ function plantillaEmailOficina(visit: any, annotations: any[], cfg: Record<strin
               <th style="padding:6px 8px;border-bottom:2px solid ${color}">Código</th>
               <th style="padding:6px 8px;border-bottom:2px solid ${color}">Producto</th>
               <th style="padding:6px 8px;border-bottom:2px solid ${color};text-align:center">Cant</th>
-              <th style="padding:6px 8px;border-bottom:2px solid ${color};text-align:right">PVF</th>
-              <th style="padding:6px 8px;border-bottom:2px solid ${color};text-align:right">Subtotal</th>
+              <th style="padding:6px 8px;border-bottom:2px solid ${color}">Bonif. / Dto.</th>
+              ${verImportes ? `<th style="padding:6px 8px;border-bottom:2px solid ${color};text-align:right">PVF</th>
+              <th style="padding:6px 8px;border-bottom:2px solid ${color};text-align:right">Subtotal</th>` : ''}
             </tr>
           </thead>
           <tbody>
@@ -9565,18 +9622,19 @@ function plantillaEmailOficina(visit: any, annotations: any[], cfg: Record<strin
                   <td style="padding:6px 8px;border-bottom:1px solid #eee"><b>${escapeHtml(a.producto_codigo || '—')}</b></td>
                   <td style="padding:6px 8px;border-bottom:1px solid #eee">${escapeHtml(a.producto_nombre || '')}</td>
                   <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center">${cant || '—'}</td>
-                  <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right">${pvf != null ? pvf.toFixed(2) + '€' : '—'}</td>
-                  <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right">${sub != null ? sub.toFixed(2) + '€' : '—'}</td>
+                  <td style="padding:6px 8px;border-bottom:1px solid #eee"><b>${escapeHtml(_condicionesLinea(a) || '—')}</b></td>
+                  ${verImportes ? `<td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right">${pvf != null ? pvf.toFixed(2) + '€' : '—'}</td>
+                  <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right">${sub != null ? sub.toFixed(2) + '€' : '—'}</td>` : ''}
                 </tr>
               `;
             }).join('')}
           </tbody>
-          <tfoot>
+          ${verImportes ? `<tfoot>
             <tr>
               <td colspan="4" style="padding:8px;text-align:right;font-weight:bold;color:${color}">TOTAL PVF:</td>
               <td style="padding:8px;text-align:right;font-weight:bold;color:${color}">${total.toFixed(2)}€</td>
             </tr>
-          </tfoot>
+          </tfoot>` : ''}
         </table>
       `;
     }
@@ -9790,7 +9848,7 @@ async function enviarEmailsVisita(visitId: number, opciones?: { emailClienteOver
     // Generar PDF una sola vez
     let pdfBuffer: Buffer | null = null;
     try {
-      pdfBuffer = await generarPdfVisitaBuffer(visit, annotations);
+      pdfBuffer = await generarPdfVisitaBuffer(visit, annotations, false);   // a oficina/cliente nunca
     } catch (e) {
       console.error('Error generando PDF para visita ' + visitId + ':', (e as Error).message);
     }
@@ -10026,7 +10084,7 @@ app.post('/api/visits/:id/resend-to-custom', verifyToken, async (req: AuthReques
     // Generar PDF (mismo que email cliente original) y adjuntarlo
     let pdfBuffer: Buffer | null = null;
     try {
-      pdfBuffer = await generarPdfVisitaBuffer(visit, annotations);
+      pdfBuffer = await generarPdfVisitaBuffer(visit, annotations, false);   // a oficina/cliente nunca
     } catch (e) {
       console.error('Error generando PDF para visita ' + id + ':', (e as Error).message);
     }
