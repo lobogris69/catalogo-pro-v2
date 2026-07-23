@@ -279,6 +279,23 @@ const MANUAL_ADMIN = [
     ]
   },
   {
+    id: 'cliente-nuevo',
+    icono: '➕',
+    titulo: 'Farmacia nueva o que aún no es cliente',
+    para: 'Que el comercial pueda visitar y vender a una apertura nueva el mismo día, sin esperar a que administración la dé de alta.',
+    pasos: [
+      'El comercial pulsa <b>➕ Cliente nuevo</b> en Clientes y rellena la ficha completa: <b>nombre y dos apellidos, CIF, dirección, CP, población, provincia, teléfono, WhatsApp, email y cuenta bancaria</b>, más notas.',
+      'Si el CIF o el teléfono ya existen, la app avisa de qué ficha es: así no se duplican farmacias.',
+      'El cliente queda <b>provisional</b> y se le puede hacer la visita y el pedido <b>en ese momento</b>.',
+      'El pedido llega a la oficina con el asunto <b>⚠️ ALTA CLIENTE</b> y un recuadro rojo con todos los datos y a qué comercial hay que asignarlo. <b>No tienen que llamar a nadie para pedir datos.</b>',
+      'Administración lo crea en Sage y escribe el código en <b>🔄 Coordinación → Clientes nuevos por dar de alta</b>. El cliente deja de ser provisional y su visita y su pedido se quedan en la ficha definitiva.'
+    ],
+    ojo: [
+      'Mientras esté provisional lleva un código temporal (PENDCLI-3) que se sustituye por el de Sage al darlo de alta.',
+      'La zona de venta se deduce sola del código postal, así que entra en el mapa desde el primer día.'
+    ]
+  },
+  {
     id: 'clientes',
     icono: '🏥',
     titulo: 'Clientes, planning y mapa',
@@ -440,6 +457,19 @@ const MANUAL_COMERCIAL = [
       'Puedes añadir una nota a cualquier línea (por ejemplo "urgente" o "para el jueves").',
       'Si el cuadro de anotar te tapa las condiciones de la lámina, <b>arrástralo desde cualquier borde</b> y apártalo. No hace falta acertar en la barra del título.'
     ]
+  },
+  {
+    id: 'c-cliente-nuevo',
+    icono: '➕',
+    titulo: 'Una farmacia nueva que no está en la lista',
+    para: 'Apertura nueva o farmacia que todavía no es cliente: puedes venderle hoy mismo.',
+    pasos: [
+      'En <b>🏥 Clientes</b> pulsa <b>➕ Cliente nuevo</b>.',
+      'Rellena <b>todo lo que puedas</b>: nombre y dos apellidos, CIF, dirección, CP, población, provincia, teléfono, WhatsApp, email y cuenta bancaria. Cuanto más pongas, <b>menos te llamarán luego</b> desde administración.',
+      'Guarda y <b>empieza la visita</b>: puedes enseñarle el catálogo y anotarle el pedido como a cualquier cliente.',
+      'En la oficina reciben el pedido con el aviso de que hay que darlo de alta y asignártelo a ti.'
+    ],
+    ojo: ['Si esa farmacia ya estaba dada de alta, la app te lo dice al guardar para que no se creen dos fichas.']
   },
   {
     id: 'c-expositores',

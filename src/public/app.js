@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v156 · 23 jul 2026';
+const APP_VERSION = 'v157 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -2333,7 +2333,10 @@ async function renderListaClientes() {
           <h2>Clientes ${ayuda('Cada cliente tiene un semáforo de planning: 🔴 Urgente = visita atrasada (>90 días desde última visita). 🟡 Próxima = visita pronto (entre 75-90 días). 🟢 Al día = visitado recientemente. ⚪ Sin historial = nunca visitado. El ciclo se configura en ⚙️ Configuración.')}</h2>
           <div id="clientes-resumen" style="font-size:12px;color:var(--gris-texto);margin-top:4px">cargando…</div>
         </div>
-        ${esAdmin ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalImportarSage()">📊 Importar Excel Sage</button>` : ''}
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-pequeno" onclick="abrirAltaClienteNuevo()" title="Farmacia nueva o que aún no es cliente: se toman todos los datos y se puede visitar y pedir al momento">➕ Cliente nuevo</button>
+          ${esAdmin ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalImportarSage()">📊 Importar Excel Sage</button>` : ''}
+        </div>
       </div>
 
       <div style="background:var(--surface);border:1px solid var(--gris-borde);border-radius:12px;padding:1rem;margin-bottom:1rem;position:relative">
@@ -15202,6 +15205,79 @@ async function quitarVarianteComision(zoneId, idx) {
   }
 }
 
+// ===== ALTA DE CLIENTE NUEVO DESDE LA CALLE =====
+// Apertura nueva o farmacia que aún no es cliente. Se piden TODOS los datos que
+// necesita administración para darlo de alta sin tener que llamar al comercial, y la
+// visita y el pedido se pueden hacer en el momento.
+function abrirAltaClienteNuevo() {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  const campo = (id, etq, tipo, ph, req) => `
+    <div class="form-group" style="margin:0">
+      <label style="font-size:12px">${etq}${req ? ' *' : ''}</label>
+      <input type="${tipo || 'text'}" id="nc-${id}" placeholder="${ph || ''}"
+             style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #d1d5db;border-radius:8px">
+    </div>`;
+  m.innerHTML = `<div class="modal-card" style="max-width:640px;width:95vw;max-height:92vh;overflow:auto">
+    <div class="modal-header"><h3 style="margin:0">➕ Cliente nuevo</h3>
+      <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;font-size:12px;padding:8px 10px;border-radius:8px;margin-bottom:12px">
+      Rellena <b>todo lo que puedas</b>: con estos datos administración lo da de alta <b>sin tener que llamarte</b>.
+      Podrás visitarlo y hacerle el pedido ahora mismo.
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div style="grid-column:1/-1">${campo('razon_social', 'Nombre y dos apellidos', 'text', 'ej: María Luisa Pérez Gómez', true)}</div>
+      ${campo('cif', 'CIF / NIF', 'text', 'ej: B12345678')}
+      ${campo('telefono', 'Teléfono', 'tel', '')}
+      <div style="grid-column:1/-1">${campo('direccion', 'Dirección', 'text', 'calle, número, piso')}</div>
+      ${campo('cp', 'Código postal', 'text', 'ej: 31001')}
+      ${campo('municipio', 'Población', 'text', '')}
+      ${campo('provincia', 'Provincia', 'text', '')}
+      ${campo('whatsapp', 'WhatsApp', 'tel', '')}
+      <div style="grid-column:1/-1">${campo('email', 'Email', 'email', '')}</div>
+      <div style="grid-column:1/-1">${campo('numero_cuenta', 'Cuenta bancaria (IBAN)', 'text', 'ES00 0000 0000 0000 0000 0000')}</div>
+      <div style="grid-column:1/-1" class="form-group">
+        <label style="font-size:12px">Notas para administración</label>
+        <textarea id="nc-notas" rows="2" placeholder="lo que necesiten saber para el alta"
+                  style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #d1d5db;border-radius:8px"></textarea>
+      </div>
+    </div>
+    <div id="nc-msg" style="margin-top:10px"></div>
+    <div class="modal-acciones" style="margin-top:12px">
+      <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+      <button type="button" class="btn btn-primary" id="nc-ok">Crear y empezar visita</button>
+    </div></div>`;
+  document.body.appendChild(m);
+  hacerDialogoArrastrable(m.querySelector('.modal-card'), m.querySelector('.modal-header'), true);
+  setTimeout(() => { const e = document.getElementById('nc-razon_social'); if (e) e.focus(); }, 60);
+  document.getElementById('nc-ok').onclick = () => guardarClienteNuevo(false);
+}
+
+async function guardarClienteNuevo(forzar) {
+  const $msg = document.getElementById('nc-msg');
+  const v = id => (document.getElementById('nc-' + id)?.value || '').trim();
+  if (!v('razon_social')) { $msg.innerHTML = `<div class="error-msg">El nombre y los apellidos son obligatorios.</div>`; return; }
+  const body = { forzar: !!forzar, notas: v('notas') };
+  ['razon_social', 'cif', 'direccion', 'cp', 'municipio', 'provincia', 'telefono', 'whatsapp', 'email', 'numero_cuenta']
+    .forEach(k => { body[k] = v(k); });
+  try {
+    const r = await api('/api/clients/nuevo-desde-visita', { method: 'POST', body });
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    mostrarNotificacionOnline('✅ ' + r.cliente.razon_social + ' · pendiente de alta en Sage', '#16a34a');
+    // Se puede visitar ya: es justo lo que hace falta estando delante del cliente.
+    if (typeof iniciarVisitaParaCliente === 'function') iniciarVisitaParaCliente(r.cliente.id);
+    else irA('clientes');
+  } catch (e) {
+    // Duplicado: la app avisa en vez de crear dos fichas de la misma farmacia.
+    if (/ya está dado de alta/i.test(e.message)) {
+      $msg.innerHTML = `<div class="error-msg">${escape(e.message)}<br>
+        <button class="btn btn-pequeno btn-secondary" style="margin-top:6px" onclick="guardarClienteNuevo(true)">Aun así, crearlo</button></div>`;
+    } else {
+      $msg.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`;
+    }
+  }
+}
+
 // ===== CLIENTES QUE NO SE VISITAN =====
 // Sage le asigna al comercial clientes que no son de su ruta (clubs, tiendas,
 // academias) y no hay nada en los datos que los distinga: todos son categoría "CLI".
@@ -15719,9 +15795,42 @@ async function renderCoordinacion() {
           <div class="editor-panel" style="flex:1;min-width:170px;text-align:center">
             <div style="font-size:26px;font-weight:700;color:${r.resumen.cambios_pendientes ? '#b45309' : '#16a34a'}">${r.resumen.cambios_pendientes}</div>
             <div style="font-size:12px;color:var(--gris-texto)">láminas por actualizar en Sage</div></div>
+          <div class="editor-panel" style="flex:1;min-width:170px;text-align:center">
+            <div style="font-size:26px;font-weight:700;color:${r.resumen.clientes_nuevos ? '#b91c1c' : '#16a34a'}">${r.resumen.clientes_nuevos || 0}</div>
+            <div style="font-size:12px;color:var(--gris-texto)">clientes nuevos por dar de alta</div></div>
         </div>
 
-        <div class="editor-panel">
+        ${(r.clientes_nuevos || []).length ? `
+        <div class="editor-panel" style="border:2px solid #fca5a5;background:#fef2f2">
+          <h3 style="margin-top:0;color:#b91c1c">🏥 Clientes nuevos por dar de alta (${r.clientes_nuevos.length})</h3>
+          <div style="font-size:12px;color:#7f1d1d;margin-bottom:10px">
+            Aperturas que el comercial ha visitado ya. <b>Hay que crearlas en Sage y asignarlas a su comercial.</b>
+            Están todos los datos: no hace falta llamar a nadie.
+          </div>
+          ${r.clientes_nuevos.map(c => `
+            <div style="border-top:1px solid #fecaca;padding:10px 0">
+              <b style="font-size:14px">${escape(c.razon_social)}</b>
+              ${c.n_visitas ? `<span style="font-size:11px;color:#7f1d1d"> · ya tiene ${c.n_visitas} visita(s)</span>` : ''}
+              <div style="font-size:12px;color:var(--gris-texto);margin:4px 0;line-height:1.6">
+                ${c.cif ? '<b>CIF:</b> ' + escape(c.cif) + ' · ' : ''}
+                ${c.direccion ? escape(c.direccion) + ' · ' : ''}
+                ${c.cp ? escape(c.cp) + ' ' : ''}${escape(c.municipio || '')}${c.provincia ? ' (' + escape(c.provincia) + ')' : ''}<br>
+                ${c.telefono ? '📞 ' + escape(c.telefono) + ' · ' : ''}
+                ${c.whatsapp ? '💬 ' + escape(c.whatsapp) + ' · ' : ''}
+                ${c.email ? '✉️ ' + escape(c.email) : ''}<br>
+                ${c.numero_cuenta ? '🏦 ' + escape(c.numero_cuenta) + '<br>' : ''}
+                <b>Asignar al comercial:</b> ${escape(c.pendiente_alta_por || '')}${c.commercial_code ? ' (código ' + escape(c.commercial_code) + ')' : ''}
+                ${c.pendiente_alta_notas ? '<br>📝 ' + escape(c.pendiente_alta_notas) : ''}
+              </div>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input type="text" id="cn-cod-${c.id}" placeholder="código de Sage asignado"
+                       style="width:190px;padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">
+                <button class="btn btn-pequeno btn-primary" onclick="asignarCodigoCliente(${c.id})">Guardar código</button>
+              </div>
+            </div>`).join('')}
+        </div>` : ''}
+
+        <div class="editor-panel" ${(r.clientes_nuevos || []).length ? 'style="margin-top:14px"' : ''}>
           <h3 style="margin-top:0">🆕 Altas de producto (${(r.altas || []).length})</h3>
           ${altas ? `<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
               <thead><tr style="text-align:left;border-bottom:2px solid var(--gris-borde)">
@@ -15803,6 +15912,19 @@ async function enviarRecordatorioCoordinacion(btn) {
       : 'No se ha enviado nada: ' + r.motivo + '.');
   } catch (e) { alert('Error: ' + e.message); }
   btn.disabled = false;
+}
+
+// Administración escribe el código de Sage del cliente nuevo: deja de ser provisional
+// y su visita y su pedido se quedan colgando de la ficha definitiva.
+async function asignarCodigoCliente(clientId) {
+  const inp = document.getElementById('cn-cod-' + clientId);
+  const codigo = (inp ? inp.value : '').trim();
+  if (!codigo) { alert('Escribe el código de Sage que le habéis asignado.'); return; }
+  try {
+    await api('/api/coordinacion/clientes/' + clientId + '/codigo', { method: 'POST', body: { codigo } });
+    mostrarNotificacionOnline('✅ Cliente dado de alta con el código ' + codigo, '#16a34a');
+    renderCoordinacion();
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 async function asignarCodigoAlta(pendId) {

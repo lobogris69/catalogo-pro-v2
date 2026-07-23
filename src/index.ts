@@ -609,6 +609,19 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS bonificacion VARCHAR(60);   -- "3+1", "12+2"
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS oferta_texto VARCHAR(120);  -- etiqueta de la campana aplicada
 
+      -- CLIENTE PENDIENTE DE ALTA. Una apertura nueva o una farmacia que aun no es
+      -- cliente: el comercial la da de alta ALLI MISMO con todos los datos que necesita
+      -- administracion (para que no tengan que llamar a pedirlos) y puede hacer la
+      -- visita y el pedido al momento. Administracion la crea en Sage, escribe el
+      -- codigo y se enlaza sola, con su visita y su pedido ya hechos.
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS pendiente_alta BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS pendiente_alta_at TIMESTAMP;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS pendiente_alta_por VARCHAR(150);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS pendiente_alta_notas TEXT;
+      CREATE INDEX IF NOT EXISTS idx_clients_pend_alta ON clients(pendiente_alta) WHERE pendiente_alta = TRUE;
+      -- sage_code es UNIQUE y en un provisional aun no existe: se pone uno temporal
+      -- (PENDCLI-n) que se sustituye por el real al enlazar.
+
       -- CLIENTE QUE NO SE VISITA. Sage asigna al comercial clientes que no son de su
       -- ruta (clubs deportivos, tiendas, academias... todos con categoria 'CLI', asi
       -- que no hay forma de distinguirlos por los datos). Se marcan a mano y
@@ -1557,7 +1570,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v156-no-visitar-23jul',
+      build: 'v157-cliente-nuevo-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -3022,6 +3035,87 @@ async function restriccionesEnZona(zonaId: number): Promise<{ laminas: number[];
 async function laminasRestringidasEnZona(zonaId: number): Promise<number[]> {
   return (await restriccionesEnZona(zonaId)).laminas;
 }
+
+// ============================================================================
+// CLIENTE NUEVO DESDE LA VISITA (apertura nueva o farmacia que aun no es cliente)
+// Lo crea el COMERCIAL en el momento, con todos los datos que administracion necesita
+// para darlo de alta sin tener que llamarle a pedirlos. Queda provisional hasta que
+// administracion le pone su codigo de Sage.
+// ============================================================================
+app.post('/api/clients/nuevo-desde-visita', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const b = req.body || {};
+    const razon = String(b.razon_social || '').trim();
+    if (!razon) { res.status(400).json({ success: false, error: 'El nombre y apellidos son obligatorios' }); return; }
+    const cif = String(b.cif || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || null;
+    const tel = String(b.telefono || '').replace(/\D/g, '') || null;
+
+    // Antes de crear nada: ¿ya existe? Evita duplicar una ficha que ya esta en Sage.
+    const dup = await pool.query(
+      `SELECT id, razon_social, sage_code, commercial_code, pendiente_alta FROM clients
+        WHERE is_active = TRUE AND (
+          ($1::text IS NOT NULL AND REGEXP_REPLACE(UPPER(COALESCE(cif,'')), '[^A-Z0-9]', '', 'g') = $1)
+          OR ($2::text IS NOT NULL AND REGEXP_REPLACE(COALESCE(telefono,''), '[^0-9]', '', 'g') = $2)
+        ) LIMIT 1`, [cif, tel]);
+    if (dup.rows.length && !b.forzar) {
+      res.status(409).json({
+        success: false,
+        error: 'Ese ' + (cif && dup.rows[0] ? 'CIF' : 'teléfono') + ' ya está dado de alta: ' + dup.rows[0].razon_social,
+        cliente: dup.rows[0]
+      });
+      return;
+    }
+
+    // El comercial que lo crea: se le asigna a el (es quien lo va a visitar).
+    const userId = effectiveUserId(req);
+    const codigos = await codigosSageDe(userId);
+    const seq = await pool.query(
+      `SELECT COALESCE(MAX(SUBSTRING(sage_code FROM 9)::int), 0) + 1 AS n
+         FROM clients WHERE sage_code ~ '^PENDCLI-[0-9]+$'`);
+    const sageTemp = 'PENDCLI-' + seq.rows[0].n;
+    const txt = (v: any, n: number) => (v ? String(v).trim().substring(0, n) : null);
+
+    const r = await pool.query(
+      `INSERT INTO clients (razon_social, cif, direccion, cp, municipio, provincia, telefono, whatsapp,
+                            email, numero_cuenta, sage_code, commercial_code, is_new_from_visit,
+                            pendiente_alta, pendiente_alta_at, pendiente_alta_por, pendiente_alta_notas)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,TRUE,TRUE,NOW(),$13,$14) RETURNING *`,
+      [txt(razon, 255), txt(b.cif, 20), txt(b.direccion, 255), txt(b.cp, 10), txt(b.municipio, 100),
+       txt(b.provincia, 100), txt(b.telefono, 50), txt(b.whatsapp, 50), txt(b.email, 150),
+       txt(b.numero_cuenta, 50), sageTemp, codigos[0] || null, req.user?.name || null, txt(b.notas, 2000)]);
+
+    // Zona: se deduce del CP para que entre en el mapa y en las reglas por territorio.
+    try {
+      const z = await zonaDeCliente(Number(r.rows[0].id));
+      if (z) await pool.query(`UPDATE clients SET zona_id = $1 WHERE id = $2`, [z.id, r.rows[0].id]);
+    } catch (_) {}
+
+    avisarCoordinacionTelegram(
+      `*${req.user?.name || 'Un comercial'}* ha dado de alta un cliente NUEVO: ${razon}` +
+      `\nHay que crearlo en Sage y asignarlo a su comercial.`).catch(() => {});
+    res.json({ success: true, cliente: r.rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Administracion escribe el codigo de Sage del cliente nuevo -> deja de ser provisional.
+app.post('/api/coordinacion/clientes/:id/codigo', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!puedeCoordinar(req)) { res.status(403).json({ success: false, error: 'Sin acceso' }); return; }
+    const codigo = String(req.body?.codigo || '').trim();
+    if (!codigo) { res.status(400).json({ success: false, error: 'Escribe el código de Sage' }); return; }
+    const ya = await pool.query(`SELECT id, razon_social FROM clients WHERE sage_code = $1 AND id <> $2`,
+      [codigo, Number(req.params.id)]);
+    if (ya.rows.length) { res.status(409).json({ success: false, error: 'Ese código ya lo tiene: ' + ya.rows[0].razon_social }); return; }
+    const r = await pool.query(
+      `UPDATE clients SET sage_code = $1, pendiente_alta = FALSE, commercial_code = COALESCE($2, commercial_code),
+              updated_at = NOW()
+        WHERE id = $3 AND pendiente_alta = TRUE RETURNING razon_social`,
+      [codigo, req.body?.commercial_code ? String(req.body.commercial_code).trim() : null, Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Ese cliente ya no está pendiente' }); return; }
+    avisarCoordinacionTelegram(`*${req.user?.name}* ha dado de alta en Sage a ${r.rows[0].razon_social} (código ${codigo}).`).catch(() => {});
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
 
 // ============================================================================
 // CLIENTES QUE NO SE VISITAN
@@ -9449,6 +9543,11 @@ async function cargarDatosVisitaCompleta(visitId: number) {
            c.telefono AS cliente_telefono, c.email AS cliente_email,
            c.email_alternativo AS cliente_email_alternativo,
            c.sage_code AS cliente_sage,
+           c.pendiente_alta AS cliente_pendiente_alta,
+           c.cif AS cliente_cif, c.direccion AS cliente_direccion, c.cp AS cliente_cp,
+           c.whatsapp AS cliente_whatsapp, c.numero_cuenta AS cliente_cuenta,
+           c.commercial_code AS cliente_comercial_codigo,
+           c.pendiente_alta_notas AS cliente_notas_alta,
            cat.name AS catalog_nombre,
            u.name AS comercial_nombre, u.email AS comercial_email
     FROM visits v
@@ -9842,6 +9941,38 @@ function _condicionesLinea(a: any): string {
   return t.join(' · ');
 }
 
+// Aviso para OFICINA cuando el pedido es de un cliente que aun no esta en Sage: van
+// todos los datos para darlo de alta sin tener que llamar al comercial a pedirlos.
+function _bloqueClienteNuevo(visit: any): string {
+  if (!visit.cliente_pendiente_alta) return '';
+  const f = (etq: string, v: any) => v ? `<tr><td style="padding:3px 10px 3px 0;color:#7f1d1d">${etq}</td><td style="padding:3px 0"><b>${escapeHtml(String(v))}</b></td></tr>` : '';
+  return `
+    <div style="border:2px solid #dc2626;background:#fef2f2;border-radius:8px;padding:12px;margin:14px 0">
+      <div style="font-family:Arial;font-size:15px;color:#b91c1c;font-weight:bold;margin-bottom:8px">
+        ⚠️ CLIENTE NUEVO — HAY QUE DARLO DE ALTA EN SAGE ANTES DE SERVIR
+      </div>
+      <div style="font-family:Arial;font-size:13px;color:#7f1d1d;margin-bottom:8px">
+        Y <b>asignarlo al comercial ${escapeHtml(visit.comercial_nombre || '')}</b>${visit.cliente_comercial_codigo ? ' (código ' + escapeHtml(visit.cliente_comercial_codigo) + ')' : ''}.
+      </div>
+      <table style="font-family:Arial;font-size:13px">
+        ${f('Nombre y apellidos', visit.cliente_nombre)}
+        ${f('CIF', visit.cliente_cif)}
+        ${f('Dirección', visit.cliente_direccion)}
+        ${f('CP', visit.cliente_cp)}
+        ${f('Población', visit.cliente_municipio)}
+        ${f('Provincia', visit.cliente_provincia)}
+        ${f('Teléfono', visit.cliente_telefono)}
+        ${f('WhatsApp', visit.cliente_whatsapp)}
+        ${f('Email', visit.cliente_email)}
+        ${f('Cuenta bancaria', visit.cliente_cuenta)}
+        ${f('Notas del comercial', visit.cliente_notas_alta)}
+      </table>
+      <div style="font-family:Arial;font-size:12px;color:#7f1d1d;margin-top:8px">
+        Cuando lo creéis, escribid su código de Sage en la app → <b>🔄 Coordinación</b> y el cliente deja de estar provisional.
+      </div>
+    </div>`;
+}
+
 function plantillaEmailOficina(visit: any, annotations: any[], cfg: Record<string,string>): string {
   // Los IMPORTES son un dato INTERNO del comercial (valoracion aproximada del pedido y
   // estadistica de lo que le compra cada cliente). Ni el cliente ni la oficina los
@@ -9919,6 +10050,7 @@ function plantillaEmailOficina(visit: any, annotations: any[], cfg: Record<strin
   return `
     <div style="font-family:Arial,sans-serif;color:#222;max-width:680px">
       <h2 style="color:#cc007a;margin:0 0 4px">📋 Nueva visita cerrada</h2>
+      ${_bloqueClienteNuevo(visit)}
       <div style="color:#666;font-size:13px">${escapeHtml(fecha)}</div>
       <table style="margin-top:14px;font-size:14px;border-collapse:collapse">
         <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Cliente:</b></td><td>${escapeHtml(visit.cliente_nombre || '—')}</td></tr>
@@ -10105,7 +10237,10 @@ async function enviarEmailsVisita(visitId: number, opciones?: { emailClienteOver
     const { visit, annotations } = datos;
     const cfg = await leerEmailConfig();
     const fecha = visit.confirmed_at ? new Date(visit.confirmed_at).toLocaleDateString('es-ES') : new Date(visit.created_at).toLocaleDateString('es-ES');
-    const asuntoBase = `Visita ${fecha} · ${visit.cliente_nombre || 'Cliente'}`;
+    // Si el cliente aun no esta en Sage, que se vea en el ASUNTO: es lo primero que
+    // mira administracion en la bandeja.
+    const asuntoBase = (visit.cliente_pendiente_alta ? '⚠️ ALTA CLIENTE · ' : '') +
+      `Visita ${fecha} · ${visit.cliente_nombre || 'Cliente'}`;
 
     // Generar PDF una sola vez
     let pdfBuffer: Buffer | null = null;
@@ -10341,7 +10476,10 @@ app.post('/api/visits/:id/resend-to-custom', verifyToken, async (req: AuthReques
 
     const cfg = await leerEmailConfig();
     const fecha = visit.confirmed_at ? new Date(visit.confirmed_at).toLocaleDateString('es-ES') : new Date(visit.created_at).toLocaleDateString('es-ES');
-    const asuntoBase = `Visita ${fecha} · ${visit.cliente_nombre || 'Cliente'}`;
+    // Si el cliente aun no esta en Sage, que se vea en el ASUNTO: es lo primero que
+    // mira administracion en la bandeja.
+    const asuntoBase = (visit.cliente_pendiente_alta ? '⚠️ ALTA CLIENTE · ' : '') +
+      `Visita ${fecha} · ${visit.cliente_nombre || 'Cliente'}`;
 
     // Generar PDF (mismo que email cliente original) y adjuntarlo
     let pdfBuffer: Buffer | null = null;
@@ -10678,6 +10816,16 @@ app.get('/api/coordinacion', verifyToken, async (req: AuthRequest, res: Response
           AND (s.sage_actualizado_at IS NULL OR a.created_at > s.sage_actualizado_at)
         GROUP BY s.id, s.titulo, s.orden, s.catalog_id, c.name
         ORDER BY MAX(a.created_at) DESC LIMIT 200`);
+    // CLIENTES pendientes de alta: aperturas nuevas que el comercial ha creado en la
+    // calle. Van con todos sus datos para que administracion no tenga que llamarle.
+    const clientes = await pool.query(
+      `SELECT c.id, c.razon_social, c.cif, c.direccion, c.cp, c.municipio, c.provincia,
+              c.telefono, c.whatsapp, c.email, c.numero_cuenta, c.commercial_code,
+              c.pendiente_alta_at, c.pendiente_alta_por, c.pendiente_alta_notas,
+              (SELECT COUNT(*)::int FROM visits v WHERE v.client_id = c.id) AS n_visitas
+         FROM clients c
+        WHERE c.pendiente_alta = TRUE AND c.is_active = TRUE
+        ORDER BY c.pendiente_alta_at`);
     const avisos = await pool.query(
       `SELECT * FROM coordinacion_avisos ORDER BY created_at DESC LIMIT 20`);
     res.json({
@@ -10685,11 +10833,13 @@ app.get('/api/coordinacion', verifyToken, async (req: AuthRequest, res: Response
       soy: soloConsulta(req) ? 'oficina' : 'admin',
       altas: altas.rows,
       cambios: cambios.rows,
+      clientes_nuevos: clientes.rows,
       avisos: avisos.rows,
       resumen: {
         altas_sin_codigo: altas.rows.filter((a: any) => !a.codigo_asignado).length,
         altas_con_codigo: altas.rows.filter((a: any) => a.codigo_asignado).length,
-        cambios_pendientes: cambios.rows.length
+        cambios_pendientes: cambios.rows.length,
+        clientes_nuevos: clientes.rows.length
       }
     });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
