@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v151 · 23 jul 2026';
+const APP_VERSION = 'v152 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -8647,8 +8647,29 @@ let _mapaState = {
   mapa: null,              // instancia Leaflet
   marcadores: {},          // id -> marker
   rutaLinea: null,         // polyline de ruta
-  miUbicacion: null        // {lat, lng} si el usuario activo "Cerca de aquí"
+  miUbicacion: null,       // {lat, lng} si el usuario activo "Cerca de aquí"
+  zonaId: '',              // filtrar por zona de venta (Navarra, Aragón…)
+  incluirBajas: false      // las bajas de Sage se ocultan por defecto
 };
+
+function cambiarZonaMapa(v) { _mapaState.zonaId = v || ''; recargarClientesMapa(); }
+function cambiarBajasMapa(v) { _mapaState.incluirBajas = !!v; recargarClientesMapa(); }
+
+// Rellena el desplegable de zonas del mapa (una vez, al abrirlo).
+async function _cargarZonasEnMapa() {
+  const sel = document.getElementById('mapa-zona');
+  if (!sel || sel.dataset.listo) return;
+  try {
+    const r = await api('/api/zonas');
+    (r.zonas || []).forEach(z => {
+      const o = document.createElement('option');
+      o.value = z.id; o.textContent = '📍 ' + z.nombre;
+      if (String(_mapaState.zonaId) === String(z.id)) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.dataset.listo = '1';
+  } catch (_) {}
+}
 
 const COLORES_PIN = {
   urgente:       '#dc2626',
@@ -8676,6 +8697,13 @@ async function renderMapa() {
           <button class="planning-chip ${_mapaState.modo === 'pendientes' ? 'planning-chip-activo' : ''}" onclick="cambiarModoMapa('pendientes')">⏰ Pendientes</button>
           <button class="planning-chip ${_mapaState.modo === 'cerca' ? 'planning-chip-activo' : ''}" onclick="cambiarModoMapa('cerca')">📍 Cerca de aquí</button>
         </div>
+        <select id="mapa-zona" onchange="cambiarZonaMapa(this.value)" style="padding:7px 10px;border:1px solid var(--gris-borde);border-radius:8px;font-size:13px">
+          <option value="">📍 Todas las zonas</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--gris-texto);cursor:pointer" title="Sage arrastra las bajas en el nombre del cliente ('- BAJA - …'), no como inactivas. Se ocultan para que el mapa sea el de trabajo real.">
+          <input type="checkbox" id="mapa-bajas" ${_mapaState.incluirBajas ? 'checked' : ''} onchange="cambiarBajasMapa(this.checked)">
+          ver bajas y anulados
+        </label>
         <div class="mapa-info" id="mapa-info">Cargando…</div>
       </div>
 
@@ -8717,6 +8745,7 @@ async function renderMapa() {
   }).addTo(_mapaState.mapa);
 
   // Cargar clientes
+  _cargarZonasEnMapa();
   await recargarClientesMapa();
 }
 
@@ -8779,6 +8808,8 @@ async function recargarClientesMapa() {
       const lng = _mapaState.miUbicacion.lng;
       params.set('bbox', `${lat-0.3},${lng-0.3},${lat+0.3},${lng+0.3}`);
     }
+    if (_mapaState.zonaId) params.set('zona_id', _mapaState.zonaId);
+    if (_mapaState.incluirBajas) params.set('incluir_bajas', 'true');
     const r = await api('/api/map/clients?' + params.toString());
     _mapaState.clientes = r.clientes || [];
 

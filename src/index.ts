@@ -1508,7 +1508,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v150-importes-bonif-23jul',
+      build: 'v152-mapa-bajas-zona-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -8743,6 +8743,21 @@ app.get('/api/map/clients', verifyToken, async (req: AuthRequest, res: Response)
       }
     }
 
+    // BAJAS: Sage no las marca como inactivas, arrastra el estado en el NOMBRE
+    // ("- BAJA - FARMACIA X", "ANULADO"). En el mapa de un comercial eso son decenas
+    // de pines que no va a visitar nunca. Se ocultan salvo que se pidan expresamente.
+    const filtroBajas = String(req.query.incluir_bajas || '') === 'true'
+      ? ''
+      : ` AND c.razon_social !~* '^[[:space:]]*-?[[:space:]]*(baja|anulad)'`;
+
+    // Filtro por ZONA de venta (Navarra, Aragón…): centrarse en un territorio.
+    let filtroZona = '';
+    const zonaIdMapa = Number(req.query.zona_id) || 0;
+    if (zonaIdMapa) {
+      params.push(zonaIdMapa);
+      filtroZona = ` AND c.zona_id = $${params.length}`;
+    }
+
     params.push(cicloDefault); const posCiclo = params.length;
     params.push(ventanaProxima); const posProxima = params.length;
     params.push(ventanaUrgente); const posUrgente = params.length;
@@ -8769,6 +8784,8 @@ app.get('/api/map/clients', verifyToken, async (req: AuthRequest, res: Response)
         WHERE c.is_active = TRUE
           AND c.latitude IS NOT NULL AND c.longitude IS NOT NULL
           ${comercialFilter}
+          ${filtroBajas}
+          ${filtroZona}
           ${bboxFilter}
       ),
       conEstado AS (
