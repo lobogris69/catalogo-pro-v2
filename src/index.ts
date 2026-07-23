@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v174-editar-coste-oferta-23jul',
+      build: 'v175-igualar-precios-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -8253,7 +8253,97 @@ app.post('/api/sheets/:sheetId/detect-precios-ia', verifyToken, requireAdmin, as
         detalle.push({ product_id: z.product_id, codigo: z.producto_codigo, campo: a.campo, confianza: Math.max(0, a.conf), revisar: a.revisar, nota: a.nota.join('; '), recuadro_id: ins.rows[0].id });
       }
     }
-    res.json({ success: true, creados, con_revisar, total_detectados: detec.length, descartados_fuera, zonas_producto: zonas.length, detalle });
+    // Los precios de una MISMA COLUMNA de tabla van todos del mismo tamaño en el papel.
+    // La IA los mide uno a uno y de vez en cuando se pasa (pilla la raya de la tabla o
+    // el rabo de una coma) y ese precio sale gigante. Se igualan al terminar.
+    const igualados = await homogeneizarRecuadrosLamina(sheetId);
+    res.json({ success: true, creados, con_revisar, total_detectados: detec.length, descartados_fuera, zonas_producto: zonas.length, igualados, detalle });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// ============================================================================
+// IGUALAR EL TAMANO DE LOS PRECIOS DE UNA LAMINA
+// En una tabla de precios todos los numeros de una columna tienen el mismo cuerpo.
+// La IA estima el tamano midiendo la mancha de tinta de CADA numero, asi que basta
+// con que en uno se cuele un pixel de la linea de la tabla para que salga enorme.
+// Aqui se agrupan por columna (misma x) y se lleva a los raros a la MEDIANA del grupo.
+// Solo se tocan los de origen 'ia': lo que el admin haya ajustado a mano no se pisa.
+// ============================================================================
+async function homogeneizarRecuadrosLamina(sheetId: number): Promise<number> {
+  const r = await pool.query(
+    `SELECT id, x, y, ancho, alto, tam_rel FROM lamina_recuadro
+      WHERE sheet_id = $1 AND activo = TRUE AND origen = 'ia' ORDER BY x, y`, [sheetId]);
+  const recs = r.rows;
+  if (recs.length < 3) return 0;
+
+  // Agrupar por columna: misma x con 1,5 puntos de margen (columnas distintas de la
+  // lamina estan mucho mas separadas que eso).
+  const grupos: any[][] = [];
+  for (const rec of recs) {
+    const g = grupos.find(gr => Math.abs(Number(gr[0].x) - Number(rec.x)) <= 1.5);
+    if (g) g.push(rec); else grupos.push([rec]);
+  }
+
+  const mediana = (xs: number[]) => {
+    const s = [...xs].sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+
+  let cambiados = 0;
+  for (const g of grupos) {
+    if (g.length < 3) continue;   // con dos no hay "normal" que valga
+    const medTam = mediana(g.map(x => Number(x.tam_rel)));
+    const medAlto = mediana(g.map(x => Number(x.alto)));
+    // Solo si el grupo es mayoritariamente homogeneo (si no, igualar seria inventar).
+    const enNorma = g.filter(x => Math.abs(Number(x.tam_rel) - medTam) / medTam <= 0.08).length;
+    if (enNorma / g.length < 0.6) continue;
+    for (const rec of g) {
+      const desvia = Math.abs(Number(rec.tam_rel) - medTam) / medTam > 0.08;
+      if (!desvia) continue;
+      // El alto se lleva tambien a la mediana manteniendo el CENTRO del numero: si no,
+      // la tapa se desplaza y deja ver un trozo del precio viejo.
+      const centroY = Number(rec.y) + Number(rec.alto) / 2;
+      const nuevaY = +(centroY - medAlto / 2).toFixed(3);
+      await pool.query(
+        `UPDATE lamina_recuadro SET tam_rel = $1, alto = $2, y = $3, updated_at = NOW() WHERE id = $4`,
+        [medTam, medAlto, nuevaY, rec.id]);
+      cambiados++;
+    }
+  }
+  return cambiados;
+}
+
+// Igualar los precios de UNA lamina (boton del editor).
+app.post('/api/sheets/:id/recuadros/igualar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) { res.status(400).json({ success: false, error: 'Parametro id invalido' }); return; }
+    const igualados = await homogeneizarRecuadrosLamina(id);
+    res.json({ success: true, igualados });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Igualar los precios de TODO un catalogo de una vez (para lo que ya esta montado).
+app.post('/api/catalogs/:id/recuadros/igualar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) { res.status(400).json({ success: false, error: 'Parametro id invalido' }); return; }
+    const sheets = await pool.query(
+      `SELECT DISTINCT s.id FROM sheets s
+         JOIN lamina_recuadro r ON r.sheet_id = s.id AND r.activo = TRUE
+        WHERE s.catalog_id = $1
+        UNION
+       SELECT DISTINCT s.id FROM express_sheets es
+         JOIN sheets s ON s.id = es.sheet_id
+         JOIN lamina_recuadro r ON r.sheet_id = s.id AND r.activo = TRUE
+        WHERE es.express_catalog_id = $1`, [id]);
+    let igualados = 0, laminasTocadas = 0;
+    for (const row of sheets.rows) {
+      const n = await homogeneizarRecuadrosLamina(Number(row.id));
+      if (n > 0) { igualados += n; laminasTocadas++; }
+    }
+    res.json({ success: true, igualados, laminas_tocadas: laminasTocadas, laminas_revisadas: sheets.rows.length });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

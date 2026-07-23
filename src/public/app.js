@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v174 · 23 jul 2026';
+const APP_VERSION = 'v175 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -772,6 +772,7 @@ async function renderEditorCatalogo(id) {
               ${sheets.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>${ayuda('Vista en cuadrícula para reordenar las láminas. Arrastra y suelta o escribe el número de orden.')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalDescargarPdf(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar PDF del catálogo">📥 Descargar PDF</button>${ayuda('Genera el PDF del catálogo en alta calidad (impresión) o pequeño (para enviar por WhatsApp/email a clientes).')}` : ''}
               ${sheets.length > 0 && esAdminReal() ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirInformePrecios(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Informe de qué láminas hay que revisar/actualizar a mano en precios dinámicos">📋 Informe precios</button>` : ''}
+              ${sheets.length > 0 && esAdminReal() ? `<button class="btn btn-pequeno" style="background:#fef3c7;color:#92400e" onclick="igualarPreciosCatalogo(${id}, this)" title="Revisa todo el catálogo y deja cada columna de precios del mismo tamaño de letra">⚖️ Igualar tamaños de precio</button>${ayuda('La IA mide cada precio por separado y a veces uno sale más grande que sus vecinos. Esto lleva a los raros al tamaño normal de su columna. No toca lo que hayas ajustado a mano.', 'izq')}` : ''}
               ${sheets.length > 0 && esAdminReal() ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirBackupMega(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Copia de respaldo en MEGA como fotos sueltas para cada comercial">☁️ Backup MEGA</button>${ayuda('Sube todas las láminas como PNG sueltos a MEGA en la carpeta de cada comercial (o en /General si el catálogo está asignado a todos). Sistema de respaldo por si la app falla: los comerciales abren la carpeta con el visor de fotos del móvil.', 'izq')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo actual: genera PDF + ZIP de respaldo descargables, queda registrado en el historial, y la versión sube V1→V2. Útil al final de cada temporada.', 'izq')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="borrarTodasLaminas(${id}, ${sheets.length})">🗑️ Borrar todas</button>` : ''}
@@ -13625,6 +13626,41 @@ async function detectarZonasConIA(sheetId, boton) {
 // La IA localiza cada precio impreso, sharp lo afina (color de fondo/tinta + caja),
 // se casa con un producto y se crea un recuadro que TAPA y REESCRIBE con el precio BD.
 // ============================================================================
+// Deja los precios de cada columna del mismo cuerpo de letra. La IA mide cada número
+// por su mancha de tinta y de vez en cuando se pasa (pilla la raya de la tabla) y ese
+// precio sale enorme al lado de sus vecinos.
+async function igualarPreciosLamina(sheetId, boton) {
+  const txt = boton ? boton.innerHTML : '';
+  if (boton) { boton.disabled = true; boton.innerHTML = 'Igualando…'; }
+  try {
+    const r = await api('/api/sheets/' + sheetId + '/recuadros/igualar', { method: 'POST', body: {} });
+    mostrarNotificacionOnline(r.igualados > 0
+      ? '⚖️ ' + r.igualados + ' precio(s) puestos al tamaño de su columna'
+      : '✅ Los precios ya estaban todos igualados', r.igualados > 0 ? '#b45309' : '#16a34a');
+    if (typeof cargarRecuadrosLamina === "function") await cargarRecuadrosLamina(sheetId);
+    if (typeof pintarRecuadrosPrecio === 'function') pintarRecuadrosPrecio();
+  } catch (e) {
+    alert('No se ha podido igualar: ' + e.message);
+  } finally {
+    if (boton) { boton.disabled = false; boton.innerHTML = txt; }
+  }
+}
+
+// Lo mismo para TODO un catálogo de golpe: para lo que ya está montado.
+async function igualarPreciosCatalogo(catalogId, boton) {
+  if (!confirm('Revisar TODAS las láminas de este catálogo y dejar cada columna de precios del mismo tamaño.\n\nSolo toca los precios detectados por la IA que se salen de sus vecinos; lo que hayas ajustado a mano no se toca.\n\n¿Lo hago?')) return;
+  const txt = boton ? boton.innerHTML : '';
+  if (boton) { boton.disabled = true; boton.innerHTML = 'Revisando láminas…'; }
+  try {
+    const r = await api('/api/catalogs/' + catalogId + '/recuadros/igualar', { method: 'POST', body: {} });
+    alert(`⚖️ Listo.\n\n${r.igualados} precio(s) corregidos en ${r.laminas_tocadas} lámina(s).\nRevisadas ${r.laminas_revisadas} láminas con precios.`);
+  } catch (e) {
+    alert('No se ha podido: ' + e.message);
+  } finally {
+    if (boton) { boton.disabled = false; boton.innerHTML = txt; }
+  }
+}
+
 async function detectarPreciosConIA(sheetId, boton) {
   if (!confirm('¿Detectar los PRECIOS de esta lámina con IA?\n\n• Localiza cada precio impreso y crea un recuadro que lo TAPA y lo REESCRIBE con el precio actual de la base de datos.\n• Reemplaza los recuadros que la IA creó antes en esta lámina (respeta los que hayas hecho a mano).\n• Coste: ~$0.02 (2 céntimos) por lámina.')) return;
   const orig = boton.textContent;
@@ -14326,6 +14362,7 @@ async function abrirEditorZonas(sheetId, catalogId) {
         <button class="btn" id="btn-aprobar-zonas" onclick="toggleAprobarZonas(${sheet.id}, this)" style="background:${_zonasEditor.aprobada ? '#16a34a' : '#e5e7eb'};color:${_zonasEditor.aprobada ? '#fff' : '#374151'}" title="Marca esta lámina como revisada y aprobada por ti">${_zonasEditor.aprobada ? '✅ Revisada' : '☐ Marcar revisada'}</button>
         <button class="btn btn-primary" id="btn-detectar-zonas-ia" onclick="detectarZonasConIA(${sheet.id}, this)" title="La IA detecta los productos de la lámina y propone recuadros">🤖 Detectar productos con IA</button>
         <button class="btn" id="btn-detectar-precios-ia" onclick="detectarPreciosConIA(${sheet.id}, this)" style="background:#ede9fe;color:#6d28d9" title="La IA localiza los precios impresos y crea recuadros que los tapan y reescriben con el precio de la BD">🏷️ Detectar precios (IA)</button>
+        <button class="btn" onclick="igualarPreciosLamina(${sheet.id}, this)" style="background:#fef3c7;color:#92400e" title="Deja todos los precios de una misma columna del mismo tamaño. Úsalo si ves algún precio más grande o más pequeño que sus vecinos.">⚖️ Igualar tamaños</button>
         <button class="btn" id="btn-modo-recuadro" onclick="toggleModoRecuadro(this)" style="background:#f3e8ff;color:#7c3aed" title="Dibuja a mano una caja SOBRE UN PRECIO impreso de la lámina para taparlo y reescribirlo con el precio de hoy (si la IA lo olvidó o falló)">✏️ Dibujar cuadro de precio</button>
         <button class="btn" id="btn-borrar-recuadros" onclick="borrarTodosLosRecuadros(${sheet.id}, this)" style="background:#fee2e2;color:#b91c1c" title="Borra de golpe los recuadros de precio de esta lámina (por si la detección con IA no convence y quieres empezar de cero)">🗑️ Borrar precios</button>
         <button class="btn" id="btn-asociar-tabla" onclick="asociarTablaDesdeEditor(${sheet.id}, ${catalogId})" style="background:#e0f2fe;color:#0369a1;font-weight:700" title="Añade una tabla de expositor de la biblioteca. Se pueden poner VARIAS en la misma lámina: púlsalo otra vez por cada una.">➕ Añadir tabla</button>
