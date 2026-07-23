@@ -18,7 +18,10 @@
    ========================================================================== */
 
 function esModoSimple() {
-  return !!(user && user.modo_simple && rolEfectivo() === 'sales');
+  // El usuario "efectivo": si el admin está viendo como un comercial, manda el flag
+  // de ese comercial, no el suyo. Así se puede comprobar cómo le queda la app.
+  const efectivo = (typeof impersonating !== 'undefined' && impersonating) ? impersonating : user;
+  return !!(efectivo && efectivo.modo_simple && rolEfectivo() === 'sales');
 }
 
 // ===== 1. PANTALLA DE INICIO: un solo botón =====

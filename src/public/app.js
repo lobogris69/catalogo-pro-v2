@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v159 · 23 jul 2026';
+const APP_VERSION = 'v160 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -273,6 +273,15 @@ async function renderApp() {
       const r = await api('/api/visits/current');
       appState.visitaActiva = r.visit || null;
     } catch (e) { /* sin visita o sin red */ }
+    // Datos frescos del usuario: si le han cambiado algo (p.ej. el modo sencillo)
+    // mientras estaba dentro, se entera al abrir la app, no al volver a entrar.
+    try {
+      const me = await api('/api/auth/me');
+      if (me.user) {
+        user = me.user;
+        localStorage.setItem('cpv2_user', JSON.stringify(user));
+      }
+    } catch (e) { /* sin red: seguimos con lo que teníamos */ }
   }
 
   const esAdmin = rolEfectivo() === 'admin';
@@ -4870,7 +4879,7 @@ async function abrirSelectorImpersonacion() {
         ` : `
           <div class="comerciales-lista" style="gap:6px">
             ${comerciales.map(c => `
-              <button class="comercial-impersonar" onclick="impersonar(${c.id}, '${escape(c.name)}', '${escape(c.sage_commercial_code || '')}')">
+              <button class="comercial-impersonar" onclick="impersonar(${c.id}, '${escape(c.name)}', '${escape(c.sage_commercial_code || '')}', ${!!c.modo_simple})">
                 <div>
                   <div style="font-size:13px;font-weight:500;color:var(--texto)">${escape(c.name)}</div>
                   <div style="font-size:11px;color:var(--gris-texto)">
@@ -4891,11 +4900,14 @@ async function abrirSelectorImpersonacion() {
   }
 }
 
-function impersonar(userId, userName, sageCode) {
+function impersonar(userId, userName, sageCode, modoSimple) {
   impersonating = {
     id: userId,
     name: userName,
-    sage_commercial_code: sageCode || null
+    sage_commercial_code: sageCode || null,
+    // Para ver la app TAL CUAL la ve él: si tiene el modo sencillo, el admin lo ve
+    // también al impersonarle. Si no, no habría forma de comprobar cómo le queda.
+    modo_simple: !!modoSimple
   };
   localStorage.setItem('cpv2_impersonate', JSON.stringify(impersonating));
   // Cerrar modal

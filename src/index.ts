@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v159-modo-sencillo-23jul',
+      build: 'v160-modo-sencillo-me-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1605,6 +1605,23 @@ const loginLimiter = rateLimit({
   message: { success: false, error: 'Demasiados intentos de login. Espera 15 minutos.' },
   // Solo cuenta intentos fallidos (no penalizar logins legitimos repetidos)
   skipSuccessfulRequests: true
+});
+
+// GET quien soy: datos FRESCOS del usuario de la sesion. Sin esto, si el admin le
+// cambia algo (p.ej. el modo sencillo) a alguien que ya esta dentro, ese alguien
+// arrastra los datos viejos de localStorage hasta que vuelve a entrar.
+app.get('/api/auth/me', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      'SELECT id, email, name, role, sage_commercial_code, modo_simple, is_active FROM users WHERE id = $1',
+      [req.user!.id]
+    );
+    if (r.rows.length === 0) { res.status(404).json({ success: false, error: 'Usuario no encontrado' }); return; }
+    const u = r.rows[0];
+    res.json({ success: true, user: { ...u, modo_simple: !!u.modo_simple } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
 });
 
 app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) => {
