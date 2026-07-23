@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v142 · 22 jul 2026';
+const APP_VERSION = 'v143 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -15148,9 +15148,11 @@ async function verLaminaCoordinacion(sheetId) {
       <div style="font-size:12px;color:var(--gris-texto);margin-bottom:10px">${escape(L.catalogo || '')}${L.sage_actualizado_at ? ` · ✅ marcada como actualizada en Sage el ${new Date(L.sage_actualizado_at).toLocaleDateString('es-ES')} por ${escape(L.sage_actualizado_por || '')}` : ''}</div>
       <div style="display:flex;gap:16px;flex-wrap:wrap">
         <div style="flex:1;min-width:280px;max-width:420px">
-          <img src="${escape(vurl(L.imagen_path, L))}" style="width:100%;border:1px solid var(--gris-borde);border-radius:8px;cursor:zoom-in"
-               onclick="abrirLightbox('${escape(vurl(L.imagen_path, L))}', '${escape((L.titulo || '').replace(/'/g, "\'"))}', ${L.orden || 0})" alt="">
-          <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">Pulsa la imagen para verla a pantalla completa</div>
+          <img id="coord-lam-img" style="width:100%;border:1px solid var(--gris-borde);border-radius:8px;cursor:zoom-in" alt="Generando la lámina…">
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">
+            <b id="coord-lam-modo">Tal y como la ve el cliente</b>, con los precios de hoy ya puestos.
+            <a href="#" id="coord-lam-toggle" style="color:var(--brand)">ver el original</a> · pulsa la imagen para ampliarla
+          </div>
         </div>
         <div style="flex:2;min-width:320px">
           <h4 style="margin:0 0 6px">Lo que lleva esta lámina (debe coincidir con Sage)</h4>
@@ -15171,6 +15173,31 @@ async function verLaminaCoordinacion(sheetId) {
         <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
         ${L.sage_actualizado_at ? '' : `<button type="button" class="btn btn-primary" onclick="marcarCambioHecho(${L.id}, this);this.closest('.modal-bg').remove()">✅ Ya está en Sage</button>`}
       </div>`;
+    // La lámina MONTADA (precios de hoy pegados) es lo que de verdad ve el cliente, así
+    // que es lo que tiene que cuadrar con Sage. Se pide con token, por eso no vale un src.
+    const $img = m.querySelector('#coord-lam-img');
+    const original = vurl(L.imagen_path, L);
+    let montadaURL = null, viendoOriginal = false;
+    const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
+    fetch(API + '/api/sheets/' + L.id + '/recompuesta?tarifa=1', { headers })
+      .then(r => r.ok ? r.blob() : Promise.reject(new Error('no')))
+      .then(b => { montadaURL = URL.createObjectURL(b); if (!viendoOriginal) $img.src = montadaURL; })
+      .catch(() => {   // si el montaje falla, mejor el original que un hueco
+        $img.src = original;
+        const t = m.querySelector('#coord-lam-modo');
+        if (t) t.textContent = 'Lámina original';
+        const a = m.querySelector('#coord-lam-toggle');
+        if (a) a.style.display = 'none';
+      });
+    $img.onclick = () => abrirLightbox($img.src, L.titulo || '', L.orden || 0);
+    const $tog = m.querySelector('#coord-lam-toggle');
+    if ($tog) $tog.onclick = (ev) => {
+      ev.preventDefault();
+      viendoOriginal = !viendoOriginal;
+      $img.src = viendoOriginal ? original : (montadaURL || original);
+      m.querySelector('#coord-lam-modo').textContent = viendoOriginal ? 'Lámina original' : 'Tal y como la ve el cliente';
+      $tog.textContent = viendoOriginal ? 'ver con los precios de hoy' : 'ver el original';
+    };
   } catch (e) {
     m.querySelector('.modal').innerHTML = `<div class="error-msg">${escape(e.message)}</div>
       <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
