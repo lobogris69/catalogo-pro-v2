@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v163-me-usuario-real-23jul',
+      build: 'v167-lamina-sin-nombre-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -3837,10 +3837,25 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
     await normalizarPngColor(req.file.path);
     // Regenerar miniatura tras sustituir imagen
     const nuevaMini = await generarMiniatura(req.file.path, req.file.filename);
-    const r = await pool.query(
-      `UPDATE sheets SET imagen_path=$1, miniatura_path=$2, updated_at=NOW() WHERE id=$3 RETURNING *`,
-      [nuevoPath, nuevaMini, id]
-    );
+
+    // SI LA LAMINA NO TENIA NOMBRE PROPIO, se lo damos ahora. Caso real: insertas una
+    // "hoja en blanco" y luego le subes la imagen encima. La lamina se quedaba con el
+    // titulo "(hoja en blanco)" y SIN tags, asi que era INVISIBLE al buscador — ni en el
+    // maestro ni en el Express. La lamina estaba ahi, pero no habia forma de encontrarla.
+    const metaR = await pool.query('SELECT titulo, tags FROM sheets WHERE id=$1', [id]);
+    const tituloActual = String(metaR.rows[0]?.titulo || '').trim();
+    const sinNombrePropio = !tituloActual || tituloActual === '(hoja en blanco)' || /^L[áa]mina \d+$/i.test(tituloActual);
+    const tituloNuevo = sinNombrePropio
+      ? (req.file.originalname.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || tituloActual)
+      : null;
+
+    const r = tituloNuevo
+      ? await pool.query(
+          `UPDATE sheets SET imagen_path=$1, miniatura_path=$2, titulo=$3, updated_at=NOW() WHERE id=$4 RETURNING *`,
+          [nuevoPath, nuevaMini, tituloNuevo, id])
+      : await pool.query(
+          `UPDATE sheets SET imagen_path=$1, miniatura_path=$2, updated_at=NOW() WHERE id=$3 RETURNING *`,
+          [nuevoPath, nuevaMini, id]);
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Lamina no encontrada' });
       return;
@@ -3851,6 +3866,11 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
     await logSheetChange('updated_image', id, r.rows[0].catalog_id, r.rows[0].titulo,
       { imagen_path_nueva: nuevoPath, imagen_path_anterior: oldImagen },
       { id: req.user?.id, name: req.user?.name });
+    // Sin tags no se encuentra por palabras (toallitas, aqua…): se generan con IA en
+    // segundo plano, igual que en una subida normal. No bloquea la respuesta.
+    if (!String(metaR.rows[0]?.tags || '').trim()) {
+      generarTagsBackground(id, req.file.path, r.rows[0].titulo);
+    }
     res.json({ success: true, sheet: r.rows[0] });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });

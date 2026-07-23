@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v166 · 23 jul 2026';
+const APP_VERSION = 'v167 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -1034,15 +1034,21 @@ function pintarEditorExpress() {
   const fM = (_expressEditor.filtroMaestro || '').toLowerCase().trim();
   const fE = (_expressEditor.filtroExpress || '').toLowerCase().trim();
 
-  // Filtrar maestro y express
-  const masterFiltradas = !fM ? masterSheets : masterSheets.filter(s => {
-    const hay = (s.titulo || '').toLowerCase() + ' ' + (s.tags || '').toLowerCase();
-    return hay.includes(fM);
-  });
-  const expressFiltradas = !fE ? sheetsExpress : sheetsExpress.filter(s => {
-    const hay = (s.titulo || '').toLowerCase() + ' ' + (s.tags || '').toLowerCase();
-    return hay.includes(fE);
-  });
+  // Filtrar maestro y express. Se busca también en el NOMBRE DEL ARCHIVO: una lámina
+  // subida sobre una hoja en blanco puede llegar sin título ni tags, y el archivo
+  // ("toallitas_natur_aqua_...png") es lo único que la delata. Sin esto la lámina
+  // existe pero no hay manera de encontrarla.
+  const _textoBuscable = (s) => (
+    (s.titulo || '') + ' ' + (s.tags || '') + ' ' + (s.imagen_path || '').split('/').pop().replace(/[_-]/g, ' ')
+  ).toLowerCase();
+  const masterFiltradas = !fM ? masterSheets : masterSheets.filter(s => _textoBuscable(s).includes(fM));
+  const expressFiltradas = !fE ? sheetsExpress : sheetsExpress.filter(s => _textoBuscable(s).includes(fE));
+
+  // LÁMINAS NUEVAS DEL MAESTRO QUE AÚN NO ESTÁN AQUÍ. Sin esto pasa lo de siempre:
+  // subes dos láminas al maestro, el comercial nunca las ve y nadie se entera hasta
+  // que un cliente las pide. Se avisa arriba y se meten de un clic.
+  const idsEnExpress = new Set(sheetsExpress.map(s => Number(s.origen_sheet_id || s.id)));
+  const nuevasDelMaestro = masterSheets.filter(s => !idsEnExpress.has(Number(s.id)) && !s.oculta);
 
   const $v = document.getElementById('vista-contenido');
   // Por defecto, abrir en pestaña láminas
@@ -1064,6 +1070,7 @@ function pintarEditorExpress() {
           ${sheetsExpress.length > 0 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalDescargarPdf(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar PDF del catálogo">📥 Descargar PDF</button>${ayuda('Genera el PDF del catálogo Express en alta calidad o pequeño (para enviar por WhatsApp/email a clientes).')}` : ''}
           ${sheetsExpress.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo Express actual: PDF+ZIP descargables, queda en historial, V1→V2. Útil para archivar ofertas pasadas (ej: ofertas mayo, ofertas verano).', 'izq')}` : ''}
           <button class="btn btn-pequeno" style="background:#dcfce7;color:#166534;font-weight:700" onclick="copiarMaestroAExpress(${id})" title="Trae todas las láminas del maestro con su mismo orden. Lo normal: partir del catálogo completo y quitar las que este comercial no lleva.">📥 Traer todas las del maestro</button>
+          ${nuevasDelMaestro.length > 0 ? `<button class="btn btn-pequeno" style="background:#fef3c7;color:#92400e;font-weight:700" onclick="anadirNuevasDelMaestro(${id})" title="Láminas que has subido al maestro después de crear este Express y que aquí todavía no están.">🆕 ${nuevasDelMaestro.length} lámina${nuevasDelMaestro.length === 1 ? '' : 's'} nueva${nuevasDelMaestro.length === 1 ? '' : 's'} sin añadir</button>` : ''}
           ${sheetsExpress.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="vaciarExpress(${id}, ${sheetsExpress.length})">🗑️ Vaciar Express</button>` : ''}
         </div>
       </div>
@@ -1236,6 +1243,30 @@ function limpiarSeleccionMaestro() {
     if (!cb.disabled) cb.checked = false;
   });
   actualizarContadorSeleccion();
+}
+
+// Mete en este Express las láminas que se han subido al maestro DESPUÉS de crearlo.
+// Se enseñan primero por nombre: igual alguna no la lleva este comercial.
+async function anadirNuevasDelMaestro(expressId) {
+  const sheetsExpress = (_expressEditor.expressData || {}).sheets || [];
+  const idsEnExpress = new Set(sheetsExpress.map(s => Number(s.origen_sheet_id || s.id)));
+  const nuevas = (_expressEditor.masterSheets || []).filter(s => !idsEnExpress.has(Number(s.id)) && !s.oculta);
+  if (!nuevas.length) { alert('No hay láminas nuevas por añadir.'); return; }
+  const lista = nuevas.slice(0, 20).map(s => '· ' + (s.titulo || '(sin título)')).join('\n');
+  if (!confirm(`Se añadirán ${nuevas.length} lámina(s) al final de este Express:\n\n${lista}${nuevas.length > 20 ? '\n…' : ''}\n\n¿Las añado?`)) return;
+  try {
+    await api('/api/catalogs/' + expressId + '/express-sheets', {
+      method: 'POST', body: { sheet_ids: nuevas.map(s => s.id) }
+    });
+    const fresco = await api('/api/catalogs/' + expressId);
+    _expressEditor.expressData = fresco;
+    const ms = await api('/api/catalogs/' + expressId + '/master-sheets');
+    _expressEditor.masterSheets = ms.sheets || [];
+    pintarEditorExpress();
+    mostrarNotificacionOnline('✅ ' + nuevas.length + ' lámina(s) añadidas al Express', '#16a34a');
+  } catch (err) {
+    alert('Error al añadir: ' + err.message);
+  }
 }
 
 async function anadirSeleccionadasAlExpress(expressId) {
