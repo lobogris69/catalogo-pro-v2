@@ -424,7 +424,7 @@ const MANUAL_ADMIN = [
       '<b>"La app va rara justo después de subir muchas cosas"</b> → espera un minuto y recarga: el servidor puede haberse reiniciado.'
     ],
     ojo: [
-      'Sin cobertura se pueden <b>ver</b> los catálogos descargados, los clientes y el planning. <b>Para empezar una visita y anotar el pedido hace falta conexión</b>: en una farmacia con mal cobertura, que salga fuera o use los datos del móvil.',
+      'El comercial trabaja sin cobertura: catálogos descargados, clientes, planning y <b>la visita entera</b> (empezar, anotar y cerrar). El pedido se sube solo al recuperar línea. Requisito: haber descargado antes el catálogo y los clientes.',
       'La administración necesita conexión para todo.'
     ]
   },
@@ -528,8 +528,9 @@ const MANUAL_COMERCIAL = [
       'Si la visita no ha ido a ningún lado, usa <b>Descartar</b> y no se manda nada.'
     ],
     ojo: [
-      '<b>Hace falta cobertura para anotar y para cerrar la visita.</b> Si en esa farmacia no hay línea, sal a la calle o tira de datos del móvil antes de empezar.',
-      'En <b>📁 Mis pedidos</b> tienes lo que aún no ha salido.'
+      '<b>Sin cobertura se trabaja igual</b>: empiezas la visita, anotas y cierras. El pedido se guarda en la tablet y <b>se envía solo</b> en cuanto vuelvas a tener línea, sin que hagas nada.',
+      'Para eso hace falta haber <b>descargado antes</b> (con wifi) el catálogo y tus clientes.',
+      'En <b>📁 Mis pedidos</b> ves los que aún no han salido.'
     ]
   },
   {

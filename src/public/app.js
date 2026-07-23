@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v171 · 23 jul 2026';
+const APP_VERSION = 'v172 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -11238,20 +11238,30 @@ async function abrirResumenPreEnvio() {
   // Ordenar por orden_en_visita
   anotaciones.sort((x, y) => (x.orden_en_visita || 0) - (y.orden_en_visita || 0));
 
-  // Cargar info del cliente
+  // Cargar info del cliente. Sin cobertura, de la copia descargada: si no, el
+  // comercial no podía ni cerrar la visita y el pedido se quedaba atrapado.
   let cliente = null;
   try {
-    const rc = await api('/api/clients/' + appState.visitaActiva.client_id);
-    cliente = rc.client || null;
+    if (navigator.onLine) {
+      const rc = await api('/api/clients/' + appState.visitaActiva.client_id);
+      cliente = rc.client || null;
+    } else {
+      cliente = await CpDB.obtenerCliente(appState.visitaActiva.client_id);
+    }
   } catch (e) {
-    alert('Error cargando cliente: ' + e.message);
-    return;
+    try { cliente = await CpDB.obtenerCliente(appState.visitaActiva.client_id); } catch (_) {}
+    if (!cliente) {
+      alert('No se ha podido cargar el cliente: ' + e.message);
+      return;
+    }
   }
 
   // Cargar info de producto para cada anotación que tiene product_id
   const idsProductos = [...new Set(anotaciones.filter(a => a.product_id).map(a => a.product_id))];
   const mapaProductos = {};
-  if (idsProductos.length > 0) {
+  // Sin red no se piden: los datos del producto ya vienen en la propia línea (se
+  // guardaron al anotar desde la zona descargada).
+  if (idsProductos.length > 0 && navigator.onLine) {
     for (const pid of idsProductos) {
       try {
         const rp = await api('/api/products/' + pid);
