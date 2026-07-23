@@ -133,6 +133,25 @@ const MANUAL_ADMIN = [
     ]
   },
   {
+    id: 'reparto',
+    icono: '🔀',
+    titulo: 'Que cada comercial reciba sus láminas (reparto automático)',
+    para: 'Que una lámina nueva llegue sola al catálogo de quien la vende, sin ir uno por uno, y poder hacer excepciones.',
+    pasos: [
+      'Cada comercial tiene su catálogo <b>📗 Express</b>, que cuelga del maestro: mismas láminas, pero con <b>su orden</b> y sin las que no lleva. Al crearlo viene ya con el maestro entero ordenado; solo quitas lo que sobre.',
+      '<b>La regla:</b> en el catálogo maestro pulsa <b>🔀 Reparto automático</b> y define "si la lámina es de <i>Lainco</i> → va al catálogo de <i>Eva</i>". Se define una vez.',
+      'A partir de ahí, cuando subas una lámina y le pongas esa <b>categoría</b>, se añade sola al catálogo de ese comercial, <b>en su posición correcta</b> (detrás de la misma lámina que la precede en el maestro).',
+      'Con <b>⏩ Aplicar a las que ya hay</b> la regla se aplica también a las láminas antiguas de esa categoría.',
+      '<b>La excepción:</b> en una lámina concreta, <b>🔀 ¿A qué comerciales va esta lámina?</b> te deja forzar <b>✅ Sí, siempre</b> o <b>🚫 No, nunca</b> para un comercial. Manda sobre la regla, y puedes anotar el motivo.',
+      'La <b>bandeja de láminas sin repartir</b> (en la misma pantalla de reparto) te avisa de las que no han llegado a nadie: casi siempre es que les falta la categoría.'
+    ],
+    ojo: [
+      'El reparto se dispara al <b>guardar las categorías</b> de la lámina, que es cuando se sabe de qué laboratorio es.',
+      'Si una lámina ya está en el catálogo de alguien, el reparto <b>no le cambia la posición</b>: respeta el orden que hayas puesto.',
+      'Quitar una regla no saca las láminas ya repartidas; para eso usa la excepción <b>🚫 No, nunca</b>.'
+    ]
+  },
+  {
     id: 'informe',
     icono: '📋',
     titulo: 'Informe de precios: saber qué falta antes de publicar',

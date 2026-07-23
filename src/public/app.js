@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v144 · 23 jul 2026';
+const APP_VERSION = 'v145 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -780,6 +780,7 @@ async function renderEditorCatalogo(id) {
               <h3 style="margin-bottom:0">Láminas (${sheets.length})</h3>
               ${esAdmin ? `
                 <button onclick="insertarHojaEnBlanco(null, ${id})" class="btn btn-pequeno btn-secondary" title="Insertar una hoja en blanco al principio del catálogo">📄➕ Hoja al principio</button>
+                <button onclick="abrirReglasReparto()" class="btn btn-pequeno" style="background:#f5f3ff;color:#6d28d9;font-weight:700" title="Qué láminas van solas al catálogo de cada comercial según su laboratorio">🔀 Reparto automático</button>
                 <input type="text" id="filtro-laminas" placeholder="🔍 Filtrar (número o palabra)..."
                        style="flex:1; min-width:200px; padding:8px 12px; border:1px solid var(--gris-borde); border-radius:8px; font-size:13px; font-family:inherit; outline:none;">
                 <button class="btn btn-pequeno btn-secondary" id="btn-filtro-semana" onclick="filtrarPorCambios('semana', this)" title="Solo las láminas tocadas en los últimos 7 días">🔄 Cambiadas esta semana</button>
@@ -2174,6 +2175,15 @@ function abrirModalEditarLamina(sheet, catalogId) {
           </button>
           <small style="color:var(--gris-texto);display:block;margin-top:4px">
             Dibuja rectángulos sobre la lámina y asigna un producto a cada uno. Los comerciales podrán pulsarlos en la visita.
+          </small>
+        </div>
+        <div class="form-group">
+          <button type="button" class="btn" style="width:100%;background:#f5f3ff;color:#6d28d9;font-weight:700"
+                  onclick="abrirRepartoLamina(${sheet.id}, '${escape((sheet.titulo || '').replace(/'/g, "\'"))}')">
+            🔀 ¿A qué comerciales va esta lámina?
+          </button>
+          <small style="color:var(--gris-texto);display:block;margin-top:4px">
+            Por defecto va a quien le toque por su categoría. Aquí puedes forzar que <b>sí</b> o que <b>no</b> vaya a uno concreto (ej: no se puede vender en su zona).
           </small>
         </div>
         <div class="form-group" style="border-top:1px solid var(--gris-borde);padding-top:12px">
@@ -14989,6 +14999,155 @@ async function quitarVarianteComision(zoneId, idx) {
   } catch (err) {
     alert('Error quitando variante: ' + err.message);
   }
+}
+
+// ===== REPARTO DE LÁMINAS A LOS EXPRESS =====
+// Dos capas: REGLAS por laboratorio (cubren lo repetitivo) y EXCEPCIONES por lámina,
+// que siempre mandan sobre la regla ("esta en concreto no se vende en esa zona").
+async function abrirReglasReparto() {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:760px"><h3 style="margin-top:0">🔀 Reparto automático</h3><div class="loading">Cargando…</div></div>`;
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+  try {
+    const r = await api('/api/reparto/reglas');
+    const sin = await api('/api/reparto/sin-repartir').catch(() => ({ laminas: [] }));
+    const filas = (r.reglas || []).map(x => `<tr style="border-bottom:1px solid var(--gris-borde)">
+        <td style="padding:7px 8px"><span class="lamina-cat-chip" style="background:${escape(x.color || '#cc007a')}20;color:${escape(x.color || '#cc007a')};border:1px solid ${escape(x.color || '#cc007a')}40">${escape(x.categoria)}</span></td>
+        <td style="padding:7px 8px">→ 📗 ${escape(x.express)}</td>
+        <td style="padding:7px 8px;white-space:nowrap">
+          <button class="btn btn-pequeno btn-secondary" onclick="aplicarReglaRetro(${x.id}, this)" title="Aplicar también a las láminas que ya tienen esa categoría">⏩ Aplicar a las que ya hay</button>
+          <button class="btn btn-pequeno btn-danger" onclick="borrarReglaReparto(${x.id})">✕</button>
+        </td>
+      </tr>`).join('');
+    m.querySelector('.modal').innerHTML = `
+      <h3 style="margin-top:0">🔀 Reparto automático de láminas</h3>
+      <p style="font-size:13px;color:var(--gris-texto);margin-top:0">
+        Cuando le pongas una categoría a una lámina, se añade sola al catálogo de los comerciales que la lleven,
+        <b>en su posición correcta</b>. Las excepciones de cada lámina mandan sobre estas reglas.
+      </p>
+      <div class="editor-panel" style="margin-bottom:12px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <div class="form-group" style="margin:0;flex:1;min-width:160px"><label style="font-size:12px">Categoría / laboratorio</label>
+            <select id="rr-cat" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px">
+              ${(r.categorias || []).map(c => `<option value="${c.id}">${escape(c.nombre)}</option>`).join('')}
+            </select></div>
+          <div class="form-group" style="margin:0;flex:1;min-width:160px"><label style="font-size:12px">Va al catálogo de</label>
+            <select id="rr-exp" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px">
+              ${(r.express || []).map(c => `<option value="${c.id}">${escape(c.name)}</option>`).join('')}
+            </select></div>
+          <button class="btn btn-primary btn-pequeno" onclick="crearReglaReparto()">+ Añadir regla</button>
+        </div>
+        ${!(r.express || []).length ? `<div style="font-size:12px;color:#b45309;margin-top:8px">Todavía no hay catálogos Express. Crea primero el de cada comercial.</div>` : ''}
+      </div>
+      ${filas ? `<table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="text-align:left;border-bottom:2px solid var(--gris-borde)">
+            <th style="padding:7px 8px">Si la lámina es de…</th><th style="padding:7px 8px">…va a</th><th style="padding:7px 8px"></th>
+          </tr></thead><tbody>${filas}</tbody></table>`
+        : `<p style="color:var(--gris-texto);font-size:13px">Todavía no hay reglas. Añade la primera arriba.</p>`}
+      <div class="editor-panel" style="margin-top:14px">
+        <h4 style="margin:0 0 6px">📥 Láminas sin repartir (${(sin.laminas || []).length})</h4>
+        <div style="font-size:12px;color:var(--gris-texto);margin-bottom:6px">Están en el maestro pero no han llegado a ningún comercial. Suele ser que les falta la categoría.</div>
+        ${(sin.laminas || []).length ? `<ul style="font-size:13px;max-height:170px;overflow:auto;padding-left:18px;margin:0">
+            ${sin.laminas.slice(0, 40).map(l => `<li>${l.orden ? l.orden + ' · ' : ''}${escape(l.titulo || 'Sin título')}${!l.n_categorias ? ' <span style="color:#b45309">· sin categoría</span>' : ''}</li>`).join('')}
+          </ul>` : `<div style="font-size:13px;color:#16a34a">Todas repartidas 👌</div>`}
+      </div>
+      <div class="modal-acciones" style="margin-top:14px">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      </div>`;
+  } catch (e) {
+    m.querySelector('.modal').innerHTML = `<div class="error-msg">${escape(e.message)}</div>
+      <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
+  }
+}
+
+async function crearReglaReparto() {
+  const cat = document.getElementById('rr-cat')?.value, exp = document.getElementById('rr-exp')?.value;
+  if (!cat || !exp) { alert('Necesitas una categoría y un catálogo Express.'); return; }
+  try {
+    await api('/api/reparto/reglas', { method: 'POST', body: { categoria_id: Number(cat), express_catalog_id: Number(exp) } });
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirReglasReparto();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function borrarReglaReparto(id) {
+  if (!confirm('¿Quitar esta regla?\n\nLas láminas ya repartidas se quedan donde están.')) return;
+  try {
+    await api('/api/reparto/reglas/' + id, { method: 'DELETE' });
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirReglasReparto();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function aplicarReglaRetro(id, btn) {
+  if (!confirm('¿Aplicar esta regla a las láminas que YA tienen esa categoría?\n\nSe añadirán al catálogo de ese comercial, en su posición correcta.')) return;
+  btn.disabled = true;
+  try {
+    const r = await api('/api/reparto/reglas/' + id + '/aplicar', { method: 'POST', body: {} });
+    alert('Revisadas ' + r.laminas + ' láminas · añadidas ' + r.anadidas + '.');
+  } catch (e) { alert('Error: ' + e.message); }
+  btn.disabled = false;
+}
+
+// Excepciones de UNA lámina: dónde va y dónde no, por encima de las reglas.
+async function abrirRepartoLamina(sheetId, titulo) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:560px"><h3 style="margin-top:0">🔀 ¿A quién va esta lámina?</h3><div class="loading">Cargando…</div></div>`;
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+  try {
+    const r = await api('/api/sheets/' + sheetId + '/reparto');
+    const filas = (r.express || []).map(c => {
+      const modo = c.excepcion ? c.excepcion.modo : 'auto';
+      return `<tr style="border-bottom:1px solid var(--gris-borde)">
+        <td style="padding:7px 8px">📗 <b>${escape(c.name)}</b>
+          <div style="font-size:11px;color:var(--gris-texto)">
+            ${c.por_regla ? 'le toca por regla' : 'no le toca por regla'} ·
+            ${c.dentro ? '<span style="color:#16a34a">ahora la tiene</span>' : 'ahora no la tiene'}
+          </div></td>
+        <td style="padding:7px 8px;white-space:nowrap">
+          <select onchange="cambiarExcepcionReparto(${sheetId}, ${c.id}, this.value)" style="padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">
+            <option value="auto" ${modo === 'auto' ? 'selected' : ''}>Según la regla</option>
+            <option value="incluir" ${modo === 'incluir' ? 'selected' : ''}>✅ Sí, siempre</option>
+            <option value="excluir" ${modo === 'excluir' ? 'selected' : ''}>🚫 No, nunca</option>
+          </select>
+        </td>
+      </tr>`;
+    }).join('');
+    m.querySelector('.modal').innerHTML = `
+      <h3 style="margin-top:0">🔀 ${escape(titulo || 'Lámina')}</h3>
+      <p style="font-size:12px;color:var(--gris-texto);margin-top:0">
+        Lo que marques aquí <b>manda sobre las reglas</b>. Úsalo cuando una lámina concreta no se pueda vender en una zona.
+      </p>
+      ${filas ? `<table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>${filas}</tbody></table>`
+              : `<p style="color:var(--gris-texto)">No hay catálogos Express todavía.</p>`}
+      <div class="modal-acciones" style="margin-top:14px">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      </div>`;
+  } catch (e) {
+    m.querySelector('.modal').innerHTML = `<div class="error-msg">${escape(e.message)}</div>
+      <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
+  }
+}
+
+async function cambiarExcepcionReparto(sheetId, expressId, modo) {
+  let motivo = null;
+  if (modo === 'excluir') {
+    motivo = prompt('¿Por qué no va a este catálogo? (opcional, para acordarte dentro de seis meses)', 'no se puede vender en su zona');
+    if (motivo === null) { abrirRepartoLamina(sheetId); return; }   // cancelado: repintar
+  }
+  try {
+    await api('/api/sheets/' + sheetId + '/reparto/excepcion', {
+      method: 'POST', body: { express_catalog_id: expressId, modo, motivo }
+    });
+    mostrarNotificacionOnline(modo === 'excluir' ? '🚫 Excluida de ese catálogo'
+      : modo === 'incluir' ? '✅ Añadida a ese catálogo' : '↩️ Vuelve a mandar la regla', '#0369a1');
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirRepartoLamina(sheetId);
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 // ===== COORDINACIÓN CON ADMINISTRACIÓN =====

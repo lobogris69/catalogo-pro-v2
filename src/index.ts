@@ -604,6 +604,40 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS num_socio VARCHAR(60);  -- numero de socio del cliente
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS referencia VARCHAR(120); -- referencia suelta tecleada a mano (expositor, no esta en Sage)
 
+      -- ===== REPARTO DE LAMINAS A LOS EXPRESS DE CADA COMERCIAL =====
+      -- Fernando sube la lamina al maestro y hasta ahora tenia que anadirla a mano en
+      -- el Express de cada comercial. Dos capas:
+      --  1) REGLAS por categoria/laboratorio: "todo lo de Lainco va al Express de Eva".
+      --     Cubren el trabajo repetido de cada semana.
+      --  2) EXCEPCIONES por lamina, que MANDAN sobre las reglas: "esta lamina en
+      --     concreto no se puede vender en esa zona" (o al reves: solo en esa).
+      CREATE TABLE IF NOT EXISTS reparto_reglas (
+        id                 SERIAL PRIMARY KEY,
+        categoria_id       INTEGER NOT NULL REFERENCES categorias(id) ON DELETE CASCADE,
+        express_catalog_id INTEGER NOT NULL REFERENCES catalogs(id) ON DELETE CASCADE,
+        activa             BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at         TIMESTAMP DEFAULT NOW(),
+        UNIQUE(categoria_id, express_catalog_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_reparto_reglas_cat ON reparto_reglas(categoria_id);
+
+      CREATE TABLE IF NOT EXISTS reparto_excepciones (
+        id                 SERIAL PRIMARY KEY,
+        sheet_id           INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+        express_catalog_id INTEGER NOT NULL REFERENCES catalogs(id) ON DELETE CASCADE,
+        modo               VARCHAR(10) NOT NULL CHECK (modo IN ('incluir','excluir')),
+        motivo             VARCHAR(200),           -- "no se puede vender en su zona"
+        creado_por         VARCHAR(150),
+        created_at         TIMESTAMP DEFAULT NOW(),
+        UNIQUE(sheet_id, express_catalog_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_reparto_exc_sheet ON reparto_excepciones(sheet_id);
+
+      -- Marca de "esta lamina llego sola por una regla": sale destacada en el Express
+      -- hasta que se valida, para que un reparto automatico nunca pase desapercibido.
+      ALTER TABLE express_sheets ADD COLUMN IF NOT EXISTS auto_reparto BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE express_sheets ADD COLUMN IF NOT EXISTS validada_at TIMESTAMP;
+
       -- ROL 'oficina': administracion. Consulta el catalogo en su tablet/PC (solo ver,
       -- no hace visitas ni pedidos) y gestiona su parte de la coordinacion: dar de alta
       -- los codigos que pide Fernando y actualizar en Sage lo que el ha cambiado.
@@ -1410,7 +1444,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v144-express-maestro-23jul',
+      build: 'v145-reparto-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2761,6 +2795,207 @@ app.get('/api/catalogs/:id/master-sheets', verifyToken, requireAdmin, async (req
 // POST anadir varias laminas del maestro al Express
 // Body: { sheet_ids: [12, 34, 56] }
 // Las añade al final, respetando el orden actual de express_sheets.
+// --- Reglas por categoria/laboratorio ---
+app.get('/api/reparto/reglas', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `SELECT r.id, r.categoria_id, r.express_catalog_id, r.activa,
+              cat.nombre AS categoria, cat.color, c.name AS express
+         FROM reparto_reglas r
+         JOIN categorias cat ON cat.id = r.categoria_id
+         JOIN catalogs c ON c.id = r.express_catalog_id
+        ORDER BY cat.nombre, c.name`);
+    const cats = await pool.query(`SELECT id, nombre, color FROM categorias ORDER BY orden, nombre`);
+    const exps = await pool.query(`SELECT id, name FROM catalogs WHERE tipo='express' AND estado <> 'archivado' ORDER BY name`);
+    res.json({ success: true, reglas: r.rows, categorias: cats.rows, express: exps.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+app.post('/api/reparto/reglas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catId = Number(req.body?.categoria_id), expId = Number(req.body?.express_catalog_id);
+    if (!catId || !expId) { res.status(400).json({ success: false, error: 'Elige la categoría y el catálogo' }); return; }
+    const c = await pool.query(`SELECT tipo FROM catalogs WHERE id=$1`, [expId]);
+    if (!c.rows.length || c.rows[0].tipo !== 'express') { res.status(400).json({ success: false, error: 'El destino debe ser un catálogo Express' }); return; }
+    const r = await pool.query(
+      `INSERT INTO reparto_reglas (categoria_id, express_catalog_id) VALUES ($1,$2)
+       ON CONFLICT (categoria_id, express_catalog_id) DO UPDATE SET activa = TRUE RETURNING *`, [catId, expId]);
+    res.json({ success: true, regla: r.rows[0] });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+app.delete('/api/reparto/reglas/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    await pool.query(`DELETE FROM reparto_reglas WHERE id=$1`, [Number(req.params.id)]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Aplicar una regla RETROACTIVAMENTE a las laminas que ya tienen esa categoria.
+app.post('/api/reparto/reglas/:id/aplicar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`SELECT categoria_id FROM reparto_reglas WHERE id=$1`, [Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Regla no encontrada' }); return; }
+    const laminas = await pool.query(
+      `SELECT sc.sheet_id FROM sheet_categorias sc JOIN sheets s ON s.id = sc.sheet_id
+        WHERE sc.categoria_id = $1 ORDER BY s.orden, s.id`, [r.rows[0].categoria_id]);
+    let n = 0;
+    for (const l of laminas.rows) { const x = await repartirLamina(Number(l.sheet_id)); n += x.anadida_en.length; }
+    res.json({ success: true, laminas: laminas.rows.length, anadidas: n });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// --- Excepciones de una lamina concreta (mandan sobre las reglas) ---
+app.get('/api/sheets/:id/reparto', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.id);
+    const d = await destinosDeLamina(sheetId);
+    const exps = await pool.query(
+      `SELECT c.id, c.name,
+              (SELECT 1 FROM express_sheets es WHERE es.express_catalog_id = c.id AND es.sheet_id = $1) AS dentro
+         FROM catalogs c WHERE c.tipo='express' AND c.estado <> 'archivado' ORDER BY c.name`, [sheetId]);
+    const exc = await pool.query(
+      `SELECT express_catalog_id, modo, motivo FROM reparto_excepciones WHERE sheet_id=$1`, [sheetId]);
+    res.json({
+      success: true,
+      express: exps.rows.map((c: any) => ({
+        id: c.id, name: c.name,
+        dentro: !!c.dentro,
+        por_regla: d.porRegla.includes(Number(c.id)),
+        excepcion: exc.rows.find((e: any) => Number(e.express_catalog_id) === Number(c.id)) || null,
+        destino_final: d.destinos.includes(Number(c.id))
+      }))
+    });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+app.post('/api/sheets/:id/reparto/excepcion', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const sheetId = Number(req.params.id);
+    const expId = Number(req.body?.express_catalog_id);
+    const modo = req.body?.modo;
+    if (!expId) { res.status(400).json({ success: false, error: 'Falta el catálogo' }); return; }
+    if (modo === null || modo === 'auto') {          // quitar la excepción: vuelve a mandar la regla
+      await pool.query(`DELETE FROM reparto_excepciones WHERE sheet_id=$1 AND express_catalog_id=$2`, [sheetId, expId]);
+    } else {
+      if (!['incluir', 'excluir'].includes(modo)) { res.status(400).json({ success: false, error: 'Modo inválido' }); return; }
+      await pool.query(
+        `INSERT INTO reparto_excepciones (sheet_id, express_catalog_id, modo, motivo, creado_por)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (sheet_id, express_catalog_id)
+         DO UPDATE SET modo=EXCLUDED.modo, motivo=EXCLUDED.motivo, creado_por=EXCLUDED.creado_por`,
+        [sheetId, expId, modo, (req.body?.motivo || '').toString().slice(0, 200) || null, req.user?.name || null]);
+      // "excluir" tiene efecto inmediato: si ya estaba dentro, se saca.
+      if (modo === 'excluir') {
+        await pool.query(`DELETE FROM express_sheets WHERE express_catalog_id=$1 AND sheet_id=$2`, [expId, sheetId]);
+      } else {
+        await insertarEnExpressPorPosicion(expId, sheetId, false);
+      }
+    }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Repartir a mano (o volver a repartir) una lamina concreta.
+app.post('/api/sheets/:id/reparto/aplicar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await repartirLamina(Number(req.params.id));
+    res.json({ success: true, ...r });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// BANDEJA: laminas del maestro que no estan en NINGUN Express. La red de seguridad
+// para que una lamina nueva no se quede sin llegar a nadie por un despiste.
+app.get('/api/reparto/sin-repartir', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.query.catalog_id) || null;
+    const r = await pool.query(
+      `SELECT s.id, s.titulo, s.orden, s.catalog_id, s.created_at,
+              (SELECT COUNT(*)::int FROM sheet_categorias sc WHERE sc.sheet_id = s.id) AS n_categorias
+         FROM sheets s
+         JOIN catalogs c ON c.id = s.catalog_id AND c.tipo = 'maestro'
+        WHERE s.oculta = FALSE
+          AND ($1::int IS NULL OR s.catalog_id = $1)
+          AND NOT EXISTS (SELECT 1 FROM express_sheets es WHERE es.sheet_id = s.id)
+          AND EXISTS (SELECT 1 FROM catalogs e WHERE e.tipo='express' AND e.parent_id = s.catalog_id)
+        ORDER BY s.created_at DESC, s.orden LIMIT 200`, [catalogId]);
+    res.json({ success: true, laminas: r.rows, total: r.rows.length });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Validar (dar por buenas) las laminas que llegaron solas a un Express.
+app.post('/api/catalogs/:id/express-sheets/validar-auto', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `UPDATE express_sheets SET auto_reparto = FALSE, validada_at = NOW()
+        WHERE express_catalog_id = $1 AND auto_reparto = TRUE RETURNING id`, [Number(req.params.id)]);
+    res.json({ success: true, validadas: r.rowCount || 0 });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// ============================================================================
+// REPARTO DE UNA LAMINA A LOS EXPRESS
+// Destinos = los Express que casan por REGLA (categoria/laboratorio), corregidos por
+// las EXCEPCIONES de esa lamina, que siempre mandan. La lamina se coloca en su sitio
+// RELATIVO: justo detras del vecino que tenga delante en el maestro, porque cada
+// Express lleva su propio orden y "la posicion 12 del maestro" no significa nada alli.
+// ============================================================================
+async function destinosDeLamina(sheetId: number): Promise<{ destinos: number[]; porRegla: number[]; excluidos: number[]; incluidos: number[] }> {
+  const porReglaR = await pool.query(
+    `SELECT DISTINCT r.express_catalog_id AS id
+       FROM sheet_categorias sc
+       JOIN reparto_reglas r ON r.categoria_id = sc.categoria_id AND r.activa = TRUE
+       JOIN catalogs c ON c.id = r.express_catalog_id AND c.tipo = 'express'
+      WHERE sc.sheet_id = $1`, [sheetId]);
+  const porRegla = porReglaR.rows.map((x: any) => Number(x.id));
+  const excR = await pool.query(
+    `SELECT e.express_catalog_id AS id, e.modo FROM reparto_excepciones e
+       JOIN catalogs c ON c.id = e.express_catalog_id AND c.tipo = 'express'
+      WHERE e.sheet_id = $1`, [sheetId]);
+  const excluidos = excR.rows.filter((x: any) => x.modo === 'excluir').map((x: any) => Number(x.id));
+  const incluidos = excR.rows.filter((x: any) => x.modo === 'incluir').map((x: any) => Number(x.id));
+  const destinos = Array.from(new Set([...porRegla, ...incluidos])).filter(id => !excluidos.includes(id));
+  return { destinos, porRegla, excluidos, incluidos };
+}
+
+// Inserta la lamina en un Express justo detras del vecino que la precede en el maestro.
+async function insertarEnExpressPorPosicion(expressId: number, sheetId: number, auto: boolean): Promise<boolean> {
+  const ya = await pool.query(
+    `SELECT 1 FROM express_sheets WHERE express_catalog_id=$1 AND sheet_id=$2`, [expressId, sheetId]);
+  if (ya.rows.length) return false;   // ya la tiene: no se toca ni su posicion
+  // Vecino: la lamina mas cercana POR DELANTE en el maestro que tambien este en el Express.
+  const vecino = await pool.query(
+    `SELECT es.orden
+       FROM sheets s
+       JOIN express_sheets es ON es.sheet_id = s.id AND es.express_catalog_id = $1
+      WHERE s.catalog_id = (SELECT catalog_id FROM sheets WHERE id = $2)
+        AND (s.orden, s.id) < (SELECT orden, id FROM sheets WHERE id = $2)
+      ORDER BY s.orden DESC, s.id DESC LIMIT 1`, [expressId, sheetId]);
+  const ordenDestino = vecino.rows.length ? Number(vecino.rows[0].orden) + 1 : 1;
+  await pool.query(
+    `UPDATE express_sheets SET orden = orden + 1 WHERE express_catalog_id=$1 AND orden >= $2`,
+    [expressId, ordenDestino]);
+  await pool.query(
+    `INSERT INTO express_sheets (express_catalog_id, sheet_id, orden, auto_reparto)
+     VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [expressId, sheetId, ordenDestino, auto]);
+  return true;
+}
+
+async function repartirLamina(sheetId: number): Promise<{ anadida_en: any[]; destinos: number[] }> {
+  const { destinos } = await destinosDeLamina(sheetId);
+  const anadida: any[] = [];
+  for (const expressId of destinos) {
+    try {
+      const ok = await insertarEnExpressPorPosicion(expressId, sheetId, true);
+      if (ok) {
+        const c = await pool.query(`SELECT name FROM catalogs WHERE id=$1`, [expressId]);
+        anadida.push({ catalog_id: expressId, nombre: c.rows[0]?.name || '' });
+      }
+    } catch (e) { console.warn('[reparto] express ' + expressId + ':', (e as Error).message); }
+  }
+  return { anadida_en: anadida, destinos };
+}
+
 // Copiar TODAS las laminas del maestro a un Express que ya existe, respetando su orden.
 // Para los Express creados antes de que esto fuera el comportamiento por defecto, y para
 // "empezar de cero desde el maestro" si te has liado quitando laminas.
@@ -11252,7 +11487,12 @@ app.put('/api/sheets/:id/categorias', verifyToken, requireAdmin, async (req: Aut
       }
     }
     await client.query('COMMIT');
-    res.json({ success: true });
+    // Asignar la categoria es el momento en que se sabe de que laboratorio es la lamina:
+    // aqui es donde tienen sentido las reglas de reparto. Best-effort: si algo falla, se
+    // guardan las categorias igual y la lamina queda en la bandeja de "sin repartir".
+    let reparto = null;
+    try { reparto = await repartirLamina(sheetId); } catch (_) {}
+    res.json({ success: true, reparto });
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(400).json({ success: false, error: (e as Error).message });
