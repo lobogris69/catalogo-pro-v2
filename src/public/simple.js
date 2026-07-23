@@ -70,8 +70,14 @@ async function simpleElegirFarmacia() {
   const $b = document.getElementById('simple-buscar');
   let todos = [];
   try {
-    const r = await api('/api/clients?limit=400');
-    todos = r.clientes || r.clients || [];
+    // Sus farmacias, todas. El servidor pagina de 200 en 200: seguimos pidiendo hasta
+    // agotar (un comercial tiene cientos, no miles) y solo las de alta.
+    for (let pag = 1; pag <= 10; pag++) {
+      const r = await api('/api/clients?active=1&limit=200&page=' + pag);
+      const lote = r.clientes || r.clients || [];
+      todos = todos.concat(lote);
+      if (lote.length < 200 || todos.length >= (r.total || 0)) break;
+    }
   } catch (e) {
     document.getElementById('simple-lista').innerHTML = `<div class="error-msg">${escape(e.message)}</div>`;
     return;

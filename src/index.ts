@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v160-modo-sencillo-me-23jul',
+      build: 'v161-clientes-visibles-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -4803,10 +4803,15 @@ app.get('/api/clients', verifyToken, async (req: AuthRequest, res: Response) => 
     const whereParts: string[] = [];
     const params: any[] = [];
 
-    // Sales solo ven los suyos
-    if (req.user!.role === 'sales' && req.user!.sage_commercial_code) {
-      whereParts.push(`commercial_code = $${params.length + 1}`);
-      params.push(req.user!.sage_commercial_code);
+    // Sales solo ven los suyos. OJO: ya NO vale "mi unico codigo de Sage" — un
+    // comercial puede llevar VARIAS carteras y zonas compartidas, y no debe ver los
+    // clientes marcados "no los visito". Eso lo resuelve filtroClientesVisibles, que
+    // es el mismo criterio que usan el mapa, el planning y los informes.
+    // Se calcula sobre el usuario EFECTIVO: si el admin esta viendo como un comercial,
+    // tiene que ver exactamente lo que ve el comercial.
+    let filtroVisibles = '';
+    if (isEffectiveSales(req)) {
+      filtroVisibles = await filtroClientesVisibles(effectiveUserId(req), params, 'c');
     } else if (commercial) {
       whereParts.push(`commercial_code = $${params.length + 1}`);
       params.push(commercial);
@@ -4821,12 +4826,16 @@ app.get('/api/clients', verifyToken, async (req: AuthRequest, res: Response) => 
       params.push('%' + search + '%');
     }
 
-    const whereSQL = whereParts.length > 0 ? 'WHERE ' + whereParts.join(' AND ') : '';
-    const countR = await pool.query(`SELECT COUNT(*)::int AS total FROM clients ${whereSQL}`, params);
+    // El filtro de visibilidad viene ya como " AND (...)", asi que si no hay nada mas
+    // arrancamos de WHERE TRUE en vez de encadenar a pelo.
+    const whereSQL = whereParts.length > 0
+      ? 'WHERE ' + whereParts.join(' AND ') + filtroVisibles
+      : (filtroVisibles ? 'WHERE TRUE' + filtroVisibles : '');
+    const countR = await pool.query(`SELECT COUNT(*)::int AS total FROM clients c ${whereSQL}`, params);
     const total = countR.rows[0].total;
 
     const r = await pool.query(
-      `SELECT * FROM clients ${whereSQL} ORDER BY razon_social LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      `SELECT c.* FROM clients c ${whereSQL} ORDER BY c.razon_social LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, offset]
     );
 
