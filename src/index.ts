@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v176-igualar-precios-todos-23jul',
+      build: 'v177-igualar-por-campo-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -8274,22 +8274,20 @@ async function homogeneizarRecuadrosLamina(sheetId: number): Promise<number> {
   // dibujado la caja a mano, el TAMANO de letra lo calcula igual el refinado automatico
   // midiendo la mancha de tinta, asi que sufre exactamente el mismo despiste.
   const r = await pool.query(
-    `SELECT id, x, y, ancho, alto, tam_rel FROM lamina_recuadro
-      WHERE sheet_id = $1 AND activo = TRUE ORDER BY x, y`, [sheetId]);
+    `SELECT id, x, y, ancho, alto, tam_rel, campo FROM lamina_recuadro
+      WHERE sheet_id = $1 AND activo = TRUE ORDER BY y, x`, [sheetId]);
   const recs = r.rows;
   if (recs.length < 3) return 0;
 
-  // Agrupar por columna: misma x con 1,5 puntos de margen (columnas distintas de la
-  // lamina estan mucho mas separadas que eso).
-  // Se compara contra la MEDIA de la columna que se va formando, no contra su primer
-  // elemento: si el primero es justo el descolocado, arrastraria el grupo entero.
-  const grupos: any[][] = [];
+  // Se agrupa por TIPO de precio, no por posicion. Una lamina puede ser una tabla de
+  // columnas (Hypafix) o una cuadricula de productos sueltos (BETER manicura); en las
+  // dos, el precio PRINCIPAL (pvf) va todo del mismo cuerpo de letra y el SECUNDARIO
+  // (pvpr) de otro. Agrupar por columna X fallaba en la cuadricula: mezclaba pvf y pvpr
+  // de productos distintos. La clave real es el campo.
+  const porCampo: Record<string, any[]> = {};
   for (const rec of recs) {
-    const g = grupos.find(gr => {
-      const media = gr.reduce((s: number, x: any) => s + Number(x.x), 0) / gr.length;
-      return Math.abs(media - Number(rec.x)) <= 2.5;
-    });
-    if (g) g.push(rec); else grupos.push([rec]);
+    const k = rec.campo || 'pvf';
+    (porCampo[k] = porCampo[k] || []).push(rec);
   }
 
   const mediana = (xs: number[]) => {
@@ -8299,13 +8297,15 @@ async function homogeneizarRecuadrosLamina(sheetId: number): Promise<number> {
   };
 
   let cambiados = 0;
-  for (const g of grupos) {
+  for (const g of Object.values(porCampo)) {
     if (g.length < 3) continue;   // con dos no hay "normal" que valga
     const medTam = mediana(g.map(x => Number(x.tam_rel)));
     const medAlto = mediana(g.map(x => Number(x.alto)));
-    // Solo si el grupo es mayoritariamente homogeneo (si no, igualar seria inventar).
+    // Solo si la MAYORIA clara comparte tamaño. Si la lamina tuviera dos tablas de
+    // cuerpos distintos a proposito (raro), no habria mayoria y no se toca nada:
+    // preferimos no igualar a igualar mal.
     const enNorma = g.filter(x => Math.abs(Number(x.tam_rel) - medTam) / medTam <= 0.08).length;
-    if (enNorma / g.length < 0.6) continue;
+    if (enNorma / g.length < 0.7) continue;
     for (const rec of g) {
       const desvia = Math.abs(Number(rec.tam_rel) - medTam) / medTam > 0.08;
       if (!desvia) continue;
