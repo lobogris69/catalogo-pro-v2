@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v170-offline-de-verdad-23jul',
+      build: 'v171-emails-al-sincronizar-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -5680,8 +5680,19 @@ app.post('/api/sync/visit-batch', verifyToken, async (req: AuthRequest, res: Res
         // ultima_visita_at del cliente
         await pool.query(`UPDATE clients SET ultima_visita_at = NOW() WHERE id = $1`, [Number(client_id)]);
         confirmed = true;
-        // NOTA: NO disparamos emails automáticos al sincronizar (Fernando decidirá si los envía manualmente)
-        // Esto evita spam si por error se sincronizan visitas viejas.
+        // EMAILS. Antes no se enviaban al sincronizar por miedo a que una visita vieja
+        // reventase el buzon de la oficina. Pero ahora este ES el camino normal de un
+        // pedido tomado sin cobertura: si no salen, la oficina no se entera y el
+        // comercial se queda tan tranquilo porque la app le dijo que se enviaba solo.
+        // Termino medio: se envian si el pedido es RECIENTE (7 dias). Si es mas viejo,
+        // queda confirmado y se avisa para mandarlo a mano desde el detalle.
+        const dias = (Date.now() - new Date(createdAtPg).getTime()) / 86400000;
+        if (dias <= 7) {
+          enviarEmailsVisita(visitId).catch((err: any) =>
+            console.error('[SYNC] Emails de la visita ' + visitId + ':', err.message));
+        } else {
+          console.warn('[SYNC] Visita ' + visitId + ' de hace ' + Math.round(dias) + ' dias: NO se envian emails automaticos');
+        }
       } catch (errConf) {
         console.error('[SYNC] Error confirmando visita:', (errConf as Error).message);
       }
