@@ -74,13 +74,18 @@ async function simpleElegirFarmacia() {
   const $b = document.getElementById('simple-buscar');
   let todos = [];
   try {
-    // Sus farmacias, todas. El servidor pagina de 200 en 200: seguimos pidiendo hasta
-    // agotar (un comercial tiene cientos, no miles) y solo las de alta.
-    for (let pag = 1; pag <= 10; pag++) {
-      const r = await api('/api/clients?active=1&limit=200&page=' + pag);
-      const lote = r.clientes || r.clients || [];
-      todos = todos.concat(lote);
-      if (lote.length < 200 || todos.length >= (r.total || 0)) break;
+    if (!navigator.onLine) {
+      // Sin cobertura: las farmacias que estén descargadas en la tablet.
+      todos = (await CpDB.listarClientes('')).filter(c => !/^\s*-?\s*(baja|anulad)/i.test(c.razon_social || ''));
+    } else {
+      // Sus farmacias, todas. El servidor pagina de 200 en 200: seguimos pidiendo hasta
+      // agotar (un comercial tiene cientos, no miles) y solo las de alta.
+      for (let pag = 1; pag <= 10; pag++) {
+        const r = await api('/api/clients?active=1&limit=200&page=' + pag);
+        const lote = r.clientes || r.clients || [];
+        todos = todos.concat(lote);
+        if (lote.length < 200 || todos.length >= (r.total || 0)) break;
+      }
     }
   } catch (e) {
     document.getElementById('simple-lista').innerHTML = `<div class="error-msg">${escape(e.message)}</div>`;
@@ -149,8 +154,9 @@ async function simpleEmpezarVisita(clientId, catalogId) {
   try {
     const cat = catalogId || await simpleCatalogoDelComercial();
     if (!cat) { alert('No tienes ningún catálogo asignado. Avisa a Fernando.'); renderSimpleInicio(); return; }
+    let visita;
     try {
-      await api('/api/visits/start', { method: 'POST', body: { client_id: clientId, catalog_id: cat } });
+      visita = await vIniciarVisita(clientId, cat, false);
     } catch (e) {
       // El servidor avisa de que hay otra visita a medias. Que decida él, en cristiano.
       if (/sin terminar/i.test(e.message || '')) {
@@ -158,12 +164,11 @@ async function simpleEmpezarVisita(clientId, catalogId) {
           renderSimpleInicio();
           return;
         }
-        await api('/api/visits/start', { method: 'POST', body: { client_id: clientId, catalog_id: cat, forzar: true } });
+        visita = await vIniciarVisita(clientId, cat, true);
       } else throw e;
     }
-    // Igual que el flujo normal: releemos la visita para tener el nombre del cliente.
-    const cur = await api('/api/visits/current');
-    appState.visitaActiva = cur.visit || null;
+    appState.visitaActiva = visita;
+    if (!navigator.onLine) simpleAviso('📴 Sin cobertura: se guarda en la tablet');
     simpleSeguirVisita();
   } catch (e) {
     alert(e.message);
@@ -174,6 +179,11 @@ async function simpleEmpezarVisita(clientId, catalogId) {
 // Los catálogos que lleva, sin archivar y con láminas dentro (uno vacío solo estorba).
 async function simpleCatalogosDelComercial() {
   try {
+    if (!navigator.onLine) {
+      // Sin cobertura solo valen los descargados: son los únicos que puede enseñar.
+      const descargados = await CpDB.listarCatalogosDescargados();
+      return (descargados || []).map(c => ({ ...c, sheet_count: c.sheet_count || c.num_laminas || 0 }));
+    }
     const r = await api('/api/catalogs');
     return (r.catalogs || []).filter(c => c.estado !== 'archivado' && (c.sheet_count || 0) > 0);
   } catch (_) { return []; }
@@ -308,16 +318,13 @@ async function simpleGuardarProducto(sheetId) {
   if (zona.ref_modelo) texto += ' ref. ' + zona.ref_modelo;
   try {
     if (anot) {
-      await api('/api/annotations/' + anot.id, { method: 'PUT', body: { texto_libre: texto, tipo: 'pedido', cantidad: cant } });
+      await vEditarAnotacion(anot.id, { texto_libre: texto, tipo: 'pedido', cantidad: cant });
     } else {
-      await api('/api/visits/' + appState.visitaActiva.id + '/annotations', {
-        method: 'POST',
-        body: {
+      await vAnotar({
           sheet_id: sheetId, texto_libre: texto, tipo: 'pedido',
           product_id: zona.product_id, cantidad: cant, zone_id: zona.id,
           referencia: zona.ref_modelo || null,
           pos_x: (zona.x + zona.ancho / 2) / 100, pos_y: (zona.y + zona.alto / 2) / 100
-        }
       });
     }
     if (m) m.remove();
@@ -330,7 +337,7 @@ async function simpleGuardarProducto(sheetId) {
 
 async function simpleQuitarProducto(anotId) {
   try {
-    await api('/api/annotations/' + anotId, { method: 'DELETE' });
+    await vBorrarAnotacion(anotId);
     document.querySelector('.simple-modal-bg')?.remove();
     const sid = document.getElementById('visor-imagen-wrapper')?.dataset.sheetId;
     if (sid) await refrescarAnotacionesVisor(Number(sid));
@@ -354,7 +361,9 @@ async function simpleTerminar() {
   document.getElementById('simple-barra')?.remove();
   $v.innerHTML = `<div class="simple-pantalla"><div class="loading">Preparando el pedido…</div></div>`;
   try {
-    const r = await api('/api/visits/' + appState.visitaActiva.id);
+    const r = visitaEsLocal()
+      ? { annotations: await CpDB.listarAnotacionesDeVisitaOffline(appState.visitaActiva.local_id) }
+      : await api('/api/visits/' + appState.visitaActiva.id);
     const anots = (r.anotaciones || r.annotations || []).filter(a => a.tipo === 'pedido');
     const filas = anots.map(a => `
       <div class="simple-repaso-linea">
@@ -388,7 +397,7 @@ async function simpleTerminar() {
 }
 
 async function simpleQuitarYRepasar(anotId) {
-  try { await api('/api/annotations/' + anotId, { method: 'DELETE' }); } catch (_) {}
+  try { await vBorrarAnotacion(anotId); } catch (_) {}
   simpleTerminar();
 }
 
@@ -397,15 +406,18 @@ async function simpleEnviar(btn) {
   btn.disabled = true;
   btn.innerHTML = 'Enviando…';
   try {
-    await api('/api/visits/' + appState.visitaActiva.id + '/confirm', { method: 'POST', body: {} });
+    const res = await vConfirmarVisita({});
+    const sinLinea = !!(res && res.offline);
     appState.visitaActiva = null;
     _anotacionesVisita = {};
     document.getElementById('simple-barra')?.remove();
     const $v = document.getElementById('vista-contenido');
     $v.innerHTML = `
       <div class="simple-pantalla">
-        <div class="simple-exito">✅</div>
-        <div class="simple-exito-txt">Pedido enviado<br><span>Ya lo tienen en la oficina</span></div>
+        <div class="simple-exito">${sinLinea ? '📴' : '✅'}</div>
+        <div class="simple-exito-txt">${sinLinea
+          ? 'Pedido guardado<br><span>Sin cobertura. Se envía solo en cuanto tengas línea: no tienes que hacer nada.</span>'
+          : 'Pedido enviado<br><span>Ya lo tienen en la oficina</span>'}</div>
         <button class="simple-boton-gigante" onclick="renderSimpleInicio()">
           <span class="simple-icono">🏥</span>
           OTRA VISITA
@@ -420,7 +432,7 @@ async function simpleEnviar(btn) {
 
 async function simpleDescartarVisita() {
   if (!confirm('¿Descartar esta visita?\n\nSe pierde lo que hayas anotado y no se envía nada.')) return;
-  try { await api('/api/visits/' + appState.visitaActiva.id + '/discard', { method: 'POST', body: {} }); } catch (_) {}
+  try { await vDescartarVisita(); } catch (_) {}
   appState.visitaActiva = null;
   _anotacionesVisita = {};
   document.getElementById('simple-barra')?.remove();

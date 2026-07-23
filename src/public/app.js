@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v169 · 23 jul 2026';
+const APP_VERSION = 'v170 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -270,8 +270,15 @@ async function renderApp() {
   if (!window._visitaCargada) {
     window._visitaCargada = true;
     try {
-      const r = await api('/api/visits/current');
-      appState.visitaActiva = r.visit || null;
+      if (navigator.onLine) {
+        const r = await api('/api/visits/current');
+        appState.visitaActiva = r.visit || null;
+      }
+      // Sin cobertura (o si arriba no había nada), miramos si quedó una visita a
+      // medias guardada en la tablet: al comercial no se le puede perder el pedido.
+      if (!appState.visitaActiva && window.CpDB && CpDB.visitaOfflineEnCurso) {
+        appState.visitaActiva = await CpDB.visitaOfflineEnCurso();
+      }
     } catch (e) { /* sin visita o sin red */ }
     // Datos frescos del usuario: si le han cambiado algo (p.ej. el modo sencillo)
     // mientras estaba dentro, se entera al abrir la app, no al volver a entrar.
@@ -3746,13 +3753,22 @@ async function cargarZonasComercial() {
   // Pero el endpoint usa el sheet_id directo; las zonas se definen en el maestro y el
   // visor del comercial muestra la lámina del maestro vía JOIN, así que el id ya es correcto.
   try {
-    const r = await api('/api/sheets/' + sheetId + '/zones');
+    // Sin cobertura, las zonas salen de lo que se descargó con el catálogo.
+    let zonas;
+    if (navigator.onLine) {
+      zonas = (await api('/api/sheets/' + sheetId + '/zones')).zones || [];
+    } else {
+      const lam = await CpDB.obtenerLamina(sheetId);
+      zonas = (lam && lam.zonas) || [];
+    }
     // Zonas "accionables": producto Sage, familia, comisión o enlace a otro catálogo.
-    _zonasComercial = (r.zones || []).filter(z => z.product_id || z.familia_ref || (z.familia_skus && z.familia_skus.length) || z.es_comision || z.link_catalog_id || z.permite_sueltas);
+    _zonasComercial = zonas.filter(z => z.product_id || z.familia_ref || (z.familia_skus && z.familia_skus.length) || z.es_comision || z.link_catalog_id || z.permite_sueltas);
     pintarZonasComercial();
-    cargarRecuadrosLamina(sheetId);   // F3: recuadros tapar-reescribir
-    cargarPreciosVigentesLamina(); // en segundo plano; repinta al llegar
-    cargarOfertasLamina();         // F4: etiqueta de oferta vigente
+    if (navigator.onLine) {
+      cargarRecuadrosLamina(sheetId);   // F3: recuadros tapar-reescribir
+      cargarPreciosVigentesLamina(); // en segundo plano; repinta al llegar
+      cargarOfertasLamina();         // F4: etiqueta de oferta vigente
+    }
   } catch (e) {
     _zonasComercial = [];
   }
@@ -4332,15 +4348,10 @@ async function pulsarZonaComercial(zona) {
     try {
       if (anotExistente) {
         // D2: editar la existente
-        await api('/api/annotations/' + anotExistente.id, {
-          method: 'PUT',
-          body: { texto_libre: texto, tipo: 'pedido', cantidad }
-        });
+        await vEditarAnotacion(anotExistente.id, { texto_libre: texto, tipo: 'pedido', cantidad });
       } else {
         // crear nueva, vinculada a zona + producto
-        await api('/api/visits/' + appState.visitaActiva.id + '/annotations', {
-          method: 'POST',
-          body: {
+        await vAnotar({
             sheet_id: sheetId,
             texto_libre: texto,
             tipo: 'pedido',
@@ -4350,8 +4361,7 @@ async function pulsarZonaComercial(zona) {
             referencia: refModelo || null,   // el nº del modelo, además de dentro del texto
             pos_x: (zona.x + zona.ancho / 2) / 100,  // centro de la zona como pin
             pos_y: (zona.y + zona.alto / 2) / 100
-          }
-        });
+          });
       }
       modal.remove();
       refrescarAnotacionesVisor(sheetId);
@@ -4364,7 +4374,7 @@ async function pulsarZonaComercial(zona) {
 
 async function borrarAnotacionZona(anotId, sheetId) {
   try {
-    await api('/api/annotations/' + anotId, { method: 'DELETE' });
+    await vBorrarAnotacion(anotId);
     document.querySelectorAll('.modal-bg').forEach(m => m.remove());
     refrescarAnotacionesVisor(sheetId);
     mostrarNotificacionOnline('Anotación quitada', '#6b7280');
@@ -4541,20 +4551,14 @@ async function pulsarZonaComision(zona) {
     if (numSocio) texto += ' · socio: ' + numSocio;
     try {
       if (anotExistente) {
-        await api('/api/annotations/' + anotExistente.id, {
-          method: 'PUT',
-          body: { texto_libre: texto, tipo: 'pedido', cantidad: unidades, descuento, almacen, num_socio: numSocio }
-        });
+        await vEditarAnotacion(anotExistente.id, { texto_libre: texto, tipo: 'pedido', cantidad: unidades, descuento, almacen, num_socio: numSocio });
       } else {
-        await api('/api/visits/' + appState.visitaActiva.id + '/annotations', {
-          method: 'POST',
-          body: {
+        await vAnotar({
             sheet_id: sheetId, texto_libre: texto, tipo: 'pedido',
             cantidad: unidades, zone_id: zona.id,
             es_comision: true, descuento, almacen, num_socio: numSocio,
             pos_x: (zona.x + zona.ancho / 2) / 100, pos_y: (zona.y + zona.alto / 2) / 100
-          }
-        });
+          });
       }
       modal.remove();
       refrescarAnotacionesVisor(sheetId);
@@ -4650,14 +4654,11 @@ async function anadirLineaSuelta() {
   if (!ref) { if ($msg) $msg.innerHTML = `<div class="error-msg">Escribe la referencia de la gafa.</div>`; return; }
   const texto = uds + ' ud' + (uds === 1 ? '' : 's') + ' · ref ' + ref + ' · expositor ' + nombre;
   try {
-    await api('/api/visits/' + appState.visitaActiva.id + '/annotations', {
-      method: 'POST',
-      body: {
+    await vAnotar({
         sheet_id: sheetId, texto_libre: texto, tipo: 'pedido',
         cantidad: uds, zone_id: Number(zoneId), referencia: ref,
         pos_x: (zona.x + zona.ancho / 2) / 100, pos_y: (zona.y + zona.alto / 2) / 100
-      }
-    });
+      });
     await cargarAnotacionesDeVisita();
     if (typeof pintarVisor === 'function') pintarVisor();
     if (_carritoAbierto) renderCarritoContenido();
@@ -4671,7 +4672,7 @@ async function anadirLineaSuelta() {
 
 async function borrarLineaSuelta(anotId) {
   try {
-    await api('/api/annotations/' + anotId, { method: 'DELETE' });
+    await vBorrarAnotacion(anotId);
     await cargarAnotacionesDeVisita();
     if (typeof pintarVisor === 'function') pintarVisor();
     if (_carritoAbierto) renderCarritoContenido();
@@ -6948,6 +6949,19 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo) {
     // 2. Guardar catálogo en IndexedDB
     await CpDB.guardarCatalogo(catalog);
 
+    // 2b. Zonas de todo el catálogo de una tacada. Sin ellas, en la farmacia sin
+    // cobertura se ve la lámina pero no se puede tocar el producto para pedirlo.
+    let zonasPorLamina = {};
+    try {
+      const rz = await api('/api/catalogs/' + catalogId + '/zones-all');
+      (rz.zones || []).forEach(z => {
+        if (!zonasPorLamina[z.sheet_id]) zonasPorLamina[z.sheet_id] = [];
+        zonasPorLamina[z.sheet_id].push(z);
+      });
+    } catch (e) {
+      console.warn('[offline] no se pudieron guardar las zonas:', e.message);
+    }
+
     // 3. Descargar cada lámina (imagen como Blob)
     const total = sheets.length;
     let okCount = 0;
@@ -6975,7 +6989,8 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo) {
           tags: sheet.tags,
           imagen_path_original: sheet.imagen_path,
           imagen_blob: blob,
-          imagen_size: blob.size
+          imagen_size: blob.size,
+          zonas: zonasPorLamina[sheet.id] || []
         });
         okCount++;
       } catch (err) {
@@ -7285,6 +7300,12 @@ async function sincronizarPendientes(esManual = false) {
       if (r.success) {
         // Borrar visita local + anotaciones (ya está en servidor)
         await CpDB.borrarVisitaOffline(visita.local_id);
+        // Si justo esa era la visita que la app tenía en pantalla, se suelta: ya vive
+        // en el servidor y dejarla apuntando a un id local sería quedarse en el aire.
+        if (appState.visitaActiva && appState.visitaActiva.local_id === visita.local_id) {
+          appState.visitaActiva = null;
+          _anotacionesVisita = {};
+        }
         okCount++;
       } else {
         await CpDB.actualizarVisitaOffline(visita.local_id, { estado_sync: 'error', error_msg: r.error || 'Error desconocido' });
@@ -9983,25 +10004,21 @@ async function confirmarIniciarVisita(clientId, catalogId) {
   // Cerrar modal si está abierto
   document.querySelectorAll('.modal-bg').forEach(m => m.remove());
   try {
+    let visita;
     try {
-      await api('/api/visits/start', {
-        method: 'POST',
-        body: { client_id: clientId, catalog_id: catalogId }
-      });
+      visita = await vIniciarVisita(clientId, catalogId, false);
     } catch (e) {
       // 409: ya hay otra visita a medias con otro cliente. Se pregunta en vez de
       // abrir una segunda en silencio y dejar la anterior olvidada sin enviar.
       if (/sin terminar/i.test(e.message || '')) {
         if (!confirm(e.message + '.\n\nSi continúas, esa visita se queda abierta tal cual y empiezas otra.\n\n¿Empezar la nueva visita?')) return;
-        await api('/api/visits/start', {
-          method: 'POST',
-          body: { client_id: clientId, catalog_id: catalogId, forzar: true }
-        });
+        visita = await vIniciarVisita(clientId, catalogId, true);
       } else throw e;
     }
-    // Refrescar la visita activa con datos completos
-    const cur = await api('/api/visits/current');
-    appState.visitaActiva = cur.visit || null;
+    appState.visitaActiva = visita;
+    if (!navigator.onLine) {
+      mostrarNotificacionOnline('📴 Sin cobertura: el pedido se guarda en la tablet y se envía solo al recuperar línea', '#b45309');
+    }
     // Llevar al visor comercial del catálogo elegido
     appState.vista = 'catalogos';
     appState.clienteActual = null;
@@ -11446,10 +11463,7 @@ function renderResumenPreEnvio() {
       if (anot.referencia) texto += ' ref. ' + anot.referencia;
       if (notaVieja) texto += ' · ' + notaVieja;
       try {
-        await api('/api/annotations/' + anotId, {
-          method: 'PUT',
-          body: { texto_libre: texto, tipo: anot.tipo || 'pedido', cantidad: nuevaCant }
-        });
+        await vEditarAnotacion(anotId, { texto_libre: texto, tipo: anot.tipo || 'pedido', cantidad: nuevaCant });
         anot.cantidad = nuevaCant;
         anot.texto_libre = texto;
         // Recalcular subtotal y total
@@ -11466,7 +11480,7 @@ function renderResumenPreEnvio() {
       const anotId = Number(btn.dataset.anotId);
       if (!confirm('¿Quitar esta línea del pedido?')) return;
       try {
-        await api('/api/annotations/' + anotId, { method: 'DELETE' });
+        await vBorrarAnotacion(anotId);
         _resumenPreEnvio.anotaciones = _resumenPreEnvio.anotaciones.filter(a => a.id !== anotId);
         renderResumenPreEnvio();
       } catch (err) {
@@ -11481,7 +11495,7 @@ function renderResumenPreEnvio() {
       const anotId = Number(btn.dataset.anotId);
       if (!confirm('¿Quitar esta anotación?')) return;
       try {
-        await api('/api/annotations/' + anotId, { method: 'DELETE' });
+        await vBorrarAnotacion(anotId);
         _resumenPreEnvio.anotaciones = _resumenPreEnvio.anotaciones.filter(a => a.id !== anotId);
         renderResumenPreEnvio();
       } catch (err) {
@@ -11545,14 +11559,20 @@ async function confirmarEnvioVisita() {
   const visitaIdLocal = _resumenPreEnvio.visitId;
 
   try {
-    await api('/api/visits/' + _resumenPreEnvio.visitId + '/confirm', {
-      method: 'POST',
-      body: {
-        notas_generales: notas,
-        email_cliente_override: (emailOverride && emailOverride !== emailOriginal) ? emailOverride : null,
-        no_enviar_cliente: noEnviar
-      }
+    const res = await vConfirmarVisita({
+      notas_generales: notas,
+      email_cliente_override: (emailOverride && emailOverride !== emailOriginal) ? emailOverride : null,
+      no_enviar_cliente: noEnviar
     });
+    if (res && res.offline) {
+      cerrarResumenPreEnvio();
+      appState.visitaActiva = null;
+      appState.vista = 'pedidos-guardados';
+      appState.catalogoActual = null;
+      render();
+      alert('📴 Sin cobertura.\n\nEl pedido ha quedado guardado en la tablet y se enviará solo en cuanto tengas línea.\n\nLo tienes en "📁 Mis pedidos".');
+      return;
+    }
     // Backup local del PDF en la tablet (async, no bloquea la UI)
     guardarPdfBackupLocal(visitaIdLocal, nombreCliente).catch(err => {
       console.warn('[backup] no se pudo guardar copia local:', err.message);
@@ -12002,7 +12022,7 @@ async function descartarVisitaActiva() {
   if (!confirm('¿Descartar la visita actual? Se perderán todas las anotaciones que has añadido.')) return;
   if (!confirm('Confirmación final: ¿seguro que quieres descartarla?')) return;
   try {
-    await api('/api/visits/' + appState.visitaActiva.id + '/discard', { method: 'POST' });
+    await vDescartarVisita();
     appState.visitaActiva = null;
     appState.vista = 'catalogos';
     appState.catalogoActual = null;
@@ -12118,13 +12138,119 @@ async function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
   });
 }
 
+// ============================================================================
+// LA VISITA, CON O SIN COBERTURA
+// ----------------------------------------------------------------------------
+// En una farmacia con sótano o con paredes gruesas no hay línea. Antes eso dejaba
+// al comercial tirado: empezar visita y anotar iban directos a la API y fallaban.
+//
+// Estas funciones son la ÚNICA puerta por la que pasa una visita. Si hay red, van
+// al servidor de siempre; si no, guardan en el móvil (IndexedDB) y el pedido se
+// sube solo cuando vuelve la cobertura (sincronizarPendientes).
+//
+// Truco para no tocar media app: las visitas y las líneas guardadas en el móvil
+// llevan un `id` NEGATIVO. Así el resto del código las trata como cualquier otra
+// (interpola ${a.id} en el HTML, las ordena, las cuenta) y aquí sabemos, por el
+// signo, si hay que ir al servidor o a la base local.
+// ============================================================================
+
+function esIdLocal(id) { return Number(id) < 0; }
+function visitaEsLocal() { return !!(appState.visitaActiva && esIdLocal(appState.visitaActiva.id)); }
+
+// Un id negativo irrepetible dentro de la misma tablet.
+let _contadorLocal = 0;
+function _nuevoIdLocal() { return -(Date.now() * 100 + (_contadorLocal++ % 100)); }
+
+// Empezar visita. Devuelve la visita (del servidor o local).
+async function vIniciarVisita(clientId, catalogId, forzar) {
+  if (navigator.onLine) {
+    await api('/api/visits/start', { method: 'POST', body: { client_id: clientId, catalog_id: catalogId, forzar: !!forzar } });
+    const cur = await api('/api/visits/current');
+    return cur.visit || null;
+  }
+  // SIN COBERTURA: hace falta tener descargados el cliente y el catálogo.
+  const catalog = await CpDB.obtenerCatalogo(catalogId);
+  if (!catalog) throw new Error('Sin cobertura solo puedes usar catálogos descargados. Descárgalo cuando tengas wifi.');
+  const cliente = await CpDB.obtenerCliente(clientId);
+  const v = await CpDB.crearVisitaOffline({
+    id: _nuevoIdLocal(),
+    client_id: clientId,
+    catalog_id: catalogId,
+    cliente_nombre: (cliente && cliente.razon_social) || 'Cliente',
+    catalog_nombre: catalog.name,
+    status: 'draft',
+    // Mientras la tenga abierta NO se sube aunque vuelva la cobertura: se subiría a
+    // medias y el comercial se quedaría sin la visita que está haciendo.
+    estado_sync: 'en_curso'
+  });
+  await refrescarContadorPendientes();
+  return v;
+}
+
+// Añadir una línea. `body` es el mismo objeto que se manda a la API.
+async function vAnotar(body) {
+  if (!visitaEsLocal()) {
+    const r = await api('/api/visits/' + appState.visitaActiva.id + '/annotations', { method: 'POST', body });
+    return r.annotation;
+  }
+  const previas = await CpDB.listarAnotacionesDeVisitaOffline(appState.visitaActiva.local_id);
+  return await CpDB.crearAnotacionOffline({
+    ...body,
+    id: _nuevoIdLocal(),
+    visit_local_id: appState.visitaActiva.local_id,
+    orden_en_visita: previas.length + 1
+  });
+}
+
+async function vEditarAnotacion(id, body) {
+  if (!esIdLocal(id)) {
+    const r = await api('/api/annotations/' + id, { method: 'PUT', body });
+    return r.annotation;
+  }
+  const a = await CpDB.obtenerAnotacionOfflinePorId(id);
+  if (!a) return null;
+  return await CpDB.actualizarAnotacionOffline(a.local_id, body);
+}
+
+async function vBorrarAnotacion(id) {
+  if (!esIdLocal(id)) return await api('/api/annotations/' + id, { method: 'DELETE' });
+  const a = await CpDB.obtenerAnotacionOfflinePorId(id);
+  if (a) await CpDB.borrarAnotacionOffline(a.local_id);
+}
+
+// Cerrar la visita. Sin cobertura queda en cola: se envía sola al volver la línea.
+async function vConfirmarVisita(body) {
+  if (!visitaEsLocal()) {
+    return await api('/api/visits/' + appState.visitaActiva.id + '/confirm', { method: 'POST', body: body || {} });
+  }
+  await CpDB.actualizarVisitaOffline(appState.visitaActiva.local_id, {
+    status: 'confirmed',
+    cerrar_al_sincronizar: true,
+    notas_generales: (body && body.notas_generales) || null,
+    estado_sync: 'pendiente'
+  });
+  await refrescarContadorPendientes();
+  return { success: true, offline: true };
+}
+
+async function vDescartarVisita() {
+  if (!visitaEsLocal()) return await api('/api/visits/' + appState.visitaActiva.id + '/discard', { method: 'POST' });
+  const anots = await CpDB.listarAnotacionesDeVisitaOffline(appState.visitaActiva.local_id);
+  for (const a of anots) await CpDB.borrarAnotacionOffline(a.local_id);
+  await CpDB.borrarVisitaOffline(appState.visitaActiva.local_id);
+  await refrescarContadorPendientes();
+}
+
 // Cache local de anotaciones por sheet_id de la visita actual (para no pegar a la API por cada repintado)
 let _anotacionesVisita = {};
 
 async function cargarAnotacionesDeVisita() {
   if (!appState.visitaActiva) { _anotacionesVisita = {}; return; }
   try {
-    const r = await api('/api/visits/' + appState.visitaActiva.id);
+    // Visita del móvil (sin cobertura): las líneas están en IndexedDB.
+    const r = visitaEsLocal()
+      ? { annotations: await CpDB.listarAnotacionesDeVisitaOffline(appState.visitaActiva.local_id) }
+      : await api('/api/visits/' + appState.visitaActiva.id);
     _anotacionesVisita = {};
     (r.annotations || []).forEach(a => {
       const sid = a.sheet_id;
@@ -12255,7 +12381,7 @@ function carritoIrALamina(sheetId) {
 async function borrarAnotacion(anotId, sheetId) {
   if (!confirm('¿Borrar esta anotación?')) return;
   try {
-    await api('/api/annotations/' + anotId, { method: 'DELETE' });
+    await vBorrarAnotacion(anotId);
     refrescarAnotacionesVisor(sheetId);
   } catch (err) {
     alert('Error: ' + err.message);
@@ -12268,10 +12394,7 @@ async function editarAnotacion(anotId, sheetId, textoActual, tipoActual) {
   const t = String(nuevo).trim();
   if (!t) return;
   try {
-    await api('/api/annotations/' + anotId, {
-      method: 'PUT',
-      body: { texto_libre: t, tipo: tipoActual }
-    });
+    await vEditarAnotacion(anotId, { texto_libre: t, tipo: tipoActual });
     refrescarAnotacionesVisor(sheetId);
   } catch (err) {
     alert('Error: ' + err.message);
@@ -12279,6 +12402,21 @@ async function editarAnotacion(anotId, sheetId, textoActual, tipoActual) {
 }
 
 // ----- RENDER DETALLE DE UNA VISITA (pasada o recién cerrada) -----
+// Borrar una visita del historial (solo admin). Los emails que ya salieron no se
+// pueden retirar: se avisa antes para que nadie se lleve la sorpresa.
+async function borrarVisita(visitId, clientId, nombreCliente) {
+  if (!confirm(`¿Borrar la visita de "${nombreCliente || 'este cliente'}"?\n\nSe borran también sus líneas de pedido.\n\nOJO: si el pedido ya se envió por email, ese email NO se puede retirar.\n\nEsto no se puede deshacer.`)) return;
+  try {
+    await api('/api/visits/' + visitId, { method: 'DELETE' });
+    mostrarNotificacionOnline('🗑️ Visita borrada', '#dc2626');
+    appState.visitaVerId = null;
+    if (clientId) { appState.vista = 'clientes'; appState.clienteActual = clientId; }
+    render();
+  } catch (e) {
+    alert('No se ha podido borrar: ' + e.message);
+  }
+}
+
 async function renderDetalleVisita(visitId) {
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando visita…</div></div>`;
@@ -12320,6 +12458,7 @@ async function renderDetalleVisita(visitId) {
             <button class="btn btn-primary btn-pequeno" onclick="descargarPdfVisita(${v.id})">📄 Descargar PDF</button>
             ${(v.status === 'confirmed' || v.status === 'sent') ? `<button class="btn btn-secondary btn-pequeno" onclick="reenviarEmailsVisita(${v.id})">📧 Reenviar emails</button>` : ''}
             ${(v.status === 'confirmed' || v.status === 'sent') ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalReenviarOtro(${v.id}, ${v.client_id})">✉️ Enviar a otro email</button>` : ''}
+            ${esAdminReal() ? `<button class="btn btn-danger btn-pequeno" onclick="borrarVisita(${v.id}, ${v.client_id}, '${escape((v.cliente_nombre || '').replace(/'/g, "\\'"))}')" title="Borra la visita y sus líneas. Para pedidos de prueba o duplicados.">🗑️ Borrar visita</button>` : ''}
           </div>
         </div>
 

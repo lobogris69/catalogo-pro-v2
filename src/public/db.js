@@ -259,7 +259,9 @@ window.CpDB = {
     const visitaCompleta = {
       ...visita,
       local_id: localId,
-      estado_sync: 'pendiente',  // pendiente | sincronizando | error | ok
+      // en_curso = el comercial la tiene abierta (NO se sube todavía).
+      // pendiente = cerrada y esperando cobertura para enviarse.
+      estado_sync: visita.estado_sync || 'pendiente',
       created_at: visita.created_at || new Date().toISOString()
     };
     const db = await abrirDB();
@@ -368,6 +370,57 @@ window.CpDB = {
       t.objectStore('annotations_offline').delete(localId);
       t.oncomplete = () => resolve();
       t.onerror = () => reject(t.error);
+    });
+  },
+
+  // Una lámina descargada, con sus zonas (para poder anotar sin cobertura).
+  async obtenerLamina(sheetId) {
+    const db = await abrirDB();
+    return new Promise((resolve, reject) => {
+      const r = db.transaction('sheets').objectStore('sheets').get(Number(sheetId));
+      r.onsuccess = () => resolve(r.result || null);
+      r.onerror = () => reject(r.error);
+    });
+  },
+
+  // Editar una anotación ya guardada sin cobertura (cambiar unidades, por ejemplo).
+  async actualizarAnotacionOffline(localId, cambios) {
+    const db = await abrirDB();
+    const store = db.transaction('annotations_offline', 'readwrite').objectStore('annotations_offline');
+    return new Promise((resolve, reject) => {
+      const g = store.get(localId);
+      g.onsuccess = () => {
+        if (!g.result) { resolve(null); return; }
+        const nueva = { ...g.result, ...cambios };
+        const p = store.put(nueva);
+        p.onsuccess = () => resolve(nueva);
+        p.onerror = () => reject(p.error);
+      };
+      g.onerror = () => reject(g.error);
+    });
+  },
+
+  // Buscar una anotación offline por su id numérico negativo (el que usa la interfaz).
+  async obtenerAnotacionOfflinePorId(idNum) {
+    const db = await abrirDB();
+    return new Promise((resolve, reject) => {
+      const r = db.transaction('annotations_offline').objectStore('annotations_offline').getAll();
+      r.onsuccess = () => resolve((r.result || []).find(a => Number(a.id) === Number(idNum)) || null);
+      r.onerror = () => reject(r.error);
+    });
+  },
+
+  // La visita local que está a medias (si la hay).
+  async visitaOfflineEnCurso() {
+    const db = await abrirDB();
+    return new Promise((resolve, reject) => {
+      const r = db.transaction('visits_offline').objectStore('visits_offline').getAll();
+      r.onsuccess = () => {
+        const abiertas = (r.result || []).filter(v => v.status === 'draft');
+        abiertas.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        resolve(abiertas[0] || null);
+      };
+      r.onerror = () => reject(r.error);
     });
   }
 };

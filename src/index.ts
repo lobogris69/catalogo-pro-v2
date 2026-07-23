@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v169-sync-lineas-completas-23jul',
+      build: 'v170-offline-de-verdad-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -9287,6 +9287,64 @@ app.get('/api/map/clients', verifyToken, async (req: AuthRequest, res: Response)
 // Actualizar bumper de health
 
 // GET una visita concreta + sus anotaciones
+// TODAS las zonas de un catalogo de una sola vez. La usa la descarga offline: sin
+// zonas guardadas, en una farmacia sin cobertura el comercial ve la lamina pero no
+// puede tocar el producto para anotarlo, que es justo lo que necesita.
+app.get('/api/catalogs/:id/zones-all', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      res.status(400).json({ success: false, error: 'Parametro id invalido' });
+      return;
+    }
+    const r = await pool.query(`
+      SELECT z.*, p.codigo AS producto_codigo, p.nombre AS producto_nombre, p.precio_pvf AS producto_pvf
+        FROM sheet_zones z
+        LEFT JOIN products p ON p.id = z.product_id
+       WHERE z.sheet_id IN (
+              SELECT id FROM sheets WHERE catalog_id = $1
+              UNION
+              SELECT s.id FROM express_sheets es JOIN sheets s ON s.id = es.sheet_id
+               WHERE es.express_catalog_id = $1)
+       ORDER BY z.sheet_id, z.id`, [id]);
+    res.json({ success: true, zones: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// BORRAR una visita entera (solo admin REAL). Para pruebas, duplicados o pedidos que
+// nunca debieron existir. Se lleva por delante sus anotaciones y su registro de emails;
+// los emails YA ENVIADOS no se pueden retirar, eso se avisa en la pantalla.
+app.delete('/api/visits/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ success: false, error: 'Parametro id invalido' });
+    return;
+  }
+  const cli = await pool.connect();
+  try {
+    const v = await cli.query(
+      `SELECT v.id, v.client_id, v.status, c.razon_social
+         FROM visits v LEFT JOIN clients c ON c.id = v.client_id WHERE v.id = $1`, [id]);
+    if (!v.rows.length) {
+      res.status(404).json({ success: false, error: 'Visita no encontrada' });
+      return;
+    }
+    await cli.query('BEGIN');
+    await cli.query('DELETE FROM annotations WHERE visit_id = $1', [id]);
+    try { await cli.query('DELETE FROM visit_emails WHERE visit_id = $1', [id]); } catch (_) { /* si no existe la tabla, da igual */ }
+    await cli.query('DELETE FROM visits WHERE id = $1', [id]);
+    await cli.query('COMMIT');
+    res.json({ success: true, borrada: v.rows[0] });
+  } catch (e) {
+    await cli.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ success: false, error: (e as Error).message });
+  } finally {
+    cli.release();
+  }
+});
+
 // GET mis ultimas visitas cerradas (modo sencillo: "Mis pedidos").
 // OJO: literal ANTES de /api/visits/:id o Express lo captura como id invalido.
 app.get('/api/visits/mias', verifyToken, async (req: AuthRequest, res: Response) => {
