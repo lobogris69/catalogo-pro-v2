@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v162-sin-bajas-23jul',
+      build: 'v163-me-usuario-real-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1612,9 +1612,14 @@ const loginLimiter = rateLimit({
 // arrastra los datos viejos de localStorage hasta que vuelve a entrar.
 app.get('/api/auth/me', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
+    // SIEMPRE el dueño del token, nunca el impersonado: si el admin esta viendo como
+    // un comercial, verifyToken le ha puesto req.user del comercial. Devolver eso aqui
+    // hacia que el navegador del admin guardase al comercial como su propio usuario y
+    // perdiera su rol hasta volver a entrar.
+    const idReal = (req.user as any)._realAdminId || req.user!.id;
     const r = await pool.query(
       'SELECT id, email, name, role, sage_commercial_code, modo_simple, is_active FROM users WHERE id = $1',
-      [req.user!.id]
+      [idReal]
     );
     if (r.rows.length === 0) { res.status(404).json({ success: false, error: 'Usuario no encontrado' }); return; }
     const u = r.rows[0];

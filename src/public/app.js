@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v162 · 23 jul 2026';
+const APP_VERSION = 'v163 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -277,7 +277,9 @@ async function renderApp() {
     // mientras estaba dentro, se entera al abrir la app, no al volver a entrar.
     try {
       const me = await api('/api/auth/me');
-      if (me.user) {
+      // Cinturón: `user` es SIEMPRE quien ha entrado. Si viniera otro (impersonación),
+      // no se toca: perder el rol de admin en el navegador es muy caro de arreglar.
+      if (me.user && (!user || me.user.id === user.id)) {
         user = me.user;
         localStorage.setItem('cpv2_user', JSON.stringify(user));
       }
