@@ -158,7 +158,8 @@ const MANUAL_ADMIN = [
     para: 'Que un comercial no ofrezca en una zona algo que ahí no se puede vender, aunque sí pueda venderlo en otra.',
     pasos: [
       'Las zonas son <b>Álava, Gipuzkoa, Vizcaya, Navarra y Aragón</b>. En el catálogo maestro: <b>📍 Zonas de venta</b>.',
-      'En cada zona, <b>🚫 Qué no se vende aquí</b>: eliges el laboratorio (categoría) y, si quieres, el motivo. Se declara <b>una sola vez</b> y vale para todos los comerciales, ahora y en el futuro.',
+      'En cada zona, <b>🚫 Qué no se vende aquí</b>: eliges el <b>laboratorio</b> y, si quieres, el motivo. Se declara <b>una sola vez</b> y vale para todos los comerciales, ahora y en el futuro.',
+      'Los laboratorios <b>salen solos</b>: la app sabe de quién es cada lámina por el proveedor que trae Sage en sus productos. Los comisionistas (Lainco, Sawes), que no están en Sage, salen de las zonas de comisión. No hay que etiquetar nada a mano.',
       'Durante la visita, la app mira <b>dónde está la farmacia</b> y oculta esas láminas. En Navarra las ve; en Aragón, no. El comercial no tiene que acordarse de nada.',
       'La zona de cada farmacia sale, por este orden: la que le hayas fijado a mano, su <b>código postal</b>, o su provincia. Si no se sabe, el comercial la elige <b>una vez</b> durante la visita y queda guardada.',
       'Con <b>🧭 Deducir zona de los clientes que faltan</b> se rellenan de golpe los que ya tengan código postal o provincia.'
@@ -167,6 +168,7 @@ const MANUAL_ADMIN = [
       'Esto va por <b>zona</b>, no por comercial: es lo que permite que el mismo comercial lleve dos territorios con reglas distintas.',
       '<b>El respaldo en PDF también va por zona.</b> Al descargar, elige la zona: si el comercial lleva dos, dale <b>un PDF por zona</b>. El papel no filtra solo, así que un PDF con todo sería justo el agujero por el que puede ofrecer donde no debe.',
       'Si no se sabe la zona de una farmacia, se enseña el catálogo <b>entero</b> y sale un aviso: se prefiere no dejar al comercial sin catálogo, pero conviene decir la zona cuanto antes.',
+      '<b>Láminas mixtas:</b> si una lámina lleva productos de varios laboratorios y solo uno está vetado, la lámina <b>NO se oculta</b>. Se enseña, y ese producto sale rayado en rojo con un <b>🚫 aquí no</b>: si lo pulsa, se le avisa y no lo puede anotar. Solo se ocultan enteras las láminas que son <b>todas</b> del laboratorio vetado.',
       'Es distinto del <b>🔀 reparto</b>: el reparto decide <b>quién</b> lleva cada laboratorio; la zona decide <b>dónde</b> se puede vender.'
     ]
   },

@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v147 · 23 jul 2026';
+const APP_VERSION = 'v148 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -2904,7 +2904,7 @@ async function renderMiCuenta() {
 let _visorSheets = []; // cache de laminas del catalogo actual
 let _visorCatalog = null;
 
-let _visorZona = null, _visorOcultasPorZona = 0, _visorZonaDesconocida = null;
+let _visorZona = null, _visorOcultasPorZona = 0, _visorZonaDesconocida = null, _visorZonasBloqueadas = new Set();
 
 // El comercial dice la zona UNA vez y queda guardada en la ficha del cliente: así los
 // datos se completan solos con el uso, sin esperar a que Sage traiga los códigos postales.
@@ -2975,12 +2975,15 @@ async function renderVisorComercial(catalogId) {
           _visorOcultasPorZona = sheets.filter(s => veto.has(Number(s.id))).length;
           sheets = sheets.filter(s => !veto.has(Number(s.id)));
         } else { _visorOcultasPorZona = 0; }
+        // Láminas MIXTAS (ofertas combinadas): la lámina se ve —tiene productos que sí
+        // se venden aquí— pero los del laboratorio vetado quedan bloqueados.
+        _visorZonasBloqueadas = new Set((z.zonas_bloqueadas || []).map(Number));
         // Sin zona conocida no se oculta nada (mejor enseñar de más que dejarle sin
         // catálogo), pero se avisa para que la fije de una vez.
         if (!z.zona) _visorZonaDesconocida = appState.visitaActiva.client_id;
         else _visorZonaDesconocida = null;
-      } catch (_) { _visorZona = null; _visorOcultasPorZona = 0; }
-    } else { _visorZona = null; _visorOcultasPorZona = 0; _visorZonaDesconocida = null; }
+      } catch (_) { _visorZona = null; _visorOcultasPorZona = 0; _visorZonasBloqueadas = new Set(); }
+    } else { _visorZona = null; _visorOcultasPorZona = 0; _visorZonaDesconocida = null; _visorZonasBloqueadas = new Set(); }
 
     _visorCatalog = catalog;
     _visorSheets = sheets;
@@ -3849,6 +3852,16 @@ function pintarZonasComercial() {
     div.style.width = z.ancho + '%';
     div.style.height = z.alto + '%';
     div.dataset.zoneId = z.id;
+    // Producto vetado en la zona de esta farmacia: se marca para que se VEA que no se
+    // puede ofrecer, en vez de descubrirlo solo al intentar anotarlo.
+    if (_visorZonasBloqueadas && _visorZonasBloqueadas.has(Number(z.id))) {
+      div.classList.add('visor-zona-vetada');
+      div.title = 'No se vende en ' + (_visorZona ? _visorZona.nombre : 'esta zona');
+      const marca = document.createElement('span');
+      marca.className = 'visor-zona-veto-txt';
+      marca.textContent = '🚫 aquí no';
+      div.appendChild(marca);
+    }
     if (z.link_catalog_id) {
       // Zona-ENLACE: se pinta como BOTON visible con texto (deliberado, no se toca sin querer)
       div.classList.add('visor-zona-enlace');
@@ -3910,6 +3923,12 @@ let _comisionUltimo = { almacen: '', num_socio: '' };
 async function pulsarZonaComercial(zona) {
   // Zona-ENLACE: saltar a otro catálogo (funciona con o sin visita activa)
   if (zona.link_catalog_id) { return navegarAEnlaceCatalogo(zona); }
+  // Producto de un laboratorio que no se vende en la zona de ESTA farmacia. La lámina
+  // se enseña (lleva otros productos que sí se venden), pero este no se puede anotar.
+  if (_visorZonasBloqueadas && _visorZonasBloqueadas.has(Number(zona.id))) {
+    alert('🚫 Este producto no se puede vender en ' + (_visorZona ? _visorZona.nombre : 'esta zona') + '.\n\nEl resto de la lámina sí.');
+    return;
+  }
   if (!appState.visitaActiva) return;
   // Zona con REFERENCIAS SUELTAS (expositor de gafas): gestor propio de líneas a mano.
   // Gana sobre el resto de tipos; desde su modal se puede pedir el expositor completo.
@@ -15147,9 +15166,11 @@ async function abrirRestriccionesZona(zonaId, nombre) {
   document.body.appendChild(m);
   try {
     const r = await api('/api/zonas/' + zonaId + '/restricciones');
+    try { r.laboratorios = (await api('/api/laboratorios')).laboratorios || []; } catch (_) { r.laboratorios = []; }
     const filas = (r.restricciones || []).map(x => `<tr style="border-bottom:1px solid var(--gris-borde)">
         <td style="padding:7px 8px">
-          ${x.categoria ? `<span class="lamina-cat-chip" style="background:${escape(x.color || '#cc007a')}20;color:${escape(x.color || '#cc007a')};border:1px solid ${escape(x.color || '#cc007a')}40">${escape(x.categoria)}</span> <span style="font-size:11px;color:var(--gris-texto)">(todo el laboratorio)</span>`
+          ${x.laboratorio ? `🏭 <b>${escape(x.laboratorio)}</b> <span style="font-size:11px;color:var(--gris-texto)">(todo el laboratorio)</span>`
+            : x.categoria ? `<span class="lamina-cat-chip" style="background:${escape(x.color || '#cc007a')}20;color:${escape(x.color || '#cc007a')};border:1px solid ${escape(x.color || '#cc007a')}40">${escape(x.categoria)}</span> <span style="font-size:11px;color:var(--gris-texto)">(categoría)</span>`
                        : `📄 ${escape((x.lamina_orden ? x.lamina_orden + ' · ' : '') + (x.lamina || ''))} <span style="font-size:11px;color:var(--gris-texto)">(solo esta lámina)</span>`}
           ${x.motivo ? `<div style="font-size:11px;color:var(--gris-texto)">${escape(x.motivo)}</div>` : ''}
         </td>
@@ -15159,10 +15180,11 @@ async function abrirRestriccionesZona(zonaId, nombre) {
       <h3 style="margin-top:0">🚫 No se vende en ${escape(nombre)}</h3>
       <div class="editor-panel" style="margin-bottom:12px">
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-          <div class="form-group" style="margin:0;flex:1;min-width:180px"><label style="font-size:12px">Laboratorio / categoría</label>
-            <select id="rz-cat" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px">
-              ${(r.categorias || []).map(c => `<option value="${c.id}">${escape(c.nombre)}</option>`).join('')}
-            </select></div>
+          <div class="form-group" style="margin:0;flex:1;min-width:220px"><label style="font-size:12px">Laboratorio</label>
+            <select id="rz-lab" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px">
+              ${(r.laboratorios || []).map(l => `<option value="${escape(l.lab).replace(/"/g, '&quot;')}">${escape(l.lab)} · ${l.n_laminas} lámina(s)${l.n_comision ? ' · comisión' : ''}</option>`).join('')}
+            </select>
+            <div style="font-size:11px;color:var(--gris-texto);margin-top:3px">Salen solos del proveedor de cada producto (y de las zonas de comisión, como Lainco o Sawes).</div></div>
           <div class="form-group" style="margin:0;flex:1;min-width:150px"><label style="font-size:12px">Motivo (opcional)</label>
             <input type="text" id="rz-motivo" placeholder="ej: no tenemos distribución" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px"></div>
           <button class="btn btn-primary btn-pequeno" onclick="anadirRestriccionZona(${zonaId}, '${escape(nombre).replace(/'/g, "\\'")}')">+ Añadir</button>
@@ -15180,11 +15202,11 @@ async function abrirRestriccionesZona(zonaId, nombre) {
 }
 
 async function anadirRestriccionZona(zonaId, nombre) {
-  const cat = document.getElementById('rz-cat')?.value;
-  if (!cat) { alert('No hay categorías. Créalas en ⚙️ Configuración → Categorías.'); return; }
+  const lab = document.getElementById('rz-lab')?.value;
+  if (!lab) { alert('No hay laboratorios todavía: salen de los productos asignados a las zonas de las láminas.'); return; }
   try {
     await api('/api/zonas/' + zonaId + '/restricciones', {
-      method: 'POST', body: { categoria_id: Number(cat), motivo: document.getElementById('rz-motivo')?.value || '' }
+      method: 'POST', body: { laboratorio: lab, motivo: document.getElementById('rz-motivo')?.value || '' }
     });
     document.querySelectorAll('.modal-bg').forEach(x => x.remove());
     abrirRestriccionesZona(zonaId, nombre);

@@ -644,6 +644,14 @@ async function initDB(): Promise<void> {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_zona_restr_cat ON zona_restricciones(zona_id, categoria_id) WHERE categoria_id IS NOT NULL;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_zona_restr_sheet ON zona_restricciones(zona_id, sheet_id) WHERE sheet_id IS NOT NULL;
+      -- LABORATORIO: es como se piensa de verdad la restriccion ("Beter no se vende
+      -- en Alava"). No hay que etiquetar nada a mano: sale del proveedor que trae Sage
+      -- en cada producto, y para los comisionistas (Lainco, Sawes) del nombre que lleva
+      -- la zona de comision. La columna guarda el NOMBRE porque los proveedores vienen
+      -- como texto de Sage y no tienen tabla propia.
+      ALTER TABLE zona_restricciones ADD COLUMN IF NOT EXISTS laboratorio VARCHAR(150);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_zona_restr_lab ON zona_restricciones(zona_id, laboratorio) WHERE laboratorio IS NOT NULL;
+      ALTER TABLE zona_restricciones DROP CONSTRAINT IF EXISTS zona_restricciones_check;
 
       -- ===== REPARTO DE LAMINAS A LOS EXPRESS DE CADA COMERCIAL =====
       -- Fernando sube la lamina al maestro y hasta ahora tenia que anadirla a mano en
@@ -1485,7 +1493,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v147-pdf-zona-23jul',
+      build: 'v148-laboratorios-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2891,16 +2899,83 @@ async function zonaDeCliente(clientId: number): Promise<any | null> {
   return null;
 }
 
-// Laminas que NO se pueden ensenar en esa zona (por laboratorio o por lamina suelta).
-async function laminasRestringidasEnZona(zonaId: number): Promise<number[]> {
-  const r = await pool.query(
-    `SELECT DISTINCT s.id
-       FROM zona_restricciones zr
-       LEFT JOIN sheet_categorias sc ON sc.categoria_id = zr.categoria_id
-       JOIN sheets s ON s.id = COALESCE(zr.sheet_id, sc.sheet_id)
-      WHERE zr.zona_id = $1`, [zonaId]);
-  return r.rows.map((x: any) => Number(x.id));
+// Que NO se puede ensenar en esa zona. Devuelve DOS cosas, porque no es lo mismo una
+// lamina de un solo laboratorio que una de ofertas combinadas:
+//   - laminas: se ocultan enteras (todo su contenido es del laboratorio vetado)
+//   - zonas:   la lamina SE VE, pero esos productos concretos quedan bloqueados
+// Fernando fue tajante: "si una lamina tiene mezcla NO se restringe entera".
+async function restriccionesEnZona(zonaId: number): Promise<{ laminas: number[]; zonas: number[] }> {
+  const restr = await pool.query(
+    `SELECT categoria_id, sheet_id, laboratorio FROM zona_restricciones WHERE zona_id = $1`, [zonaId]);
+  if (!restr.rows.length) return { laminas: [], zonas: [] };
+
+  const laminas = new Set<number>();
+  const zonasBloq = new Set<number>();
+
+  // 1) Laminas vetadas a dedo y por categoria: se ocultan enteras (es lo que se pidio).
+  const sheetIds = restr.rows.map((r: any) => r.sheet_id).filter(Boolean);
+  sheetIds.forEach((id: any) => laminas.add(Number(id)));
+  const catIds = restr.rows.map((r: any) => r.categoria_id).filter(Boolean);
+  if (catIds.length) {
+    const r = await pool.query(
+      `SELECT DISTINCT sheet_id FROM sheet_categorias WHERE categoria_id = ANY($1::int[])`, [catIds]);
+    r.rows.forEach((x: any) => laminas.add(Number(x.sheet_id)));
+  }
+
+  // 2) Laboratorios: hay que mirar lamina a lamina si es "pura" o mixta.
+  const labs = restr.rows.map((r: any) => r.laboratorio).filter(Boolean);
+  if (labs.length) {
+    const z = await pool.query(
+      `SELECT z.id AS zone_id, z.sheet_id,
+              COALESCE(p.proveedor, CASE WHEN z.es_comision THEN z.etiqueta END) AS lab
+         FROM sheet_zones z
+         LEFT JOIN products p ON p.id = z.product_id
+        WHERE z.sheet_id IN (
+          SELECT DISTINCT z2.sheet_id FROM sheet_zones z2
+          LEFT JOIN products p2 ON p2.id = z2.product_id
+           WHERE COALESCE(p2.proveedor, CASE WHEN z2.es_comision THEN z2.etiqueta END) = ANY($1::text[])
+        )`, [labs]);
+    const porLamina: Record<number, { total: number; vetadas: number[] }> = {};
+    z.rows.forEach((x: any) => {
+      const sid = Number(x.sheet_id);
+      porLamina[sid] = porLamina[sid] || { total: 0, vetadas: [] };
+      if (x.lab) {           // solo cuentan las zonas de las que se sabe el laboratorio
+        porLamina[sid].total++;
+        if (labs.includes(x.lab)) porLamina[sid].vetadas.push(Number(x.zone_id));
+      }
+    });
+    Object.entries(porLamina).forEach(([sid, d]) => {
+      if (!d.vetadas.length) return;
+      if (d.vetadas.length === d.total) laminas.add(Number(sid));   // pura: fuera entera
+      else d.vetadas.forEach(zid => zonasBloq.add(zid));            // mixta: solo esos productos
+    });
+  }
+  return { laminas: Array.from(laminas), zonas: Array.from(zonasBloq) };
 }
+
+// Compatibilidad con lo que ya llamaba a esta funcion (PDF por zona).
+async function laminasRestringidasEnZona(zonaId: number): Promise<number[]> {
+  return (await restriccionesEnZona(zonaId)).laminas;
+}
+
+// LISTA DE LABORATORIOS. No hay que darlos de alta a mano: salen del proveedor que
+// trae Sage en cada producto. Y ademas los COMISIONISTAS (Lainco, Sawes), que no estan
+// en Sage y viven en el nombre de las zonas de comision.
+app.get('/api/laboratorios', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `SELECT lab, COUNT(DISTINCT sheet_id)::int AS n_laminas, SUM(comision)::int AS n_comision
+         FROM (
+           SELECT COALESCE(p.proveedor, CASE WHEN z.es_comision THEN z.etiqueta END) AS lab,
+                  z.sheet_id, (CASE WHEN z.es_comision THEN 1 ELSE 0 END) AS comision
+             FROM sheet_zones z LEFT JOIN products p ON p.id = z.product_id
+         ) t
+        WHERE lab IS NOT NULL AND TRIM(lab) <> ''
+          AND UPPER(lab) NOT LIKE '%PRODUCTOS ELIMINADOS%'
+        GROUP BY lab ORDER BY lab`);
+    res.json({ success: true, laboratorios: r.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
 
 app.get('/api/zonas', verifyToken, async (_req: AuthRequest, res: Response) => {
   try {
@@ -2917,7 +2992,7 @@ app.get('/api/zonas/:id/restricciones', verifyToken, requireRealAdmin, async (re
   try {
     const zonaId = Number(req.params.id);
     const r = await pool.query(
-      `SELECT zr.id, zr.categoria_id, zr.sheet_id, zr.motivo, zr.created_at,
+      `SELECT zr.id, zr.categoria_id, zr.sheet_id, zr.laboratorio, zr.motivo, zr.created_at,
               cat.nombre AS categoria, cat.color, s.titulo AS lamina, s.orden AS lamina_orden
          FROM zona_restricciones zr
          LEFT JOIN categorias cat ON cat.id = zr.categoria_id
@@ -2933,11 +3008,12 @@ app.post('/api/zonas/:id/restricciones', verifyToken, requireRealAdmin, async (r
     const zonaId = Number(req.params.id);
     const catId = req.body?.categoria_id ? Number(req.body.categoria_id) : null;
     const sheetId = req.body?.sheet_id ? Number(req.body.sheet_id) : null;
-    if (!catId && !sheetId) { res.status(400).json({ success: false, error: 'Elige un laboratorio o una lámina' }); return; }
+    const lab = req.body?.laboratorio ? String(req.body.laboratorio).trim().slice(0, 150) : null;
+    if (!catId && !sheetId && !lab) { res.status(400).json({ success: false, error: 'Elige un laboratorio o una lámina' }); return; }
     await pool.query(
-      `INSERT INTO zona_restricciones (zona_id, categoria_id, sheet_id, motivo, creado_por)
-       VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-      [zonaId, catId, sheetId, (req.body?.motivo || '').toString().slice(0, 200) || null, req.user?.name || null]);
+      `INSERT INTO zona_restricciones (zona_id, categoria_id, sheet_id, laboratorio, motivo, creado_por)
+       VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+      [zonaId, catId, sheetId, lab, (req.body?.motivo || '').toString().slice(0, 200) || null, req.user?.name || null]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -2954,8 +3030,8 @@ app.get('/api/clients/:id/zona', verifyToken, async (req: AuthRequest, res: Resp
   try {
     const clientId = Number(req.params.id);
     const zona = await zonaDeCliente(clientId);
-    const restringidas = zona ? await laminasRestringidasEnZona(Number(zona.id)) : [];
-    res.json({ success: true, zona, restringidas });
+    const r = zona ? await restriccionesEnZona(Number(zona.id)) : { laminas: [], zonas: [] };
+    res.json({ success: true, zona, restringidas: r.laminas, zonas_bloqueadas: r.zonas });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
@@ -2965,8 +3041,8 @@ app.put('/api/clients/:id/zona', verifyToken, async (req: AuthRequest, res: Resp
     const zonaId = req.body?.zona_id ? Number(req.body.zona_id) : null;
     await pool.query(`UPDATE clients SET zona_id=$1, updated_at=NOW() WHERE id=$2`, [zonaId, Number(req.params.id)]);
     const zona = await zonaDeCliente(Number(req.params.id));
-    const restringidas = zona ? await laminasRestringidasEnZona(Number(zona.id)) : [];
-    res.json({ success: true, zona, restringidas });
+    const r = zona ? await restriccionesEnZona(Number(zona.id)) : { laminas: [], zonas: [] };
+    res.json({ success: true, zona, restringidas: r.laminas, zonas_bloqueadas: r.zonas });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

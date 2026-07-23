@@ -3589,6 +3589,19 @@ body.con-banner-update {
   background: rgba(22, 163, 74, 0.18);
   border-width: 3px;
 }
+/* Producto que no se vende en la zona de esta farmacia, dentro de una lámina mixta:
+   la lámina se enseña, pero ese producto queda marcado y no se puede anotar. */
+.visor-zona-vetada {
+  background: repeating-linear-gradient(45deg, rgba(220,38,38,.16) 0 8px, rgba(220,38,38,.28) 8px 16px);
+  outline: 2px solid rgba(220,38,38,.75);
+  cursor: not-allowed;
+}
+.visor-zona-veto-txt {
+  position: absolute; top: 2px; left: 2px;
+  background: #b91c1c; color: #fff; font-size: 10px; font-weight: 700;
+  padding: 1px 5px; border-radius: 4px; pointer-events: none; white-space: nowrap;
+}
+
 /* Aviso en el visor de que hay láminas ocultas por la zona de la farmacia. */
 .visor-aviso-zona {
   background: #dbeafe; color: #1e40af; padding: 8px 14px; font-size: 13px;
