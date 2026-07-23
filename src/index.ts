@@ -1410,7 +1410,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v142-ficha-lamina-22jul',
+      build: 'v144-express-maestro-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1756,7 +1756,21 @@ app.post('/api/catalogs', verifyToken, requireAdmin, async (req: AuthRequest, re
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
       [name, description || '', tipo, fecha_caducidad || null, req.user!.id, parentIdFinal]
     );
-    res.status(201).json({ success: true, catalog: r.rows[0] });
+    // Un Express para un comercial suele ser "el maestro MENOS unas pocas", no una
+    // seleccion desde cero: arrancarlo vacio obligaba a marcar 350 laminas a mano.
+    // Por defecto se copia el maestro ENTERO con su mismo orden y luego se quitan las
+    // que sobren. Con copiar_maestro:false se crea vacio (campanas de ofertas sueltas).
+    let copiadas = 0;
+    if (tipo === 'express' && parentIdFinal && req.body.copiar_maestro !== false) {
+      const ins = await pool.query(
+        `INSERT INTO express_sheets (express_catalog_id, sheet_id, orden)
+         SELECT $1, id, ROW_NUMBER() OVER (ORDER BY orden, id)
+           FROM sheets WHERE catalog_id = $2 AND oculta = FALSE
+         ON CONFLICT DO NOTHING
+         RETURNING id`, [r.rows[0].id, parentIdFinal]);
+      copiadas = ins.rowCount || 0;
+    }
+    res.status(201).json({ success: true, catalog: r.rows[0], laminas_copiadas: copiadas });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
   }
@@ -2747,6 +2761,31 @@ app.get('/api/catalogs/:id/master-sheets', verifyToken, requireAdmin, async (req
 // POST anadir varias laminas del maestro al Express
 // Body: { sheet_ids: [12, 34, 56] }
 // Las añade al final, respetando el orden actual de express_sheets.
+// Copiar TODAS las laminas del maestro a un Express que ya existe, respetando su orden.
+// Para los Express creados antes de que esto fuera el comportamiento por defecto, y para
+// "empezar de cero desde el maestro" si te has liado quitando laminas.
+app.post('/api/catalogs/:id/express-sheets/copiar-maestro', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const expressId = Number(req.params.id);
+    const c = await pool.query(`SELECT tipo, parent_id FROM catalogs WHERE id=$1`, [expressId]);
+    if (!c.rows.length || c.rows[0].tipo !== 'express') { res.status(400).json({ success: false, error: 'Solo aplicable a catálogos Express' }); return; }
+    if (!c.rows[0].parent_id) { res.status(400).json({ success: false, error: 'Express sin maestro padre' }); return; }
+    // reemplazar=true: se vacia antes, para recuperar exactamente el orden del maestro.
+    if (req.body?.reemplazar === true) {
+      await pool.query(`DELETE FROM express_sheets WHERE express_catalog_id=$1`, [expressId]);
+    }
+    const base = await pool.query(
+      `SELECT COALESCE(MAX(orden),0) AS m FROM express_sheets WHERE express_catalog_id=$1`, [expressId]);
+    const r = await pool.query(
+      `INSERT INTO express_sheets (express_catalog_id, sheet_id, orden)
+       SELECT $1, id, $3 + ROW_NUMBER() OVER (ORDER BY orden, id)
+         FROM sheets WHERE catalog_id = $2 AND oculta = FALSE
+       ON CONFLICT (express_catalog_id, sheet_id) DO NOTHING
+       RETURNING id`, [expressId, c.rows[0].parent_id, Number(base.rows[0].m)]);
+    res.json({ success: true, anadidas: r.rowCount || 0 });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
 app.post('/api/catalogs/:id/express-sheets', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   const client = await pool.connect();
   try {

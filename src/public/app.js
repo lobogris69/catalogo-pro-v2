@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v143 · 23 jul 2026';
+const APP_VERSION = 'v144 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -588,6 +588,13 @@ async function abrirModalNuevoCatalogo() {
           <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">
             El Express seleccionará láminas de este maestro. Es un espejo en vivo: si actualizas la lámina en el maestro, el Express lo refleja.
           </div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="cat-copiar-maestro" checked>
+            <span>Empezar con <b>todas</b> las láminas del maestro, en su mismo orden</span>
+          </label>
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:2px">
+            Lo normal para el catálogo de un comercial: partes del completo y quitas las que no lleva. Desmárcalo si vas a elegir unas pocas (campaña de ofertas).
+          </div>
         </div>
         <div class="form-group">
           <label>Nombre</label>
@@ -631,11 +638,16 @@ async function abrirModalNuevoCatalogo() {
           return;
         }
         data.parent_id = Number(parentId);
+        const chk = document.getElementById('cat-copiar-maestro');
+        data.copiar_maestro = !chk || chk.checked;
       }
       const r = await api('/api/catalogs', { method: 'POST', body: data });
       modal.remove();
       appState.catalogoActual = r.catalog.id;
       render();
+      if (r.laminas_copiadas) {
+        setTimeout(() => mostrarNotificacionOnline('📗 Express creado con ' + r.laminas_copiadas + ' láminas del maestro · quita las que no lleve', '#16a34a'), 400);
+      }
     } catch (err) {
       document.getElementById('modal-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
     }
@@ -922,6 +934,30 @@ let _expressEditor = {
   seleccionMaestro: new Set(),
 };
 
+// Trae el maestro entero al Express (o lo reemplaza para recuperar su orden exacto).
+async function copiarMaestroAExpress(expressId) {
+  const yaHay = (_expressEditor.expressData?.sheets || []).length;
+  let reemplazar = false;
+  if (yaHay) {
+    const r = confirm('Este Express ya tiene ' + yaHay + ' láminas.\n\n' +
+      'ACEPTAR: añadir solo las que falten (conserva tu orden actual).\n' +
+      'CANCELAR: te pregunto si prefieres empezar de cero con el orden del maestro.');
+    if (!r) {
+      if (!confirm('¿Vaciarlo y traer el maestro completo con SU orden?\n\nSe pierde el orden que tuvieras en este Express.')) return;
+      reemplazar = true;
+    }
+  }
+  try {
+    const r = await api('/api/catalogs/' + expressId + '/express-sheets/copiar-maestro', {
+      method: 'POST', body: { reemplazar }
+    });
+    mostrarNotificacionOnline('📥 ' + r.anadidas + ' láminas traídas del maestro', '#16a34a');
+    // renderEditorExpress necesita los datos del Express: hay que releerlos.
+    const datos = await api('/api/catalogs/' + expressId);
+    await renderEditorExpress(expressId, datos);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
 async function renderEditorExpress(id, expressData) {
   _expressEditor.catalogId = id;
   _expressEditor.expressData = expressData;
@@ -976,6 +1012,7 @@ function pintarEditorExpress() {
           ${sheetsExpress.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>${ayuda('Vista en cuadrícula para reordenar las láminas. Arrastra y suelta o escribe el número de orden.')}` : ''}
           ${sheetsExpress.length > 0 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalDescargarPdf(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar PDF del catálogo">📥 Descargar PDF</button>${ayuda('Genera el PDF del catálogo Express en alta calidad o pequeño (para enviar por WhatsApp/email a clientes).')}` : ''}
           ${sheetsExpress.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo Express actual: PDF+ZIP descargables, queda en historial, V1→V2. Útil para archivar ofertas pasadas (ej: ofertas mayo, ofertas verano).', 'izq')}` : ''}
+          <button class="btn btn-pequeno" style="background:#dcfce7;color:#166534;font-weight:700" onclick="copiarMaestroAExpress(${id})" title="Trae todas las láminas del maestro con su mismo orden. Lo normal: partir del catálogo completo y quitar las que este comercial no lleva.">📥 Traer todas las del maestro</button>
           ${sheetsExpress.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="vaciarExpress(${id}, ${sheetsExpress.length})">🗑️ Vaciar Express</button>` : ''}
         </div>
       </div>
@@ -15928,6 +15965,8 @@ let _mosaicoCambios = false;
 let _mosaicoSel = new Set();
 let _mosaicoAncla = null;
 
+let _mosaicoEsExpress = false;
+
 async function abrirMosaicoLaminas(catalogId) {
   _mosaicoCatalogId = catalogId;
   _mosaicoCambios = false;
@@ -15937,6 +15976,10 @@ async function abrirMosaicoLaminas(catalogId) {
   try {
     const r = await api('/api/catalogs/' + catalogId);
     sheets = r.sheets || [];
+    // Un Express no manda sobre las láminas (son del maestro): su orden vive en
+    // express_sheets y se guarda por otra puerta. Sin esto, reordenar daba
+    // "No se puede modificar laminas en un Express".
+    _mosaicoEsExpress = (r.catalog && r.catalog.tipo === 'express');
   } catch (e) {
     alert('Error cargando láminas: ' + e.message);
     return;
@@ -16260,7 +16303,9 @@ async function guardarOrdenMosaico() {
   const $estado = document.getElementById('mosaico-estado');
   if ($estado) $estado.textContent = 'Guardando…';
   try {
-    await api(`/api/catalogs/${_mosaicoCatalogId}/sheets/reorder`, {
+    await api(_mosaicoEsExpress
+      ? `/api/catalogs/${_mosaicoCatalogId}/express-sheets/reorder`
+      : `/api/catalogs/${_mosaicoCatalogId}/sheets/reorder`, {
       method: 'PUT',
       body: { sheet_ids: ids }
     });
