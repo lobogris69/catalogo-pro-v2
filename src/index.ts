@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v175-igualar-precios-23jul',
+      build: 'v176-igualar-precios-todos-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -8270,17 +8270,25 @@ app.post('/api/sheets/:sheetId/detect-precios-ia', verifyToken, requireAdmin, as
 // Solo se tocan los de origen 'ia': lo que el admin haya ajustado a mano no se pisa.
 // ============================================================================
 async function homogeneizarRecuadrosLamina(sheetId: number): Promise<number> {
+  // OJO: se miran TODOS los recuadros, no solo los de origen 'ia'. Aunque el admin haya
+  // dibujado la caja a mano, el TAMANO de letra lo calcula igual el refinado automatico
+  // midiendo la mancha de tinta, asi que sufre exactamente el mismo despiste.
   const r = await pool.query(
     `SELECT id, x, y, ancho, alto, tam_rel FROM lamina_recuadro
-      WHERE sheet_id = $1 AND activo = TRUE AND origen = 'ia' ORDER BY x, y`, [sheetId]);
+      WHERE sheet_id = $1 AND activo = TRUE ORDER BY x, y`, [sheetId]);
   const recs = r.rows;
   if (recs.length < 3) return 0;
 
   // Agrupar por columna: misma x con 1,5 puntos de margen (columnas distintas de la
   // lamina estan mucho mas separadas que eso).
+  // Se compara contra la MEDIA de la columna que se va formando, no contra su primer
+  // elemento: si el primero es justo el descolocado, arrastraria el grupo entero.
   const grupos: any[][] = [];
   for (const rec of recs) {
-    const g = grupos.find(gr => Math.abs(Number(gr[0].x) - Number(rec.x)) <= 1.5);
+    const g = grupos.find(gr => {
+      const media = gr.reduce((s: number, x: any) => s + Number(x.x), 0) / gr.length;
+      return Math.abs(media - Number(rec.x)) <= 2.5;
+    });
     if (g) g.push(rec); else grupos.push([rec]);
   }
 
