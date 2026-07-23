@@ -165,6 +165,7 @@ const MANUAL_ADMIN = [
     ],
     ojo: [
       'Esto va por <b>zona</b>, no por comercial: es lo que permite que el mismo comercial lleve dos territorios con reglas distintas.',
+      '<b>El respaldo en PDF también va por zona.</b> Al descargar, elige la zona: si el comercial lleva dos, dale <b>un PDF por zona</b>. El papel no filtra solo, así que un PDF con todo sería justo el agujero por el que puede ofrecer donde no debe.',
       'Si no se sabe la zona de una farmacia, se enseña el catálogo <b>entero</b> y sale un aviso: se prefiere no dejar al comercial sin catálogo, pero conviene decir la zona cuanto antes.',
       'Es distinto del <b>🔀 reparto</b>: el reparto decide <b>quién</b> lleva cada laboratorio; la zona decide <b>dónde</b> se puede vender.'
     ]

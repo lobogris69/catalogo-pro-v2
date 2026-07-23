@@ -1485,7 +1485,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v146-zonas-23jul',
+      build: 'v147-pdf-zona-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2237,10 +2237,25 @@ app.get('/api/catalogs/:id/download-pdf', verifyToken, async (req: AuthRequest, 
     }
     const calidad = (req.query.calidad === 'pequena') ? 'pequena' : 'alta';
     const sufijo = calidad === 'pequena' ? '_pequeno' : '';
-    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}${sufijo}.pdf`;
+    // PDF POR ZONA: el respaldo en papel no filtra solo. Si el comercial lleva dos
+    // zonas y le damos el catalogo entero, el PDF se convierte justo en el agujero
+    // por el que puede ofrecer en Aragon algo que solo se vende en Navarra.
+    let laminas = sheets;
+    let sufZona = '';
+    const zonaId = Number(req.query.zona_id) || 0;
+    if (zonaId) {
+      const z = await pool.query(`SELECT nombre FROM zonas_venta WHERE id=$1`, [zonaId]);
+      if (z.rows.length) {
+        const veto = new Set((await laminasRestringidasEnZona(zonaId)).map(Number));
+        laminas = sheets.filter((s: any) => !veto.has(Number(s.id)));
+        sufZona = '_' + nombreFicheroSeguro(z.rows[0].nombre);
+      }
+    }
+    if (!laminas.length) { res.status(400).json({ success: false, error: 'No queda ninguna lámina para esa zona' }); return; }
+    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}${sufZona}${sufijo}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    await generarPdfCatalogoStream(catalog, sheets, res, calidad);
+    await generarPdfCatalogoStream(catalog, laminas, res, calidad);
   } catch (e) {
     if (!res.headersSent) {
       res.status(500).json({ success: false, error: (e as Error).message });
@@ -7984,20 +7999,43 @@ app.get('/api/catalogs/:id/pdf-hoy', verifyToken, async (req: AuthRequest, res: 
   try {
     const catId = Number(req.params.id);
     const tarifa = Number(req.query.tarifa) || 1;
-    const cat = await pool.query('SELECT name FROM catalogs WHERE id=$1', [catId]);
+    const cat = await pool.query('SELECT name, tipo FROM catalogs WHERE id=$1', [catId]);
     if (!cat.rows.length) { res.status(404).json({ success: false, error: 'Catalogo no encontrado' }); return; }
-    const sheets = (await pool.query(
-      `SELECT id FROM sheets WHERE catalog_id=$1 AND (oculta IS NULL OR oculta=FALSE) ORDER BY orden, id`, [catId])).rows;
+    // Un Express no tiene laminas propias: las suyas van por express_sheets y en SU
+    // orden. Sin esto, el PDF de un Express salia "no tiene laminas" — justo el
+    // respaldo en papel que necesita el comercial.
+    const sheets = cat.rows[0].tipo === 'express'
+      ? (await pool.query(
+          `SELECT s.id FROM express_sheets es JOIN sheets s ON s.id = es.sheet_id
+            WHERE es.express_catalog_id = $1 AND (s.oculta IS NULL OR s.oculta = FALSE)
+            ORDER BY es.orden, es.id`, [catId])).rows
+      : (await pool.query(
+          `SELECT id FROM sheets WHERE catalog_id=$1 AND (oculta IS NULL OR oculta=FALSE) ORDER BY orden, id`, [catId])).rows;
     if (!sheets.length) { res.status(400).json({ success: false, error: 'El catalogo no tiene laminas' }); return; }
+    // PDF POR ZONA: el papel no filtra solo, asi que si el respaldo lleva todo, se
+    // convierte en el agujero por el que se cuela lo que no se puede vender alli.
+    let zonaNombre = '';
+    const zonaId = Number(req.query.zona_id) || 0;
+    let laminas = sheets;
+    if (zonaId) {
+      const z = await pool.query(`SELECT nombre FROM zonas_venta WHERE id=$1`, [zonaId]);
+      if (z.rows.length) {
+        zonaNombre = z.rows[0].nombre;
+        const veto = new Set((await laminasRestringidasEnZona(zonaId)).map(Number));
+        laminas = sheets.filter((s: any) => !veto.has(Number(s.id)));
+      }
+    }
+    if (!laminas.length) { res.status(400).json({ success: false, error: 'No queda ninguna lámina para esa zona' }); return; }
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const PDFDocument = require('pdfkit');
     const doc = new PDFDocument({ autoFirstPage: false, margin: 0 });
     const nombre = String(cat.rows[0].name || 'catalogo').replace(/[^a-z0-9._-]+/gi, '_');
+    const sufijo = zonaNombre ? '_' + zonaNombre.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/gi, '_') : '';
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${nombre}_precios_hoy.pdf"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${nombre}${sufijo}_precios_hoy.pdf"`);
     doc.pipe(res);
     const pageW = 595; // A4 ancho en pt
-    for (const s of sheets) {
+    for (const s of laminas) {
       const buf = await recomponerLaminaHoy(s.id, tarifa);
       if (!buf) continue;
       const m = await sharp(buf).metadata();

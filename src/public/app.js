@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v146 · 23 jul 2026';
+const APP_VERSION = 'v147 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -7304,6 +7304,16 @@ function abrirModalDescargarPdf(catalogId, nombreCatalogo) {
       <p style="color:#6b7280;font-size:13px;margin:0 0 14px 0">
         Catálogo: <b>${escape(nombreCatalogo)}</b>
       </p>
+      <div class="form-group" style="margin-bottom:14px">
+        <label style="font-size:13px">Zona a la que va este respaldo</label>
+        <select id="dl-pdf-zona" style="width:100%;padding:9px;border:1px solid #d1d5db;border-radius:8px">
+          <option value="">Todas las zonas (catálogo completo)</option>
+        </select>
+        <div style="font-size:11px;color:var(--gris-texto);margin-top:4px">
+          Si el comercial lleva varias zonas, <b>descarga un PDF por zona</b>: el papel no filtra solo,
+          y así no puede ofrecer donde no debe.
+        </div>
+      </div>
       <p style="margin:0 0 12px 0;font-size:14px">Elige la calidad según el uso:</p>
       <div style="display:flex;flex-direction:column;gap:10px">
         <button class="btn-calidad-pdf" onclick="descargarPdfCalidad(${catalogId}, 'alta', this)">
@@ -7330,6 +7340,22 @@ function abrirModalDescargarPdf(catalogId, nombreCatalogo) {
     </div>
   `;
   document.body.appendChild(modal);
+  _cargarZonasEnModalPdf();
+}
+
+// Se rellena al abrir el modal: si no hay zonas configuradas, se queda solo "todas".
+async function _cargarZonasEnModalPdf() {
+  try {
+    const r = await api('/api/zonas');
+    const sel = document.getElementById('dl-pdf-zona');
+    if (!sel) return;
+    (r.zonas || []).forEach(z => {
+      const o = document.createElement('option');
+      o.value = z.id;
+      o.textContent = z.nombre + (z.n_restricciones ? ' (' + z.n_restricciones + ' laboratorio(s) fuera)' : '');
+      sel.appendChild(o);
+    });
+  } catch (_) {}
 }
 
 async function descargarPdfCalidad(catalogId, calidad, btnEl) {
@@ -7342,7 +7368,9 @@ async function descargarPdfCalidad(catalogId, calidad, btnEl) {
 
   try {
     const token = localStorage.getItem('cpv2_token') || '';
-    const url = `/api/catalogs/${catalogId}/download-pdf?calidad=${calidad}`;
+    const zonaSel = document.getElementById('dl-pdf-zona');
+    const zonaId = zonaSel ? zonaSel.value : '';
+    const url = `/api/catalogs/${catalogId}/download-pdf?calidad=${calidad}` + (zonaId ? '&zona_id=' + zonaId : '');
     const resp = await fetch(url, {
       headers: { Authorization: 'Bearer ' + token }
     });
