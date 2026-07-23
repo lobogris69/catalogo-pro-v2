@@ -5398,4 +5398,5 @@ body.modo-simple .visor-fullscreen-btn { min-height: 56px; font-size: 17px; }
    última visita, "+ Anotar" y el carrito flotante (lo sustituye la barra de abajo). */
 body.modo-simple .visor-modo-btn,
 body.modo-simple .carrito-fab,
+body.modo-simple .visor-export-bar,
 body.modo-simple .visor-anotaciones-header { display: none !important; }

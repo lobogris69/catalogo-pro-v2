@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v164 · 23 jul 2026';
+const APP_VERSION = 'v165 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12079,6 +12079,9 @@ async function cargarAnotacionesDeVisita() {
   } catch (e) {
     _anotacionesVisita = {};
   }
+  // Este es el momento en que se sabe cuántas líneas lleva la visita: si el modo
+  // sencillo tiene su barra puesta, que se entere aquí y no un segundo tarde.
+  if (typeof simpleBarraPedido === 'function') simpleBarraPedido();
 }
 
 function refrescarAnotacionesVisor(sheetId) {
