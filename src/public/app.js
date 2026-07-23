@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v163 · 23 jul 2026';
+const APP_VERSION = 'v164 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12087,6 +12087,8 @@ function refrescarAnotacionesVisor(sheetId) {
     if (typeof pintarVisor === 'function') pintarVisor();
     // pintarVisor ya refresca el carrito si está abierto; por si no se llamó, reforzamos:
     if (_carritoAbierto) renderCarritoContenido();
+    // Modo sencillo: la barra de abajo lleva la misma cuenta, aquí es donde se entera.
+    if (typeof simpleBarraPedido === 'function') simpleBarraPedido();
   });
 }
 

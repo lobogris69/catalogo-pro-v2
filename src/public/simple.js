@@ -31,7 +31,7 @@ function renderSimpleInicio() {
   const va = appState.visitaActiva;
   $v.innerHTML = `
     <div class="simple-pantalla">
-      <div class="simple-saludo">Hola, ${escape((user.name || '').split(' ')[0] || '')}</div>
+      <div class="simple-saludo">Hola, ${escape((nombreEfectivo() || '').split(' ')[0] || '')}</div>
       ${va ? `
         <div class="simple-aviso-visita">
           Tienes una visita empezada en<br><b>${escape(va.cliente_nombre || 'un cliente')}</b>
@@ -151,10 +151,9 @@ function simpleBarraPedido() {
     document.getElementById('simple-barra')?.remove();
     return;
   }
-  let n = 0;
-  Object.keys(_anotacionesVisita || {}).forEach(sid => {
-    (_anotacionesVisita[sid] || []).forEach(a => { if (a.tipo === 'pedido') n++; });
-  });
+  // La MISMA cuenta que el carrito del modo normal: si los dos números bailasen,
+  // el comercial no sabría cuál creerse.
+  const n = (typeof carritoContarLineas === 'function') ? carritoContarLineas() : 0;
   let b = document.getElementById('simple-barra');
   if (!b) {
     b = document.createElement('div');
