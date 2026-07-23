@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v145 · 23 jul 2026';
+const APP_VERSION = 'v146 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -781,6 +781,7 @@ async function renderEditorCatalogo(id) {
               ${esAdmin ? `
                 <button onclick="insertarHojaEnBlanco(null, ${id})" class="btn btn-pequeno btn-secondary" title="Insertar una hoja en blanco al principio del catálogo">📄➕ Hoja al principio</button>
                 <button onclick="abrirReglasReparto()" class="btn btn-pequeno" style="background:#f5f3ff;color:#6d28d9;font-weight:700" title="Qué láminas van solas al catálogo de cada comercial según su laboratorio">🔀 Reparto automático</button>
+                <button onclick="abrirZonasVenta()" class="btn btn-pequeno" style="background:#eff6ff;color:#1d4ed8;font-weight:700" title="Qué no se puede vender en cada territorio: se oculta solo durante la visita según dónde esté la farmacia">📍 Zonas de venta</button>
                 <input type="text" id="filtro-laminas" placeholder="🔍 Filtrar (número o palabra)..."
                        style="flex:1; min-width:200px; padding:8px 12px; border:1px solid var(--gris-borde); border-radius:8px; font-size:13px; font-family:inherit; outline:none;">
                 <button class="btn btn-pequeno btn-secondary" id="btn-filtro-semana" onclick="filtrarPorCambios('semana', this)" title="Solo las láminas tocadas en los últimos 7 días">🔄 Cambiadas esta semana</button>
@@ -2903,6 +2904,25 @@ async function renderMiCuenta() {
 let _visorSheets = []; // cache de laminas del catalogo actual
 let _visorCatalog = null;
 
+let _visorZona = null, _visorOcultasPorZona = 0, _visorZonaDesconocida = null;
+
+// El comercial dice la zona UNA vez y queda guardada en la ficha del cliente: así los
+// datos se completan solos con el uso, sin esperar a que Sage traiga los códigos postales.
+async function elegirZonaCliente(clientId) {
+  try {
+    const r = await api('/api/zonas');
+    const zonas = r.zonas || [];
+    if (!zonas.length) { alert('No hay zonas configuradas.'); return; }
+    const texto = zonas.map((z, i) => (i + 1) + ') ' + z.nombre).join('\n');
+    const sel = prompt('¿En qué zona está esta farmacia?\n\n' + texto + '\n\nEscribe el número:');
+    const idx = parseInt(sel, 10) - 1;
+    if (!(idx >= 0 && idx < zonas.length)) return;
+    await api('/api/clients/' + clientId + '/zona', { method: 'PUT', body: { zona_id: zonas[idx].id } });
+    mostrarNotificacionOnline('📍 Zona guardada: ' + zonas[idx].nombre, '#16a34a');
+    renderVisorComercial(_visorCatalog.id);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
 async function renderVisorComercial(catalogId) {
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogo…</div></div>`;
@@ -2941,6 +2961,26 @@ async function renderVisorComercial(catalogId) {
         }));
       }
     }
+
+    // ZONA DEL CLIENTE: hay láminas que no se pueden vender en su territorio (un
+    // laboratorio que no distribuimos en Rioja, por ejemplo). Se ocultan DURANTE LA
+    // VISITA, que es el momento en que importa: así el comercial no puede ofrecer por
+    // error algo que no debe, lleve las zonas que lleve.
+    if (appState.visitaActiva && appState.visitaActiva.client_id) {
+      try {
+        const z = await api('/api/clients/' + appState.visitaActiva.client_id + '/zona');
+        _visorZona = z.zona || null;
+        const veto = new Set((z.restringidas || []).map(Number));
+        if (veto.size) {
+          _visorOcultasPorZona = sheets.filter(s => veto.has(Number(s.id))).length;
+          sheets = sheets.filter(s => !veto.has(Number(s.id)));
+        } else { _visorOcultasPorZona = 0; }
+        // Sin zona conocida no se oculta nada (mejor enseñar de más que dejarle sin
+        // catálogo), pero se avisa para que la fije de una vez.
+        if (!z.zona) _visorZonaDesconocida = appState.visitaActiva.client_id;
+        else _visorZonaDesconocida = null;
+      } catch (_) { _visorZona = null; _visorOcultasPorZona = 0; }
+    } else { _visorZona = null; _visorOcultasPorZona = 0; _visorZonaDesconocida = null; }
 
     _visorCatalog = catalog;
     _visorSheets = sheets;
@@ -3038,6 +3078,17 @@ function pintarVisor() {
       ${_visorModoOffline ? `
         <div class="visor-aviso-offline">
           📲 Estás viendo este catálogo <b>desde la copia descargada en este dispositivo</b> (modo offline)
+        </div>
+      ` : ''}
+      ${_visorOcultasPorZona ? `
+        <div class="visor-aviso-zona">
+          📍 <b>${escape(_visorZona ? _visorZona.nombre : '')}</b>: se han ocultado <b>${_visorOcultasPorZona}</b> lámina(s) que no se pueden vender en esta zona.
+        </div>
+      ` : ''}
+      ${_visorZonaDesconocida ? `
+        <div class="visor-aviso-zona sin-zona">
+          📍 No sé en qué zona está esta farmacia, así que te enseño el catálogo entero.
+          <button class="btn btn-pequeno" style="background:#fff;color:#92400e;margin-left:8px" onclick="elegirZonaCliente(${_visorZonaDesconocida})">Decir la zona</button>
         </div>
       ` : ''}
       <div class="visor-cabecera-fila">
@@ -14999,6 +15050,126 @@ async function quitarVarianteComision(zoneId, idx) {
   } catch (err) {
     alert('Error quitando variante: ' + err.message);
   }
+}
+
+// ===== ZONAS DE VENTA =====
+// Lo que NO se puede vender en un territorio. Va por zona y no por comercial porque
+// el mismo comercial puede llevar dos zonas con reglas distintas (Eva: Navarra y Rioja).
+async function abrirZonasVenta() {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:720px"><h3 style="margin-top:0">📍 Zonas de venta</h3><div class="loading">Cargando…</div></div>`;
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+  try {
+    const r = await api('/api/zonas');
+    const filas = (r.zonas || []).map(z => `<tr style="border-bottom:1px solid var(--gris-borde)">
+        <td style="padding:8px"><b style="color:${escape(z.color || '#0369a1')}">${escape(z.nombre)}</b>
+          <div style="font-size:11px;color:var(--gris-texto)">CP ${escape(z.prefijos_cp || '—')} · ${z.n_clientes} cliente(s)</div></td>
+        <td style="padding:8px;text-align:center">${z.n_restricciones ? `<b style="color:#b45309">${z.n_restricciones}</b> sin vender` : '<span style="color:var(--gris-texto)">todo se vende</span>'}</td>
+        <td style="padding:8px;white-space:nowrap">
+          <button class="btn btn-pequeno btn-secondary" onclick="abrirRestriccionesZona(${z.id}, '${escape(z.nombre).replace(/'/g, "\\'")}')">🚫 Qué no se vende aquí</button>
+        </td>
+      </tr>`).join('');
+    m.querySelector('.modal').innerHTML = `
+      <h3 style="margin-top:0">📍 Zonas de venta</h3>
+      <p style="font-size:13px;color:var(--gris-texto);margin-top:0">
+        Lo que no se puede vender en un territorio se declara <b>aquí, una sola vez</b>, y vale para todos los comerciales.
+        Durante la visita, la app oculta esas láminas según <b>dónde esté la farmacia</b>: así el mismo comercial puede llevar
+        dos zonas con reglas distintas.
+      </p>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;border-bottom:2px solid var(--gris-borde)">
+          <th style="padding:8px">Zona</th><th style="padding:8px;text-align:center">Restricciones</th><th style="padding:8px"></th>
+        </tr></thead><tbody>${filas}</tbody></table>
+      <div class="editor-panel" style="margin-top:14px;font-size:13px">
+        <b>¿Cómo sabe la app dónde está cada farmacia?</b>
+        <div style="color:var(--gris-texto);font-size:12px;margin:4px 0 8px">
+          Por este orden: la zona que le hayas fijado a mano → el <b>código postal</b> → la provincia.
+          Si no lo sabe, el comercial la elige una vez durante la visita y queda guardada.
+        </div>
+        <button class="btn btn-pequeno btn-secondary" onclick="deducirZonasClientes(this)">🧭 Deducir zona de los clientes que faltan</button>
+      </div>
+      <div class="modal-acciones" style="margin-top:14px">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      </div>`;
+  } catch (e) {
+    m.querySelector('.modal').innerHTML = `<div class="error-msg">${escape(e.message)}</div>
+      <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
+  }
+}
+
+async function deducirZonasClientes(btn) {
+  btn.disabled = true;
+  try {
+    const r = await api('/api/zonas/deducir', { method: 'POST', body: {} });
+    alert('Revisados ' + r.revisados + ' clientes.\n\nCon zona asignada: ' + r.asignados +
+          '\nSin datos suficientes: ' + r.sin_datos + ' (se preguntará en la visita).');
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirZonasVenta();
+  } catch (e) { alert('Error: ' + e.message); }
+  btn.disabled = false;
+}
+
+async function abrirRestriccionesZona(zonaId, nombre) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:600px"><h3 style="margin-top:0">🚫 ${escape(nombre)}</h3><div class="loading">Cargando…</div></div>`;
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+  try {
+    const r = await api('/api/zonas/' + zonaId + '/restricciones');
+    const filas = (r.restricciones || []).map(x => `<tr style="border-bottom:1px solid var(--gris-borde)">
+        <td style="padding:7px 8px">
+          ${x.categoria ? `<span class="lamina-cat-chip" style="background:${escape(x.color || '#cc007a')}20;color:${escape(x.color || '#cc007a')};border:1px solid ${escape(x.color || '#cc007a')}40">${escape(x.categoria)}</span> <span style="font-size:11px;color:var(--gris-texto)">(todo el laboratorio)</span>`
+                       : `📄 ${escape((x.lamina_orden ? x.lamina_orden + ' · ' : '') + (x.lamina || ''))} <span style="font-size:11px;color:var(--gris-texto)">(solo esta lámina)</span>`}
+          ${x.motivo ? `<div style="font-size:11px;color:var(--gris-texto)">${escape(x.motivo)}</div>` : ''}
+        </td>
+        <td style="padding:7px 8px;white-space:nowrap"><button class="btn btn-pequeno btn-danger" onclick="borrarRestriccionZona(${x.id}, ${zonaId}, '${escape(nombre).replace(/'/g, "\\'")}')">✕</button></td>
+      </tr>`).join('');
+    m.querySelector('.modal').innerHTML = `
+      <h3 style="margin-top:0">🚫 No se vende en ${escape(nombre)}</h3>
+      <div class="editor-panel" style="margin-bottom:12px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <div class="form-group" style="margin:0;flex:1;min-width:180px"><label style="font-size:12px">Laboratorio / categoría</label>
+            <select id="rz-cat" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px">
+              ${(r.categorias || []).map(c => `<option value="${c.id}">${escape(c.nombre)}</option>`).join('')}
+            </select></div>
+          <div class="form-group" style="margin:0;flex:1;min-width:150px"><label style="font-size:12px">Motivo (opcional)</label>
+            <input type="text" id="rz-motivo" placeholder="ej: no tenemos distribución" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px"></div>
+          <button class="btn btn-primary btn-pequeno" onclick="anadirRestriccionZona(${zonaId}, '${escape(nombre).replace(/'/g, "\\'")}')">+ Añadir</button>
+        </div>
+      </div>
+      ${filas ? `<table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>${filas}</tbody></table>`
+              : `<p style="color:var(--gris-texto);font-size:13px">En esta zona se puede vender todo.</p>`}
+      <div class="modal-acciones" style="margin-top:14px">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+      </div>`;
+  } catch (e) {
+    m.querySelector('.modal').innerHTML = `<div class="error-msg">${escape(e.message)}</div>
+      <div class="modal-acciones"><button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button></div>`;
+  }
+}
+
+async function anadirRestriccionZona(zonaId, nombre) {
+  const cat = document.getElementById('rz-cat')?.value;
+  if (!cat) { alert('No hay categorías. Créalas en ⚙️ Configuración → Categorías.'); return; }
+  try {
+    await api('/api/zonas/' + zonaId + '/restricciones', {
+      method: 'POST', body: { categoria_id: Number(cat), motivo: document.getElementById('rz-motivo')?.value || '' }
+    });
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirRestriccionesZona(zonaId, nombre);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function borrarRestriccionZona(id, zonaId, nombre) {
+  if (!confirm('¿Quitar esta restricción?\n\nEsas láminas volverán a verse en las visitas de esa zona.')) return;
+  try {
+    await api('/api/zonas/restricciones/' + id, { method: 'DELETE' });
+    document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+    abrirRestriccionesZona(zonaId, nombre);
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 // ===== REPARTO DE LÁMINAS A LOS EXPRESS =====

@@ -604,6 +604,47 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS num_socio VARCHAR(60);  -- numero de socio del cliente
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS referencia VARCHAR(120); -- referencia suelta tecleada a mano (expositor, no esta en Sage)
 
+      -- ===== ZONAS DE VENTA =====
+      -- La restriccion de "esto aqui no se puede vender" es del TERRITORIO, no del
+      -- comercial: Eva lleva Navarra y Rioja, y un laboratorio puede venderse en una
+      -- y en la otra no. Atarlo al comercial obligaba a elegir entre quitarselo entero
+      -- o arriesgarse a que lo ofrezca donde no debe.
+      CREATE TABLE IF NOT EXISTS zonas_venta (
+        id           SERIAL PRIMARY KEY,
+        nombre       VARCHAR(80) NOT NULL UNIQUE,
+        prefijos_cp  VARCHAR(200),          -- "01" o "22,44,50": los 2 primeros digitos del CP
+        color        VARCHAR(20) DEFAULT '#0369a1',
+        orden        INTEGER DEFAULT 0,
+        created_at   TIMESTAMP DEFAULT NOW()
+      );
+      INSERT INTO zonas_venta (nombre, prefijos_cp, color, orden) VALUES
+        ('Álava',    '01',       '#0369a1', 1),
+        ('Gipuzkoa', '20',       '#0d9488', 2),
+        ('Vizcaya',  '48',       '#7c3aed', 3),
+        ('Navarra',  '31',       '#ea580c', 4),
+        ('Aragón',   '22,44,50', '#16a34a', 5)
+      ON CONFLICT (nombre) DO NOTHING;
+
+      -- Zona del cliente. Se deduce del CP y si no, se pregunta UNA vez al empezar la
+      -- visita y queda guardada: asi los datos se completan solos con el uso.
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS zona_id INTEGER REFERENCES zonas_venta(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_clients_zona ON clients(zona_id);
+
+      -- QUE NO SE PUEDE VENDER EN CADA ZONA. Por laboratorio (categoria) o por lamina
+      -- suelta. Se declara una vez y vale para todos los comerciales, ahora y despues.
+      CREATE TABLE IF NOT EXISTS zona_restricciones (
+        id           SERIAL PRIMARY KEY,
+        zona_id      INTEGER NOT NULL REFERENCES zonas_venta(id) ON DELETE CASCADE,
+        categoria_id INTEGER REFERENCES categorias(id) ON DELETE CASCADE,
+        sheet_id     INTEGER REFERENCES sheets(id) ON DELETE CASCADE,
+        motivo       VARCHAR(200),
+        creado_por   VARCHAR(150),
+        created_at   TIMESTAMP DEFAULT NOW(),
+        CHECK (categoria_id IS NOT NULL OR sheet_id IS NOT NULL)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_zona_restr_cat ON zona_restricciones(zona_id, categoria_id) WHERE categoria_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_zona_restr_sheet ON zona_restricciones(zona_id, sheet_id) WHERE sheet_id IS NOT NULL;
+
       -- ===== REPARTO DE LAMINAS A LOS EXPRESS DE CADA COMERCIAL =====
       -- Fernando sube la lamina al maestro y hasta ahora tenia que anadirla a mano en
       -- el Express de cada comercial. Dos capas:
@@ -1444,7 +1485,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v145-reparto-23jul',
+      build: 'v146-zonas-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2795,6 +2836,141 @@ app.get('/api/catalogs/:id/master-sheets', verifyToken, requireAdmin, async (req
 // POST anadir varias laminas del maestro al Express
 // Body: { sheet_ids: [12, 34, 56] }
 // Las añade al final, respetando el orden actual de express_sheets.
+// ============================================================================
+// ZONAS DE VENTA: que NO se puede vender en el territorio de cada cliente
+// ============================================================================
+
+// Zona del cliente, en cascada de mas fiable a menos:
+//   1) la que se le haya fijado a mano (zona_id)  2) los 2 primeros digitos del CP
+//   3) el nombre de la provincia
+// Devuelve null si no se puede saber: entonces se pregunta al empezar la visita.
+async function zonaDeCliente(clientId: number): Promise<any | null> {
+  const c = await pool.query(`SELECT id, zona_id, cp, provincia FROM clients WHERE id=$1`, [clientId]);
+  if (!c.rows.length) return null;
+  const cli = c.rows[0];
+  if (cli.zona_id) {
+    const z = await pool.query(`SELECT * FROM zonas_venta WHERE id=$1`, [cli.zona_id]);
+    if (z.rows.length) return { ...z.rows[0], fuente: 'fijada a mano' };
+  }
+  const zonas = (await pool.query(`SELECT * FROM zonas_venta ORDER BY orden, nombre`)).rows;
+  const cp = String(cli.cp || '').replace(/\D/g, '');
+  if (cp.length >= 4) {
+    const pref = cp.padStart(5, '0').slice(0, 2);
+    const z = zonas.find((x: any) => String(x.prefijos_cp || '').split(',').map((s: string) => s.trim()).includes(pref));
+    if (z) return { ...z, fuente: 'código postal' };
+  }
+  const prov = String(cli.provincia || '').trim().toLowerCase();
+  if (prov) {
+    // Comparacion sin tildes: "alava" casa con "Álava", "guipuzcoa" con "Gipuzkoa" no,
+    // asi que se admiten tambien las grafias castellanas mas habituales.
+    const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const alias: Record<string, string> = {
+      'guipuzcoa': 'gipuzkoa', 'guipuzkoa': 'gipuzkoa', 'gipuzcoa': 'gipuzkoa',
+      'vizcaya': 'vizcaya', 'bizkaia': 'vizcaya', 'araba': 'alava',
+      'zaragoza': 'aragon', 'huesca': 'aragon', 'teruel': 'aragon'
+    };
+    const buscado = alias[norm(prov)] || norm(prov);
+    const z = zonas.find((x: any) => norm(x.nombre) === buscado);
+    if (z) return { ...z, fuente: 'provincia' };
+  }
+  return null;
+}
+
+// Laminas que NO se pueden ensenar en esa zona (por laboratorio o por lamina suelta).
+async function laminasRestringidasEnZona(zonaId: number): Promise<number[]> {
+  const r = await pool.query(
+    `SELECT DISTINCT s.id
+       FROM zona_restricciones zr
+       LEFT JOIN sheet_categorias sc ON sc.categoria_id = zr.categoria_id
+       JOIN sheets s ON s.id = COALESCE(zr.sheet_id, sc.sheet_id)
+      WHERE zr.zona_id = $1`, [zonaId]);
+  return r.rows.map((x: any) => Number(x.id));
+}
+
+app.get('/api/zonas', verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const z = await pool.query(
+      `SELECT z.*, (SELECT COUNT(*)::int FROM clients c WHERE c.zona_id = z.id) AS n_clientes,
+              (SELECT COUNT(*)::int FROM zona_restricciones r WHERE r.zona_id = z.id) AS n_restricciones
+         FROM zonas_venta z ORDER BY z.orden, z.nombre`);
+    res.json({ success: true, zonas: z.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Restricciones de una zona + catalogo de categorias para el desplegable.
+app.get('/api/zonas/:id/restricciones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const zonaId = Number(req.params.id);
+    const r = await pool.query(
+      `SELECT zr.id, zr.categoria_id, zr.sheet_id, zr.motivo, zr.created_at,
+              cat.nombre AS categoria, cat.color, s.titulo AS lamina, s.orden AS lamina_orden
+         FROM zona_restricciones zr
+         LEFT JOIN categorias cat ON cat.id = zr.categoria_id
+         LEFT JOIN sheets s ON s.id = zr.sheet_id
+        WHERE zr.zona_id = $1 ORDER BY cat.nombre NULLS LAST, s.orden`, [zonaId]);
+    const cats = await pool.query(`SELECT id, nombre, color FROM categorias ORDER BY orden, nombre`);
+    res.json({ success: true, restricciones: r.rows, categorias: cats.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+app.post('/api/zonas/:id/restricciones', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const zonaId = Number(req.params.id);
+    const catId = req.body?.categoria_id ? Number(req.body.categoria_id) : null;
+    const sheetId = req.body?.sheet_id ? Number(req.body.sheet_id) : null;
+    if (!catId && !sheetId) { res.status(400).json({ success: false, error: 'Elige un laboratorio o una lámina' }); return; }
+    await pool.query(
+      `INSERT INTO zona_restricciones (zona_id, categoria_id, sheet_id, motivo, creado_por)
+       VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+      [zonaId, catId, sheetId, (req.body?.motivo || '').toString().slice(0, 200) || null, req.user?.name || null]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+app.delete('/api/zonas/restricciones/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    await pool.query(`DELETE FROM zona_restricciones WHERE id=$1`, [Number(req.params.id)]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// LO QUE USA LA VISITA: zona del cliente + laminas que hay que ocultarle.
+app.get('/api/clients/:id/zona', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const clientId = Number(req.params.id);
+    const zona = await zonaDeCliente(clientId);
+    const restringidas = zona ? await laminasRestringidasEnZona(Number(zona.id)) : [];
+    res.json({ success: true, zona, restringidas });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Fijar la zona de un cliente (lo hace el comercial al empezar la visita si no se sabe).
+app.put('/api/clients/:id/zona', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const zonaId = req.body?.zona_id ? Number(req.body.zona_id) : null;
+    await pool.query(`UPDATE clients SET zona_id=$1, updated_at=NOW() WHERE id=$2`, [zonaId, Number(req.params.id)]);
+    const zona = await zonaDeCliente(Number(req.params.id));
+    const restringidas = zona ? await laminasRestringidasEnZona(Number(zona.id)) : [];
+    res.json({ success: true, zona, restringidas });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Rellenar zonas de golpe a partir del CP / provincia que ya tengan los clientes.
+app.post('/api/zonas/deducir', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const cs = await pool.query(`SELECT id FROM clients WHERE zona_id IS NULL AND is_active = TRUE`);
+    let hechos = 0;
+    for (const c of cs.rows) {
+      const z = await zonaDeCliente(Number(c.id));
+      if (z && z.fuente !== 'fijada a mano') {
+        await pool.query(`UPDATE clients SET zona_id=$1 WHERE id=$2`, [z.id, c.id]);
+        hechos++;
+      }
+    }
+    res.json({ success: true, revisados: cs.rows.length, asignados: hechos, sin_datos: cs.rows.length - hechos });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
 // --- Reglas por categoria/laboratorio ---
 app.get('/api/reparto/reglas', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
   try {

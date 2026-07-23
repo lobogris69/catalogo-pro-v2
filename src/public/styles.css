@@ -3589,6 +3589,15 @@ body.con-banner-update {
   background: rgba(22, 163, 74, 0.18);
   border-width: 3px;
 }
+/* Aviso en el visor de que hay láminas ocultas por la zona de la farmacia. */
+.visor-aviso-zona {
+  background: #dbeafe; color: #1e40af; padding: 8px 14px; font-size: 13px;
+  border-bottom: 1px solid #bfdbfe; text-align: center;
+}
+.visor-aviso-zona.sin-zona { background: #fef3c7; color: #92400e; border-bottom-color: #fcd34d; }
+:root[data-theme="dark"] .visor-aviso-zona { background: #172554; color: #bfdbfe; border-bottom-color: #1e3a8a; }
+:root[data-theme="dark"] .visor-aviso-zona.sin-zona { background: #422006; color: #fde68a; border-bottom-color: #854d0e; }
+
 /* Tercer distintivo de la lámina: cuándo se tocó por última vez. En ámbar cuando
    se modificó DESPUÉS de darla por revisada (hay que volver a mirarla). */
 .lamina-estado-cambio {
