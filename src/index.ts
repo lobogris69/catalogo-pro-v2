@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v168-backtesting-23jul',
+      build: 'v169-sync-lineas-completas-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -5630,17 +5630,36 @@ app.post('/api/sync/visit-batch', verifyToken, async (req: AuthRequest, res: Res
             if (Number.isFinite(py) && py >= 0 && py <= 1) posY = py;
           }
           const orden = Number(ann.orden_en_visita) || ordenContador++;
+          // Se guarda TODO lo de la linea, no solo el texto. Antes esta via (la de los
+          // pedidos tomados sin cobertura) perdia cantidad, producto, zona y las
+          // condiciones pactadas: llegaban a la oficina como texto suelto, fuera de la
+          // tabla del PDF y sin importes para el comercial.
+          const cantSync = (ann.cantidad !== undefined && ann.cantidad !== null && ann.cantidad !== '')
+            ? Number(ann.cantidad) : null;
+          const cantOk = (cantSync != null && Number.isFinite(cantSync) && cantSync > 0 && cantSync <= 99999) ? cantSync : null;
           const annR = await pool.query(
-            `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y)
-             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+            `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y,
+                                      product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio,
+                                      referencia, bonificacion, oferta_texto)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
             [
               visitId,
               ann.sheet_id ? Number(ann.sheet_id) : null,
               orden,
-              String(ann.texto_libre || '').trim() || '(sin texto)',
+              String(ann.texto_libre || '').trim().substring(0, 500) || '(sin texto)',
               tipoFinal,
               posX,
-              posY
+              posY,
+              ann.product_id ? Number(ann.product_id) : null,
+              cantOk,
+              ann.zone_id ? Number(ann.zone_id) : null,
+              !!ann.es_comision,
+              (ann.descuento !== undefined && ann.descuento !== null && ann.descuento !== '') ? Number(ann.descuento) : null,
+              ann.almacen ? String(ann.almacen).trim().substring(0, 150) : null,
+              ann.num_socio ? String(ann.num_socio).trim().substring(0, 60) : null,
+              ann.referencia ? String(ann.referencia).trim().substring(0, 120) : null,
+              ann.bonificacion ? String(ann.bonificacion).trim().substring(0, 60) : null,
+              ann.oferta_texto ? String(ann.oferta_texto).trim().substring(0, 120) : null
             ]
           );
           if (ann.local_id) annIdMap[ann.local_id] = annR.rows[0].id;

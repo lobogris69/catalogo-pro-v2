@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v168 · 23 jul 2026';
+const APP_VERSION = 'v169 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -7266,7 +7266,19 @@ async function sincronizarPendientes(esManual = false) {
             tipo: a.tipo,
             pos_x: a.pos_x,
             pos_y: a.pos_y,
-            orden_en_visita: a.orden_en_visita
+            orden_en_visita: a.orden_en_visita,
+            // Todo lo de la línea, no solo el texto: si no, el pedido tomado sin
+            // cobertura llega a la oficina sin cantidad, sin producto y sin condiciones.
+            product_id: a.product_id,
+            cantidad: a.cantidad,
+            zone_id: a.zone_id,
+            es_comision: a.es_comision,
+            descuento: a.descuento,
+            almacen: a.almacen,
+            num_socio: a.num_socio,
+            referencia: a.referencia,
+            bonificacion: a.bonificacion,
+            oferta_texto: a.oferta_texto
           }))
         }
       });

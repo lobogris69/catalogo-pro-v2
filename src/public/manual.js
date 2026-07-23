@@ -423,7 +423,10 @@ const MANUAL_ADMIN = [
       '<b>"El precio sale mal"</b> → mira la ficha del producto en <b>📦 Productos</b> antes que la lámina; casi siempre es la tarifa de Sage.',
       '<b>"La app va rara justo después de subir muchas cosas"</b> → espera un minuto y recarga: el servidor puede haberse reiniciado.'
     ],
-    ojo: ['La app funciona sin cobertura para lo del comercial (catálogos descargados, clientes, planning y pedidos); la administración necesita conexión.']
+    ojo: [
+      'Sin cobertura se pueden <b>ver</b> los catálogos descargados, los clientes y el planning. <b>Para empezar una visita y anotar el pedido hace falta conexión</b>: en una farmacia con mal cobertura, que salga fuera o use los datos del móvil.',
+      'La administración necesita conexión para todo.'
+    ]
   },
   {
     id: 'modo-sencillo',
@@ -525,7 +528,7 @@ const MANUAL_COMERCIAL = [
       'Si la visita no ha ido a ningún lado, usa <b>Descartar</b> y no se manda nada.'
     ],
     ojo: [
-      'Si estás sin cobertura, el pedido se guarda en el móvil y se envía solo cuando vuelvas a tener línea.',
+      '<b>Hace falta cobertura para anotar y para cerrar la visita.</b> Si en esa farmacia no hay línea, sal a la calle o tira de datos del móvil antes de empezar.',
       'En <b>📁 Mis pedidos</b> tienes lo que aún no ha salido.'
     ]
   },
