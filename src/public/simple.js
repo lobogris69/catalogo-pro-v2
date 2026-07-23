@@ -91,7 +91,7 @@ async function simpleElegirFarmacia() {
       return;
     }
     $l.innerHTML = lista.slice(0, 60).map(c => `
-      <button class="simple-item" onclick="simpleEmpezarVisita(${c.id})">
+      <button class="simple-item" onclick="simpleElegirCatalogo(${c.id})">
         <span class="simple-item-nombre">${escape(c.razon_social || '')}</span>
         <span class="simple-item-sub">${escape(c.municipio || '')}</span>
       </button>`).join('') +
@@ -106,12 +106,44 @@ async function simpleElegirFarmacia() {
   setTimeout(() => $b.focus(), 100);
 }
 
-async function simpleEmpezarVisita(clientId) {
+// ===== 2b. ELEGIR CATÁLOGO =====
+// Un comercial puede llevar varios: el suyo, uno común, el de promociones de regalos…
+// Si solo tiene uno, no se le pregunta: entra directo. Si tiene varios, botones
+// grandes con el nombre y cuántas láminas trae.
+async function simpleElegirCatalogo(clientId) {
+  const $l = document.getElementById('simple-lista');
+  if ($l) $l.innerHTML = `<div class="loading">Un momento…</div>`;
+  const cats = await simpleCatalogosDelComercial();
+  if (!cats.length) {
+    simpleAviso('No tienes ningún catálogo. Avisa a Fernando.');
+    renderSimpleInicio();
+    return;
+  }
+  if (cats.length === 1) return simpleEmpezarVisita(clientId, cats[0].id);
+
+  const $v = document.getElementById('vista-contenido');
+  $v.innerHTML = `
+    <div class="simple-pantalla simple-lista-pantalla">
+      <div class="simple-cabecera">
+        <button class="simple-atras" onclick="simpleElegirFarmacia()">←</button>
+        <span>¿Qué catálogo le enseñas?</span>
+      </div>
+      <div class="simple-lista">
+        ${cats.map(c => `
+          <button class="simple-item simple-item-catalogo" onclick="simpleEmpezarVisita(${clientId}, ${c.id})">
+            <span class="simple-item-nombre">📚 ${escape(c.name || '')}</span>
+            <span class="simple-item-sub">${c.sheet_count || 0} láminas${c.tipo === 'express' ? ' · ofertas' : ''}</span>
+          </button>`).join('')}
+      </div>
+      <div class="simple-vacio" style="font-size:15px">Luego puedes cambiar de catálogo sin perder el pedido.</div>
+    </div>`;
+}
+
+async function simpleEmpezarVisita(clientId, catalogId) {
   const $l = document.getElementById('simple-lista');
   if ($l) $l.innerHTML = `<div class="loading">Abriendo la visita…</div>`;
   try {
-    // Se abre la visita y se entra DIRECTO al catálogo: un paso menos.
-    const cat = await simpleCatalogoDelComercial();
+    const cat = catalogId || await simpleCatalogoDelComercial();
     if (!cat) { alert('No tienes ningún catálogo asignado. Avisa a Fernando.'); renderSimpleInicio(); return; }
     await api('/api/visits/start', { method: 'POST', body: { client_id: clientId, catalog_id: cat } });
     // Igual que el flujo normal: releemos la visita para tener el nombre del cliente.
@@ -124,13 +156,47 @@ async function simpleEmpezarVisita(clientId) {
   }
 }
 
-// El comercial no elige catálogo: se le abre el suyo. Si tuviera varios, el primero.
-async function simpleCatalogoDelComercial() {
+// Los catálogos que lleva, sin archivar y con láminas dentro (uno vacío solo estorba).
+async function simpleCatalogosDelComercial() {
   try {
     const r = await api('/api/catalogs');
-    const cs = (r.catalogs || []).filter(c => c.estado !== 'archivado');
-    return cs.length ? cs[0].id : null;
-  } catch (_) { return null; }
+    return (r.catalogs || []).filter(c => c.estado !== 'archivado' && (c.sheet_count || 0) > 0);
+  } catch (_) { return []; }
+}
+
+async function simpleCatalogoDelComercial() {
+  const cs = await simpleCatalogosDelComercial();
+  return cs.length ? cs[0].id : null;
+}
+
+// CAMBIAR DE CATÁLOGO EN MITAD DE LA VISITA. El pedido es UNO solo: enseña el general,
+// luego el de promociones, y todo lo anotado se junta en el mismo pedido.
+async function simpleCambiarCatalogo() {
+  const cats = await simpleCatalogosDelComercial();
+  if (cats.length <= 1) { simpleAviso('Solo tienes un catálogo'); return; }
+  const m = document.createElement('div');
+  m.className = 'modal-bg simple-modal-bg';
+  m.innerHTML = `
+    <div class="simple-modal">
+      <div class="simple-modal-cab"><div class="simple-modal-nombre">¿Qué catálogo le enseñas ahora?</div></div>
+      ${cats.map(c => `
+        <button class="simple-item simple-item-catalogo${Number(c.id) === Number(appState.catalogoActual) ? ' simple-item-activo' : ''}"
+                onclick="simpleAbrirCatalogo(${c.id})">
+          <span class="simple-item-nombre">📚 ${escape(c.name || '')}</span>
+          <span class="simple-item-sub">${c.sheet_count || 0} láminas${Number(c.id) === Number(appState.catalogoActual) ? ' · lo estás viendo' : ''}</span>
+        </button>`).join('')}
+      <button class="simple-cancelar" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+    </div>`;
+  document.body.appendChild(m);
+}
+
+function simpleAbrirCatalogo(catalogId) {
+  document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+  appState.vista = 'catalogos';
+  appState.catalogoActual = catalogId;
+  appState.visorIndice = 0;   // el catálogo nuevo empieza por su primera lámina
+  render();
+  setTimeout(simpleBarraPedido, 400);
 }
 
 function simpleSeguirVisita() {
@@ -138,7 +204,8 @@ function simpleSeguirVisita() {
   appState.vista = 'catalogos';
   appState.clienteActual = null;
   appState.visitaVerId = null;
-  appState.catalogoActual = appState.visitaActiva.catalog_id;
+  // Si ya estaba viendo otro catálogo (los cambió a media visita), se respeta.
+  appState.catalogoActual = appState.catalogoActual || appState.visitaActiva.catalog_id;
   appState.visorIndice = appState.visorIndice || 0;
   render();   // el visor de siempre; la barra de abajo la pone simpleBarraPedido()
   setTimeout(simpleBarraPedido, 300);
@@ -162,6 +229,7 @@ function simpleBarraPedido() {
     document.body.appendChild(b);
   }
   b.innerHTML = `
+    <button class="simple-barra-cat" onclick="simpleCambiarCatalogo()" title="Ver otro catálogo sin perder el pedido">📚</button>
     <div class="simple-barra-cuenta">🛒 ${n} ${n === 1 ? 'producto' : 'productos'}</div>
     <button class="simple-barra-btn" onclick="simpleTerminar()">TERMINAR ▸</button>`;
 }
