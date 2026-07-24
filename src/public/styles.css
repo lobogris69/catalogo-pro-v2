@@ -2368,43 +2368,39 @@ body.visor-fullscreen-activo .visor-presentacion {
   background: #000 !important;
   z-index: 9000;
 }
-body.visor-fullscreen-activo .visor-imagen-contenedor {
-  width: 100vw !important;
-  height: 100vh !important;
-  height: 100dvh !important;
+/* UNA SOLA FUENTE DE VERDAD PARA EL TAMAÑO. Antes el contenedor usaba una unidad
+   (100dvh = 968px en la tablet) y el zoom de dentro otra (100vh = 1024px): el hijo era
+   56px más alto que su padre, que recorta, así que la lámina perdía 28px por arriba.
+   Ahora el contenedor fijo marca el viewport y TODOS los hijos van al 100% de él. */
+body.visor-fullscreen-activo .visor-imagen-contenedor,
+body.visor-fullscreen-activo .visor-imagen-zoom {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
   display: flex !important;
-  align-items: center;
-  justify-content: center;
+  align-items: center !important;
+  justify-content: center !important;
   margin: 0 !important;
   padding: 0 !important;
   background: #000 !important;
-  overflow: hidden;
-}
-body.visor-fullscreen-activo .visor-imagen-zoom {
-  width: 100vw;
-  height: 100vh;
-  height: 100dvh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
+  overflow: hidden !important;
 }
 body.visor-fullscreen-activo .visor-imagen-wrapper {
-  max-width: 100vw;
-  max-height: 100vh;
-  max-height: 100dvh;
-  width: auto;
-  height: auto;
-  display: flex;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  width: auto !important;
+  height: auto !important;
+  display: flex !important;
   align-items: center;
   justify-content: center;
 }
+/* La lámina ENTERA siempre: se ajusta al hueco sin recortarse por ningún lado. */
 body.visor-fullscreen-activo .visor-imagen {
-  max-width: 100vw;
-  max-height: 100vh;
-  max-height: 100dvh;
-  width: auto;
-  height: auto;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  width: auto !important;
+  height: auto !important;
   object-fit: contain;
 }
 
