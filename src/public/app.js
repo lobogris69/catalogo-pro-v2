@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v189 · 24 jul 2026';
+const APP_VERSION = 'v190 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -6092,7 +6092,7 @@ function abrirIncidencia() {
   m.querySelector('#inc-captura-auto').onclick = async (ev) => {
     const b = ev.currentTarget;
     const txt = b.textContent;
-    b.disabled = true; b.textContent = '📸 Capturando…';
+    b.disabled = true; b.textContent = '📸 Capturando… (unos segundos)';
     try {
       const img = await capturarPantallaActual(m);
       pegada = img; $f.value = ''; pintarPrevia(img);
@@ -6169,15 +6169,19 @@ async function capturarPantallaActual(cuadroAOcultar) {
   // Un respiro para que el navegador repinte sin el cuadro antes de la foto.
   await new Promise(r => setTimeout(r, 220));
   try {
-    const blob = await window.modernScreenshot.domToBlob(document.body, {
+    // Se fotografía el armazón de la app, no el <body> entero: menos nodos que recorrer
+    // y por tanto MUCHO más rápido (con el body tardaba más de 20 segundos y parecía
+    // colgada). Escala 1: para ver qué falla en una pantalla sobra, y el archivo pesa
+    // poco, que se envía desde la tablet.
+    const raiz = document.querySelector('.app-shell') || document.body;
+    const blob = await window.modernScreenshot.domToBlob(raiz, {
       type: 'image/jpeg',
-      quality: 0.85,
-      scale: Math.min(window.devicePixelRatio || 1, 1.5),   // nítida sin archivos enormes
+      quality: 0.8,
+      scale: 1,
       backgroundColor: getComputedStyle(document.body).backgroundColor || '#ffffff',
       width: document.documentElement.clientWidth,
       height: document.documentElement.clientHeight,
-      // Lo que se ve, no la página entera: el problema está en pantalla.
-      style: { transform: 'translate(' + (-window.scrollX) + 'px,' + (-window.scrollY) + 'px)' }
+      filter: (n) => !(n.classList && (n.classList.contains('btn-incidencia') || n.id === 'toast-deshacer'))
     });
     if (!blob || !blob.size) throw new Error('la imagen salió vacía');
     return new File([blob], 'pantalla.jpg', { type: 'image/jpeg' });
