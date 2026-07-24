@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v175 · 23 jul 2026';
+const APP_VERSION = 'v178 · 23 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3793,6 +3793,9 @@ async function cargarRecuadrosLamina(sheetId) {
     _recuadrosLamina = (r.recuadros || []).filter(x => x.activo && !x.revisar);
     cargarConfigPrecios(); // una vez: fuente + factor de tamaño
     pintarRecuadrosPrecio();
+    // Ahora ya se sabe qué precios se reescriben: se repintan las zonas para quitar las
+    // etiquetas verdes de esos productos (el dato ya está en la lámina, en su sitio).
+    if (typeof pintarZonasComercial === 'function') pintarZonasComercial();
   } catch (e) { _recuadrosLamina = []; }
 }
 
@@ -3833,6 +3836,14 @@ function _formatearPrecioRecuadro(rec, pr) {
 
 // Pinta los recuadros sobre la imagen. font-size en px = tam_rel% del ancho RENDERIZADO
 // de la imagen (así casa con la lámina y escala con el zoom, que es un transform del ancestro).
+// ¿El precio de este producto ya se está reescribiendo encima de la lámina? Si es que
+// sí, no hace falta la etiqueta verde flotante: el número correcto ya se ve en su sitio.
+function _precioYaReescrito(productId) {
+  if (!_preciosDinamicosOn) return false;
+  return (_recuadrosLamina || []).some(r =>
+    r.activo !== false && Number(r.product_id) === Number(productId) && (r.campo === 'pvf' || !r.campo));
+}
+
 function pintarRecuadrosPrecio() {
   const capa = document.getElementById('visor-recuadros-capa');
   if (!capa) return;
@@ -3970,9 +3981,12 @@ function pintarZonasComercial() {
       const txt = z.link_label || ('🔗 ' + (z.link_catalog_nombre || 'Ver catálogo') + ' →');
       div.innerHTML = '<span class="visor-zona-enlace-txt">' + escape(txt) + '</span>';
       div.title = 'Ir a ' + (z.link_catalog_nombre || 'otro catálogo');
-    } else if (z.product_id && _preciosVigentes[z.product_id]) {
+    } else if (z.product_id && _preciosVigentes[z.product_id] && !_precioYaReescrito(z.product_id)) {
       // FASE 1 precios dinámicos: etiqueta con el precio de HOY (de la BD) sobre la zona.
       // La imagen puede tener el número viejo; la app enseña el correcto.
+      // OJO: solo si ese precio NO se está reescribiendo ya encima de la lámina. En una
+      // lámina con tablas, una etiqueta por producto tapaba media página y encima
+      // repetía un dato que ya estaba bien puesto en su sitio.
       const pr = _preciosVigentes[z.product_id];
       const pvf = (pr.pvf != null && pr.pvf !== '') ? Number(pr.pvf).toFixed(2).replace('.', ',') + '€' : null;
       if (pvf) {
@@ -11305,6 +11319,10 @@ function renderResumenPreEnvio() {
     totalPVF += cant * pvf;
   });
 
+  // VISITA SIN PEDIDO: el cliente no ha comprado nada. Se puede cerrar igual (cuenta
+  // como visita hecha), pero no se manda ningun email: no hay nada que facturar.
+  const sinPedido = anotaciones.filter(a => a.tipo !== 'nota').length === 0;
+
   const emailClienteActual = _resumenPreEnvio.cliente?.email || '';
   const emailClienteOverride = _resumenPreEnvio.emailClienteOverride;
   const valorEmailCliente = emailClienteOverride !== undefined ? emailClienteOverride : emailClienteActual;
@@ -11429,7 +11447,12 @@ function renderResumenPreEnvio() {
       <textarea id="resumen-notas" rows="2" placeholder="Observaciones para oficina y tu archivo personal…"
         style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box;font-family:inherit">${escape(_resumenPreEnvio.notas || '')}</textarea>
 
-      <h4 style="margin-top:20px;margin-bottom:8px">📧 Envío al cliente</h4>
+      ${sinPedido ? `
+        <div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:10px;padding:12px 14px;margin-top:18px;font-size:14px;color:#334155">
+          <b>Esta visita no lleva pedido.</b> Puedes cerrarla igualmente: queda registrada como
+          visita hecha (cuenta para tu planning) y <b>no se envía ningún email</b> ni a la oficina ni al cliente.
+        </div>` : ''}
+      ${sinPedido ? '' : `<h4 style="margin-top:20px;margin-bottom:8px">📧 Envío al cliente</h4>`}
       <div class="form-group" style="margin-bottom:8px">
         <label style="font-size:13px;color:#374151">Email del cliente para esta visita</label>
         <input type="email" id="resumen-email-cliente" value="${escape(valorEmailCliente)}"
@@ -11447,8 +11470,8 @@ function renderResumenPreEnvio() {
 
       <div class="resumen-acciones">
         <button class="btn btn-secondary" onclick="cerrarResumenPreEnvio()">← Volver al visor</button>
-        <button class="btn btn-primary" id="resumen-confirmar-btn" onclick="confirmarEnvioVisita()" style="font-size:15px;padding:12px 22px">
-          ✅ Confirmar y enviar
+        <button class="btn btn-primary" id="resumen-confirmar-btn" onclick="confirmarEnvioVisita()" style="font-size:15px;padding:12px 22px${sinPedido ? ';background:#475569' : ''}">
+          ${sinPedido ? '✔ Cerrar visita sin pedido' : '✅ Confirmar y enviar'}
         </button>
       </div>
     </div>

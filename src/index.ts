@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v177-igualar-por-campo-23jul',
+      build: 'v178-visita-sin-pedido-23jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -9730,10 +9730,11 @@ app.post('/api/visits/:id/confirm', verifyToken, async (req: AuthRequest, res: R
       `SELECT COUNT(*)::int AS n FROM annotations WHERE visit_id = $1 AND tipo IN ('pedido','devolucion')`,
       [id]
     );
+    const conPedido = huboPedido.rows[0].n > 0;
     const r = await pool.query(
       `UPDATE visits SET status = 'confirmed', confirmed_at = NOW(),
        notas_generales = $1, hubo_pedido = $2 WHERE id = $3 RETURNING *`,
-      [notas_generales ? String(notas_generales).trim() : null, huboPedido.rows[0].n > 0, id]
+      [notas_generales ? String(notas_generales).trim() : null, conPedido, id]
     );
     // Actualizar ultima_visita_at del cliente
     await pool.query(`UPDATE clients SET ultima_visita_at = NOW() WHERE id = $1`, [r.rows[0].client_id]);
@@ -9744,11 +9745,17 @@ app.post('/api/visits/:id/confirm', verifyToken, async (req: AuthRequest, res: R
       noEnviarCliente: !!no_enviar_cliente
     };
 
-    // C: lanzar los 3 emails (oficina + cliente + comercial) de forma asíncrona.
-    // No bloqueamos la respuesta al frontend - los emails se procesan en background.
-    enviarEmailsVisita(id, opciones).catch((e: any) => console.error('Error enviando emails visita ' + id + ':', e));
+    // VISITA SIN PEDIDO: el comercial ha ido, ha enseñado el catálogo y el cliente no ha
+    // comprado. Eso TAMBIEN es una visita y cuenta para su planning, asi que se cierra y
+    // queda registrada — pero NO se manda ningun email: la oficina no tiene nada que
+    // facturar y al cliente no se le envia un pedido vacio.
+    if (conPedido) {
+      // C: lanzar los 3 emails (oficina + cliente + comercial) de forma asíncrona.
+      // No bloqueamos la respuesta al frontend - los emails se procesan en background.
+      enviarEmailsVisita(id, opciones).catch((e: any) => console.error('Error enviando emails visita ' + id + ':', e));
+    }
 
-    res.json({ success: true, visit: r.rows[0] });
+    res.json({ success: true, visit: r.rows[0], sin_pedido: !conPedido });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
   }

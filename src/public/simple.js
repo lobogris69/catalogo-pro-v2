@@ -373,20 +373,30 @@ async function simpleTerminar() {
         </div>
         <button class="simple-repaso-quitar" onclick="simpleQuitarYRepasar(${a.id})">🗑</button>
       </div>`).join('');
+    // SIN PEDIDO: el cliente no ha comprado nada esta vez. La visita se cierra igual y
+    // queda contada: has ido, le has enseñado el catálogo. Lo que no se manda es un
+    // pedido vacío a la oficina ni al cliente.
+    const vacio = anots.length === 0;
     $v.innerHTML = `
       <div class="simple-pantalla simple-lista-pantalla">
         <div class="simple-cabecera">
           <button class="simple-atras" onclick="simpleSeguirVisita()">←</button>
-          <span>Repasa el pedido</span>
+          <span>${vacio ? 'Terminar la visita' : 'Repasa el pedido'}</span>
         </div>
         <div class="simple-lista">
-          ${filas || '<div class="simple-vacio">No has añadido ningún producto todavía.</div>'}
+          ${filas || `<div class="simple-vacio">Esta vez no te ha comprado nada.<br><br>
+            Puedes <b>cerrar la visita igual</b>: queda apuntada como visita hecha sin pedido.</div>`}
         </div>
         <div class="simple-abajo">
-          <button class="simple-boton-gigante verde" onclick="simpleEnviar(this)">
-            <span class="simple-icono">📨</span>
-            ENVIAR PEDIDO
-          </button>
+          ${vacio ? `
+            <button class="simple-boton-gigante" style="background:linear-gradient(135deg,#475569,#334155);box-shadow:0 12px 28px -10px rgba(51,65,85,.7)" onclick="simpleEnviar(this)">
+              <span class="simple-icono">✔</span>
+              CERRAR SIN PEDIDO
+            </button>` : `
+            <button class="simple-boton-gigante verde" onclick="simpleEnviar(this)">
+              <span class="simple-icono">📨</span>
+              ENVIAR PEDIDO
+            </button>`}
           <button class="simple-boton-secundario" onclick="simpleSeguirVisita()">Volver al catálogo</button>
         </div>
       </div>`;
@@ -402,9 +412,14 @@ async function simpleQuitarYRepasar(anotId) {
 }
 
 async function simpleEnviar(btn) {
-  if (!confirm('¿Enviar el pedido a la oficina?')) return;
+  // Sin líneas se cierra la visita igual (queda contada como visita sin pedido), pero
+  // el mensaje tiene que decir la verdad: aquí no se envía nada a nadie.
+  const sinPedido = (typeof carritoContarLineas === 'function') ? carritoContarLineas() === 0 : false;
+  if (!confirm(sinPedido
+    ? '¿Cerrar la visita sin pedido?\n\nQueda apuntada como visita hecha. No se envía nada a la oficina.'
+    : '¿Enviar el pedido a la oficina?')) return;
   btn.disabled = true;
-  btn.innerHTML = 'Enviando…';
+  btn.innerHTML = sinPedido ? 'Cerrando…' : 'Enviando…';
   try {
     const res = await vConfirmarVisita({});
     const sinLinea = !!(res && res.offline);
@@ -414,10 +429,12 @@ async function simpleEnviar(btn) {
     const $v = document.getElementById('vista-contenido');
     $v.innerHTML = `
       <div class="simple-pantalla">
-        <div class="simple-exito">${sinLinea ? '📴' : '✅'}</div>
+        <div class="simple-exito">${sinLinea ? '📴' : (sinPedido ? '✔' : '✅')}</div>
         <div class="simple-exito-txt">${sinLinea
           ? 'Pedido guardado<br><span>Sin cobertura. Se envía solo en cuanto tengas línea: no tienes que hacer nada.</span>'
-          : 'Pedido enviado<br><span>Ya lo tienen en la oficina</span>'}</div>
+          : (sinPedido
+            ? 'Visita cerrada<br><span>Queda apuntada aunque esta vez no te haya comprado nada.</span>'
+            : 'Pedido enviado<br><span>Ya lo tienen en la oficina</span>')}</div>
         <button class="simple-boton-gigante" onclick="renderSimpleInicio()">
           <span class="simple-icono">🏥</span>
           OTRA VISITA
@@ -426,7 +443,9 @@ async function simpleEnviar(btn) {
   } catch (e) {
     alert('No se ha podido enviar: ' + e.message);
     btn.disabled = false;
-    btn.innerHTML = '<span class="simple-icono">📨</span> ENVIAR PEDIDO';
+    btn.innerHTML = sinPedido
+      ? '<span class="simple-icono">✔</span> CERRAR SIN PEDIDO'
+      : '<span class="simple-icono">📨</span> ENVIAR PEDIDO';
   }
 }
 
