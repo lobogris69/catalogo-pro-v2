@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v187 · 24 jul 2026';
+const APP_VERSION = 'v188 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -6059,9 +6059,12 @@ function abrirIncidencia() {
                 style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea></div>
     <div class="form-group">
       <label>Captura (opcional pero ayuda mucho)</label>
+      <button type="button" class="btn btn-primary" id="inc-captura-auto"
+              style="width:100%;padding:12px;margin-bottom:8px">📸 Capturar esta pantalla</button>
+      <small style="color:var(--gris-texto);display:block;margin:-4px 0 8px">Se guarda una foto de lo que hay detrás de este cuadro, sin el cuadro.</small>
       <input type="file" id="inc-captura" accept="image/*" capture="environment"
              style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px">
-      <small style="color:var(--gris-texto);display:block;margin-top:4px">También puedes <b>pegar</b> una captura con Ctrl+V.</small>
+      <small style="color:var(--gris-texto);display:block;margin-top:4px">O adjunta una imagen tuya. También puedes <b>pegar</b> una con Ctrl+V.</small>
       <div id="inc-previa" style="margin-top:8px"></div>
     </div>
     <div id="inc-msg" style="font-size:13px;margin-top:4px"></div>
@@ -6082,6 +6085,27 @@ function abrirIncidencia() {
     $prev.innerHTML = `<img src="${url}" style="max-width:100%;max-height:160px;border:1px solid var(--gris-borde);border-radius:8px">`;
   };
   $f.onchange = () => { pegada = null; pintarPrevia($f.files[0]); };
+
+  // 📸 CAPTURA AUTOMÁTICA DE LA PANTALLA. El comercial no tiene por qué saber hacer una
+  // captura con los botones del aparato ni buscarla después en la galería: pulsa aquí,
+  // el cuadro se aparta un momento, se fotografía lo que hay detrás y queda adjunta.
+  m.querySelector('#inc-captura-auto').onclick = async (ev) => {
+    const b = ev.currentTarget;
+    const txt = b.textContent;
+    b.disabled = true; b.textContent = '📸 Capturando…';
+    try {
+      const img = await capturarPantallaActual(m);
+      pegada = img; $f.value = ''; pintarPrevia(img);
+      b.textContent = '✅ Pantalla capturada · repetir';
+      setTimeout(() => { b.textContent = txt; }, 2500);
+    } catch (e) {
+      m.querySelector('#inc-msg').innerHTML =
+        '<span style="color:#b45309">No se ha podido capturar (' + escape(e.message) + '). Puedes hacer la captura con la tablet y adjuntarla abajo.</span>';
+      b.textContent = txt;
+    } finally {
+      b.disabled = false;
+    }
+  };
   m.addEventListener('paste', (e) => {
     const it = [...(e.clipboardData?.items || [])].find(x => x.type.startsWith('image/'));
     if (!it) return;
@@ -6114,6 +6138,52 @@ function abrirIncidencia() {
       b.disabled = false; b.textContent = 'Enviar';
     }
   };
+}
+
+// Carga la librería de captura SOLO cuando hace falta (200 KB): no penaliza el arranque
+// de la app, y como se sirve desde aquí mismo también funciona sin cobertura.
+function _cargarLibCaptura() {
+  if (window.html2canvas) return Promise.resolve();
+  if (window._libCapturaPromesa) return window._libCapturaPromesa;
+  window._libCapturaPromesa = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/vendor/html2canvas.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('no se pudo cargar la herramienta de captura'));
+    document.head.appendChild(s);
+  });
+  return window._libCapturaPromesa;
+}
+
+// Fotografía la pantalla actual SIN el cuadro que se le pase (el de la incidencia).
+// Devuelve un File listo para adjuntar.
+async function capturarPantallaActual(cuadroAOcultar) {
+  await _cargarLibCaptura();
+  const ocultar = [];
+  if (cuadroAOcultar) ocultar.push(cuadroAOcultar);
+  // El botón flotante 🛟 tampoco pinta en la foto: es de la app, no del problema.
+  document.querySelectorAll('.btn-incidencia, #toast-deshacer').forEach(el => ocultar.push(el));
+  ocultar.forEach(el => { el.dataset._visPrev = el.style.visibility || ''; el.style.visibility = 'hidden'; });
+  // Un respiro para que el navegador repinte sin el cuadro antes de la foto.
+  await new Promise(r => setTimeout(r, 220));
+  try {
+    const canvas = await window.html2canvas(document.body, {
+      backgroundColor: getComputedStyle(document.body).backgroundColor || '#fff',
+      scale: Math.min(window.devicePixelRatio || 1, 1.5),   // nítida pero sin archivos enormes
+      useCORS: true,
+      logging: false,
+      windowWidth: document.documentElement.clientWidth,
+      windowHeight: document.documentElement.clientHeight,
+      x: window.scrollX, y: window.scrollY,
+      width: document.documentElement.clientWidth,
+      height: document.documentElement.clientHeight
+    });
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.85));
+    if (!blob) throw new Error('la imagen salió vacía');
+    return new File([blob], 'pantalla.jpg', { type: 'image/jpeg' });
+  } finally {
+    ocultar.forEach(el => { el.style.visibility = el.dataset._visPrev || ''; delete el.dataset._visPrev; });
+  }
 }
 
 // Historial del propio comercial, con la respuesta del administrador.

@@ -1613,8 +1613,11 @@ html {
 .carrito-fab {
   position: fixed;
   right: 16px;
-  bottom: 18px;
-  z-index: 1200;
+  /* Justo ENCIMA del botón 🛟 (que ocupa 52px de alto + 18px de margen): antes estaban
+     los dos en el mismo sitio y el de incidencias, que va en una capa superior, se
+     tragaba el toque. De ahí el "pulso el carrito y no hace nada". */
+  bottom: 84px;
+  z-index: 9100;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1646,7 +1649,9 @@ html {
 .carrito-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1300;
+  /* Por encima de la capa de pantalla completa (9000): si no, se abría por debajo de la
+     lámina y parecía que el botón no funcionaba. */
+  z-index: 9600;
   background: rgba(0,0,0,0.45);
   display: flex;
   align-items: flex-end;

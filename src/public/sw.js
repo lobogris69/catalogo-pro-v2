@@ -16,7 +16,7 @@
  * El usuario decide cuándo activar el nuevo SW pulsando el banner.
  * ============================================================================ */
 
-const CACHE_VERSION = 'cpv2-shell-v187-24jul';
+const CACHE_VERSION = 'cpv2-shell-v188-24jul';
 // El nombre de la caché del shell LLEVA la versión: así, al desplegar, se crea una
 // caché nueva (con app.js/styles.css frescos) y `activate` borra las viejas. Antes el
 // nombre era constante ('cpv2-shell') y nunca se purgaba → servía el CSS/JS antiguo
@@ -31,6 +31,7 @@ const SHELL_FILES = [
   '/app.js',
   '/manual.js',   // el manual/ayuda tiene que poder leerse sin cobertura
   '/simple.js',   // modo sencillo: tiene que funcionar sin cobertura como el resto
+  '/vendor/html2canvas.min.js',  // captura de pantalla para las incidencias, también sin línea
   '/styles.css',
   '/manifest.json',
   '/icons/icon-192.png',
