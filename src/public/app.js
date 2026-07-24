@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v185 · 24 jul 2026';
+const APP_VERSION = 'v186 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -10111,7 +10111,7 @@ async function iniciarVisitaParaCliente(clientId) {
   }
   // Si ya hay visita activa con OTRO cliente, mostrar modal informativo
   if (appState.visitaActiva && appState.visitaActiva.client_id !== clientId) {
-    mostrarModalVisitaEnCurso();
+    mostrarModalVisitaEnCurso(clientId);
     return;
   }
   if (appState.visitaActiva && appState.visitaActiva.client_id === clientId) {
@@ -10119,7 +10119,13 @@ async function iniciarVisitaParaCliente(clientId) {
     abrirVisitaActiva();
     return;
   }
-  // Pedir al usuario que elija el catálogo (de su cartera) y cargar resumen ultima visita en paralelo
+  await _elegirCatalogoParaVisita(clientId, false);
+}
+
+// Elegir con qué catálogo se empieza la visita. `forzar` = ya se ha avisado de que hay
+// otra visita abierta y el comercial ha dicho que quiere empezar esta igualmente.
+async function _elegirCatalogoParaVisita(clientId, forzar) {
+  window._forzarNuevaVisita = !!forzar;
   try {
     const [r, resumen] = await Promise.all([
       api('/api/catalogs'),
@@ -10239,10 +10245,13 @@ async function retomarVisitaAbierta(visitId) {
 async function confirmarIniciarVisita(clientId, catalogId) {
   // Cerrar modal si está abierto
   document.querySelectorAll('.modal-bg').forEach(m => m.remove());
+  // Si ya dijo "empezar la nueva de todos modos", no se le vuelve a preguntar.
+  const forzar = !!window._forzarNuevaVisita;
+  window._forzarNuevaVisita = false;
   try {
     let visita;
     try {
-      visita = await vIniciarVisita(clientId, catalogId, false);
+      visita = await vIniciarVisita(clientId, catalogId, forzar);
     } catch (e) {
       // 409: ya hay otra visita a medias con otro cliente. Se le enseña cuál es y se le
       // deja IR A ELLA, que es lo que casi siempre quiere hacer.
@@ -10284,8 +10293,11 @@ async function confirmarIniciarVisita(clientId, catalogId) {
 // Comercial → visor del catálogo de la visita (para seguir anotando)
 function abrirVisitaActiva() {
   if (!appState.visitaActiva) return;
-  const esAdminReal_ = (typeof esAdminReal === 'function') ? esAdminReal() : false;
-  if (esAdminReal_) {
+  // Manda el rol con el que se está TRABAJANDO, no el de la cuenta: un admin que está
+  // viendo la app como comercial quiere el visor para seguir la visita, no la ficha
+  // informativa (que no tiene ni cómo seguir anotando).
+  const comoAdmin = (typeof rolEfectivo === 'function') ? rolEfectivo() === 'admin' : false;
+  if (comoAdmin) {
     // Admin: ver detalle informativo de la visita
     appState.vista = 'clientes';
     appState.clienteActual = null;
@@ -10301,59 +10313,20 @@ function abrirVisitaActiva() {
   render();
 }
 
-// Modal informativo cuando el comercial intenta iniciar visita y ya hay otra abierta.
-// Muestra qué cliente, cuándo se inició, y ofrece "Ir a la visita" o "Cancelar".
-function mostrarModalVisitaEnCurso() {
+// Ya hay una visita abierta con OTRO cliente. Se enseña el cuadro único (el mismo que
+// cuando lo detecta el servidor) con las tres salidas: ir a ella, empezar la nueva
+// igualmente, o cancelar. Antes había aquí un cuadro propio de dos botones que se
+// adelantaba al otro: dos avisos distintos para la misma situación.
+function mostrarModalVisitaEnCurso(clientId) {
   const va = appState.visitaActiva;
   if (!va) return;
-  const clienteNombre = va.cliente_nombre || ('Cliente #' + va.client_id);
-  // Calcular cuándo se inició
-  let cuando = '';
-  if (va.created_at) {
-    const inicio = new Date(va.created_at);
-    const ahora = new Date();
-    const ms = ahora - inicio;
-    const minutos = Math.round(ms / 60000);
-    if (minutos < 1) cuando = 'hace menos de un minuto';
-    else if (minutos < 60) cuando = 'hace ' + minutos + ' min';
-    else if (minutos < 24 * 60) {
-      const h = Math.floor(minutos / 60);
-      cuando = 'hace ' + h + ' h ' + (minutos % 60) + ' min';
-    } else {
-      cuando = 'el ' + inicio.toLocaleDateString('es-ES') + ' a las ' + inicio.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-    }
-  }
-
-  // Contar anotaciones ya hechas en esa visita (desde memoria local)
-  let totalAnots = 0;
-  Object.keys(_anotacionesVisita || {}).forEach(sid => {
-    totalAnots += (_anotacionesVisita[sid] || []).length;
-  });
-
+  let lineas = 0;
+  Object.keys(_anotacionesVisita || {}).forEach(sid => { lineas += (_anotacionesVisita[sid] || []).length; });
   document.querySelectorAll('.modal-bg').forEach(m => m.remove());
-  const modal = document.createElement('div');
-  modal.className = 'modal-bg';
-  modal.innerHTML = `
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3>🛒 Ya tienes una visita en curso</h3>
-        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
-      </div>
-      <div style="background:#eff6ff;border:1px solid #bfdbfe;padding:12px 14px;border-radius:8px;font-size:14px;color:#1e40af;margin-bottom:14px">
-        <div style="margin-bottom:4px"><b>Cliente:</b> ${escape(clienteNombre)}</div>
-        ${cuando ? `<div style="margin-bottom:4px"><b>Iniciada:</b> ${escape(cuando)}</div>` : ''}
-        <div><b>Anotaciones:</b> ${totalAnots}</div>
-      </div>
-      <p style="font-size:13px;color:#374151;margin:0 0 14px 0">
-        Para iniciar una visita nueva con otro cliente, primero ciérrala o descártala desde su visor.
-      </p>
-      <div class="modal-acciones">
-        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
-        <button class="btn btn-primary" onclick="this.closest('.modal-bg').remove(); abrirVisitaActiva()">→ Ir a la visita</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(modal);
+  dialogoVisitaSinTerminar(
+    { id: va.id, razon_social: va.cliente_nombre || ('Cliente #' + va.client_id), created_at: va.created_at, lineas },
+    clientId ? () => _elegirCatalogoParaVisita(clientId, true) : null
+  );
 }
 
 // ============================================================================
