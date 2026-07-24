@@ -2332,6 +2332,7 @@ body.visor-fullscreen-activo .visor-cabecera,
 body.visor-fullscreen-activo .visor-nav-superior,
 body.visor-fullscreen-activo .visor-info-lamina,
 body.visor-fullscreen-activo .visor-anotaciones,
+body.visor-fullscreen-activo .visor-export-bar,
 body.visor-fullscreen-activo .visor-zoom-hint,
 body.visor-fullscreen-activo .barra-visita-activa,
 body.visor-fullscreen-activo .visor-buscador-fila,
@@ -2374,6 +2375,7 @@ body.visor-fullscreen-activo .visor-presentacion {
    Ahora el contenedor fijo marca el viewport y TODOS los hijos van al 100% de él. */
 body.visor-fullscreen-activo .visor-imagen-contenedor,
 body.visor-fullscreen-activo .visor-imagen-zoom {
+  flex: 1 0 auto !important;   /* nunca se encoge: si algo más asoma, la lámina manda */
   width: 100% !important;
   height: 100% !important;
   max-width: 100% !important;
