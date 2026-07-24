@@ -2411,6 +2411,23 @@ body.visor-fullscreen-activo .visor-imagen {
   display: block;
 }
 
+/* EL CARRITO TAMBIÉN EN PANTALLA COMPLETA. La regla de arriba oculta todo lo que no
+   sea la lámina, y el carrito caía dentro: te quedabas sin ver el pedido justo en la
+   pantalla donde lo estás haciendo. Ahora acompaña a los controles: aparece al tocar y
+   se va solo a los 2,8 s, para no tapar la lámina mientras el cliente la mira.
+   (Va después a propósito: misma especificidad que la regla que lo escondía, gana esta.) */
+body.visor-fullscreen-activo .visor-shell > .carrito-fab {
+  display: inline-flex !important;
+  z-index: 9999;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .3s;
+}
+body.visor-fullscreen-activo.visor-fullscreen-controles-visibles .visor-shell > .carrito-fab {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* Controles auto-ocultos */
 .fullscreen-controles {
   position: fixed;
