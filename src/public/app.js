@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v181 · 24 jul 2026';
+const APP_VERSION = 'v182 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -4857,6 +4857,38 @@ async function abrirDetallePin(annotationId) {
 let _fullscreenActivo = false;
 let _fullscreenHideTimer = null;
 
+// La lámina TIENE que caber entera en pantalla completa. Con CSS no bastaba: entre
+// 100vh, 100dvh y la cascada de reglas del visor, el hueco donde se centra la imagen
+// acababa midiendo menos que la propia imagen y la recortaba por arriba (28px en la
+// tablet). Aquí se mide la pantalla de verdad y se fija a mano: gana a cualquier regla.
+function _ajustarAlturaPantallaCompleta() {
+  if (!document.body.classList.contains('visor-fullscreen-activo')) return;
+  const alto = window.innerHeight, ancho = window.innerWidth;
+  ['.visor-presentacion', '.visor-imagen-contenedor', '.visor-imagen-zoom'].forEach(sel => {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    el.style.setProperty('height', alto + 'px', 'important');
+    el.style.setProperty('max-height', alto + 'px', 'important');
+    el.style.setProperty('width', ancho + 'px', 'important');
+  });
+  ['#visor-imagen-wrapper', '.visor-imagen'].forEach(sel => {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    el.style.setProperty('max-height', alto + 'px', 'important');
+    el.style.setProperty('max-width', ancho + 'px', 'important');
+    el.style.setProperty('height', 'auto', 'important');
+    el.style.setProperty('width', 'auto', 'important');
+  });
+  // Los precios reescritos se dimensionan con el ancho en pantalla: repintar tras el ajuste.
+  if (typeof pintarRecuadrosPrecio === 'function') setTimeout(pintarRecuadrosPrecio, 60);
+}
+// Al girar la tablet o cambiar el tamaño, se vuelve a medir.
+window.addEventListener('resize', () => {
+  clearTimeout(window._fsAjusteT);
+  window._fsAjusteT = setTimeout(_ajustarAlturaPantallaCompleta, 120);
+});
+window.addEventListener('orientationchange', () => setTimeout(_ajustarAlturaPantallaCompleta, 250));
+
 function entrarPantallaCompleta() {
   _fullscreenActivo = true;
   // Intentar pantalla completa del navegador (si soportado)
@@ -4866,6 +4898,7 @@ function entrarPantallaCompleta() {
     else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen();
   } catch (_) {}
   document.body.classList.add('visor-fullscreen-activo');
+  _ajustarAlturaPantallaCompleta();
   // Inyectar controles flotantes (se ocultan/muestran via CSS según clase del body)
   let $ctrl = document.getElementById('fullscreen-controles');
   if (!$ctrl) {
@@ -4893,6 +4926,13 @@ function salirPantallaCompleta() {
   } catch (_) {}
   document.body.classList.remove('visor-fullscreen-activo');
   document.body.classList.remove('visor-fullscreen-controles-visibles');
+  // Quitar las medidas que se fijaron a mano: fuera de pantalla completa manda el CSS.
+  ['.visor-presentacion', '.visor-imagen-contenedor', '.visor-imagen-zoom', '#visor-imagen-wrapper', '.visor-imagen'].forEach(sel => {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    ['height', 'max-height', 'width', 'max-width'].forEach(p => el.style.removeProperty(p));
+  });
+  if (typeof pintarRecuadrosPrecio === 'function') setTimeout(pintarRecuadrosPrecio, 60);
   if (_fullscreenHideTimer) { clearTimeout(_fullscreenHideTimer); _fullscreenHideTimer = null; }
   // Limpiar controles inyectados
   const $ctrl = document.getElementById('fullscreen-controles');
