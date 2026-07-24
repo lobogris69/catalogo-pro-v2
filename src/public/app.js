@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v188 · 24 jul 2026';
+const APP_VERSION = 'v189 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -6140,14 +6140,16 @@ function abrirIncidencia() {
   };
 }
 
-// Carga la librería de captura SOLO cuando hace falta (200 KB): no penaliza el arranque
-// de la app, y como se sirve desde aquí mismo también funciona sin cobertura.
+// Carga la herramienta de captura SOLO cuando hace falta (28 KB): no penaliza el
+// arranque, y como se sirve desde aquí mismo también funciona sin cobertura.
+// (Se probó antes html2canvas y se descartó: es de 2022 y revienta con los colores
+// modernos que devuelve Chrome — "unsupported color function color".)
 function _cargarLibCaptura() {
-  if (window.html2canvas) return Promise.resolve();
+  if (window.modernScreenshot) return Promise.resolve();
   if (window._libCapturaPromesa) return window._libCapturaPromesa;
   window._libCapturaPromesa = new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = '/vendor/html2canvas.min.js';
+    s.src = '/vendor/modern-screenshot.js';
     s.onload = () => resolve();
     s.onerror = () => reject(new Error('no se pudo cargar la herramienta de captura'));
     document.head.appendChild(s);
@@ -6156,30 +6158,28 @@ function _cargarLibCaptura() {
 }
 
 // Fotografía la pantalla actual SIN el cuadro que se le pase (el de la incidencia).
-// Devuelve un File listo para adjuntar.
+// Devuelve un File listo para adjuntar al aviso.
 async function capturarPantallaActual(cuadroAOcultar) {
   await _cargarLibCaptura();
   const ocultar = [];
   if (cuadroAOcultar) ocultar.push(cuadroAOcultar);
-  // El botón flotante 🛟 tampoco pinta en la foto: es de la app, no del problema.
+  // El botón flotante y los avisos de la propia app no pintan en la foto.
   document.querySelectorAll('.btn-incidencia, #toast-deshacer').forEach(el => ocultar.push(el));
   ocultar.forEach(el => { el.dataset._visPrev = el.style.visibility || ''; el.style.visibility = 'hidden'; });
   // Un respiro para que el navegador repinte sin el cuadro antes de la foto.
   await new Promise(r => setTimeout(r, 220));
   try {
-    const canvas = await window.html2canvas(document.body, {
-      backgroundColor: getComputedStyle(document.body).backgroundColor || '#fff',
-      scale: Math.min(window.devicePixelRatio || 1, 1.5),   // nítida pero sin archivos enormes
-      useCORS: true,
-      logging: false,
-      windowWidth: document.documentElement.clientWidth,
-      windowHeight: document.documentElement.clientHeight,
-      x: window.scrollX, y: window.scrollY,
+    const blob = await window.modernScreenshot.domToBlob(document.body, {
+      type: 'image/jpeg',
+      quality: 0.85,
+      scale: Math.min(window.devicePixelRatio || 1, 1.5),   // nítida sin archivos enormes
+      backgroundColor: getComputedStyle(document.body).backgroundColor || '#ffffff',
       width: document.documentElement.clientWidth,
-      height: document.documentElement.clientHeight
+      height: document.documentElement.clientHeight,
+      // Lo que se ve, no la página entera: el problema está en pantalla.
+      style: { transform: 'translate(' + (-window.scrollX) + 'px,' + (-window.scrollY) + 'px)' }
     });
-    const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.85));
-    if (!blob) throw new Error('la imagen salió vacía');
+    if (!blob || !blob.size) throw new Error('la imagen salió vacía');
     return new File([blob], 'pantalla.jpg', { type: 'image/jpeg' });
   } finally {
     ocultar.forEach(el => { el.style.visibility = el.dataset._visPrev || ''; delete el.dataset._visPrev; });
