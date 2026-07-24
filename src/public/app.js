@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v178 · 23 jul 2026';
+const APP_VERSION = 'v179 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3804,22 +3804,31 @@ const RECUADRO_FUENTE_DEFECTO = 'Arial, Helvetica, sans-serif';
 // Config de render de precios (fuente + factor de tamaño), cargada una vez del servidor.
 let _cfgPrecioFuente = 'Liberation Sans';
 let _cfgPrecioTamFactor = 1;
-let _cfgPreciosCargada = false;
 let _preciosDinamicosOn = true; // interruptor maestro (Configuración). OFF = lámina original.
-async function cargarConfigPrecios() {
-  if (_cfgPreciosCargada) return;
-  _cfgPreciosCargada = true;
-  try {
-    const r = await api('/api/config');
-    const c = r.config || {};
-    _preciosDinamicosOn = (c.precios_dinamicos_activo ?? '1') !== '0';
-    if (c.precio_fuente) _cfgPrecioFuente = c.precio_fuente;
-    const tf = parseFloat(c.precio_tam_factor);
-    if (Number.isFinite(tf) && tf >= 0.5 && tf <= 2) _cfgPrecioTamFactor = tf;
-    if (!_preciosDinamicosOn) { _recuadrosLamina = []; _preciosVigentes = {}; }
-    pintarRecuadrosPrecio();
-    pintarZonasComercial();
-  } catch (e) { /* usa valores por defecto */ }
+// BUG QUE CAUSABA EL DESCONTROL: antes esto guardaba un booleano "ya cargada" que se
+// ponía a true ANTES del await. La segunda función que llamaba (cargarPreciosVigentes)
+// veía la bandera puesta y seguía de largo SIN ESPERAR, con el interruptor todavía en su
+// valor por defecto (encendido). Resultado: se pintaban precios y etiquetas aunque el
+// sistema estuviera APAGADO, y según qué petición llegara antes salían unas veces sí y
+// otras no — los precios que "aparecen y desaparecen" al pasar láminas.
+// Ahora se guarda la PROMESA: todos esperan a la misma respuesta.
+let _cfgPreciosPromesa = null;
+function cargarConfigPrecios() {
+  if (_cfgPreciosPromesa) return _cfgPreciosPromesa;
+  _cfgPreciosPromesa = (async () => {
+    try {
+      const r = await api('/api/config');
+      const c = r.config || {};
+      _preciosDinamicosOn = (c.precios_dinamicos_activo ?? '1') !== '0';
+      if (c.precio_fuente) _cfgPrecioFuente = c.precio_fuente;
+      const tf = parseFloat(c.precio_tam_factor);
+      if (Number.isFinite(tf) && tf >= 0.5 && tf <= 2) _cfgPrecioTamFactor = tf;
+      if (!_preciosDinamicosOn) { _recuadrosLamina = []; _preciosVigentes = {}; }
+      pintarRecuadrosPrecio();
+      pintarZonasComercial();
+    } catch (e) { /* usa valores por defecto */ }
+  })();
+  return _cfgPreciosPromesa;
 }
 
 function _formatearPrecioRecuadro(rec, pr) {
@@ -3850,6 +3859,18 @@ function pintarRecuadrosPrecio() {
   const wrapper = document.getElementById('visor-imagen-wrapper');
   const anchoPx = wrapper ? wrapper.clientWidth : 0;
   capa.innerHTML = '';
+  // La lámina TIENE QUE ESTAR CARGADA antes de escribir nada encima: el tamaño de la
+  // letra se calcula sobre el ancho real en pantalla, y mientras la imagen se está
+  // colocando ese ancho cambia. Pintar antes es lo que hacía que los precios salieran
+  // desplazados y luego dieran un salto (el efecto "scrolling" al pasar de lámina).
+  const img = wrapper ? wrapper.querySelector('img') : null;
+  if (img && !(img.complete && img.naturalWidth > 0)) {
+    if (!img._esperaPrecios) {
+      img._esperaPrecios = true;
+      img.addEventListener('load', () => { img._esperaPrecios = false; pintarRecuadrosPrecio(); }, { once: true });
+    }
+    return;
+  }
   // Interruptor maestro apagado -> lámina TAL CUAL, no se reescribe ningún precio.
   if (!_preciosDinamicosOn) return;
   if (!anchoPx || !_recuadrosLamina.length) return;

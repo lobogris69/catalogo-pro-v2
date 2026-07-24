@@ -2360,6 +2360,7 @@ body.visor-fullscreen-activo .visor-presentacion {
   bottom: 0 !important;
   width: 100vw !important;
   height: 100vh !important;
+  height: 100dvh !important;   /* en tablet, 100vh cuenta la barra del navegador y la lámina se salía */
   max-width: none !important;
   max-height: none !important;
   margin: 0 !important;
@@ -2370,6 +2371,7 @@ body.visor-fullscreen-activo .visor-presentacion {
 body.visor-fullscreen-activo .visor-imagen-contenedor {
   width: 100vw !important;
   height: 100vh !important;
+  height: 100dvh !important;
   display: flex !important;
   align-items: center;
   justify-content: center;
@@ -2381,6 +2383,7 @@ body.visor-fullscreen-activo .visor-imagen-contenedor {
 body.visor-fullscreen-activo .visor-imagen-zoom {
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2389,6 +2392,7 @@ body.visor-fullscreen-activo .visor-imagen-zoom {
 body.visor-fullscreen-activo .visor-imagen-wrapper {
   max-width: 100vw;
   max-height: 100vh;
+  max-height: 100dvh;
   width: auto;
   height: auto;
   display: flex;
@@ -2398,6 +2402,7 @@ body.visor-fullscreen-activo .visor-imagen-wrapper {
 body.visor-fullscreen-activo .visor-imagen {
   max-width: 100vw;
   max-height: 100vh;
+  max-height: 100dvh;
   width: auto;
   height: auto;
   object-fit: contain;
