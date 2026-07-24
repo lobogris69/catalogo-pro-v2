@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v178-visita-sin-pedido-23jul',
+      build: 'v185-visita-sin-terminar-24jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -5545,7 +5545,7 @@ app.post('/api/visits/start', verifyToken, async (req: AuthRequest, res: Respons
     // enviar, y no se enteraba nadie. Ahora se avisa y decide él (forzar=true).
     if (!req.body.forzar) {
       const otra = await pool.query(
-        `SELECT v.id, v.client_id, c.razon_social,
+        `SELECT v.id, v.client_id, v.catalog_id, v.created_at, c.razon_social,
                 (SELECT COUNT(*)::int FROM annotations a WHERE a.visit_id = v.id) AS lineas
            FROM visits v LEFT JOIN clients c ON c.id = v.client_id
           WHERE v.user_id = $1 AND v.status = 'draft'

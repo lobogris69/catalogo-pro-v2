@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v184 · 24 jul 2026';
+const APP_VERSION = 'v185 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -150,7 +150,12 @@ function api(endpoint, options = {}) {
           err._corte = true;
           throw err;
         }
-        throw new Error(data.error || `Error ${r.status}`);
+        // El cuerpo del error viaja pegado al Error: hay avisos que traen datos con los
+        // que la app tiene que hacer algo (p.ej. la visita que se quedó sin terminar).
+        const errApi = new Error(data.error || `Error ${r.status}`);
+        errApi.status = r.status;
+        errApi.datos = data;
+        throw errApi;
       }
       return data;
     });
@@ -10164,6 +10169,73 @@ function abrirModalElegirCatalogoVisita(clientId, cats, resumenUltima) {
   document.body.appendChild(modal);
 }
 
+// CUADRO DE "TIENES UNA VISITA SIN TERMINAR".
+// Antes era el confirm() del navegador, que solo tiene dos botones: te avisaba de la
+// visita abierta pero no te dejaba ir a ella, que es justo lo que quieres hacer.
+// Aquí hay tres caminos y se ve de cuándo es, para decidir si retomarla o descartarla.
+function dialogoVisitaSinTerminar(info, alEmpezarNueva) {
+  const desde = info.created_at ? new Date(info.created_at) : null;
+  const dias = desde ? Math.floor((Date.now() - desde.getTime()) / 86400000) : null;
+  const cuando = desde
+    ? desde.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' }) +
+      (dias > 0 ? ` · hace ${dias} día${dias === 1 ? '' : 's'}` : ' · hoy')
+    : '';
+  const lineas = Number(info.lineas || 0);
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🛒 Tienes una visita sin terminar</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;margin-bottom:14px">
+        <div style="font-size:16px;font-weight:700;color:#92400e">${escape(info.razon_social || 'Otro cliente')}</div>
+        <div style="font-size:13px;color:#92400e;margin-top:4px">
+          ${escape(cuando)}${lineas ? ' · ' + lineas + ' línea' + (lineas === 1 ? '' : 's') + ' anotada' + (lineas === 1 ? '' : 's') : ' · sin nada anotado'}
+        </div>
+      </div>
+      <p style="font-size:14px;margin:0 0 14px">¿Qué quieres hacer?</p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn btn-primary" style="padding:12px" onclick="this.closest('.modal-bg').remove();retomarVisitaAbierta(${info.id})">
+          ▶ Ir a esa visita${lineas ? ' (seguir, cerrarla o descartarla)' : ' (cerrarla o descartarla)'}
+        </button>
+        <button class="btn btn-secondary" style="padding:12px" onclick="this.closest('.modal-bg').remove();(${alEmpezarNueva ? 'window._alEmpezarNuevaVisita' : 'function(){}'})()">
+          ➕ Empezar la nueva de todos modos
+        </button>
+        <button class="btn" style="padding:10px;background:transparent;color:var(--gris-texto)" onclick="this.closest('.modal-bg').remove()">
+          Cancelar
+        </button>
+      </div>
+      <p style="font-size:12px;color:var(--gris-texto);margin:14px 0 0">
+        Si empiezas la nueva, la de ${escape(info.razon_social || 'antes')} se queda abierta como está.
+      </p>
+    </div>`;
+  window._alEmpezarNuevaVisita = alEmpezarNueva || function () {};
+  document.body.appendChild(modal);
+}
+
+// Abre la visita que se había quedado sin terminar, en el catálogo con el que se hizo.
+async function retomarVisitaAbierta(visitId) {
+  try {
+    const r = await api('/api/visits/' + visitId);
+    if (!r.visit) throw new Error('Esa visita ya no existe');
+    appState.visitaActiva = r.visit;
+    appState.vista = 'catalogos';
+    appState.clienteActual = null;
+    appState.visitaVerId = null;
+    appState.catalogoActual = r.visit.catalog_id;
+    appState.visorIndice = 0;
+    await cargarAnotacionesDeVisita();
+    render();
+    if (typeof esModoSimple === 'function' && esModoSimple()) setTimeout(simpleBarraPedido, 400);
+    mostrarNotificacionOnline('🛒 Has vuelto a la visita de ' + (r.visit.cliente_nombre || 'ese cliente'), '#b45309');
+  } catch (e) {
+    alert('No se ha podido abrir esa visita: ' + e.message);
+  }
+}
+
 async function confirmarIniciarVisita(clientId, catalogId) {
   // Cerrar modal si está abierto
   document.querySelectorAll('.modal-bg').forEach(m => m.remove());
@@ -10172,12 +10244,24 @@ async function confirmarIniciarVisita(clientId, catalogId) {
     try {
       visita = await vIniciarVisita(clientId, catalogId, false);
     } catch (e) {
-      // 409: ya hay otra visita a medias con otro cliente. Se pregunta en vez de
-      // abrir una segunda en silencio y dejar la anterior olvidada sin enviar.
-      if (/sin terminar/i.test(e.message || '')) {
-        if (!confirm(e.message + '.\n\nSi continúas, esa visita se queda abierta tal cual y empiezas otra.\n\n¿Empezar la nueva visita?')) return;
-        visita = await vIniciarVisita(clientId, catalogId, true);
-      } else throw e;
+      // 409: ya hay otra visita a medias con otro cliente. Se le enseña cuál es y se le
+      // deja IR A ELLA, que es lo que casi siempre quiere hacer.
+      if (e && e.datos && e.datos.visita_abierta) {
+        dialogoVisitaSinTerminar(e.datos.visita_abierta, async () => {
+          try {
+            const nueva = await vIniciarVisita(clientId, catalogId, true);
+            appState.visitaActiva = nueva;
+            appState.vista = 'catalogos';
+            appState.clienteActual = null;
+            appState.visitaVerId = null;
+            appState.catalogoActual = catalogId;
+            appState.visorIndice = 0;
+            render();
+          } catch (e2) { alert('Error al iniciar visita: ' + e2.message); }
+        });
+        return;
+      }
+      throw e;
     }
     appState.visitaActiva = visita;
     if (!navigator.onLine) {

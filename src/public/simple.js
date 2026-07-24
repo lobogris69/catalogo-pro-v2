@@ -160,14 +160,21 @@ async function simpleEmpezarVisita(clientId, catalogId) {
     try {
       visita = await vIniciarVisita(clientId, cat, false);
     } catch (e) {
-      // El servidor avisa de que hay otra visita a medias. Que decida él, en cristiano.
-      if (/sin terminar/i.test(e.message || '')) {
-        if (!confirm(e.message + '.\n\nSi sigues, esa visita se queda como está y empiezas una nueva.\n\n¿Empiezo la nueva?')) {
-          renderSimpleInicio();
-          return;
-        }
-        visita = await vIniciarVisita(clientId, cat, true);
-      } else throw e;
+      // Hay otra visita a medias: se le enseña de quién es y desde cuándo, y puede ir
+      // a ella con un toque. Mismo cuadro que en el modo normal.
+      if (e && e.datos && e.datos.visita_abierta) {
+        dialogoVisitaSinTerminar(e.datos.visita_abierta, async () => {
+          try {
+            const nueva = await vIniciarVisita(clientId, cat, true);
+            appState.visitaActiva = nueva;
+            appState.catalogoActual = cat;
+            simpleSeguirVisita();
+          } catch (e2) { alert(e2.message); renderSimpleInicio(); }
+        });
+        renderSimpleInicio();
+        return;
+      }
+      throw e;
     }
     appState.visitaActiva = visita;
     if (!navigator.onLine) simpleAviso('📴 Sin cobertura: se guarda en la tablet');
