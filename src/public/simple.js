@@ -52,6 +52,8 @@ function renderSimpleInicio() {
         </button>
       `}
       <button class="simple-boton-secundario" onclick="simpleMisPedidos()">📁 Mis pedidos enviados</button>
+      ${(typeof appYaInstalada === 'function' && !appYaInstalada()) ? `
+        <button class="simple-boton-secundario" style="border-color:#93c5fd;color:#1d4ed8" onclick="instalarApp()">📲 Poner la app en la tablet</button>` : ''}
       <div class="simple-pie">
         <button class="simple-enlace" onclick="abrirIncidencia()">🛟 Necesito ayuda</button>
         <span>${APP_VERSION}</span>

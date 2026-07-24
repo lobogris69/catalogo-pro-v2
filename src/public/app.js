@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v183 · 24 jul 2026';
+const APP_VERSION = 'v184 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -2860,6 +2860,83 @@ function desactivarUsuario(id, nombre) {
 // ============================================================================
 // MI CUENTA
 // ============================================================================
+// ============================================================================
+// INSTALAR LA APP EN LA TABLET
+// ----------------------------------------------------------------------------
+// Instalada se abre como una aplicación de verdad: icono propio en la pantalla de
+// inicio y SIN la barra del navegador (el manifest la declara "standalone").
+// Android/Chrome deja pedirlo desde dentro (evento beforeinstallprompt); en iPad hay
+// que hacerlo desde Compartir → Añadir a pantalla de inicio, así que ahí se explica.
+// ============================================================================
+let _promptInstalar = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();          // el aviso lo damos nosotros, cuando y donde queramos
+  _promptInstalar = e;
+  // Si la pantalla ya está pintada, que aparezca el botón sin tener que recargar
+  const b = document.getElementById('btn-instalar-app');
+  if (b) b.style.display = '';
+});
+window.addEventListener('appinstalled', () => {
+  _promptInstalar = null;
+  mostrarNotificacionOnline('✅ App instalada. Ábrela desde el icono de la pantalla de inicio', '#16a34a');
+});
+
+function appYaInstalada() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+function _esIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPad moderno
+}
+
+async function instalarApp() {
+  if (appYaInstalada()) {
+    alert('✅ Ya estás usando la app instalada.\n\nSi ves la barra del navegador, cierra esto y abre CatalogPRO desde su icono en la pantalla de inicio.');
+    return;
+  }
+  // Android / Chrome: instalación en un toque
+  if (_promptInstalar) {
+    _promptInstalar.prompt();
+    const res = await _promptInstalar.userChoice.catch(() => null);
+    if (res && res.outcome === 'accepted') {
+      mostrarNotificacionOnline('✅ Instalando… busca el icono de CatalogPRO en la pantalla de inicio', '#16a34a');
+    }
+    _promptInstalar = null;
+    return;
+  }
+  // iPad / Safari y demás: hay que hacerlo a mano, se explica con dibujos
+  const ios = _esIOS();
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>📲 Poner CatalogPRO en la tablet</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p style="font-size:14px;margin:0 0 12px">Así queda como una aplicación normal: con su icono y <b>sin la barra del navegador</b>.</p>
+      ${ios ? `
+        <ol style="font-size:15px;line-height:1.9;padding-left:20px;margin:0">
+          <li>Toca el botón <b>Compartir</b> <span style="font-size:18px">⬆️</span> (arriba, al lado de la dirección).</li>
+          <li>Baja y toca <b>“Añadir a pantalla de inicio”</b>.</li>
+          <li>Toca <b>Añadir</b> arriba a la derecha.</li>
+        </ol>
+        <p style="font-size:13px;color:var(--gris-texto);margin-top:14px">A partir de ahí, entra siempre por el icono de CatalogPRO, no por el navegador.</p>
+      ` : `
+        <ol style="font-size:15px;line-height:1.9;padding-left:20px;margin:0">
+          <li>Toca el botón de los <b>tres puntos ⋮</b> (arriba a la derecha del navegador).</li>
+          <li>Toca <b>“Instalar aplicación”</b> o <b>“Añadir a pantalla de inicio”</b>.</li>
+          <li>Confirma con <b>Instalar</b>.</li>
+        </ol>
+        <p style="font-size:13px;color:var(--gris-texto);margin-top:14px">A partir de ahí, entra siempre por el icono de CatalogPRO, no por el navegador.</p>
+      `}
+      <div class="modal-acciones">
+        <button class="btn btn-primary" onclick="this.closest('.modal-bg').remove()">Entendido</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
 async function renderMiCuenta() {
   const $v = document.getElementById('vista-contenido');
   // Refrescar perfil del usuario para tener el toggle de notificaciones al día
@@ -2878,6 +2955,17 @@ async function renderMiCuenta() {
           <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">${escape(user.name)} · ${user.role === 'admin' ? 'Administrador' : 'Comercial'}</div>
         </div>
       </div>
+
+      ${appYaInstalada() ? `
+        <div class="editor-panel" style="margin-bottom:1rem;background:#f0fdf4;border-color:#bbf7d0">
+          <h3 style="margin:0">✅ App instalada en esta tablet</h3>
+          <p style="font-size:13px;color:#166534;margin:6px 0 0">Estás usando CatalogPRO como aplicación, sin barra del navegador.</p>
+        </div>` : `
+        <div class="editor-panel" style="margin-bottom:1rem;background:#eff6ff;border-color:#bfdbfe">
+          <h3 style="margin:0 0 6px">📲 Poner la app en la tablet</h3>
+          <p style="font-size:13px;color:#1e40af;margin:0 0 10px">Se instala con su icono y <b>se abre sin la barra del navegador</b>, como cualquier otra aplicación. También va más rápido y funciona sin cobertura.</p>
+          <button class="btn btn-primary" onclick="instalarApp()">📲 Instalar CatalogPRO</button>
+        </div>`}
 
       <div class="editor-panel" style="margin-bottom:1rem">
         <h3>🔑 Cambiar mi contraseña</h3>

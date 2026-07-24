@@ -480,6 +480,21 @@ const MANUAL_COMERCIAL = [
     ]
   },
   {
+    id: 'c-instalar',
+    icono: '📲',
+    titulo: 'Poner la app en la tablet',
+    para: 'Hazlo el primer día. Así se abre como una aplicación normal, sin la barra del navegador.',
+    pasos: [
+      'Entra en CatalogPRO con el navegador y ve a <b>⚙️ Mi cuenta</b>.',
+      'Pulsa <b>📲 Instalar CatalogPRO</b>. En Android se instala en un toque; en iPad te dice los tres pasos (Compartir → Añadir a pantalla de inicio → Añadir).',
+      'A partir de ese momento entra <b>SIEMPRE por el icono</b> de CatalogPRO, no por el navegador.'
+    ],
+    ojo: [
+      'Instalada ocupa toda la pantalla: no verás la barra de direcciones ni las pestañas.',
+      'Si algún día ves la barra del navegador, es que has entrado por el navegador: cierra y entra por el icono.'
+    ]
+  },
+  {
     id: 'c-sencillo',
     icono: '👶',
     titulo: 'Si tu app se ve "en grande"',
