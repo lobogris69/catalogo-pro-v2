@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v221 · 27 jul 2026';
+const APP_VERSION = 'v222 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3272,6 +3272,15 @@ async function _soloVisorPrepararOffline(cats) {
   }
 }
 
+// Abre/cierra el buscador + categorías en modo solo-visor (plegados para dejar la lámina grande).
+function toggleVisorBuscadorSolo(btn) {
+  const cab = document.querySelector('.visor-cabecera');
+  if (!cab) return;
+  const abierto = cab.classList.toggle('solovisor-buscar-abierto');
+  if (btn) btn.classList.toggle('activo', abierto);
+  if (abierto) { const inp = document.getElementById('visor-buscar'); if (inp) setTimeout(() => inp.focus(), 50); }
+}
+
 function _soloVisorAbrir(catalogId, unico) {
   appState.catalogoActual = catalogId;
   renderVisorComercial(catalogId);
@@ -3473,6 +3482,7 @@ function pintarVisor() {
         </div>
         ${appState.visitaActiva ? `<div style="display:flex;align-items:center">${ayuda('Estás en visita. Toca las zonas marcadas sobre las láminas para añadir productos al pedido (aparecen al pasar el dedo o ratón). También puedes anotar manualmente con el icono ✏️. Al terminar, pulsa "Cerrar visita" para enviar el pedido.', 'abajo')}</div>` : ''}
         <div class="visor-modo-switch">
+          <button class="visor-modo-btn solovisor-solo" onclick="toggleVisorBuscadorSolo(this)" title="Buscar / categorías">🔍</button>
           ${appState.visitaActiva ? `<button class="visor-modo-btn" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Última visita con este cliente">📋</button>` : ''}
           <button class="visor-modo-btn" onclick="abrirModalDescargarCatalogo(${_visorCatalog.id}, '${escape((_visorCatalog.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">📥</button>
           <button class="visor-modo-btn ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
