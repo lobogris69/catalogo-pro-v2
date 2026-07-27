@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v203 · 27 jul 2026';
+const APP_VERSION = 'v204 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -7781,6 +7781,7 @@ function _archivoCard(c) {
                   <button class="btn-card-mini" onclick="archivoVerVersion(${v.id})" title="Ver las láminas de esta versión">👁 Ver</button>
                   ${v.tiene_pdf ? `<button class="btn-card-mini" onclick="descargarVersionPDF(${v.id})">📕 PDF${pdfMB ? ' (' + pdfMB + ' MB)' : ''}</button>` : ''}
                   ${v.tiene_zip ? `<button class="btn-card-mini" onclick="descargarVersionZIP(${v.id})">📦 ZIP${zipMB ? ' (' + zipMB + ' MB)' : ''}</button>` : ''}
+                  ${c.tipo === 'express' ? `<button class="btn-card-mini btn-card-restaurar" onclick="archivoRestaurar(${c.id}, ${v.id}, ${v.version_number}, ${JSON.stringify(c.name).replace(/"/g, '&quot;')})" title="Dejar el Express como estaba en esta versión">♻️ Restaurar</button>` : ''}
                 </span>
               </div>`;
           }).join('')}
@@ -7820,6 +7821,24 @@ function archivoBuscarLamina(q) {
           </div>`;
       }).join('')}`;
   }, 320);
+}
+
+// Restaurar un Express a una versión pasada. Antes guarda una foto de lo actual
+// (cerrar versión) para no perder nada, luego repone las láminas de la versión elegida.
+async function archivoRestaurar(catId, vid, vnum, nombre) {
+  if (!confirm(`¿Restaurar «${nombre}» a la versión V${vnum}?\n\nSe reemplazan las láminas y el orden actuales del Express por los de esa versión.\n\nAntes guardo una foto (versión) de lo que hay ahora, por si acaso.`)) return;
+  try {
+    // 1. Guardar foto de lo actual. Si ya estaba cerrada o está vacío, se ignora y seguimos.
+    try {
+      await api('/api/catalogs/' + catId + '/close-version', { method: 'POST', body: { notas_version: 'Copia automática antes de restaurar a V' + vnum } });
+    } catch (_) { /* ya cerrada / vacía: no bloquea la restauración */ }
+    // 2. Restaurar.
+    const r = await api('/api/catalogs/' + catId + '/restaurar-version/' + vid, { method: 'POST' });
+    mostrarNotificacionOnline('♻️ Restaurado: ' + (r.restauradas || 0) + ' láminas' + (r.omitidas ? ' · ' + r.omitidas + ' ya no existen en el maestro' : ''), '#16a34a');
+    renderArchivo();
+  } catch (e) {
+    alert('No se pudo restaurar: ' + e.message);
+  }
 }
 
 // Ver una versión POR DENTRO: sus láminas tal como estaban al cerrarla.

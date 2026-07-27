@@ -1605,7 +1605,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v203-archivo-inc2-ver-buscar-27jul',
+      build: 'v204-archivo-inc3a-restaurar-express-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2632,6 +2632,49 @@ app.get('/api/archivo', verifyToken, requireRealAdmin, async (_req: AuthRequest,
     res.json({ success: true, maestros, express });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ARCHIVO: RESTAURAR un Express a una versión pasada. Repone la lista y el orden de
+// láminas del snapshot (solo las que sigan existiendo en el maestro). No toca el maestro.
+// Consejo: cerrar antes la versión actual (lo hace el frontend) para no perder lo de ahora.
+app.post('/api/catalogs/:id/restaurar-version/:vid', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
+  try {
+    const catId = Number(req.params.id);
+    const vid = Number(req.params.vid);
+    const cat = await client.query(`SELECT tipo FROM catalogs WHERE id=$1`, [catId]);
+    if (!cat.rows.length || cat.rows[0].tipo !== 'express') {
+      res.status(400).json({ success: false, error: 'De momento solo se pueden restaurar catálogos Express' });
+      return;
+    }
+    const v = await client.query(`SELECT snapshot_json FROM catalog_versions WHERE id=$1 AND catalog_id=$2`, [vid, catId]);
+    if (!v.rows.length) { res.status(404).json({ success: false, error: 'Esa versión no es de este catálogo' }); return; }
+    let snap = v.rows[0].snapshot_json;
+    if (typeof snap === 'string') { try { snap = JSON.parse(snap); } catch { snap = {}; } }
+    const snapSheets = (snap && Array.isArray(snap.sheets)) ? snap.sheets : [];
+    if (!snapSheets.length) { res.status(400).json({ success: false, error: 'Esa versión no tiene láminas guardadas' }); return; }
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM express_sheets WHERE express_catalog_id=$1`, [catId]);
+    let restauradas = 0, omitidas = 0;
+    let orden = 1;
+    for (const s of snapSheets) {
+      // Solo si la lámina sigue existiendo en el maestro (si se borró, no se puede reponer aquí).
+      const existe = await client.query(`SELECT 1 FROM sheets WHERE id=$1`, [s.id]);
+      if (!existe.rows.length) { omitidas++; continue; }
+      await client.query(
+        `INSERT INTO express_sheets (express_catalog_id, sheet_id, orden) VALUES ($1,$2,$3)
+         ON CONFLICT (express_catalog_id, sheet_id) DO NOTHING`, [catId, s.id, orden]);
+      orden++; restauradas++;
+    }
+    await client.query('UPDATE catalogs SET updated_at = NOW() WHERE id=$1', [catId]);
+    await client.query('COMMIT');
+    res.json({ success: true, restauradas, omitidas });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ success: false, error: (e as Error).message });
+  } finally {
+    client.release();
   }
 });
 
