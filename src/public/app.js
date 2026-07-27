@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v210 · 27 jul 2026';
+const APP_VERSION = 'v211 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -1034,6 +1034,10 @@ async function renderEditorExpress(id, expressData) {
   _expressEditor.catalogId = id;
   _expressEditor.expressData = expressData;
   _expressEditor.seleccionMaestro = new Set();
+  // Empezar SIEMPRE sin filtros: si no, una búsqueda anterior (aunque no diera
+  // resultados) se quedaba pegada al reabrir y parecía una pantalla vacía rota.
+  _expressEditor.filtroMaestro = '';
+  _expressEditor.filtroExpress = '';
 
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogo Express…</div></div>`;
@@ -1136,7 +1140,7 @@ function pintarEditorExpress() {
           </div>
           <div class="express-lista" id="lista-maestro">
             ${masterFiltradas.length === 0
-              ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">${masterSheets.length === 0 ? 'El maestro padre no tiene láminas todavía.' : 'No hay resultados con ese filtro.'}</p>`
+              ? `<div style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">${masterSheets.length === 0 ? 'El maestro padre no tiene láminas todavía.' : `No hay ninguna lámina con «${escape(_expressEditor.filtroMaestro)}».<br><button class="btn btn-secondary btn-pequeno" style="margin-top:8px" onclick="limpiarFiltroMaestro()">✕ Quitar búsqueda</button>`}</div>`
               : masterFiltradas.map((s, idx) => {
                 const yaEsta = !!s.ya_en_express;
                 const seleccionada = _expressEditor.seleccionMaestro.has(s.id);
@@ -1173,7 +1177,7 @@ function pintarEditorExpress() {
                  style="width:100%;padding:8px 12px;border:1px solid var(--gris-borde);border-radius:8px;font-size:13px;margin-bottom:8px;outline:none">
           <div class="express-lista" id="lista-express">
             ${expressFiltradas.length === 0
-              ? `<p style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">${sheetsExpress.length === 0 ? 'El Express aún no tiene láminas. Marca alguna del maestro y pulsa "Añadir →".' : 'No hay resultados con ese filtro.'}</p>`
+              ? `<div style="color:var(--gris-texto);font-size:13px;text-align:center;padding:1rem">${sheetsExpress.length === 0 ? 'El Express aún no tiene láminas. Marca alguna del maestro y pulsa "Añadir →".' : `No hay ninguna lámina con «${escape(_expressEditor.filtroExpress)}».<br><button class="btn btn-secondary btn-pequeno" style="margin-top:8px" onclick="limpiarFiltroExpress()">✕ Quitar búsqueda</button>`}</div>`
               : expressFiltradas.map((s, idx) => `
                 <div class="express-fila lamina-fila" data-id="${s.id}" draggable="true">
                   <div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>
@@ -1238,6 +1242,10 @@ function pintarEditorExpress() {
   // Drag & drop en la lista del Express (reordenar)
   activarDragDropExpress(id);
 }
+
+// Quitar la búsqueda de cada columna del editor Express (botón del estado vacío).
+function limpiarFiltroMaestro() { _expressEditor.filtroMaestro = ''; pintarEditorExpress(); }
+function limpiarFiltroExpress() { _expressEditor.filtroExpress = ''; pintarEditorExpress(); }
 
 function actualizarContadorSeleccion() {
   const n = _expressEditor.seleccionMaestro.size;
