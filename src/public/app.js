@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v211 · 27 jul 2026';
+const APP_VERSION = 'v212 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -870,7 +870,7 @@ async function renderEditorCatalogo(id) {
                 <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${idx + 1}" data-cambio="${s.ultimo_cambio || ''}" data-pendiente="${_pendienteRepaso(s) ? '1' : '0'}" ${esAdmin ? 'draggable="true"' : ''}>
                   ${esAdmin ? `<div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>` : ''}
                   <div class="lamina-numero">${idx + 1}</div>
-                  <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
+                  <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async" draggable="false" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
                     ${esAdmin ? (
@@ -1152,7 +1152,7 @@ function pintarEditorExpress() {
                            ${seleccionada ? 'checked' : ''}
                            title="${yaEsta ? 'Ya está en el Express' : 'Seleccionar para añadir'}">
                     <div class="lamina-numero" style="font-size:11px">${s.orden}</div>
-                    <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async"
+                    <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async" draggable="false"
                          onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${s.orden})">
                     <div class="lamina-info">
                       <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
@@ -1182,7 +1182,7 @@ function pintarEditorExpress() {
                 <div class="express-fila lamina-fila" data-id="${s.id}" draggable="true">
                   <div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>
                   <div class="lamina-numero">${idx + 1}</div>
-                  <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async"
+                  <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async" draggable="false"
                        onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
@@ -18390,7 +18390,7 @@ function pintarMosaicoReorden() {
              inputmode="numeric" draggable="false" data-pos="${idx + 1}">
       <div class="mosaico-marca" title="Marcar esta lámina">${_mosaicoSel.has(s.id) ? '✓' : ''}</div>
       <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="mosaico-img" alt="" loading="lazy" decoding="async"
-           onerror="this.style.background='#374151'">
+           draggable="false" onerror="this.style.background='#374151'">
       <div class="mosaico-titulo">${escape(s.titulo || 'Sin título')}</div>
     `;
     grid.appendChild(card);

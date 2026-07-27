@@ -4466,6 +4466,18 @@ body.con-banner-update {
 }
 .mosaico-nav-btn:active { transform: scale(.92); }
 
+/* Las imágenes NO se arrastran solas: al arrastrar sobre una foto se mueve la TARJETA
+   (reordenar), no la imagen suelta. Antes la imagen nativa podía salirse de la ventana
+   y soltarse en el escritorio/barra de Windows, que abría archivos. */
+.mosaico-img, .lamina-mini {
+  -webkit-user-drag: none;
+  -khtml-user-drag: none;
+  -moz-user-drag: none;
+  user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* ---------- ARCHIVO DE CATÁLOGOS ---------- */
 .archivo-cabecera { margin: 8px 0 14px; }
 .archivo-buscador {
