@@ -2793,6 +2793,42 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
 
 /* SOLO VISOR: se ocultan las pestañas de navegación; el comercial solo mira catálogos. */
 body.solo-visor .navtabs { display: none !important; }
+
+/* SOLO VISOR: la lámina aprovecha TODA la altura de la pantalla (sin franjas arriba/abajo).
+   En el visor normal la imagen se dimensiona SOLO por ancho (contenedor max-width:720px + img
+   width:100%): una lámina vertical se queda fija y en tablets grandes/verticales sobra altura.
+   Aquí solo se MIRA (no hay zonas clicables), así que la imagen puede limitarse también por la
+   ALTURA disponible y crecer hasta llenar la pantalla. El zoom (transform en .visor-imagen-zoom)
+   sigue funcionando igual. */
+body.solo-visor .visor-cabecera { padding: 8px 12px; gap: 6px; }
+body.solo-visor .visor-presentacion {
+  padding: 6px;
+  gap: 8px;
+  min-height: calc(100dvh - 66px);
+  justify-content: center;
+}
+body.solo-visor .visor-imagen-contenedor {
+  max-width: min(96vw, 100%);
+  max-height: calc(100dvh - 150px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+}
+body.solo-visor .visor-imagen-zoom {
+  width: auto;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+body.solo-visor .visor-imagen {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: calc(100dvh - 158px);
+}
 .solovisor-volver {
   position: fixed; top: 10px; left: 10px; z-index: 9700;
   min-height: 44px; padding: 0 16px; border: none; border-radius: 12px;
