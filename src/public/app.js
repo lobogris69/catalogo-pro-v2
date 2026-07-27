@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v205 · 27 jul 2026';
+const APP_VERSION = 'v206 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -786,7 +786,7 @@ async function renderEditorCatalogo(id) {
               ${sheets.length > 0 && esAdminReal() ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirInformePrecios(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Informe de qué láminas hay que revisar/actualizar a mano en precios dinámicos">📋 Informe precios</button>` : ''}
               ${sheets.length > 0 && esAdminReal() ? `<button class="btn btn-pequeno" style="background:#fef3c7;color:#92400e" onclick="igualarPreciosCatalogo(${id}, this)" title="Revisa todo el catálogo y deja cada columna de precios del mismo tamaño de letra">⚖️ Igualar tamaños de precio</button>${ayuda('La IA mide cada precio por separado y a veces uno sale más grande que sus vecinos. Esto lleva a los raros al tamaño normal de su columna. No toca lo que hayas ajustado a mano.', 'izq')}` : ''}
               ${sheets.length > 0 && esAdminReal() ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirBackupMega(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Copia de respaldo en MEGA como fotos sueltas para cada comercial">☁️ Backup MEGA</button>${ayuda('Sube todas las láminas como PNG sueltos a MEGA en la carpeta de cada comercial (o en /General si el catálogo está asignado a todos). Sistema de respaldo por si la app falla: los comerciales abren la carpeta con el visor de fotos del móvil.', 'izq')}` : ''}
-              ${sheets.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo actual: genera PDF + ZIP de respaldo descargables, queda registrado en el historial, y la versión sube V1→V2. Útil al final de cada temporada.', 'izq')}` : ''}
+              ${sheets.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}', ${sheets.length})" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo actual: genera PDF + ZIP de respaldo descargables, queda registrado en el historial, y la versión sube V1→V2. Útil al final de cada temporada.', 'izq')}` : ''}
               ${sheets.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="borrarTodasLaminas(${id}, ${sheets.length})">🗑️ Borrar todas</button>` : ''}
             </div>
           ` : ''}
@@ -1088,7 +1088,7 @@ function pintarEditorExpress() {
           <button class="btn btn-secondary btn-pequeno" onclick="abrirAsignacionComerciales(${id})">👥 Asignar a comerciales</button>
           ${sheetsExpress.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirMosaicoLaminas(${id})" title="Reordenar láminas en mosaico visual">🔲 Mosaico</button>${ayuda('Vista en cuadrícula para reordenar las láminas. Arrastra y suelta o escribe el número de orden.')}` : ''}
           ${sheetsExpress.length > 0 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirModalDescargarPdf(${id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar PDF del catálogo">📥 Descargar PDF</button>${ayuda('Genera el PDF del catálogo Express en alta calidad o pequeño (para enviar por WhatsApp/email a clientes).')}` : ''}
-          ${sheetsExpress.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo Express actual: PDF+ZIP descargables, queda en historial, V1→V2. Útil para archivar ofertas pasadas (ej: ofertas mayo, ofertas verano).', 'izq')}` : ''}
+          ${sheetsExpress.length > 0 ? `<button class="btn btn-primary btn-pequeno" onclick="abrirCerrarVersion(${id}, ${c.version || 1}, '${escape((c.name || '').replace(/'/g, "\\'"))}', ${sheetsExpress.length})" title="Cerrar versión actual y empezar la siguiente">📌 Cerrar versión</button>${ayuda('Guarda una "foto" del catálogo Express actual: PDF+ZIP descargables, queda en historial, V1→V2. Útil para archivar ofertas pasadas (ej: ofertas mayo, ofertas verano).', 'izq')}` : ''}
           <button class="btn btn-pequeno" style="background:#dcfce7;color:#166534;font-weight:700" onclick="copiarMaestroAExpress(${id})" title="Trae todas las láminas del maestro con su mismo orden. Lo normal: partir del catálogo completo y quitar las que este comercial no lleva.">📥 Traer todas las del maestro</button>
           ${nuevasDelMaestro.length > 0 ? `<button class="btn btn-pequeno" style="background:#fef3c7;color:#92400e;font-weight:700" onclick="anadirNuevasDelMaestro(${id})" title="Láminas que has subido al maestro después de crear este Express y que aquí todavía no están.">🆕 ${nuevasDelMaestro.length} lámina${nuevasDelMaestro.length === 1 ? '' : 's'} nueva${nuevasDelMaestro.length === 1 ? '' : 's'} sin añadir</button>` : ''}
           ${sheetsExpress.length > 0 ? `<button class="btn btn-danger btn-pequeno" onclick="vaciarExpress(${id}, ${sheetsExpress.length})">🗑️ Vaciar Express</button>` : ''}
@@ -9042,7 +9042,11 @@ async function enviarLinkMegaEmail(userId, url, catalogName, version, folderName
 }
 
 // Modal para confirmar el cierre de versión, con campo opcional de notas
-function abrirCerrarVersion(catalogId, versionActual, nombreCatalogo) {
+function abrirCerrarVersion(catalogId, versionActual, nombreCatalogo, numLaminas) {
+  numLaminas = Number(numLaminas) || 0;
+  // Estimación aproximada: generar PDF + ZIP escala con el nº de láminas. ~0,25 s/lámina
+  // + 3 s de base. Es solo una guía; el contador de segundos muestra lo REAL.
+  const estSeg = Math.max(4, Math.round(numLaminas * 0.25) + 3);
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
   modal.innerHTML = `
@@ -9063,7 +9067,17 @@ function abrirCerrarVersion(catalogId, versionActual, nombreCatalogo) {
         <textarea id="cerrar-version-notas" rows="2" placeholder="Describir brevemente esta versión..."></textarea>
       </div>
       <div id="cerrar-version-error"></div>
-      <div class="modal-acciones">
+      <div id="cerrar-version-progreso" style="display:none;margin:6px 0 4px">
+        <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;margin-bottom:6px">
+          <span>⏳ Generando PDF y ZIP…</span>
+          <span id="cerrar-version-cronos">0 s</span>
+        </div>
+        <div class="cerrar-barra"><div class="cerrar-barra-fill" id="cerrar-version-fill"></div></div>
+        <div style="font-size:11.5px;color:var(--gris-texto);margin-top:6px">
+          ${numLaminas} láminas · suele tardar ~${estSeg} s · no cierres esta ventana
+        </div>
+      </div>
+      <div class="modal-acciones" id="cerrar-version-acciones">
         <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
         <button class="btn btn-primary" id="btn-confirmar-cerrar">📌 Cerrar versión</button>
       </div>
@@ -9072,26 +9086,43 @@ function abrirCerrarVersion(catalogId, versionActual, nombreCatalogo) {
   document.body.appendChild(modal);
 
   document.getElementById('btn-confirmar-cerrar').addEventListener('click', async () => {
-    const $btn = document.getElementById('btn-confirmar-cerrar');
     const $err = document.getElementById('cerrar-version-error');
     const notas = (document.getElementById('cerrar-version-notas').value || '').trim();
-    $btn.disabled = true;
-    $btn.textContent = '⏳ Generando PDF y ZIP…';
     $err.innerHTML = '';
+    // Cambiar a modo "trabajando": ocultar botones, mostrar barra + contador.
+    document.getElementById('cerrar-version-acciones').style.display = 'none';
+    document.getElementById('cerrar-version-progreso').style.display = '';
+    const $fill = document.getElementById('cerrar-version-fill');
+    const $cronos = document.getElementById('cerrar-version-cronos');
+    const t0 = Date.now();
+    // La barra avanza hacia la estimación pero se queda en 92% hasta que llega la
+    // respuesta REAL: nunca dice "100%" antes de tiempo (progreso honesto).
+    const timer = setInterval(() => {
+      const seg = (Date.now() - t0) / 1000;
+      $cronos.textContent = Math.floor(seg) + ' s';
+      const pct = Math.min(92, (seg / estSeg) * 92);
+      $fill.style.width = pct.toFixed(1) + '%';
+    }, 250);
     try {
       const r = await api('/api/catalogs/' + catalogId + '/close-version', {
         method: 'POST',
         body: { notas_version: notas }
       });
-      modal.remove();
-      // Refrescar editor — ahora mostrando el historial
-      appState.editorPestana = 'historial';
-      renderEditorCatalogo(catalogId);
-      alert(`✅ Versión V${r.version_cerrada} cerrada con éxito.\n\nEl catálogo ahora es V${r.nueva_version} y sigue editable.`);
+      clearInterval(timer);
+      $fill.style.width = '100%';
+      $cronos.textContent = Math.floor((Date.now() - t0) / 1000) + ' s ✓';
+      setTimeout(() => {
+        modal.remove();
+        appState.editorPestana = 'historial';
+        renderEditorCatalogo(catalogId);
+        alert(`✅ Versión V${r.version_cerrada} cerrada con éxito.\n\nEl catálogo ahora es V${r.nueva_version} y sigue editable.`);
+      }, 350);
     } catch (err) {
+      clearInterval(timer);
       $err.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
-      $btn.disabled = false;
-      $btn.textContent = '📌 Cerrar versión';
+      document.getElementById('cerrar-version-progreso').style.display = 'none';
+      const $acc = document.getElementById('cerrar-version-acciones');
+      $acc.style.display = '';
     }
   });
 }
