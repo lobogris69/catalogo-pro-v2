@@ -1605,7 +1605,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v201-express-ordenar-como-maestro-27jul',
+      build: 'v202-archivo-catalogos-inc1-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2575,6 +2575,61 @@ app.post('/api/catalogs/:id/close-version', verifyToken, requireRealAdmin, async
       nueva_version: versionACerrar + 1,
       registro: r.rows[0]
     });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ARCHIVO DE CATÁLOGOS: vista global de todos los catálogos (maestros y express)
+// con sus versiones cerradas. Solo admin real. Solo lectura.
+app.get('/api/archivo', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    // Todos los catálogos con su nº de láminas vivas y el maestro padre (si express).
+    const cats = await pool.query(`
+      SELECT c.id, c.name, c.tipo, c.version, c.estado, c.parent_id, c.created_at, c.updated_at,
+        (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
+        CASE
+          WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
+          ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
+        END AS sheet_count
+      FROM catalogs c
+      ORDER BY c.tipo, c.name
+    `);
+    // Comerciales asignados a cada catálogo (para agrupar los express por comercial).
+    const asig = await pool.query(`
+      SELECT ca.catalog_id, u.name AS comercial_nombre, u.id AS comercial_id
+      FROM catalog_assignments ca JOIN users u ON u.id = ca.user_id
+      ORDER BY u.name
+    `);
+    const asigPorCat: Record<number, any[]> = {};
+    for (const a of asig.rows) {
+      (asigPorCat[a.catalog_id] = asigPorCat[a.catalog_id] || []).push({ id: a.comercial_id, nombre: a.comercial_nombre });
+    }
+    // Todas las versiones cerradas, de todos los catálogos, de una vez.
+    const vers = await pool.query(`
+      SELECT cv.id, cv.catalog_id, cv.version_number, cv.notas_version, cv.published_at,
+             cv.pdf_path IS NOT NULL AS tiene_pdf, cv.zip_path IS NOT NULL AS tiene_zip,
+             cv.pdf_size_bytes, cv.zip_size_bytes, cv.total_laminas, cv.status,
+             u.name AS published_by_name
+      FROM catalog_versions cv
+      LEFT JOIN users u ON u.id = cv.published_by
+      ORDER BY cv.version_number DESC
+    `);
+    const versPorCat: Record<number, any[]> = {};
+    for (const v of vers.rows) {
+      (versPorCat[v.catalog_id] = versPorCat[v.catalog_id] || []).push(v);
+    }
+    const maestros: any[] = [], express: any[] = [];
+    for (const c of cats.rows) {
+      const item = {
+        ...c,
+        comerciales: asigPorCat[c.id] || [],
+        versiones: versPorCat[c.id] || [],
+        num_versiones: (versPorCat[c.id] || []).length
+      };
+      if (c.tipo === 'express') express.push(item); else maestros.push(item);
+    }
+    res.json({ success: true, maestros, express });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }

@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v201 · 27 jul 2026';
+const APP_VERSION = 'v202 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -351,6 +351,7 @@ async function renderApp() {
         ${esOficina ? '' : `<button class="navtab ${appState.vista === 'planning' ? 'navtab-activa' : ''}" onclick="irA('planning')">🗓️ Planning</button>`}
         ${esOficina ? '' : `<button class="navtab ${appState.vista === 'aula' ? 'navtab-activa' : ''}" onclick="irA('aula')">🎓 Aula</button>`}
         ${esOficina ? '' : `<button class="navtab ${appState.vista === 'mapa' ? 'navtab-activa' : ''}" onclick="irA('mapa')">🗺️ Mapa</button>`}
+        ${esAdmin ? `<button class="navtab ${appState.vista === 'archivo' ? 'navtab-activa' : ''}" onclick="irA('archivo')" title="Archivo de catálogos y versiones">🗄️ Archivo</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'productos' ? 'navtab-activa' : ''}" onclick="irA('productos')">📦 Productos</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
         ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
@@ -403,7 +404,7 @@ function routerVista() {
 
   // I.2: vistas que NO funcionan offline (requieren API y no tienen cache offline)
   // Clientes y Planning SÍ funcionan offline (I.3 + I-Planning) leyendo desde IndexedDB
-  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion', 'productos', 'dashboard', 'aula'];
+  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion', 'productos', 'dashboard', 'aula', 'archivo'];
   if (!navigator.onLine && vistasOnlineOnly.includes(appState.vista)) {
     renderVistaNoDisponibleOffline(appState.vista);
     return;
@@ -415,6 +416,10 @@ function routerVista() {
   }
   if (appState.vista === 'aula') {
     renderAula();
+    return;
+  }
+  if (appState.vista === 'archivo') {
+    renderArchivo();
     return;
   }
   if (appState.vista === 'coordinacion') {
@@ -7670,6 +7675,121 @@ function cambiarPestanaEditorExpress(pestana) {
 }
 
 // Pinta la pestaña Historial dentro del editor de catálogo
+// ============================================================================
+// ===== ARCHIVO DE CATÁLOGOS (admin): todas las versiones en un solo sitio =====
+// ============================================================================
+let _archivoData = null;
+let _archivoFiltro = '';
+
+async function renderArchivo() {
+  const $v = document.getElementById('vista-contenido');
+  if (!$v) return;
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando archivo…</div></div>`;
+  try {
+    _archivoData = await api('/api/archivo');
+  } catch (e) {
+    $v.innerHTML = `<div class="contenedor"><div class="error-msg">Error: ${escape(e.message)}</div></div>`;
+    return;
+  }
+  pintarArchivo();
+}
+
+function _archivoTotalVersiones() {
+  const d = _archivoData;
+  if (!d) return 0;
+  return [...(d.maestros || []), ...(d.express || [])].reduce((n, c) => n + (c.num_versiones || 0), 0);
+}
+
+function pintarArchivo() {
+  const $v = document.getElementById('vista-contenido');
+  if (!$v || !_archivoData) return;
+  const q = _archivoFiltro.trim().toLowerCase();
+  const coincide = (c) => !q || (c.name || '').toLowerCase().includes(q) ||
+    (c.parent_name || '').toLowerCase().includes(q) ||
+    (c.comerciales || []).some(x => (x.nombre || '').toLowerCase().includes(q));
+
+  const maestros = (_archivoData.maestros || []).filter(coincide);
+  const express = (_archivoData.express || []).filter(coincide);
+
+  // Agrupar los Express por comercial (un express puede estar asignado a varios).
+  const porComercial = {};
+  for (const c of express) {
+    const nombres = (c.comerciales || []).length ? c.comerciales.map(x => x.nombre) : ['— Sin asignar'];
+    for (const n of nombres) (porComercial[n] = porComercial[n] || []).push(c);
+  }
+  const comerciales = Object.keys(porComercial).sort((a, b) => a.localeCompare(b, 'es'));
+
+  $v.innerHTML = `
+    <div class="contenedor">
+      <div class="archivo-cabecera">
+        <div>
+          <h2 style="margin:0">🗄️ Archivo de catálogos</h2>
+          <p style="color:var(--gris-texto);font-size:13px;margin:4px 0 0">
+            Todas las versiones cerradas de tus catálogos, organizadas por maestros y por comercial.
+            ${_archivoTotalVersiones()} versión${_archivoTotalVersiones() === 1 ? '' : 'es'} guardada${_archivoTotalVersiones() === 1 ? '' : 's'}.
+          </p>
+        </div>
+      </div>
+      <input type="search" class="archivo-buscador" placeholder="🔍 Buscar catálogo o comercial…"
+             value="${escape(_archivoFiltro)}" oninput="_archivoFiltro=this.value; pintarArchivo(); const i=document.querySelector('.archivo-buscador'); if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}">
+
+      <div class="archivo-seccion-tit">📕 Maestros (${maestros.length})</div>
+      ${maestros.length ? maestros.map(_archivoCard).join('') : '<div class="archivo-vacio">No hay maestros que coincidan.</div>'}
+
+      <div class="archivo-seccion-tit" style="margin-top:26px">🚚 Express por comercial</div>
+      ${comerciales.length ? comerciales.map(nombre => `
+        <div class="archivo-comercial">
+          <div class="archivo-comercial-tit">👤 ${escape(nombre)}</div>
+          ${porComercial[nombre].map(_archivoCard).join('')}
+        </div>
+      `).join('') : '<div class="archivo-vacio">No hay catálogos Express que coincidan.</div>'}
+    </div>`;
+}
+
+function _archivoCard(c) {
+  const fechaUpd = c.updated_at ? new Date(c.updated_at).toLocaleDateString('es-ES') : '';
+  const versiones = c.versiones || [];
+  return `
+    <div class="archivo-card">
+      <div class="archivo-card-cab">
+        <div>
+          <span class="archivo-card-nombre">${escape(c.name || 'Sin nombre')}</span>
+          <span class="archivo-badge archivo-badge-${c.tipo}">${c.tipo === 'express' ? 'Express' : 'Maestro'}</span>
+        </div>
+        <div class="archivo-card-meta">
+          Actual: <b>V${c.version || 1}</b> · ${c.sheet_count || 0} láminas${c.parent_name ? ' · del maestro «' + escape(c.parent_name) + '»' : ''}${fechaUpd ? ' · editado ' + fechaUpd : ''}
+        </div>
+      </div>
+      ${versiones.length ? `
+        <div class="archivo-versiones">
+          ${versiones.map(v => {
+            const fecha = v.published_at ? new Date(v.published_at).toLocaleDateString('es-ES') : '';
+            const pdfMB = v.pdf_size_bytes ? (v.pdf_size_bytes / 1048576).toFixed(1) : null;
+            const zipMB = v.zip_size_bytes ? (v.zip_size_bytes / 1048576).toFixed(1) : null;
+            return `
+              <div class="archivo-version">
+                <span class="archivo-vbadge">V${v.version_number}</span>
+                <span class="archivo-vinfo">
+                  <b>${escape(fecha)}</b> · ${v.total_laminas || '?'} láminas${v.published_by_name ? ' · ' + escape(v.published_by_name) : ''}
+                  ${v.notas_version ? `<span class="archivo-vnotas">"${escape(v.notas_version)}"</span>` : ''}
+                </span>
+                <span class="archivo-vacc">
+                  <button class="btn-card-mini" onclick="archivoVerVersion(${v.id})" title="Ver las láminas de esta versión">👁 Ver</button>
+                  ${v.tiene_pdf ? `<button class="btn-card-mini" onclick="descargarVersionPDF(${v.id})">📕 PDF${pdfMB ? ' (' + pdfMB + ' MB)' : ''}</button>` : ''}
+                  ${v.tiene_zip ? `<button class="btn-card-mini" onclick="descargarVersionZIP(${v.id})">📦 ZIP${zipMB ? ' (' + zipMB + ' MB)' : ''}</button>` : ''}
+                </span>
+              </div>`;
+          }).join('')}
+        </div>
+      ` : `<div class="archivo-sin-versiones">Sin versiones cerradas todavía. Usa <b>📌 Cerrar versión</b> en el catálogo para guardar una foto.</div>`}
+    </div>`;
+}
+
+// Placeholder hasta el incremento 2 (ver versión por dentro).
+function archivoVerVersion(versionId) {
+  alert('Ver la versión por dentro llega en el siguiente paso.');
+}
+
 async function pintarPestanaHistorial(catalogId) {
   const $cont = document.getElementById('editor-pestana-contenido');
   if (!$cont) return;
