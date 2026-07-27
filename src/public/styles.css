@@ -4158,6 +4158,13 @@ body.con-banner-update {
   border-color: #ea580c;
   box-shadow: 0 4px 12px -4px rgba(234,88,12,.6);
 }
+/* Título de cada fila dentro del cuadro sencillo (¿lleva regalo? / ¿descuento?) */
+.simple-cond-titulo {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 6px 0 2px;
+  text-align: left;
+}
 .zona-tpl-chip:hover {
   background: color-mix(in srgb, var(--brand) 7%, var(--surface));
   border-color: color-mix(in srgb, var(--brand) 45%, var(--gris-borde-2));

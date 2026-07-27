@@ -288,6 +288,16 @@ function simpleModalProducto(zona, sheetId, anotExistente) {
       <div class="simple-rapidos">
         ${[3, 6, 12, 24].map(x => `<button onclick="simpleCantFija(${x})">${x}</button>`).join('')}
       </div>
+
+      <div class="simple-cond-titulo">🎁 ¿Lleva regalo?</div>
+      <div class="cond-chips" id="simple-bonif">
+        ${['3+1', '6+1', '12+1', '12+2'].map(b => `<button type="button" class="cond-chip" data-bonif="${b}">${b}</button>`).join('')}
+      </div>
+      <div class="simple-cond-titulo">🏷️ ¿Lleva descuento?</div>
+      <div class="cond-chips" id="simple-dto">
+        ${[10, 15, 20, 25].map(d => `<button type="button" class="cond-chip cond-chip-dto" data-dto="${d}">-${d}%</button>`).join('')}
+      </div>
+
       <button class="simple-anadir" onclick="simpleGuardarProducto(${sheetId})">
         ${anotExistente ? '✔ CAMBIAR' : '✔ AÑADIR AL PEDIDO'}
       </button>
@@ -303,6 +313,19 @@ function simpleModalProducto(zona, sheetId, anotExistente) {
   _simpleZona = zona;
   _simpleAnot = anotExistente;
   _simpleSheet = sheetId;
+  // Bonificación y descuento: un toque marca, otro quita. Selección única en cada fila.
+  const grupo = (id) => {
+    const cont = m.querySelector(id);
+    cont.querySelectorAll('.cond-chip').forEach(ch => ch.addEventListener('click', () => {
+      const ya = ch.classList.contains('sel');
+      cont.querySelectorAll('.cond-chip').forEach(x => x.classList.remove('sel'));
+      if (!ya) ch.classList.add('sel');
+    }));
+  };
+  grupo('#simple-bonif'); grupo('#simple-dto');
+  // Al editar, dejar marcado lo que ya llevaba la línea.
+  if (anotExistente && anotExistente.bonificacion) m.querySelectorAll('#simple-bonif .cond-chip').forEach(ch => { if (ch.dataset.bonif === String(anotExistente.bonificacion)) ch.classList.add('sel'); });
+  if (anotExistente && anotExistente.descuento != null && anotExistente.descuento !== '') m.querySelectorAll('#simple-dto .cond-chip').forEach(ch => { if (Number(ch.dataset.dto) === Number(anotExistente.descuento)) ch.classList.add('sel'); });
   hacerDialogoArrastrable(m.querySelector('.simple-modal'), m.querySelector('.simple-modal-cab'), true);
 }
 
@@ -323,16 +346,24 @@ async function simpleGuardarProducto(sheetId) {
   const cant = Number((document.getElementById('simple-cant') || {}).textContent) || 1;
   const cod = zona.producto_codigo || '';
   const nom = zona.producto_nombre || '';
+  // Bonificación y descuento elegidos (si los hay).
+  const bSel = (m && m.querySelector('#simple-bonif .cond-chip.sel')) ? m.querySelector('#simple-bonif .cond-chip.sel').dataset.bonif : '';
+  const dSel = (m && m.querySelector('#simple-dto .cond-chip.sel')) ? Number(m.querySelector('#simple-dto .cond-chip.sel').dataset.dto) : null;
   let texto = cant + ' uds · ' + cod + ' ' + nom;
   if (zona.ref_modelo) texto += ' ref. ' + zona.ref_modelo;
+  if (bSel) texto += ' · ' + bSel;
+  if (dSel != null) texto += ' · -' + dSel + '%';
+  const bonifFinal = bSel || null;
+  const dtoFinal = (dSel != null) ? dSel : null;
   try {
     if (anot) {
-      await vEditarAnotacion(anot.id, { texto_libre: texto, tipo: 'pedido', cantidad: cant });
+      await vEditarAnotacion(anot.id, { texto_libre: texto, tipo: 'pedido', cantidad: cant, bonificacion: bonifFinal, descuento: dtoFinal });
     } else {
       await vAnotar({
           sheet_id: sheetId, texto_libre: texto, tipo: 'pedido',
           product_id: zona.product_id, cantidad: cant, zone_id: zona.id,
           referencia: zona.ref_modelo || null,
+          bonificacion: bonifFinal, descuento: dtoFinal,
           pos_x: (zona.x + zona.ancho / 2) / 100, pos_y: (zona.y + zona.alto / 2) / 100
       });
     }
