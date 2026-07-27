@@ -32,6 +32,8 @@ function esModoSimple() {
 function renderSimpleInicio() {
   const $v = document.getElementById('vista-contenido');
   if (!$v) return;
+  // Al volver al inicio, retirar el botón flotante de "volver" si se quedó de planning/formación.
+  document.querySelectorAll('.simple-volver-flotante').forEach(x => x.remove());
   const va = appState.visitaActiva;
   $v.innerHTML = `
     <div class="simple-pantalla">
@@ -51,6 +53,16 @@ function renderSimpleInicio() {
           EMPEZAR VISITA
         </button>
       `}
+      <div class="simple-accesos">
+        <button class="simple-boton-medio" onclick="simpleAbrirPlanning()">
+          <span class="simple-medio-icono">🗓️</span>
+          <span>Mi planning</span>
+        </button>
+        <button class="simple-boton-medio" onclick="simpleAbrirFormacion()">
+          <span class="simple-medio-icono">🎓</span>
+          <span>Formación</span>
+        </button>
+      </div>
       <button class="simple-boton-secundario" onclick="simpleMisPedidos()">📁 Mis pedidos enviados</button>
       ${(typeof appYaInstalada === 'function' && !appYaInstalada()) ? `
         <button class="simple-boton-secundario" style="border-color:#93c5fd;color:#1d4ed8" onclick="instalarApp()">📲 Poner la app en la tablet</button>` : ''}
@@ -59,6 +71,29 @@ function renderSimpleInicio() {
         <span>${APP_VERSION}</span>
       </div>
     </div>`;
+}
+
+// Acceso al PLANNING desde el modo sencillo. Reutiliza la pantalla normal de planning
+// (por zona + agenda) y añade un botón flotante para volver al inicio sencillo.
+function simpleAbrirPlanning() {
+  _simpleAbrirVistaConVuelta('planning', () => renderPlanning());
+}
+// Acceso a FORMACIÓN (Aula) desde el modo sencillo. Aula necesita conexión.
+function simpleAbrirFormacion() {
+  if (!navigator.onLine) { alert('La formación necesita conexión a internet. Inténtalo cuando tengas cobertura.'); return; }
+  _simpleAbrirVistaConVuelta('aula', () => renderAula());
+}
+// Muestra una pantalla normal (planning/aula) dentro del modo sencillo, con un botón
+// flotante "← Inicio" que sobrevive a los repintados de esa vista.
+function _simpleAbrirVistaConVuelta(vista, render) {
+  document.querySelectorAll('.simple-volver-flotante').forEach(x => x.remove());
+  appState.vista = vista;
+  render();
+  const b = document.createElement('button');
+  b.className = 'simple-volver-flotante';
+  b.innerHTML = '← Inicio';
+  b.onclick = () => { b.remove(); appState.vista = 'catalogos'; renderSimpleInicio(); };
+  document.body.appendChild(b);
 }
 
 // ===== 2. ELEGIR FARMACIA =====

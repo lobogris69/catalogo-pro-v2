@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v198 · 27 jul 2026';
+const APP_VERSION = 'v199 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -389,6 +389,8 @@ function routerVista() {
   // la visita, que es la única pantalla que se reutiliza tal cual.
   if (esModoSimple()) {
     document.body.classList.add('modo-simple');
+    // Si veníamos de planning/formación en sencillo, quitar el botón flotante de volver.
+    document.querySelectorAll('.simple-volver-flotante').forEach(x => x.remove());
     if (appState.visitaActiva && appState.catalogoActual) {
       renderVisorComercial(appState.catalogoActual);
       setTimeout(simpleBarraPedido, 300);
@@ -10035,8 +10037,10 @@ async function programarEnDia(iso, hora) {
           <input type="time" id="ag-hora" value="${hora || '10:00'}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:16px"></div>
         <div class="form-group" style="flex:1"><label>Duración</label>
           <select id="ag-dur" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:15px">
-            <option value="15">15 min</option><option value="30" selected>30 min</option>
-            <option value="45">45 min</option><option value="60">1 hora</option></select></div>
+            <option value="15">15 min</option><option value="30">30 min</option>
+            <option value="45">45 min</option><option value="60" selected>1 hora</option>
+            <option value="90">1 h 30 min</option><option value="120">2 horas</option>
+            <option value="180">3 horas</option><option value="240">4 horas</option></select></div>
       </div>
       <div class="form-group"><label>Nota <small style="color:#9ca3af">opcional</small></label>
         <input type="text" id="ag-nota" placeholder="ej: llevar muestras" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box"></div>
