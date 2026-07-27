@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v219 · 27 jul 2026';
+const APP_VERSION = 'v220 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3193,9 +3193,11 @@ async function renderVisorSoloLector() {
   appState.visitaActiva = null; // por si acaso: en solo visor no hay visita
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogos…</div></div>`;
   let cats = [];
+  let online = navigator.onLine;
   try { const r = await api('/api/catalogs'); cats = r.catalogs || []; }
   catch (e) {
     // offline: catálogos descargados
+    online = false;
     try { cats = (await CpDB.listarCatalogosDescargados()).map(c => ({ ...c, _offline: true })); } catch (_) {}
   }
   if (!cats.length) {
@@ -3204,6 +3206,9 @@ async function renderVisorSoloLector() {
       <p>Avisa al administrador para que te asigne uno.</p></div></div>`;
     return;
   }
+  // AUTOMÁTICO: si hay WiFi/datos, guardar en la tablet los catálogos asignados para que
+  // luego funcionen SIN CONEXIÓN. Solo descarga lo que falte o lo que haya cambiado.
+  if (online) { try { await _soloVisorPrepararOffline(cats); } catch (_) {} }
   if (cats.length === 1) { _soloVisorAbrir(cats[0].id, true); return; }
   $v.innerHTML = `
     <div class="contenedor">
@@ -3228,6 +3233,27 @@ function _mostrarBotonInstalarSoloVisor() {
   b.title = 'Crear el icono del catálogo en la tablet';
   b.onclick = () => { if (typeof instalarApp === 'function') instalarApp(); };
   document.body.appendChild(b);
+}
+
+// AUTOMÁTICO (solo-visor): guarda en la tablet los catálogos asignados para verlos SIN DATOS.
+// Descarga solo lo que falte o lo que haya cambiado (compara updated_at). Reutiliza la misma
+// barra de progreso que la descarga manual. Se llama al entrar, con conexión.
+async function _soloVisorPrepararOffline(cats) {
+  if (!window.CpDB || !navigator.onLine || !cats || !cats.length) return;
+  try { await refrescarCacheCatalogosDescargados(); } catch (_) {}
+  const pendientes = [];
+  for (const c of cats) {
+    let guardado = null;
+    try { guardado = await CpDB.obtenerCatalogo(c.id); } catch (_) {}
+    // Falta por descargar, o cambió respecto a la copia guardada (auto-actualización).
+    const cambiado = !!(guardado && c.updated_at && guardado.updated_at &&
+      String(guardado.updated_at) !== String(c.updated_at));
+    if (!guardado || cambiado) pendientes.push(c);
+  }
+  if (!pendientes.length) return; // ya está todo en la tablet y al día
+  for (const c of pendientes) {
+    try { await descargarCatalogoOffline(c.id, c.name || 'Catálogo'); } catch (_) {}
+  }
 }
 
 function _soloVisorAbrir(catalogId, unico) {
