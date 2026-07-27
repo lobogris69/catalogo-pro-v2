@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v216 · 27 jul 2026';
+const APP_VERSION = 'v217 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -18487,6 +18487,8 @@ async function abrirMosaicoLaminas(catalogId) {
       <span class="mosaico-barra-sep"></span>
       <button class="btn btn-secondary btn-pequeno" onclick="seleccionarTodasMosaico()">Marcar todas</button>
       <button class="btn btn-secondary btn-pequeno" onclick="limpiarSeleccionMosaico()">Quitar marcas</button>
+      <span class="mosaico-barra-sep"></span>
+      <button class="btn btn-pequeno mosaico-btn-quitar" onclick="quitarSeleccionadasMosaico()" title="${_mosaicoEsExpress ? 'Quitar del Express las marcadas (siguen en el maestro)' : 'Borrar de verdad las láminas marcadas'}">🗑️ ${_mosaicoEsExpress ? 'Quitar del Express' : 'Borrar'} seleccionadas</button>
     </div>
     <div class="mosaico-grid" id="mosaico-grid"></div>
     <div class="mosaico-nav" id="mosaico-nav">
@@ -18587,6 +18589,48 @@ function limpiarSeleccionMosaico() {
   _mosaicoSel.clear();
   _mosaicoAncla = null;
   repintarMarcasMosaico();
+}
+
+// Quitar/borrar las láminas MARCADAS. En Express: las saca de este Express (siguen en
+// el maestro). En maestro: borra de verdad (con doble confirmación); las que estén en
+// pedidos no se borran (se informan). El borrado NO se puede deshacer.
+async function quitarSeleccionadasMosaico() {
+  const ids = [..._mosaicoSel];
+  if (!ids.length) { alert('Marca primero las láminas que quieras quitar (tócalas).'); return; }
+  const estado = document.getElementById('mosaico-estado');
+  try {
+    if (_mosaicoEsExpress) {
+      if (!confirm(`¿Quitar ${ids.length} lámina(s) de este Express?\n\nSiguen intactas en el maestro y podrás volver a añadirlas cuando quieras.`)) return;
+      if (estado) estado.textContent = 'Quitando…';
+      const r = await api('/api/catalogs/' + _mosaicoCatalogId + '/express-sheets/quitar', { method: 'POST', body: { sheet_ids: ids } });
+      _mosaicoSheets = _mosaicoSheets.filter(s => !_mosaicoSel.has(s.id));
+      _mosaicoSel.clear(); _mosaicoAncla = null;
+      _mosaicoOrdenPrev = _mosaicoSheets.map(s => s.id);
+      pintarMosaicoReorden();
+      if (estado) { estado.textContent = '✓ Quitadas ' + (r.quitadas || 0); setTimeout(() => { if (estado) estado.textContent = ''; }, 3000); }
+    } else {
+      if (!confirm(`¿BORRAR DEFINITIVAMENTE ${ids.length} lámina(s) del maestro?\n\nSe borran con su imagen. Las que estén usadas en pedidos NO se borrarán (se protege el historial). NO se puede deshacer.`)) return;
+      const t = prompt('Para confirmar, escribe:  BORRAR');
+      if ((t || '').trim().toUpperCase() !== 'BORRAR') { alert('Cancelado (no escribiste BORRAR).'); return; }
+      if (estado) estado.textContent = 'Borrando…';
+      const r = await api('/api/catalogs/' + _mosaicoCatalogId + '/sheets/borrar', { method: 'POST', body: { sheet_ids: ids } });
+      const bloqueadasIds = new Set((r.bloqueadas || []).map(b => b.id));
+      _mosaicoSheets = _mosaicoSheets.filter(s => !(_mosaicoSel.has(s.id) && !bloqueadasIds.has(s.id)));
+      _mosaicoSel.clear(); _mosaicoAncla = null;
+      _mosaicoOrdenPrev = _mosaicoSheets.map(s => s.id);
+      pintarMosaicoReorden();
+      let msg = '🗑️ Borradas ' + (r.borradas || 0);
+      if ((r.bloqueadas || []).length) msg += ' · ' + r.bloqueadas.length + ' no se pudieron';
+      if (estado) { estado.textContent = msg; setTimeout(() => { if (estado) estado.textContent = ''; }, 5000); }
+      if ((r.bloqueadas || []).length) {
+        alert('No se borraron ' + r.bloqueadas.length + ' lámina(s) porque están usadas en pedidos:\n\n' +
+          r.bloqueadas.map(b => '· ' + (b.titulo || ('nº ' + b.id))).join('\n') + '\n\n(Se quedan como están para no perder historial.)');
+      }
+    }
+  } catch (e) {
+    if (estado) estado.textContent = '';
+    alert('Error: ' + e.message);
+  }
 }
 
 // Núcleo del movimiento: saca las láminas de `ids` y las reinserta juntas en la

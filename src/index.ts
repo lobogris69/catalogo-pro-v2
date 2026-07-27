@@ -1609,7 +1609,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v216-modo-solo-visor-27jul',
+      build: 'v217-mosaico-quitar-seleccionadas-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -4161,6 +4161,48 @@ app.delete('/api/catalogs/:cid/express-sheets/:sid', verifyToken, requireAdmin, 
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
   }
+});
+
+// QUITAR varias láminas de un Express de golpe (siguen en el maestro). Reversible.
+app.post('/api/catalogs/:id/express-sheets/quitar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const expressId = Number(req.params.id);
+    const ids = (req.body?.sheet_ids || []).map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n));
+    if (!ids.length) { res.status(400).json({ success: false, error: 'No hay láminas seleccionadas' }); return; }
+    const c = await pool.query(`SELECT tipo FROM catalogs WHERE id=$1`, [expressId]);
+    if (!c.rows.length || c.rows[0].tipo !== 'express') { res.status(400).json({ success: false, error: 'Solo aplicable a catálogos Express' }); return; }
+    const r = await pool.query(`DELETE FROM express_sheets WHERE express_catalog_id=$1 AND sheet_id = ANY($2::int[])`, [expressId, ids]);
+    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id=$1', [expressId]);
+    res.json({ success: true, quitadas: r.rowCount || 0 });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// BORRAR DE VERDAD varias láminas de un maestro (con su imagen). Bloquea las que estén
+// usadas en pedidos (para no perder historial) y las informa sin tocarlas.
+app.post('/api/catalogs/:id/sheets/borrar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catId = Number(req.params.id);
+    const ids = (req.body?.sheet_ids || []).map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n));
+    if (!ids.length) { res.status(400).json({ success: false, error: 'No hay láminas seleccionadas' }); return; }
+    const c = await pool.query(`SELECT tipo FROM catalogs WHERE id=$1`, [catId]);
+    if (!c.rows.length) { res.status(404).json({ success: false, error: 'Catálogo no encontrado' }); return; }
+    if (c.rows[0].tipo === 'express') { res.status(400).json({ success: false, error: 'En un Express usa "quitar del Express", no borrar.' }); return; }
+    const bloqueadas: any[] = [];
+    let borradas = 0;
+    for (const id of ids) {
+      const s = await pool.query(`SELECT titulo, imagen_path, miniatura_path, catalog_id FROM sheets WHERE id=$1`, [id]);
+      if (!s.rows.length || s.rows[0].catalog_id !== catId) continue; // solo láminas de este catálogo
+      const en = await pool.query(`SELECT COUNT(*)::int AS n FROM annotations WHERE sheet_id=$1`, [id]);
+      if (Number(en.rows[0].n) > 0) { bloqueadas.push({ id, titulo: s.rows[0].titulo }); continue; }
+      await pool.query(`DELETE FROM sheets WHERE id=$1`, [id]);
+      borrarUploadSeguro(s.rows[0].imagen_path);
+      borrarUploadSeguro(s.rows[0].miniatura_path);
+      try { await logSheetChange('deleted', id, catId, s.rows[0].titulo, {}, { id: req.user?.id, name: req.user?.name }); } catch (_) {}
+      borradas++;
+    }
+    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id=$1', [catId]);
+    res.json({ success: true, borradas, bloqueadas });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 // PUT reordenar laminas dentro del Express (drag&drop)

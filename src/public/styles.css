@@ -2787,6 +2787,10 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
 .btn-card-borrar { border-color: #fca5a5 !important; color: #dc2626 !important; }
 .btn-card-borrar:hover { background: #fee2e2 !important; border-color: #dc2626 !important; }
 
+/* Botón de quitar/borrar seleccionadas en el mosaico (rojo, para que se distinga). */
+.mosaico-btn-quitar { background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; font-weight: 700; }
+.mosaico-btn-quitar:hover { background: #dc2626; color: #fff; }
+
 /* SOLO VISOR: se ocultan las pestañas de navegación; el comercial solo mira catálogos. */
 body.solo-visor .navtabs { display: none !important; }
 .solovisor-volver {
