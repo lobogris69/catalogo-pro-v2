@@ -2159,6 +2159,51 @@ html {
   gap: 6px;
 }
 
+/* ===== PLANNING POR ZONA (tarjetas + ruta por cercanía) ===== */
+.plan-resumen { display:flex; gap:10px; flex-wrap:wrap; margin:4px 0 12px; }
+.plan-kpi { flex:1; min-width:120px; background:var(--surface); border:1px solid var(--gris-borde);
+  border-radius:12px; padding:11px 14px; }
+.plan-kpi .n { font-size:24px; font-weight:800; line-height:1; }
+.plan-kpi .l { font-size:12px; color:var(--gris-texto); margin-top:3px; font-weight:600; }
+.plan-kpi.u .n { color:#dc2626; } .plan-kpi.p .n { color:#d97706; } .plan-kpi.a .n { color:#16a34a; }
+.plan-barra { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+.plan-sub { font-size:12.5px; color:var(--gris-texto); }
+.plan-btn-ruta { margin-left:auto; border:0; background:var(--brand,#d80a6b); color:#fff;
+  border-radius:11px; padding:10px 16px; font-size:14px; font-weight:800; cursor:pointer;
+  font-family:inherit; box-shadow:0 4px 14px -6px rgba(0,0,0,.3); }
+.plan-btn-ruta.on { background:#16a34a; }
+.plan-zona { margin-top:16px; }
+.plan-zona-cab { display:flex; align-items:center; gap:9px; margin-bottom:8px; padding:0 2px; }
+.plan-zona-cab h3 { margin:0; font-size:16px; font-weight:800; }
+.plan-zona-cuenta { font-size:12px; color:var(--gris-texto); font-weight:600; }
+.plan-zona-urg { margin-left:auto; font-size:11.5px; font-weight:800; color:#dc2626;
+  background:#fee2e2; padding:3px 9px; border-radius:999px; }
+.plan-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:10px; }
+.plan-tar { background:var(--surface); border:1px solid var(--gris-borde); border-radius:14px;
+  padding:12px 13px; position:relative; overflow:hidden; cursor:pointer;
+  box-shadow:0 1px 2px rgba(0,0,0,.05), 0 4px 14px -10px rgba(0,0,0,.18); }
+.plan-tar::before { content:""; position:absolute; left:0; top:0; bottom:0; width:5px; }
+.plan-tar.u::before { background:#dc2626; } .plan-tar.p::before { background:#d97706; }
+.plan-tar.a::before { background:#16a34a; } .plan-tar.s::before { background:#8b7d86; }
+.plan-tar-num { position:absolute; top:10px; right:10px; width:24px; height:24px; border-radius:50%;
+  background:var(--brand,#d80a6b); color:#fff; font-size:12px; font-weight:800;
+  display:none; align-items:center; justify-content:center; }
+.plan-grid.con-ruta .plan-tar-num { display:flex; }
+.plan-tar-nombre { font-size:15px; font-weight:800; padding-left:6px; padding-right:28px; line-height:1.25; }
+.plan-tar-muni { font-size:12.5px; color:var(--gris-texto); padding-left:6px; margin-top:1px; }
+.plan-estado { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:700;
+  padding:4px 9px; border-radius:999px; margin:8px 0 0 6px; }
+.plan-estado .pt { width:8px; height:8px; border-radius:50%; }
+.plan-estado.u { background:#fee2e2; color:#dc2626; } .plan-estado.u .pt { background:#dc2626; }
+.plan-estado.p { background:#fef3c7; color:#d97706; } .plan-estado.p .pt { background:#d97706; }
+.plan-estado.a { background:#dcfce7; color:#16a34a; } .plan-estado.a .pt { background:#16a34a; }
+.plan-estado.s { background:#eeeaec; color:#8b7d86; } .plan-estado.s .pt { background:#8b7d86; }
+.plan-tar-pie { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; padding-left:6px; }
+.plan-ult { font-size:11.5px; color:var(--gris-texto); }
+.plan-visita { border:1.5px solid var(--brand,#d80a6b); background:transparent; color:var(--brand,#d80a6b);
+  border-radius:9px; padding:6px 11px; font-size:12.5px; font-weight:800; cursor:pointer; font-family:inherit; white-space:nowrap; }
+.plan-visita:hover { background:var(--brand,#d80a6b); color:#fff; }
+
 .planning-fila {
   display: flex;
   align-items: center;

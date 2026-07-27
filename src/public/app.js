@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v192 · 24 jul 2026';
+const APP_VERSION = 'v193 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -9390,6 +9390,7 @@ let _planningState = {
   clientes: [],
   total: 0,
   config: null,
+  ruta: false,         // ordenar cada zona por cercanía
   filtrosCache: null   // {provincias:[], municipios:[], comerciales:[]}
 };
 
@@ -9547,7 +9548,7 @@ async function recargarPlanning() {
     if (s.provincia) params.set('provincia', s.provincia);
     if (s.municipio) params.set('municipio', s.municipio);
     if (s.comercial) params.set('comercial', s.comercial);
-    params.set('limit', '200');
+    params.set('limit', '500');
     const r = await api('/api/planning?' + params.toString());
     _planningState.clientes = r.clientes || [];
     _planningState.total = r.total || 0;
@@ -9649,63 +9650,122 @@ function pintarPlanningResultado() {
   if (!$res) return;
   const clientes = _planningState.clientes;
   const total = _planningState.total;
-  if (clientes.length === 0) {
+  if (!clientes || clientes.length === 0) {
     $res.innerHTML = '<p style="text-align:center;color:var(--gris-texto);padding:2rem">No hay clientes que coincidan con los filtros.</p>';
     return;
   }
-  const conteo = {urgente:0, proxima:0, al_dia:0, sin_historial:0};
+  const conteo = { urgente:0, proxima:0, al_dia:0, sin_historial:0 };
   clientes.forEach(c => { conteo[c.estado] = (conteo[c.estado]||0) + 1; });
 
-  // Resumen arriba
+  // Resumen de un vistazo: cuántas hay de cada tipo.
+  const kpi = (cls, n, label) => `<div class="plan-kpi ${cls}"><div class="n">${n}</div><div class="l">${label}</div></div>`;
   const resumen = `
     ${_planningState.modoOffline ? `
       <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#78350f">
-        📲 <b>Planning offline:</b> calculado con los clientes y visitas descargados en este dispositivo. Algunas visitas online recientes pueden no estar reflejadas.
-      </div>
-    ` : ''}
-    <div class="planning-resumen">
-      <span>${clientes.length}${total > clientes.length ? '/' + total : ''} clientes</span>
-      ${conteo.urgente > 0 ? `<span class="planning-resumen-chip" style="background:${ESTADOS_PLANNING.urgente.bg};color:${ESTADOS_PLANNING.urgente.color}">${ESTADOS_PLANNING.urgente.emoji} ${conteo.urgente} urgentes</span>` : ''}
-      ${conteo.proxima > 0 ? `<span class="planning-resumen-chip" style="background:${ESTADOS_PLANNING.proxima.bg};color:${ESTADOS_PLANNING.proxima.color}">${ESTADOS_PLANNING.proxima.emoji} ${conteo.proxima} próximas</span>` : ''}
-      ${conteo.al_dia > 0 ? `<span class="planning-resumen-chip" style="background:${ESTADOS_PLANNING.al_dia.bg};color:${ESTADOS_PLANNING.al_dia.color}">${ESTADOS_PLANNING.al_dia.emoji} ${conteo.al_dia} al día</span>` : ''}
-      ${conteo.sin_historial > 0 ? `<span class="planning-resumen-chip" style="background:${ESTADOS_PLANNING.sin_historial.bg};color:${ESTADOS_PLANNING.sin_historial.color}">${ESTADOS_PLANNING.sin_historial.emoji} ${conteo.sin_historial} sin historial</span>` : ''}
-    </div>
-  `;
+        📲 <b>Planning sin conexión:</b> calculado con lo descargado en la tablet. Alguna visita muy reciente puede no estar reflejada.
+      </div>` : ''}
+    <div class="plan-resumen">
+      ${kpi('u', conteo.urgente, '🔴 Urgentes')}
+      ${kpi('p', conteo.proxima, '🟡 Tocan pronto')}
+      ${kpi('a', conteo.al_dia, '🟢 Al día')}
+      ${kpi('t', clientes.length + (total > clientes.length ? '/' + total : ''), '📋 En total')}
+    </div>`;
 
-  const filas = clientes.map(c => {
+  // Botón de ruta: reordena cada zona por cercanía real (coordenadas del cliente).
+  const rutaOn = !!_planningState.ruta;
+  const barraRuta = `
+    <div class="plan-barra">
+      <div class="plan-sub">Farmacias agrupadas por zona. Toca una para su ficha, o 🛒 para empezar la visita.</div>
+      <button class="plan-btn-ruta ${rutaOn ? 'on' : ''}" onclick="togglePlanningRuta()">
+        ${rutaOn ? '✓ Orden de ruta (por cercanía)' : '🧭 Ordenar por ruta'}
+      </button>
+    </div>`;
+
+  // Agrupar por ZONA de venta; si el cliente no tiene zona, por municipio.
+  const grupos = {};
+  clientes.forEach(c => {
+    const k = (c.zona_nombre && String(c.zona_nombre).trim()) || (c.municipio && String(c.municipio).trim()) || 'Sin zona asignada';
+    (grupos[k] = grupos[k] || []).push(c);
+  });
+  // Orden de las zonas: primero las que tienen urgentes, luego alfabético.
+  const nombresZona = Object.keys(grupos).sort((a, b) => {
+    const ua = grupos[a].filter(c => c.estado === 'urgente').length;
+    const ub = grupos[b].filter(c => c.estado === 'urgente').length;
+    if (ua !== ub) return ub - ua;
+    return a.localeCompare(b, 'es');
+  });
+
+  const tarjeta = (c, idx) => {
     const e = ESTADOS_PLANNING[c.estado] || ESTADOS_PLANNING.sin_historial;
-    let infoTiempo;
-    if (c.estado === 'sin_historial') {
-      infoTiempo = 'Sin visitas previas';
-    } else if (c.dias_retraso > 0) {
-      infoTiempo = `Retraso ${c.dias_retraso}d · ciclo ${c.ciclo_efectivo}d`;
-    } else {
-      const dias = c.dias_desde_ultima;
-      infoTiempo = `Hace ${dias}d · ciclo ${c.ciclo_efectivo}d`;
-    }
-    const fechaUlt = c.fecha_ultima ? new Date(c.fecha_ultima).toLocaleDateString('es-ES') : '—';
+    const clase = { urgente:'u', proxima:'p', al_dia:'a', sin_historial:'s' }[c.estado] || 's';
+    let tiempo;
+    if (c.estado === 'sin_historial') tiempo = 'Nunca visitada';
+    else if (c.dias_retraso > 0) tiempo = 'Atrasada ' + c.dias_retraso + ' días';
+    else tiempo = 'Hace ' + c.dias_desde_ultima + ' días';
+    const puedeVisitar = !(esAdminReal() && !impersonating);
     return `
-      <div class="planning-fila" onclick="abrirDetalleCliente(${c.id})" style="border-left-color:${e.color}">
-        <div class="planning-chip-estado" style="background:${e.bg};color:${e.color}" title="${e.label}">${e.emoji}</div>
-        <div class="planning-fila-info">
-          <div class="planning-fila-nombre">${escape(c.razon_social)}</div>
-          <div class="planning-fila-meta">
-            <span><b>${escape(c.sage_code || '?')}</b></span>
-            ${c.municipio ? `<span>· ${escape(c.municipio)}</span>` : ''}
-            ${c.provincia && c.provincia !== c.municipio ? `<span>· ${escape(c.provincia)}</span>` : ''}
-            ${c.commercial_code ? `<span>· Com.${escape(c.commercial_code)}</span>` : ''}
-            ${c.categoria ? `<span>· cat.${escape(c.categoria)}</span>` : ''}
-          </div>
-          <div class="planning-fila-tiempo">
-            🕐 Última visita: <b>${escape(fechaUlt)}</b> · ${escape(infoTiempo)}
-          </div>
+      <div class="plan-tar ${clase}" onclick="abrirDetalleCliente(${c.id})">
+        <div class="plan-tar-num">${idx + 1}</div>
+        <div class="plan-tar-nombre">${escape(c.razon_social)}</div>
+        <div class="plan-tar-muni">${escape(c.municipio || c.provincia || '')}</div>
+        <span class="plan-estado ${clase}"><i class="pt"></i>${e.label}</span>
+        <div class="plan-tar-pie">
+          <span class="plan-ult">${escape(tiempo)}</span>
+          ${puedeVisitar ? `<button class="plan-visita" onclick="event.stopPropagation();iniciarVisitaParaCliente(${c.id})" title="Empezar visita">🛒 Visitar</button>` : ''}
         </div>
-        ${(esAdminReal() && !impersonating) ? '' : `<button class="btn btn-primary btn-pequeno planning-btn-visita" onclick="event.stopPropagation();iniciarVisitaParaCliente(${c.id})" title="Empezar visita">🛒</button>`}
-      </div>
-    `;
+      </div>`;
+  };
+
+  const bloques = nombresZona.map(zn => {
+    let lista = grupos[zn];
+    if (rutaOn) lista = _ordenarPlanningPorCercania(lista);
+    const urg = lista.filter(c => c.estado === 'urgente').length;
+    return `
+      <div class="plan-zona">
+        <div class="plan-zona-cab">
+          <h3>📍 ${escape(zn)}</h3>
+          <span class="plan-zona-cuenta">· ${lista.length} farmacia${lista.length === 1 ? '' : 's'}</span>
+          ${urg ? `<span class="plan-zona-urg">${urg} urgente${urg === 1 ? '' : 's'}</span>` : ''}
+        </div>
+        <div class="plan-grid ${rutaOn ? 'con-ruta' : ''}">${lista.map(tarjeta).join('')}</div>
+      </div>`;
   }).join('');
 
-  $res.innerHTML = `${resumen}<div class="planning-lista">${filas}</div>`;
+  $res.innerHTML = resumen + barraRuta + bloques;
+}
+
+// Reordena una lista de clientes por CERCANÍA (vecino más próximo): empieza por el
+// primero y va enganchando el más cercano al anterior. Los que no tienen coordenadas
+// van al final. No es la ruta óptima perfecta, pero es un orden de visita muy razonable.
+function _ordenarPlanningPorCercania(lista) {
+  const con = lista.filter(c => c.latitude != null && c.longitude != null);
+  const sin = lista.filter(c => !(c.latitude != null && c.longitude != null));
+  if (con.length < 2) return lista;
+  const dist2 = (a, b) => {
+    const dx = Number(a.latitude) - Number(b.latitude);
+    const dy = (Number(a.longitude) - Number(b.longitude)) * Math.cos(Number(a.latitude) * Math.PI / 180);
+    return dx * dx + dy * dy;
+  };
+  // Arrancar por la más al norte (arriba en el mapa): ruta más natural de leer.
+  const orden = [...con].sort((a, b) => Number(b.latitude) - Number(a.latitude));
+  const usados = new Set();
+  let actual = orden[0];
+  const ruta = [actual]; usados.add(actual.id);
+  while (ruta.length < con.length) {
+    let mejor = null, md = Infinity;
+    for (const c of con) {
+      if (usados.has(c.id)) continue;
+      const d = dist2(actual, c);
+      if (d < md) { md = d; mejor = c; }
+    }
+    ruta.push(mejor); usados.add(mejor.id); actual = mejor;
+  }
+  return ruta.concat(sin);
+}
+
+function togglePlanningRuta() {
+  _planningState.ruta = !_planningState.ruta;
+  pintarPlanningResultado();
 }
 
 // G: editar ciclo individual de un cliente (prompt simple)

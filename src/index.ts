@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v191-bonif-dto-visual-24jul',
+      build: 'v193-planning-por-zona-24jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -5945,6 +5945,7 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
           c.id, c.sage_code, c.razon_social, c.cif, c.commercial_code,
           c.municipio, c.provincia, c.categoria, c.email, c.email_alternativo,
           c.telefono, c.ciclo_visita_dias,
+          c.zona_id, zv.nombre AS zona_nombre, c.latitude, c.longitude, c.direccion,
           uv.fecha_ultima, uv.comercial_ultima_visita, uv.visita_id AS ultima_visita_id,
           COALESCE(c.ciclo_visita_dias, $${posCiclo}) AS ciclo_efectivo,
           CASE WHEN uv.fecha_ultima IS NULL THEN NULL
@@ -5952,6 +5953,7 @@ app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) =>
           END AS dias_desde_ultima
         FROM clients c
         LEFT JOIN ultima_visita uv ON uv.client_id = c.id
+        LEFT JOIN zonas_venta zv ON zv.id = c.zona_id
         WHERE c.is_active = TRUE
           ${comercialFilterClause}
           ${extraClauses}
