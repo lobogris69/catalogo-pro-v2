@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v208 · 27 jul 2026';
+const APP_VERSION = 'v209 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -18287,12 +18287,17 @@ let _mosaicoSel = new Set();
 let _mosaicoAncla = null;
 
 let _mosaicoEsExpress = false;
+// Pila de órdenes anteriores para el botón "Deshacer" (guarda arrays de ids).
+let _mosaicoUndo = [];
+// Orden conocido antes del último guardado (lo que hay que apilar al deshacer).
+let _mosaicoOrdenPrev = [];
 
 async function abrirMosaicoLaminas(catalogId) {
   _mosaicoCatalogId = catalogId;
   _mosaicoCambios = false;
   _mosaicoSel = new Set();
   _mosaicoAncla = null;
+  _mosaicoUndo = [];
   let sheets = [];
   try {
     const r = await api('/api/catalogs/' + catalogId);
@@ -18306,6 +18311,7 @@ async function abrirMosaicoLaminas(catalogId) {
     return;
   }
   _mosaicoSheets = sheets;
+  _mosaicoOrdenPrev = sheets.map(s => s.id);
 
   const overlay = document.createElement('div');
   overlay.className = 'mosaico-overlay';
@@ -18318,6 +18324,7 @@ async function abrirMosaicoLaminas(catalogId) {
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <span id="mosaico-estado" style="font-size:12px;color:#9ca3af"></span>
+        <button class="btn btn-secondary" id="mosaico-deshacer" onclick="deshacerMosaico()" title="Deshacer el último cambio de orden" disabled>↩️ Deshacer</button>
         ${_mosaicoEsExpress ? `<button class="btn btn-secondary" onclick="ordenarMosaicoComoMaestro()" title="Coloca las láminas en el mismo orden que el maestro">🔢 Ordenar como el maestro</button>` : ''}
         <button class="btn btn-secondary" onclick="cerrarMosaico()">Cerrar</button>
       </div>
@@ -18574,13 +18581,43 @@ function activarDragDropMosaico() {
     return i;
   }
 
+  // AUTO-SCROLL: si arrastras cerca del borde de arriba/abajo, la cuadrícula se
+  // desplaza sola. Sin esto, con cientos de láminas te quedas "bloqueado" al llegar
+  // al borde y hay que soltar, hacer scroll y volver a coger. Un temporizador lee la
+  // última posición del puntero (que 'dragover' actualiza) y desplaza mientras estés
+  // en la zona del borde, aunque el ratón esté quieto.
+  let autoScrollTimer = null;
+  let punteroY = 0;
+  function arrancarAutoScroll() {
+    if (autoScrollTimer) return;
+    autoScrollTimer = setInterval(() => {
+      const rect = grid.getBoundingClientRect();
+      const zona = 90;                     // altura de la banda sensible en cada borde
+      const maxVel = 26;                   // píxeles por tick como mucho
+      if (punteroY < rect.top + zona) {
+        const f = (rect.top + zona - punteroY) / zona;   // más cerca del borde = más rápido
+        grid.scrollTop -= Math.min(maxVel, 6 + f * maxVel);
+      } else if (punteroY > rect.bottom - zona) {
+        const f = (punteroY - (rect.bottom - zona)) / zona;
+        grid.scrollTop += Math.min(maxVel, 6 + f * maxVel);
+      }
+    }, 16);
+  }
+  function pararAutoScroll() {
+    if (autoScrollTimer) { clearInterval(autoScrollTimer); autoScrollTimer = null; }
+  }
+
   // Soltar en el espacio vacío del final = mandar al final del catálogo
   grid.addEventListener('dragover', (e) => {
     if (!arrastrando.length) return;
     e.preventDefault();
+    punteroY = e.clientY;
+    arrancarAutoScroll();
     if (e.target === grid) ponerMarcador(null);
   });
-  grid.addEventListener('drop', (e) => { if (arrastrando.length) e.preventDefault(); });
+  grid.addEventListener('drop', (e) => { if (arrastrando.length) e.preventDefault(); pararAutoScroll(); });
+  grid.addEventListener('dragend', pararAutoScroll);
+  grid.addEventListener('dragleave', (e) => { if (e.target === grid) pararAutoScroll(); });
 
   grid.querySelectorAll('.mosaico-card').forEach(card => {
     card.addEventListener('dragstart', (e) => {
@@ -18624,10 +18661,17 @@ function activarDragDropMosaico() {
   });
 }
 
-async function guardarOrdenMosaico() {
+async function guardarOrdenMosaico(registrarUndo = true) {
   _mosaicoCambios = false;
   const grid = document.getElementById('mosaico-grid');
   const ids = Array.from(grid.querySelectorAll('.mosaico-card')).map(c => Number(c.dataset.id));
+  // Guardar el orden ANTERIOR en la pila de deshacer, antes de pisarlo con el nuevo.
+  if (registrarUndo && _mosaicoOrdenPrev && _mosaicoOrdenPrev.length) {
+    _mosaicoUndo.push(_mosaicoOrdenPrev.slice());
+    if (_mosaicoUndo.length > 50) _mosaicoUndo.shift();
+    _actualizarBotonDeshacerMosaico();
+  }
+  _mosaicoOrdenPrev = ids.slice();
   const $estado = document.getElementById('mosaico-estado');
   if ($estado) $estado.textContent = 'Guardando…';
   try {
@@ -18648,6 +18692,26 @@ async function guardarOrdenMosaico() {
   }
 }
 
+function _actualizarBotonDeshacerMosaico() {
+  const b = document.getElementById('mosaico-deshacer');
+  if (b) b.disabled = _mosaicoUndo.length === 0;
+}
+
+// Deshacer el último cambio de orden: recupera el orden anterior y lo guarda.
+async function deshacerMosaico() {
+  if (!_mosaicoUndo.length) return;
+  const prev = _mosaicoUndo.pop();
+  // Reordenar _mosaicoSheets según los ids guardados (los que falten van al final).
+  const byId = new Map(_mosaicoSheets.map(s => [s.id, s]));
+  const nuevo = prev.map(id => byId.get(id)).filter(Boolean);
+  for (const s of _mosaicoSheets) if (!prev.includes(s.id)) nuevo.push(s);
+  _mosaicoSheets = nuevo;
+  _mosaicoSel.clear(); _mosaicoAncla = null;
+  pintarMosaicoReorden();
+  _actualizarBotonDeshacerMosaico();
+  await guardarOrdenMosaico(false); // no re-apilar: es una vuelta atrás
+}
+
 function cerrarMosaico() {
   const ov = document.getElementById('mosaico-overlay');
   if (ov) ov.remove();
@@ -18663,11 +18727,16 @@ async function ordenarMosaicoComoMaestro() {
   if (!confirm('¿Colocar todas las láminas en el mismo orden que el maestro?\n\nSe reordena solo este Express (no se añade ni se quita ninguna). Después podrás seguir moviéndolas a mano.')) return;
   const estado = document.getElementById('mosaico-estado');
   if (estado) estado.textContent = 'Reordenando…';
+  // Apilar el orden actual para poder deshacer esta reordenación.
+  _mosaicoUndo.push(_mosaicoSheets.map(s => s.id));
+  if (_mosaicoUndo.length > 50) _mosaicoUndo.shift();
+  _actualizarBotonDeshacerMosaico();
   try {
     const r = await api('/api/catalogs/' + _mosaicoCatalogId + '/express-reorder-como-maestro', { method: 'POST' });
     // Recargar las láminas ya reordenadas y repintar el mosaico.
     const cat = await api('/api/catalogs/' + _mosaicoCatalogId);
     _mosaicoSheets = cat.sheets || [];
+    _mosaicoOrdenPrev = _mosaicoSheets.map(s => s.id);
     _mosaicoSel.clear(); _mosaicoAncla = null;
     pintarMosaicoReorden();
     if (estado) estado.textContent = '✓ Ordenado como el maestro (' + (r.reordenadas || 0) + ')';
