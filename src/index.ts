@@ -1605,7 +1605,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v200-mosaico-nav-rapida-27jul',
+      build: 'v201-express-ordenar-como-maestro-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -3703,6 +3703,34 @@ app.post('/api/catalogs/:id/express-sheets/copiar-maestro', verifyToken, require
        ON CONFLICT (express_catalog_id, sheet_id) DO NOTHING
        RETURNING id`, [expressId, c.rows[0].parent_id, Number(base.rows[0].m)]);
     res.json({ success: true, anadidas: r.rowCount || 0 });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Reordena las laminas que YA estan en el Express siguiendo el orden del maestro.
+// No cambia el conjunto (respeta exclusiones), solo el orden: las que se anadieron al
+// final vuelven a su sitio logico. No destructivo: el comercial puede seguir arrastrando.
+app.post('/api/catalogs/:id/express-reorder-como-maestro', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const expressId = Number(req.params.id);
+    const c = await pool.query(`SELECT tipo FROM catalogs WHERE id=$1`, [expressId]);
+    if (!c.rows.length || c.rows[0].tipo !== 'express') {
+      res.status(400).json({ success: false, error: 'Solo aplicable a catálogos Express' });
+      return;
+    }
+    const r = await pool.query(`
+      WITH ordenados AS (
+        SELECT es.sheet_id, ROW_NUMBER() OVER (ORDER BY s.orden, s.id) AS nuevo
+        FROM express_sheets es
+        JOIN sheets s ON s.id = es.sheet_id
+        WHERE es.express_catalog_id = $1
+      )
+      UPDATE express_sheets es
+      SET orden = o.nuevo
+      FROM ordenados o
+      WHERE es.express_catalog_id = $1 AND es.sheet_id = o.sheet_id
+    `, [expressId]);
+    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [expressId]);
+    res.json({ success: true, reordenadas: r.rowCount || 0 });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

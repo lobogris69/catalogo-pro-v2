@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v200 · 27 jul 2026';
+const APP_VERSION = 'v201 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -18017,6 +18017,7 @@ async function abrirMosaicoLaminas(catalogId) {
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <span id="mosaico-estado" style="font-size:12px;color:#9ca3af"></span>
+        ${_mosaicoEsExpress ? `<button class="btn btn-secondary" onclick="ordenarMosaicoComoMaestro()" title="Coloca las láminas en el mismo orden que el maestro">🔢 Ordenar como el maestro</button>` : ''}
         <button class="btn btn-secondary" onclick="cerrarMosaico()">Cerrar</button>
       </div>
     </div>
@@ -18352,6 +18353,28 @@ function cerrarMosaico() {
   _mosaicoSel.clear();
   _mosaicoAncla = null;
   if (_mosaicoCatalogId) renderEditorCatalogo(_mosaicoCatalogId);
+}
+
+// Reordena el Express siguiendo el orden del maestro (solo Express). Deja las láminas
+// en su sitio lógico; después se puede seguir arrastrando a mano.
+async function ordenarMosaicoComoMaestro() {
+  if (!_mosaicoCatalogId) return;
+  if (!confirm('¿Colocar todas las láminas en el mismo orden que el maestro?\n\nSe reordena solo este Express (no se añade ni se quita ninguna). Después podrás seguir moviéndolas a mano.')) return;
+  const estado = document.getElementById('mosaico-estado');
+  if (estado) estado.textContent = 'Reordenando…';
+  try {
+    const r = await api('/api/catalogs/' + _mosaicoCatalogId + '/express-reorder-como-maestro', { method: 'POST' });
+    // Recargar las láminas ya reordenadas y repintar el mosaico.
+    const cat = await api('/api/catalogs/' + _mosaicoCatalogId);
+    _mosaicoSheets = cat.sheets || [];
+    _mosaicoSel.clear(); _mosaicoAncla = null;
+    pintarMosaicoReorden();
+    if (estado) estado.textContent = '✓ Ordenado como el maestro (' + (r.reordenadas || 0) + ')';
+    setTimeout(() => { if (estado) estado.textContent = ''; }, 4000);
+  } catch (e) {
+    if (estado) estado.textContent = '';
+    alert('No se pudo reordenar: ' + e.message);
+  }
 }
 
 // Navegación rápida del mosaico: con cientos de láminas el scroll a mano es eterno.
