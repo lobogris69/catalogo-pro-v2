@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v220 · 27 jul 2026';
+const APP_VERSION = 'v221 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -108,6 +108,15 @@ function _condLinea(a) {
   if (a.descuento != null && a.descuento !== '') t.push('-' + Number(a.descuento) + '%');
   if (a.oferta_texto && !t.length) t.push(String(a.oferta_texto));
   return t.join(' · ');
+}
+
+// Avisa al backend de un evento de uso (conexion / abrir_catalogo / offline_listo) para
+// que reenvíe a Telegram. Silencioso: nunca rompe la app si falla (comercial sin cobertura).
+function registrarUso(evento, detalle) {
+  try {
+    if (!token || !navigator.onLine) return;
+    api('/api/uso', { method: 'POST', body: { evento, detalle: detalle || '' } }).catch(() => {});
+  } catch (_) {}
 }
 
 function api(endpoint, options = {}) {
@@ -296,6 +305,13 @@ async function renderApp() {
         localStorage.setItem('cpv2_user', JSON.stringify(user));
       }
     } catch (e) { /* sin red: seguimos con lo que teníamos */ }
+    // Aviso a Fernando por Telegram de que un comercial ha abierto la app (una vez por
+    // arranque; el backend además lo limita a 1/hora). Solo comerciales, no admin.
+    try {
+      if (navigator.onLine && user && user.role === 'sales') {
+        registrarUso('conexion', (typeof APP_VERSION !== 'undefined' ? APP_VERSION : ''));
+      }
+    } catch (_) {}
   }
 
   const esAdmin = rolEfectivo() === 'admin';
@@ -3336,6 +3352,14 @@ async function renderVisorComercial(catalogId) {
     _visorSheets = sheets;
     // I.2: guardar flag de offline para mostrar aviso en cabecera
     _visorModoOffline = modoOffline;
+
+    // Aviso a Fernando (Telegram) de que el comercial está mirando este catálogo.
+    // Silencioso y limitado (1/15min por comercial en el backend). Solo online y comercial.
+    try {
+      if (!modoOffline && user && user.role === 'sales' && !impersonating) {
+        registrarUso('abrir_catalogo', (catalog && catalog.name) ? String(catalog.name).slice(0, 60) : '');
+      }
+    } catch (_) {}
 
     // B6: si hay visita activa, cargar anotaciones para pintarlas en el visor
     if (appState.visitaActiva) {
@@ -7429,6 +7453,8 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo) {
       ${errCount > 0 ? `<br><span style="color:#dc2626">⚠️ ${errCount} con error</span>` : ''}
       <br><span style="color:var(--gris-texto);font-size:11px">~${tamanoMB} MB en el dispositivo</span>
     `;
+    // Aviso a Fernando (Telegram): este comercial ya tiene el catálogo en su tablet.
+    try { if (user && user.role === 'sales' && !impersonating) registrarUso('offline_listo', String(nombreCatalogo).slice(0, 60)); } catch (_) {}
     setTimeout(() => {
       modal.remove();
       mostrarNotificacionOnline(`📲 "${nombreCatalogo}" disponible offline`, '#16a34a');

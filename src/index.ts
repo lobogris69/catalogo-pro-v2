@@ -1609,7 +1609,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v220-solovisor-descarga-offline-auto-27jul',
+      build: 'v221-telegram-uso-comerciales-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1714,6 +1714,47 @@ app.get('/api/users/:id/magic-token', verifyToken, requireRealAdmin, async (req:
       { id: user.id, email: user.email, role: user.role, name: user.name, sage_commercial_code: user.sage_commercial_code },
       JWT_SECRET, { expiresIn: '365d' });
     res.json({ success: true, token, url: 'https://catalogo.lomhifar.net/?acceso=' + token });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// AVISOS DE USO A TELEGRAM. Reutiliza el bot de incidencias (INCIDENCIAS_BOT_TOKEN/CHAT_ID).
+// La app llama a /api/uso cuando un comercial: abre la app (conexion), ve un catalogo
+// (abrir_catalogo) o termina de descargarlo para offline (offline_listo). Throttle en
+// memoria por usuario+evento para no inundar el chat (se reinicia en cada despliegue).
+const _usoUltimoAviso: Record<string, number> = {};
+async function enviarTelegramUso(text: string): Promise<void> {
+  const token = process.env.INCIDENCIAS_BOT_TOKEN, chat = process.env.INCIDENCIAS_CHAT_ID;
+  if (!token || !chat) return;   // aun no configurado: no pasa nada
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text, parse_mode: 'Markdown' }),
+    });
+  } catch (e) { console.error('[uso] Telegram:', (e as Error).message); }
+}
+app.post('/api/uso', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const u = req.user!;
+    // Solo comerciales de verdad. Ni admins ni el admin "viendo como" un comercial.
+    if (u.role !== 'sales' || (u as any)._realAdminId) { res.json({ success: true, skip: true }); return; }
+    const evento = String(req.body?.evento || '').slice(0, 40);
+    const detalle = String(req.body?.detalle || '').slice(0, 120);
+    // Throttle: conexion 1/60min; actividad 1/15min; la descarga lista siempre avisa.
+    const key = `${u.id}:${evento}`;
+    const ahora = Date.now();
+    if (evento !== 'offline_listo') {
+      const minMs = evento === 'conexion' ? 60 * 60 * 1000 : 15 * 60 * 1000;
+      if (_usoUltimoAviso[key] && (ahora - _usoUltimoAviso[key]) < minMs) { res.json({ success: true, throttled: true }); return; }
+    }
+    _usoUltimoAviso[key] = ahora;
+    const nombre = u.name || ('usuario ' + u.id);
+    let msg: string;
+    if (evento === 'conexion') msg = `🔌 *${nombre}* ha abierto la app${detalle ? ` _(${detalle})_` : ''}`;
+    else if (evento === 'abrir_catalogo') msg = `📖 *${nombre}* está mirando un catálogo${detalle ? `: ${detalle}` : ''}`;
+    else if (evento === 'offline_listo') msg = `📲 *${nombre}* ya tiene el catálogo descargado en la tablet (uso sin datos)${detalle ? `: ${detalle}` : ''}`;
+    else msg = `ℹ️ *${nombre}*: ${evento}${detalle ? ` — ${detalle}` : ''}`;
+    await enviarTelegramUso(msg);
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
