@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v209 · 27 jul 2026';
+const APP_VERSION = 'v210 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -18298,6 +18298,8 @@ async function abrirMosaicoLaminas(catalogId) {
   _mosaicoSel = new Set();
   _mosaicoAncla = null;
   _mosaicoUndo = [];
+  _mosaicoBuscarMatches = [];
+  _mosaicoBuscarIdx = 0;
   let sheets = [];
   try {
     const r = await api('/api/catalogs/' + catalogId);
@@ -18333,6 +18335,14 @@ async function abrirMosaicoLaminas(catalogId) {
       ✋ Arrastra una lámina para cambiar el orden: se abrirá un <b>hueco magenta</b> en el sitio exacto
       donde va a caer · 👆 <b>Pulsa sobre las láminas para marcarlas</b> y moverlas todas juntas
       (Mayúsculas + clic marca un rango seguido). Se guarda automáticamente.
+    </div>
+    <div class="mosaico-buscar-barra">
+      <input type="search" id="mosaico-buscar" placeholder="🔍 Buscar lámina por número, título o etiqueta…"
+             autocomplete="off" oninput="buscarEnMosaico(this.value)"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();mosaicoBuscarNav(1);}">
+      <span id="mosaico-buscar-cuenta"></span>
+      <button class="btn btn-secondary btn-pequeno" onclick="mosaicoBuscarNav(-1)" title="Coincidencia anterior">◀</button>
+      <button class="btn btn-secondary btn-pequeno" onclick="mosaicoBuscarNav(1)" title="Siguiente coincidencia">▶</button>
     </div>
     <div class="mosaico-barra-sel" id="mosaico-barra-sel" hidden>
       <span class="mosaico-barra-cuenta" id="mosaico-sel-cuenta"></span>
@@ -18381,6 +18391,7 @@ function pintarMosaicoReorden() {
   activarMoverPorNumero();
   activarSeleccionMosaico();
   actualizarBarraSeleccion();
+  _reaplicarBusquedaMosaico();
 }
 
 // ---------------------------------------------------------------------------
@@ -18745,6 +18756,55 @@ async function ordenarMosaicoComoMaestro() {
     if (estado) estado.textContent = '';
     alert('No se pudo reordenar: ' + e.message);
   }
+}
+
+// BÚSQUEDA en el mosaico: resalta y salta a la lámina, sin filtrar (para no romper el
+// arrastre). Busca por título o etiqueta; el número suele ir dentro del título.
+let _mosaicoBuscarMatches = [];
+let _mosaicoBuscarIdx = 0;
+function _normBusca(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
+function buscarEnMosaico(q) {
+  const nq = _normBusca(q).trim();
+  const grid = document.getElementById('mosaico-grid');
+  const cuenta = document.getElementById('mosaico-buscar-cuenta');
+  if (grid) grid.querySelectorAll('.mosaico-card').forEach(c => c.classList.remove('mosaico-match', 'mosaico-match-actual'));
+  if (!nq) {
+    _mosaicoBuscarMatches = [];
+    if (cuenta) cuenta.textContent = '';
+    grid?.classList.remove('mosaico-buscando');
+    return;
+  }
+  _mosaicoBuscarMatches = _mosaicoSheets
+    .filter(s => _normBusca(s.titulo).includes(nq) || _normBusca(s.tags).includes(nq))
+    .map(s => s.id);
+  _mosaicoBuscarIdx = 0;
+  grid?.classList.toggle('mosaico-buscando', _mosaicoBuscarMatches.length > 0);
+  _pintarMatchesMosaico(true);
+}
+function _pintarMatchesMosaico(hacerScroll) {
+  const grid = document.getElementById('mosaico-grid');
+  const cuenta = document.getElementById('mosaico-buscar-cuenta');
+  if (!grid) return;
+  grid.querySelectorAll('.mosaico-card').forEach(c => c.classList.remove('mosaico-match', 'mosaico-match-actual'));
+  _mosaicoBuscarMatches.forEach((id, i) => {
+    const card = grid.querySelector('.mosaico-card[data-id="' + id + '"]');
+    if (card) { card.classList.add('mosaico-match'); if (i === _mosaicoBuscarIdx) card.classList.add('mosaico-match-actual'); }
+  });
+  if (cuenta) cuenta.textContent = _mosaicoBuscarMatches.length ? (_mosaicoBuscarIdx + 1) + '/' + _mosaicoBuscarMatches.length : 'sin resultados';
+  if (hacerScroll && _mosaicoBuscarMatches.length) {
+    const actual = grid.querySelector('.mosaico-card.mosaico-match-actual');
+    if (actual) actual.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+}
+function mosaicoBuscarNav(dir) {
+  if (!_mosaicoBuscarMatches.length) return;
+  _mosaicoBuscarIdx = (_mosaicoBuscarIdx + dir + _mosaicoBuscarMatches.length) % _mosaicoBuscarMatches.length;
+  _pintarMatchesMosaico(true);
+}
+// Tras repintar (reordenar), vuelve a resaltar lo buscado si el buscador tiene texto.
+function _reaplicarBusquedaMosaico() {
+  const inp = document.getElementById('mosaico-buscar');
+  if (inp && inp.value.trim() && _mosaicoBuscarMatches.length) _pintarMatchesMosaico(false);
 }
 
 // Navegación rápida del mosaico: con cientos de láminas el scroll a mano es eterno.
