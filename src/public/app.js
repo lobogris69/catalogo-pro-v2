@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v213 · 27 jul 2026';
+const APP_VERSION = 'v214 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -515,6 +515,40 @@ function irA(vista) {
 }
 
 // ===== LISTA DE CATALOGOS =====
+let _verArchivados = false;
+function toggleVerArchivados() { _verArchivados = !_verArchivados; renderListaCatalogos(); }
+
+async function archivarCatalogo(id, nombre) {
+  if (!confirm(`¿Archivar «${nombre}»?\n\nDesaparece de la lista pero NO se borra nada: podrás restaurarlo cuando quieras desde "🗄️ Ver archivados".`)) return;
+  try {
+    await api('/api/catalogs/' + id + '/archivar', { method: 'POST' });
+    mostrarNotificacionOnline('🗄️ Catálogo archivado', '#b45309');
+    renderListaCatalogos();
+  } catch (e) { alert('No se pudo archivar: ' + e.message); }
+}
+async function desarchivarCatalogo(id, nombre) {
+  try {
+    await api('/api/catalogs/' + id + '/desarchivar', { method: 'POST' });
+    mostrarNotificacionOnline('♻️ «' + nombre + '» restaurado', '#16a34a');
+    renderListaCatalogos();
+  } catch (e) { alert('No se pudo restaurar: ' + e.message); }
+}
+async function borrarCatalogoDefinitivo(id, nombre, numHijos) {
+  if (numHijos > 0) {
+    alert(`No se puede borrar «${nombre}»: de este maestro cuelgan ${numHijos} catálogo(s) Express. Bórralos o muévelos antes.`);
+    return;
+  }
+  // Doble confirmación: es irreversible.
+  if (!confirm(`¿BORRAR DEFINITIVAMENTE «${nombre}»?\n\nSe borran sus versiones, láminas y asignaciones, y sus ficheros. NO se puede deshacer.`)) return;
+  const tecleado = prompt(`Para confirmar, escribe:  BORRAR`);
+  if ((tecleado || '').trim().toUpperCase() !== 'BORRAR') { alert('Cancelado (no escribiste BORRAR).'); return; }
+  try {
+    await api('/api/catalogs/' + id, { method: 'DELETE' });
+    mostrarNotificacionOnline('🗑️ «' + nombre + '» borrado definitivamente', '#dc2626');
+    renderListaCatalogos();
+  } catch (e) { alert('No se pudo borrar: ' + e.message); }
+}
+
 async function renderListaCatalogos() {
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogos…</div></div>`;
@@ -530,7 +564,7 @@ async function renderListaCatalogos() {
       catalogos = descargados.map(c => ({ ...c, _offline: true }));
     } else {
       try {
-        const r = await api('/api/catalogs');
+        const r = await api('/api/catalogs' + (_verArchivados ? '?archivados=1' : ''));
         catalogos = r.catalogs || [];
       } catch (err) {
         // Si falla la API pero el navegador dice online, intentar IndexedDB como fallback
@@ -545,10 +579,11 @@ async function renderListaCatalogos() {
     let html = `
       <div class="contenedor">
         <div class="titulo-pagina">
-          <h2>Catálogos${modoOffline ? ' <span style="font-size:13px;color:var(--gris-texto);font-weight:normal">(modo offline)</span>' : ''}</h2>
+          <h2>Catálogos${modoOffline ? ' <span style="font-size:13px;color:var(--gris-texto);font-weight:normal">(modo offline)</span>' : ''}${_verArchivados ? ' <span style="font-size:13px;color:#b45309;font-weight:normal">· archivados</span>' : ''}</h2>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            ${esAdmin && !modoOffline ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoCatalogo()">+ Nuevo catálogo</button>${ayuda('Crea un catálogo nuevo. Tipo "Maestro" = catálogo principal con todas las láminas. Tipo "Express" = subcatálogo de ofertas que selecciona algunas láminas del maestro (ej: ofertas verano).', 'izq')}` : ''}
-            ${!modoOffline ? `<button class="btn btn-secondary btn-pequeno" onclick="descargarMisClientes()" title="Descargar tu lista de clientes a este dispositivo para uso offline">👥 Descargar clientes</button>` : ''}
+            ${esAdmin && !modoOffline && !_verArchivados ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoCatalogo()">+ Nuevo catálogo</button>${ayuda('Crea un catálogo nuevo. Tipo "Maestro" = catálogo principal con todas las láminas. Tipo "Express" = subcatálogo de ofertas que selecciona algunas láminas del maestro (ej: ofertas verano).', 'izq')}` : ''}
+            ${esAdmin && !modoOffline ? `<button class="btn btn-secondary btn-pequeno" onclick="toggleVerArchivados()">${_verArchivados ? '← Volver a los activos' : '🗄️ Ver archivados'}</button>` : ''}
+            ${!modoOffline && !_verArchivados ? `<button class="btn btn-secondary btn-pequeno" onclick="descargarMisClientes()" title="Descargar tu lista de clientes a este dispositivo para uso offline">👥 Descargar clientes</button>` : ''}
           </div>
         </div>
         ${modoOffline ? `
@@ -561,11 +596,11 @@ async function renderListaCatalogos() {
     if (catalogos.length === 0) {
       html += `
         <div class="empty-state">
-          <div class="empty-state-icono">📚</div>
-          <h3>${modoOffline ? 'Sin catálogos descargados' : 'No hay catálogos todavía'}</h3>
+          <div class="empty-state-icono">${_verArchivados ? '🗄️' : '📚'}</div>
+          <h3>${modoOffline ? 'Sin catálogos descargados' : (_verArchivados ? 'No hay catálogos archivados' : 'No hay catálogos todavía')}</h3>
           <p>${modoOffline
             ? 'Cuando recuperes la conexión, podrás descargar catálogos para usarlos offline.'
-            : (esAdmin ? 'Crea tu primer catálogo maestro para empezar a subir láminas.' : 'Aún no tienes catálogos asignados.')}</p>
+            : (_verArchivados ? 'Los catálogos que archives aparecerán aquí y podrás restaurarlos o borrarlos.' : (esAdmin ? 'Crea tu primer catálogo maestro para empezar a subir láminas.' : 'Aún no tienes catálogos asignados.'))}</p>
           ${esAdmin && !modoOffline ? `<button class="btn btn-primary" style="max-width:280px;margin:0 auto" onclick="abrirModalNuevoCatalogo()">+ Crear primer catálogo</button>` : ''}
         </div>
       `;
@@ -593,17 +628,23 @@ async function renderListaCatalogos() {
             <div class="catalogo-card-info">${c.sheet_count || 0} láminas · V${c.version}</div>
             ${Number(c.num_versiones) > 0 ? `<div class="catalogo-card-versiones">📚 ${c.num_versiones} ${c.num_versiones === 1 ? 'versión guardada' : 'versiones guardadas'}${c.ultima_version_at ? ' · última ' + new Date(c.ultima_version_at).toLocaleDateString('es-ES') : ''}</div>` : ''}
             <div class="catalogo-card-acciones">
-              <button class="btn-card-mini" onclick="event.stopPropagation();abrirModalDescargarCatalogo(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">
-                📥 PDF/ZIP
-              </button>
-              ${esOfflineDescargado
-                ? `<button class="btn-card-mini btn-card-offline-on" onclick="event.stopPropagation();borrarCatalogoOffline(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Borrar copia offline">
-                    ✅ Offline
-                  </button>`
-                : `<button class="btn-card-mini" onclick="event.stopPropagation();descargarCatalogoOffline(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar al móvil para uso sin internet">
-                    📲 Offline
-                  </button>`
-              }
+              ${_verArchivados ? `
+                <button class="btn-card-mini" onclick="event.stopPropagation();desarchivarCatalogo(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Devolver a la lista">♻️ Restaurar</button>
+                <button class="btn-card-mini btn-card-borrar" onclick="event.stopPropagation();borrarCatalogoDefinitivo(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}', ${Number(c.num_hijos) || 0})" title="Borrar definitivamente">🗑️ Borrar</button>
+              ` : `
+                <button class="btn-card-mini" onclick="event.stopPropagation();abrirModalDescargarCatalogo(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">
+                  📥 PDF/ZIP
+                </button>
+                ${esOfflineDescargado
+                  ? `<button class="btn-card-mini btn-card-offline-on" onclick="event.stopPropagation();borrarCatalogoOffline(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Borrar copia offline">
+                      ✅ Offline
+                    </button>`
+                  : `<button class="btn-card-mini" onclick="event.stopPropagation();descargarCatalogoOffline(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar al móvil para uso sin internet">
+                      📲 Offline
+                    </button>`
+                }
+                ${esAdmin ? `<button class="btn-card-mini" onclick="event.stopPropagation();archivarCatalogo(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Ocultar de la lista (reversible)">🗄️ Archivar</button>` : ''}
+              `}
             </div>
           </div>
         `;

@@ -1606,7 +1606,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v213-mosaico-quitar-busqueda-27jul',
+      build: 'v214-archivar-borrar-catalogos-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1895,6 +1895,9 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
     //  - parent_name: nombre del maestro padre (solo si es express, NULL en otros casos)
     let r;
     if (req.user.role === 'admin') {
+      // Por defecto NO se muestran los archivados; con ?archivados=1 solo salen esos.
+      const soloArchivados = String(req.query.archivados || '') === '1';
+      const filtroArchivado = soloArchivados ? `c.estado = 'archivado'` : `c.estado <> 'archivado'`;
       r = await pool.query(`
         SELECT c.*,
           CASE
@@ -1903,8 +1906,10 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
           END AS sheet_count,
           (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
           (SELECT COUNT(*)::int FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS num_versiones,
-          (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at
+          (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at,
+          (SELECT COUNT(*)::int FROM catalogs h WHERE h.parent_id = c.id) AS num_hijos
         FROM catalogs c
+        WHERE ${filtroArchivado}
         ORDER BY c.updated_at DESC
       `);
     } else {
@@ -1944,6 +1949,74 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
+});
+
+// ARCHIVAR un catálogo: lo oculta de la lista (reversible). No borra nada.
+app.post('/api/catalogs/:id/archivar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(`UPDATE catalogs SET estado='archivado', updated_at=NOW() WHERE id=$1 RETURNING id`, [id]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Catálogo no encontrado' }); return; }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// DESARCHIVAR: lo devuelve a la lista como borrador.
+app.post('/api/catalogs/:id/desarchivar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(`UPDATE catalogs SET estado='borrador', updated_at=NOW() WHERE id=$1 RETURNING id`, [id]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Catálogo no encontrado' }); return; }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// BORRAR DEFINITIVAMENTE un catálogo. Solo si está ARCHIVADO. Guardas para no romper
+// nada: un maestro con Express hijos se bloquea; un catálogo con láminas usadas en
+// pedidos se bloquea (protege el historial). Borra versiones/láminas/asignaciones (por
+// cascada de la BD) y sus ficheros de disco (PDF/ZIP de versiones + imágenes).
+app.delete('/api/catalogs/:id', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const c = await pool.query(`SELECT id, name, tipo, estado FROM catalogs WHERE id=$1`, [id]);
+    if (!c.rows.length) { res.status(404).json({ success: false, error: 'Catálogo no encontrado' }); return; }
+    const cat = c.rows[0];
+    if (cat.estado !== 'archivado') {
+      res.status(400).json({ success: false, error: 'Primero archívalo y, cuando estés seguro, bórralo desde los archivados.' });
+      return;
+    }
+    // Guarda 1: un maestro con Express hijos NO se borra (arrastraría los Express).
+    const hijos = await pool.query(`SELECT name FROM catalogs WHERE parent_id=$1`, [id]);
+    if (hijos.rows.length) {
+      res.status(400).json({ success: false, error: `No se puede borrar: de este maestro cuelgan ${hijos.rows.length} catálogo(s) Express (${hijos.rows.map((h: any) => h.name).join(', ')}). Bórralos o muévelos antes.` });
+      return;
+    }
+    // Guarda 2: si alguna lámina de este catálogo está en pedidos, no se borra.
+    const enPedidos = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM annotations a JOIN sheets s ON s.id = a.sheet_id WHERE s.catalog_id = $1`, [id]);
+    if (Number(enPedidos.rows[0].n) > 0) {
+      res.status(400).json({ success: false, error: 'No se puede borrar: tiene láminas usadas en pedidos de visitas. Se perdería historial. (Puedes dejarlo archivado.)' });
+      return;
+    }
+    // Recopilar ficheros a borrar del disco ANTES de borrar la BD.
+    const fs = require('fs');
+    const vers = await pool.query(`SELECT pdf_path, zip_path FROM catalog_versions WHERE catalog_id=$1`, [id]);
+    const imgs = await pool.query(`SELECT imagen_path, miniatura_path FROM sheets WHERE catalog_id=$1`, [id]);
+    // Borrar la fila del catálogo: la BD arrastra en cascada versiones, láminas,
+    // express_sheets, asignaciones, reglas de reparto, etc.
+    await pool.query(`DELETE FROM catalogs WHERE id=$1`, [id]);
+    // Ficheros de disco (best-effort, no bloquea).
+    for (const v of vers.rows) {
+      for (const p of [v.pdf_path, v.zip_path]) {
+        if (p) { try { fs.unlinkSync(p); } catch (_) {} }
+      }
+    }
+    for (const s of imgs.rows) {
+      borrarUploadSeguro(s.imagen_path);
+      borrarUploadSeguro(s.miniatura_path);
+    }
+    res.json({ success: true, nombre: cat.name });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 // Crear catalogo (maestro o express, solo admin)

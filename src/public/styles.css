@@ -2770,6 +2770,8 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
   font-family: inherit;
   transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
 }
+.btn-card-borrar { border-color: #fca5a5 !important; color: #dc2626 !important; }
+.btn-card-borrar:hover { background: #fee2e2 !important; border-color: #dc2626 !important; }
 .btn-card-mini:hover {
   background: color-mix(in srgb, var(--brand) 8%, var(--surface));
   border-color: color-mix(in srgb, var(--brand) 40%, var(--gris-borde-2));
