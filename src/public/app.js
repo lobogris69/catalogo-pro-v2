@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v193 · 24 jul 2026';
+const APP_VERSION = 'v194 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -9681,10 +9681,17 @@ function pintarPlanningResultado() {
       </button>
     </div>`;
 
-  // Agrupar por ZONA de venta; si el cliente no tiene zona, por municipio.
+  // Agrupación: si ya se ha filtrado por una provincia, se agrupa por MUNICIPIO (así
+  // Gipuzkoa se parte en Donostia, Irún, Tolosa… que es lo útil para la ruta). Si no
+  // hay provincia elegida, se agrupa por zona/provincia como vista de nivel superior.
+  // (La "zona de venta" coincide con la provincia, así que dentro de una provincia
+  // daría un único grupo — por eso ahí mandamos el municipio.)
+  const porProvincia = !!(_planningState.provincia && String(_planningState.provincia).trim());
   const grupos = {};
   clientes.forEach(c => {
-    const k = (c.zona_nombre && String(c.zona_nombre).trim()) || (c.municipio && String(c.municipio).trim()) || 'Sin zona asignada';
+    const k = porProvincia
+      ? ((c.municipio && String(c.municipio).trim()) || 'Sin municipio')
+      : ((c.zona_nombre && String(c.zona_nombre).trim()) || (c.municipio && String(c.municipio).trim()) || 'Sin zona asignada');
     (grupos[k] = grupos[k] || []).push(c);
   });
   // Orden de las zonas: primero las que tienen urgentes, luego alfabético.
