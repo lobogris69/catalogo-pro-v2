@@ -1605,7 +1605,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v202-archivo-catalogos-inc1-27jul',
+      build: 'v203-archivo-inc2-ver-buscar-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2633,6 +2633,64 @@ app.get('/api/archivo', verifyToken, requireRealAdmin, async (_req: AuthRequest,
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
+});
+
+// ARCHIVO: ver una versión POR DENTRO — devuelve las láminas tal como estaban al
+// cerrarla (desde el snapshot). Solo admin real.
+app.get('/api/catalog-versions/:id/sheets', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const vid = Number(req.params.id);
+    const r = await pool.query(
+      `SELECT cv.id, cv.version_number, cv.published_at, cv.notas_version, cv.snapshot_json,
+              c.name AS catalog_name, c.tipo AS catalog_tipo, cv.catalog_id
+       FROM catalog_versions cv JOIN catalogs c ON c.id = cv.catalog_id
+       WHERE cv.id = $1`, [vid]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Versión no encontrada' }); return; }
+    const row = r.rows[0];
+    let snap = row.snapshot_json;
+    if (typeof snap === 'string') { try { snap = JSON.parse(snap); } catch { snap = {}; } }
+    const sheets = (snap && Array.isArray(snap.sheets)) ? snap.sheets : [];
+    res.json({
+      success: true,
+      version: { id: row.id, version_number: row.version_number, published_at: row.published_at, notas_version: row.notas_version },
+      catalog: { id: row.catalog_id, name: row.catalog_name, tipo: row.catalog_tipo },
+      sheets
+    });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// ARCHIVO: buscar una lámina en TODAS las versiones guardadas (por título o tag).
+// Útil para "¿en qué versión estaba esa lámina que borré?". Solo admin real.
+app.get('/api/archivo/buscar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const q = String(req.query.q || '').trim().toLowerCase();
+    if (q.length < 2) { res.json({ success: true, resultados: [] }); return; }
+    const vers = await pool.query(`
+      SELECT cv.id AS version_id, cv.version_number, cv.published_at, cv.snapshot_json,
+             c.id AS catalog_id, c.name AS catalog_name, c.tipo AS catalog_tipo
+      FROM catalog_versions cv JOIN catalogs c ON c.id = cv.catalog_id
+      ORDER BY cv.published_at DESC`);
+    const resultados: any[] = [];
+    for (const v of vers.rows) {
+      let snap = v.snapshot_json;
+      if (typeof snap === 'string') { try { snap = JSON.parse(snap); } catch { snap = {}; } }
+      const sheets = (snap && Array.isArray(snap.sheets)) ? snap.sheets : [];
+      for (const s of sheets) {
+        const titulo = String(s.titulo || '').toLowerCase();
+        const tags = String(s.tags || '').toLowerCase();
+        if (titulo.includes(q) || tags.includes(q)) {
+          resultados.push({
+            version_id: v.version_id, version_number: v.version_number, published_at: v.published_at,
+            catalog_id: v.catalog_id, catalog_name: v.catalog_name, catalog_tipo: v.catalog_tipo,
+            sheet: { id: s.id, orden: s.orden, titulo: s.titulo, tags: s.tags, imagen_path: s.imagen_path }
+          });
+          if (resultados.length >= 200) break;
+        }
+      }
+      if (resultados.length >= 200) break;
+    }
+    res.json({ success: true, resultados });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 // GET listado de versiones cerradas de un catálogo (admin y comerciales asignados)

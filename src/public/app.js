@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v202 · 27 jul 2026';
+const APP_VERSION = 'v203 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -7733,6 +7733,10 @@ function pintarArchivo() {
       <input type="search" class="archivo-buscador" placeholder="🔍 Buscar catálogo o comercial…"
              value="${escape(_archivoFiltro)}" oninput="_archivoFiltro=this.value; pintarArchivo(); const i=document.querySelector('.archivo-buscador'); if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}">
 
+      <input type="search" id="archivo-lamina-buscar" class="archivo-buscador" style="margin-top:-8px"
+             placeholder="🔎 Buscar una lámina guardada (por título o tag)…" oninput="archivoBuscarLamina(this.value)">
+      <div id="archivo-lamina-resultados"></div>
+
       <div class="archivo-seccion-tit">📕 Maestros (${maestros.length})</div>
       ${maestros.length ? maestros.map(_archivoCard).join('') : '<div class="archivo-vacio">No hay maestros que coincidan.</div>'}
 
@@ -7785,9 +7789,90 @@ function _archivoCard(c) {
     </div>`;
 }
 
-// Placeholder hasta el incremento 2 (ver versión por dentro).
-function archivoVerVersion(versionId) {
-  alert('Ver la versión por dentro llega en el siguiente paso.');
+// Buscar una lámina en TODAS las versiones guardadas (título o tag). Sirve para
+// encontrar una lámina que se borró: te dice en qué versión sigue guardada.
+let _archivoBuscarTimer = null;
+function archivoBuscarLamina(q) {
+  clearTimeout(_archivoBuscarTimer);
+  const cont = document.getElementById('archivo-lamina-resultados');
+  if (!cont) return;
+  q = (q || '').trim();
+  if (q.length < 2) { cont.innerHTML = ''; return; }
+  cont.innerHTML = '<div style="font-size:12px;color:var(--gris-texto,#9ca3af);padding:4px 2px">Buscando…</div>';
+  _archivoBuscarTimer = setTimeout(async () => {
+    let r;
+    try { r = await api('/api/archivo/buscar?q=' + encodeURIComponent(q)); }
+    catch (e) { cont.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`; return; }
+    const res = r.resultados || [];
+    if (!res.length) { cont.innerHTML = `<div class="archivo-vacio">No hay ninguna lámina guardada con «${escape(q)}».</div>`; return; }
+    cont.innerHTML = `
+      <div class="archivo-busq-cab">🔎 ${res.length} coincidencia${res.length === 1 ? '' : 's'} en el archivo</div>
+      ${res.map(x => {
+        const fecha = x.published_at ? new Date(x.published_at).toLocaleDateString('es-ES') : '';
+        return `
+          <div class="archivo-busq-fila" onclick="archivoVerVersion(${x.version_id})" title="Abrir esta versión">
+            <span class="archivo-busq-num">${x.sheet.orden || ''}</span>
+            <span class="archivo-busq-info">
+              <b>${escape(x.sheet.titulo || 'Sin título')}</b>
+              <span class="archivo-busq-donde">📚 ${escape(x.catalog_name)} · V${x.version_number}${fecha ? ' · ' + escape(fecha) : ''}</span>
+            </span>
+            <span class="archivo-busq-ver">👁 Ver</span>
+          </div>`;
+      }).join('')}`;
+  }, 320);
+}
+
+// Ver una versión POR DENTRO: sus láminas tal como estaban al cerrarla.
+let _archivoVisorData = null;
+async function archivoVerVersion(versionId) {
+  const ov = document.createElement('div');
+  ov.className = 'archivo-visor-overlay';
+  ov.id = 'archivo-visor-overlay';
+  ov.innerHTML = `<div class="archivo-visor"><div class="loading" style="padding:40px;text-align:center">Cargando versión…</div></div>`;
+  ov.onclick = (e) => { if (e.target === ov) cerrarArchivoVisor(); };
+  document.body.appendChild(ov);
+  try {
+    _archivoVisorData = await api('/api/catalog-versions/' + versionId + '/sheets');
+  } catch (e) {
+    ov.querySelector('.archivo-visor').innerHTML = `<div class="error-msg" style="margin:20px">${escape(e.message)}</div>
+      <div style="text-align:center;padding:0 0 16px"><button class="btn btn-secondary" onclick="cerrarArchivoVisor()">Cerrar</button></div>`;
+    return;
+  }
+  pintarArchivoVisor('');
+}
+function cerrarArchivoVisor() {
+  document.getElementById('archivo-visor-overlay')?.remove();
+  _archivoVisorData = null;
+}
+function pintarArchivoVisor(filtro) {
+  const ov = document.getElementById('archivo-visor-overlay');
+  if (!ov || !_archivoVisorData) return;
+  const d = _archivoVisorData;
+  const q = (filtro || '').trim().toLowerCase();
+  const sheets = (d.sheets || []).filter(s => !q ||
+    String(s.titulo || '').toLowerCase().includes(q) || String(s.tags || '').toLowerCase().includes(q));
+  const fecha = d.version.published_at ? new Date(d.version.published_at).toLocaleDateString('es-ES') : '';
+  ov.querySelector('.archivo-visor').innerHTML = `
+    <div class="archivo-visor-cab">
+      <div>
+        <b>${escape(d.catalog.name)}</b> · <span style="color:var(--marca,#d80a6b);font-weight:800">V${d.version.version_number}</span>
+        <div style="font-size:12px;color:var(--gris-texto,#6b7280)">📅 ${escape(fecha)} · ${(d.sheets || []).length} láminas guardadas${d.version.notas_version ? ' · "' + escape(d.version.notas_version) + '"' : ''}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="cerrarArchivoVisor()">✕ Cerrar</button>
+    </div>
+    <input type="search" class="archivo-buscador" style="margin:0 0 12px" placeholder="🔍 Buscar lámina en esta versión…"
+           value="${escape(filtro || '')}" oninput="pintarArchivoVisor(this.value); const i=document.querySelector('#archivo-visor-overlay .archivo-buscador'); if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}">
+    <div class="archivo-visor-grid">
+      ${sheets.length ? sheets.map(s => `
+        <div class="archivo-visor-celda">
+          <img src="${escape(vurl(s.imagen_path, s))}" class="archivo-visor-img" alt="" loading="lazy" decoding="async"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="archivo-visor-noimg" style="display:none">🖼️<br><small>imagen no disponible<br>(está en el ZIP)</small></div>
+          <div class="archivo-visor-num">${s.orden || ''}</div>
+          <div class="archivo-visor-tit">${escape(s.titulo || 'Sin título')}</div>
+        </div>
+      `).join('') : '<div class="archivo-vacio" style="grid-column:1/-1;text-align:center">No hay láminas que coincidan.</div>'}
+    </div>`;
 }
 
 async function pintarPestanaHistorial(catalogId) {
