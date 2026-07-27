@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v195 · 24 jul 2026';
+const APP_VERSION = 'v196 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -9464,17 +9464,22 @@ function pintarPlanning() {
     return `<button class="planning-chip ${activo ? 'planning-chip-activo' : ''}" onclick="cambiarFiltroPlanning('estado','${e}')">${label}</button>`;
   }).join('');
 
+  const sub = _planningState.sub || 'zonas';
   $v.innerHTML = `
     <div class="contenedor">
       <div class="titulo-pagina">
         <div>
           <h2>🗓️ Planning de visitas</h2>
-          <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
-            Clientes ordenados por urgencia. Pulsa una fila para abrir su ficha.
-          </div>
         </div>
       </div>
 
+      <!-- Conmutador Zonas / Agenda -->
+      <div class="plan-subtabs">
+        <button class="plan-subtab ${sub === 'zonas' ? 'on' : ''}" onclick="cambiarSubPlanning('zonas')">🗺️ Por zona</button>
+        <button class="plan-subtab ${sub === 'agenda' ? 'on' : ''}" onclick="cambiarSubPlanning('agenda')">📅 Agenda</button>
+      </div>
+
+      <div id="plan-zonas-vista" style="${sub === 'zonas' ? '' : 'display:none'}">
       <!-- Filtros -->
       <div class="planning-filtros">
         <div class="planning-chips-row">${estadosChips}</div>
@@ -9501,8 +9506,13 @@ function pintarPlanning() {
       <div id="planning-resultado">
         ${s.loading ? '<div class="loading">Cargando…</div>' : ''}
       </div>
+      </div><!-- /plan-zonas-vista -->
+
+      <div id="plan-agenda-vista" style="${sub === 'agenda' ? '' : 'display:none'}"></div>
     </div>
   `;
+
+  if (sub === 'agenda') { renderAgenda(); }
 
   // Listeners (debounce en búsqueda)
   const $q = document.getElementById('planning-q');
@@ -9733,7 +9743,10 @@ function pintarPlanningResultado() {
         <span class="plan-estado ${clase}"><i class="pt"></i>${e.label}</span>
         <div class="plan-tar-pie">
           <span class="plan-ult">${escape(tiempo)}</span>
-          ${puedeVisitar ? `<button class="plan-visita" onclick="event.stopPropagation();iniciarVisitaParaCliente(${c.id})" title="Empezar visita">🛒 Visitar</button>` : ''}
+          <div style="display:flex;gap:6px">
+            <button class="plan-visita" style="border-color:#0ea5e9;color:#0ea5e9" onclick="event.stopPropagation();programarDesdePlanning(${c.id})" title="Poner en la agenda">📅</button>
+            ${puedeVisitar ? `<button class="plan-visita" onclick="event.stopPropagation();iniciarVisitaParaCliente(${c.id})" title="Empezar visita">🛒</button>` : ''}
+          </div>
         </div>
       </div>`;
   };
@@ -9788,6 +9801,282 @@ function _ordenarPlanningPorCercania(lista) {
 function togglePlanningRuta() {
   _planningState.ruta = !_planningState.ruta;
   pintarPlanningResultado();
+}
+
+function cambiarSubPlanning(sub) {
+  _planningState.sub = sub;
+  pintarPlanning();
+  if (sub === 'zonas') recargarPlanning();
+}
+
+// ============================================================================
+// AGENDA DE VISITAS (día / semana)
+// ============================================================================
+let _agenda = {
+  vista: 'sem',          // 'sem' | 'dia'
+  ancla: null,           // fecha de referencia (lunes de la semana / día mostrado)
+  citas: []
+};
+
+function _hoyISO() { const d = new Date(); return _fechaISO(d); }
+function _fechaISO(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function _lunesDe(d) {
+  const x = new Date(d); const dow = (x.getDay() + 6) % 7; // 0 = lunes
+  x.setDate(x.getDate() - dow); x.setHours(0, 0, 0, 0); return x;
+}
+function _sumarDias(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return _fechaISO(d); }
+const _DIAS_SEM = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie'];
+const _MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+
+async function renderAgenda() {
+  const cont = document.getElementById('plan-agenda-vista');
+  if (!cont) return;
+  if (!_agenda.ancla) _agenda.ancla = _hoyISO();
+  cont.innerHTML = '<div class="loading">Cargando agenda…</div>';
+
+  // Rango a pedir según la vista
+  let desde, hasta, rangoTxt;
+  if (_agenda.vista === 'sem') {
+    const lun = _fechaISO(_lunesDe(_agenda.ancla));
+    desde = lun; hasta = _sumarDias(lun, 4);
+    const dL = new Date(desde + 'T00:00:00'), dV = new Date(hasta + 'T00:00:00');
+    rangoTxt = dL.getDate() + ' ' + _MESES[dL.getMonth()] + ' – ' + dV.getDate() + ' ' + _MESES[dV.getMonth()] + ' ' + dV.getFullYear();
+  } else {
+    desde = _agenda.ancla; hasta = _agenda.ancla;
+    const d = new Date(desde + 'T00:00:00');
+    rangoTxt = _DIAS_SEM_LARGO(d) + ' ' + d.getDate() + ' ' + _MESES[d.getMonth()] + ' ' + d.getFullYear();
+  }
+
+  try {
+    const r = await api('/api/agenda?desde=' + desde + '&hasta=' + hasta);
+    _agenda.citas = r.citas || [];
+  } catch (e) { _agenda.citas = []; }
+
+  cont.innerHTML = `
+    <div class="ag-top">
+      <div class="ag-seg">
+        <button class="${_agenda.vista === 'sem' ? 'on' : ''}" onclick="agendaVista('sem')">Semana</button>
+        <button class="${_agenda.vista === 'dia' ? 'on' : ''}" onclick="agendaVista('dia')">Día</button>
+      </div>
+      <div class="ag-rango">${escape(rangoTxt)}</div>
+      <div class="ag-flechas">
+        <button onclick="agendaMover(-1)" title="Anterior">‹</button>
+        <button onclick="agendaHoy()" title="Hoy">Hoy</button>
+        <button onclick="agendaMover(1)" title="Siguiente">›</button>
+      </div>
+    </div>
+    <div id="ag-cuerpo"></div>`;
+
+  if (_agenda.vista === 'sem') pintarAgendaSemana(desde);
+  else pintarAgendaDia(desde);
+}
+function _DIAS_SEM_LARGO(d) { return ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][d.getDay()]; }
+
+function _citaHTML(ci) {
+  const cls = ci.estado === 'realizada' ? 'hecha' : (ci.estado === 'cancelada' ? 'cancelada' : 'pend');
+  return `<div class="ag-cita ${cls}" onclick="abrirCita(${ci.id})">
+    ${ci.estado === 'realizada' ? '<span class="tick">✔</span>' : ''}
+    ${ci.hora ? `<div class="h">${escape(ci.hora)}</div>` : '<div class="h">—</div>'}
+    <div class="c">${escape(ci.cliente_nombre || 'Cliente')}</div>
+  </div>`;
+}
+
+function pintarAgendaSemana(lunISO) {
+  const cuerpo = document.getElementById('ag-cuerpo');
+  const hoy = _hoyISO();
+  let html = '<div class="ag-semana">';
+  for (let i = 0; i < 5; i++) {
+    const iso = _sumarDias(lunISO, i);
+    const d = new Date(iso + 'T00:00:00');
+    const delDia = _agenda.citas.filter(c => c.fecha === iso);
+    html += `<div class="ag-dia ${iso === hoy ? 'hoy' : ''}">
+      <div class="ag-dia-cab"><div class="d">${_DIAS_SEM[i]}</div><div class="n">${d.getDate()}</div></div>
+      <div class="ag-dia-cuerpo">
+        ${delDia.map(_citaHTML).join('')}
+        <div class="ag-hueco" onclick="programarEnDia('${iso}')">+ añadir</div>
+      </div></div>`;
+  }
+  html += '</div>';
+  cuerpo.innerHTML = html;
+}
+
+function pintarAgendaDia(iso) {
+  const cuerpo = document.getElementById('ag-cuerpo');
+  const delDia = _agenda.citas.filter(c => c.fecha === iso).sort((a, b) => (a.hora || '99') > (b.hora || '99') ? 1 : -1);
+  const horas = ['08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '16:00', '17:00', '18:00'];
+  let html = '<div class="ag-dia-vista">';
+  horas.forEach(h => {
+    const hh = h.slice(0, 2);
+    const enHora = delDia.filter(c => (c.hora || '').slice(0, 2) === hh);
+    html += `<div class="ag-franja"><div class="hh">${h}</div><div class="cont" onclick="programarEnDia('${iso}','${h}')">
+      ${enHora.map(_citaHTML).join('')}
+    </div></div>`;
+  });
+  // Citas sin hora
+  const sinHora = delDia.filter(c => !c.hora);
+  if (sinHora.length) html += `<div class="ag-franja"><div class="hh">Sin hora</div><div class="cont">${sinHora.map(_citaHTML).join('')}</div></div>`;
+  html += '</div>';
+  cuerpo.innerHTML = html;
+}
+
+function agendaVista(v) { _agenda.vista = v; renderAgenda(); }
+function agendaHoy() { _agenda.ancla = _hoyISO(); renderAgenda(); }
+function agendaMover(dir) {
+  const paso = _agenda.vista === 'sem' ? 7 : 1;
+  _agenda.ancla = _sumarDias(_agenda.ancla, dir * paso);
+  renderAgenda();
+}
+
+// Desde una tarjeta del planning: programar ESE cliente. Diálogo corto con día + hora.
+async function programarDesdePlanning(clientId) {
+  const cli = (_planningState.clientes || []).find(c => c.id === clientId);
+  const nombre = cli ? cli.razon_social : 'este cliente';
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header"><h3>📅 Programar visita</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+      <div style="font-size:15px;font-weight:700;margin-bottom:12px">${escape(nombre)}</div>
+      <div style="display:flex;gap:10px">
+        <div class="form-group" style="flex:1.3"><label>Día</label>
+          <input type="date" id="pp-fecha" value="${_hoyISO()}" min="${_hoyISO()}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:15px"></div>
+        <div class="form-group" style="flex:1"><label>Hora</label>
+          <input type="time" id="pp-hora" value="10:00" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:16px"></div>
+      </div>
+      <div class="form-group"><label>Nota <small style="color:#9ca3af">opcional</small></label>
+        <input type="text" id="pp-nota" placeholder="ej: llevar novedades" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box"></div>
+      <div id="pp-msg"></div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn btn-primary" id="pp-guardar">📅 Programar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  m.querySelector('#pp-guardar').addEventListener('click', async (ev) => {
+    ev.currentTarget.disabled = true;
+    try {
+      await api('/api/agenda', { method: 'POST', body: {
+        client_id: clientId, fecha: m.querySelector('#pp-fecha').value,
+        hora: m.querySelector('#pp-hora').value || null,
+        nota: m.querySelector('#pp-nota').value.trim() || null
+      }});
+      m.remove();
+      mostrarNotificacionOnline('📅 ' + nombre + ' añadida a la agenda', '#16a34a');
+    } catch (e) {
+      m.querySelector('#pp-msg').innerHTML = '<span style="color:#b91c1c">' + escape(e.message) + '</span>';
+      ev.currentTarget.disabled = false;
+    }
+  });
+}
+
+// Programar una visita: elegir cliente (de los suyos) + hora.
+async function programarEnDia(iso, hora) {
+  const d = new Date(iso + 'T00:00:00');
+  const titulo = _DIAS_SEM_LARGO(d) + ' ' + d.getDate() + ' ' + _MESES[d.getMonth()];
+  // cargar clientes del comercial para el desplegable
+  let clientes = [];
+  try {
+    const r = await api('/api/clients?active=1&limit=500');
+    clientes = (r.clients || []).filter(c => !/^\s*-?\s*(baja|anulad)/i.test(c.razon_social || ''))
+      .sort((a, b) => (a.razon_social || '').localeCompare(b.razon_social || '', 'es'));
+  } catch (_) {}
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header"><h3>📅 Programar visita — ${escape(titulo)}</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+      <div class="form-group">
+        <label>Farmacia</label>
+        <input type="search" id="ag-buscar" placeholder="🔍 Escribe el nombre…" autocomplete="off"
+               style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box">
+        <select id="ag-cliente" size="6" style="width:100%;margin-top:6px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box">
+          ${clientes.slice(0, 200).map(c => `<option value="${c.id}">${escape(c.razon_social)}${c.municipio ? ' · ' + escape(c.municipio) : ''}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:flex;gap:10px">
+        <div class="form-group" style="flex:1"><label>Hora</label>
+          <input type="time" id="ag-hora" value="${hora || '10:00'}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:16px"></div>
+        <div class="form-group" style="flex:1"><label>Duración</label>
+          <select id="ag-dur" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:15px">
+            <option value="15">15 min</option><option value="30" selected>30 min</option>
+            <option value="45">45 min</option><option value="60">1 hora</option></select></div>
+      </div>
+      <div class="form-group"><label>Nota <small style="color:#9ca3af">opcional</small></label>
+        <input type="text" id="ag-nota" placeholder="ej: llevar muestras" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box"></div>
+      <div id="ag-msg"></div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn btn-primary" id="ag-guardar">📅 Programar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  const $bus = m.querySelector('#ag-buscar'), $sel = m.querySelector('#ag-cliente');
+  $bus.addEventListener('input', () => {
+    const q = $bus.value.toLowerCase().trim();
+    $sel.innerHTML = clientes.filter(c => !q || (c.razon_social || '').toLowerCase().includes(q) || (c.municipio || '').toLowerCase().includes(q))
+      .slice(0, 200).map(c => `<option value="${c.id}">${escape(c.razon_social)}${c.municipio ? ' · ' + escape(c.municipio) : ''}</option>`).join('');
+  });
+  m.querySelector('#ag-guardar').addEventListener('click', async (ev) => {
+    const cliId = $sel.value;
+    if (!cliId) { m.querySelector('#ag-msg').innerHTML = '<span style="color:#b91c1c">Elige una farmacia.</span>'; return; }
+    ev.currentTarget.disabled = true;
+    try {
+      await api('/api/agenda', { method: 'POST', body: {
+        client_id: Number(cliId), fecha: iso,
+        hora: m.querySelector('#ag-hora').value || null,
+        duracion_min: Number(m.querySelector('#ag-dur').value),
+        nota: m.querySelector('#ag-nota').value.trim() || null
+      }});
+      m.remove();
+      renderAgenda();
+      mostrarNotificacionOnline('📅 Visita programada', '#16a34a');
+    } catch (e) {
+      m.querySelector('#ag-msg').innerHTML = '<span style="color:#b91c1c">' + escape(e.message) + '</span>';
+      ev.currentTarget.disabled = false;
+    }
+  });
+  setTimeout(() => $bus.focus(), 100);
+}
+
+// Abrir una cita: ver, empezar la visita, mover, o borrar.
+async function abrirCita(id) {
+  const ci = _agenda.citas.find(c => c.id === id);
+  if (!ci) return;
+  const puedeVisitar = !(esAdminReal() && !impersonating);
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header"><h3>📅 ${escape(ci.cliente_nombre)}</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+      <div style="background:var(--gris-fondo,#f9fafb);border:1px solid var(--gris-borde);border-radius:10px;padding:12px 14px;font-size:14px">
+        <div>📆 <b>${escape(_fechaLegible(ci.fecha))}</b>${ci.hora ? ' · 🕐 ' + escape(ci.hora) : ''}</div>
+        ${ci.municipio ? `<div style="color:var(--gris-texto);margin-top:3px">📍 ${escape(ci.municipio)}</div>` : ''}
+        ${ci.telefono ? `<div style="color:var(--gris-texto);margin-top:3px">📞 ${escape(ci.telefono)}</div>` : ''}
+        ${ci.nota ? `<div style="margin-top:6px">📝 ${escape(ci.nota)}</div>` : ''}
+        <div style="margin-top:8px">${ci.estado === 'realizada' ? '<b style="color:#16a34a">✔ Visita realizada</b>' : (ci.estado === 'cancelada' ? '<b style="color:#9ca3af">Cancelada</b>' : '<b style="color:#d97706">⏳ Pendiente</b>')}</div>
+      </div>
+      <div class="modal-acciones" style="flex-wrap:wrap">
+        <button class="btn" style="background:#dc2626;color:#fff" onclick="borrarCita(${id})">🗑️ Borrar</button>
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+        ${puedeVisitar && ci.estado === 'pendiente' ? `<button class="btn btn-primary" onclick="this.closest('.modal-bg').remove();iniciarVisitaParaCliente(${ci.client_id})">🛒 Empezar visita</button>` : ''}
+        ${puedeVisitar ? `<button class="btn" style="background:#0ea5e9;color:#fff" onclick="abrirDetalleCliente(${ci.client_id})">👤 Ver ficha</button>` : ''}
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+}
+function _fechaLegible(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return _DIAS_SEM_LARGO(d) + ' ' + d.getDate() + ' de ' + ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][d.getMonth()];
+}
+async function borrarCita(id) {
+  if (!confirm('¿Quitar esta visita de la agenda?')) return;
+  try { await api('/api/agenda/' + id, { method: 'DELETE' }); document.querySelectorAll('.modal-bg').forEach(m => m.remove()); renderAgenda(); }
+  catch (e) { alert('Error: ' + e.message); }
 }
 
 // G: editar ciclo individual de un cliente (prompt simple)

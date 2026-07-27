@@ -860,6 +860,26 @@ async function initDB(): Promise<void> {
         UNIQUE(user_id, catalog_id)
       );
 
+      -- AGENDA DE VISITAS. Cada fila = una visita PLANIFICADA (un cliente, un dia y una
+      -- hora). Es la agenda del comercial; distinta de 'visits', que es la visita YA
+      -- hecha con su pedido. Cuando el comercial cierra la visita real de ese cliente,
+      -- la cita del dia se marca 'realizada' y se enlaza con visit_id.
+      CREATE TABLE IF NOT EXISTS agenda_citas (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+        fecha DATE NOT NULL,
+        hora TIME,                                   -- hora exacta (puede ser NULL = sin hora)
+        duracion_min INTEGER NOT NULL DEFAULT 30,
+        estado VARCHAR(12) NOT NULL DEFAULT 'pendiente',  -- pendiente | realizada | cancelada
+        visit_id INTEGER REFERENCES visits(id) ON DELETE SET NULL,  -- la visita real que la cumplio
+        nota TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_agenda_user_fecha ON agenda_citas(user_id, fecha);
+      CREATE INDEX IF NOT EXISTS idx_agenda_cliente ON agenda_citas(client_id);
+
       CREATE TABLE IF NOT EXISTS visits (
         id SERIAL PRIMARY KEY,
         client_id INTEGER REFERENCES clients(id),
@@ -1576,7 +1596,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v193-planning-por-zona-24jul',
+      build: 'v196-agenda-visitas-24jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -5848,6 +5868,105 @@ app.get('/api/clients/:id/last-visit-summary', verifyToken, async (req: AuthRequ
 //   municipio: filtro municipio exacto
 //   comercial: codigo_comercial (solo admin lo usa). Comerciales solo ven los suyos.
 //   limit / offset (default 100 / 0)
+// ============================================================================
+// AGENDA DE VISITAS (citas planificadas con día y hora)
+// ============================================================================
+
+// Listar las citas de un rango de fechas del comercial (o del que impersona el admin).
+app.get('/api/agenda', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = effectiveUserId(req);
+    const desde = String(req.query.desde || '').trim();   // 'YYYY-MM-DD'
+    const hasta = String(req.query.hasta || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(desde) || !/^\d{4}-\d{2}-\d{2}$/.test(hasta)) {
+      res.status(400).json({ success: false, error: 'Fechas desde/hasta obligatorias (YYYY-MM-DD)' });
+      return;
+    }
+    const r = await pool.query(
+      `SELECT a.id, a.client_id, a.fecha::text AS fecha, to_char(a.hora,'HH24:MI') AS hora,
+              a.duracion_min, a.estado, a.visit_id, a.nota,
+              c.razon_social AS cliente_nombre, c.municipio, c.telefono
+         FROM agenda_citas a
+         JOIN clients c ON c.id = a.client_id
+        WHERE a.user_id = $1 AND a.fecha BETWEEN $2::date AND $3::date
+        ORDER BY a.fecha, a.hora NULLS LAST, a.id`,
+      [userId, desde, hasta]);
+    res.json({ success: true, citas: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Crear una cita (programar visita). El admin real sin impersonar no tiene agenda propia.
+app.post('/api/agenda', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.user?.role === 'admin' && !(req.user as any)._realAdminId) {
+      res.status(403).json({ success: false, error: 'Como administrador no tienes agenda. Usa "Ver como" un comercial.' });
+      return;
+    }
+    const userId = effectiveUserId(req);
+    const { client_id, fecha, hora, duracion_min, nota } = req.body;
+    if (!client_id || !/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ''))) {
+      res.status(400).json({ success: false, error: 'Cliente y fecha (YYYY-MM-DD) obligatorios' });
+      return;
+    }
+    const horaOk = /^\d{2}:\d{2}$/.test(String(hora || '')) ? hora : null;
+    const dur = Number(duracion_min) > 0 ? Math.min(Number(duracion_min), 600) : 30;
+    const r = await pool.query(
+      `INSERT INTO agenda_citas (user_id, client_id, fecha, hora, duracion_min, nota)
+       VALUES ($1,$2,$3::date,$4,$5,$6) RETURNING id`,
+      [userId, Number(client_id), fecha, horaOk, dur, nota ? String(nota).trim().substring(0, 300) : null]);
+    res.json({ success: true, id: r.rows[0].id });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Editar una cita: mover de día/hora, cambiar nota, o marcar realizada/cancelada a mano.
+app.put('/api/agenda/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    const a = await pool.query('SELECT user_id FROM agenda_citas WHERE id = $1', [id]);
+    if (!a.rows.length) { res.status(404).json({ success: false, error: 'Cita no encontrada' }); return; }
+    if (isEffectiveSales(req) && a.rows[0].user_id !== userId) {
+      res.status(403).json({ success: false, error: 'No es tu cita' });
+      return;
+    }
+    const campos: string[] = []; const vals: any[] = [];
+    const set = (col: string, v: any) => { vals.push(v); campos.push(`${col} = $${vals.length}`); };
+    if (req.body.fecha !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.fecha))) set('fecha', req.body.fecha);
+    if (req.body.hora !== undefined) set('hora', /^\d{2}:\d{2}$/.test(String(req.body.hora || '')) ? req.body.hora : null);
+    if (req.body.duracion_min !== undefined) set('duracion_min', Math.min(Math.max(Number(req.body.duracion_min) || 30, 5), 600));
+    if (req.body.nota !== undefined) set('nota', req.body.nota ? String(req.body.nota).trim().substring(0, 300) : null);
+    if (req.body.estado !== undefined && ['pendiente', 'realizada', 'cancelada'].includes(req.body.estado)) set('estado', req.body.estado);
+    if (!campos.length) { res.json({ success: true, sinCambios: true }); return; }
+    vals.push(id);
+    await pool.query(`UPDATE agenda_citas SET ${campos.join(', ')}, updated_at = NOW() WHERE id = $${vals.length}`, vals);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// Borrar una cita.
+app.delete('/api/agenda/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = effectiveUserId(req);
+    const a = await pool.query('SELECT user_id FROM agenda_citas WHERE id = $1', [id]);
+    if (!a.rows.length) { res.status(404).json({ success: false, error: 'Cita no encontrada' }); return; }
+    if (isEffectiveSales(req) && a.rows[0].user_id !== userId) {
+      res.status(403).json({ success: false, error: 'No es tu cita' });
+      return;
+    }
+    await pool.query('DELETE FROM agenda_citas WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
 app.get('/api/planning', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
@@ -9745,6 +9864,20 @@ app.post('/api/visits/:id/confirm', verifyToken, async (req: AuthRequest, res: R
     );
     // Actualizar ultima_visita_at del cliente
     await pool.query(`UPDATE clients SET ultima_visita_at = NOW() WHERE id = $1`, [r.rows[0].client_id]);
+
+    // AGENDA: si había una cita PENDIENTE de este cliente para hoy, se da por cumplida
+    // sola y se enlaza con esta visita. Así el comercial no tiene que marcar nada: hace
+    // la visita y su agenda se pone al día. (La más cercana a hoy si hubiera varias.)
+    try {
+      await pool.query(
+        `UPDATE agenda_citas SET estado = 'realizada', visit_id = $1, updated_at = NOW()
+          WHERE id = (
+            SELECT id FROM agenda_citas
+             WHERE user_id = $2 AND client_id = $3 AND estado = 'pendiente'
+               AND fecha = CURRENT_DATE
+             ORDER BY hora NULLS LAST LIMIT 1)`,
+        [r.rows[0].id, r.rows[0].user_id, r.rows[0].client_id]);
+    } catch (e) { console.warn('[AGENDA] no se pudo cerrar la cita:', (e as Error).message); }
 
     // Resumen pre-envío: opciones del comercial al confirmar
     const opciones = {
