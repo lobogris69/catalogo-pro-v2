@@ -310,8 +310,17 @@ function simpleModalProducto(zona, sheetId, anotExistente) {
         ${anotExistente ? '✔ CAMBIAR' : '✔ AÑADIR AL PEDIDO'}
       </button>
       ${anotExistente ? `<button class="simple-quitar" onclick="simpleQuitarProducto(${anotExistente.id})">🗑 Quitarlo del pedido</button>` : ''}
+      ${!anotExistente ? `<button class="btn-devolver-lanzar" style="margin-top:10px" onclick="this.closest('.modal-bg').remove(); abrirCuadroDevolucion(window._devPrefillActual)">↩️ ¿El cliente devuelve este producto?</button>` : ''}
       <button class="simple-cancelar" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
     </div>`;
+  // Prefill para el cuadro de devolución (mismo global que usa el modo normal).
+  window._devPrefillActual = {
+    product_id: zona.product_id || null,
+    codigo: zona.producto_codigo || '',
+    nombre: zona.producto_nombre || '',
+    zone_id: zona.id || null,
+    sheet_id: sheetId || null
+  };
   document.body.appendChild(m);
   m._zona = zona;
   m._anot = anotExistente;

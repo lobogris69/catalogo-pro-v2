@@ -609,6 +609,14 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS bonificacion VARCHAR(60);   -- "3+1", "12+2"
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS oferta_texto VARCHAR(120);  -- etiqueta de la campana aplicada
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS nota_extra VARCHAR(300);    -- nota libre del comercial en la linea
+      -- DEVOLUCIONES (tipo='devolucion'): el cliente devuelve genero durante la visita.
+      -- Se guardan como anotaciones aparte para que salgan en su propio bloque del pedido.
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS dev_estado VARCHAR(12);        -- bueno | caducado | roto
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS dev_motivo VARCHAR(300);       -- por que se devuelve
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS dev_resolucion VARCHAR(10);    -- mismo | otro | abono
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS dev_cambio_producto VARCHAR(200); -- si es 'otro', por que producto
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS dev_cambio_motivo VARCHAR(300);   -- si es 'otro', por que el cambio
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS dev_retirada BOOLEAN DEFAULT TRUE; -- mercancia retirada por el comercial
 
       -- MODO SENCILLO. Dos de los comerciales vienen del visor de fotos y el talonario
       -- de papel. Con el modo puesto, la app se reduce a un solo camino guiado:
@@ -1597,7 +1605,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v197-etiquetas-otra-nota-27jul',
+      build: 'v198-devoluciones-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -5661,8 +5669,9 @@ app.post('/api/sync/visit-batch', verifyToken, async (req: AuthRequest, res: Res
           const annR = await pool.query(
             `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y,
                                       product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio,
-                                      referencia, bonificacion, oferta_texto, nota_extra)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+                                      referencia, bonificacion, oferta_texto, nota_extra,
+                                      dev_estado, dev_motivo, dev_resolucion, dev_cambio_producto, dev_cambio_motivo, dev_retirada)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
             [
               visitId,
               ann.sheet_id ? Number(ann.sheet_id) : null,
@@ -5681,7 +5690,8 @@ app.post('/api/sync/visit-batch', verifyToken, async (req: AuthRequest, res: Res
               ann.referencia ? String(ann.referencia).trim().substring(0, 120) : null,
               ann.bonificacion ? String(ann.bonificacion).trim().substring(0, 60) : null,
               ann.oferta_texto ? String(ann.oferta_texto).trim().substring(0, 120) : null,
-              ann.nota_extra ? String(ann.nota_extra).trim().substring(0, 300) : null
+              ann.nota_extra ? String(ann.nota_extra).trim().substring(0, 300) : null,
+              ..._devTuple(_parseDevFields(ann, tipoFinal))
             ]
           );
           if (ann.local_id) annIdMap[ann.local_id] = annR.rows[0].id;
@@ -8498,6 +8508,27 @@ function especificidad(ambito: string): number {
   return ambito === 'producto' ? 3 : ambito === 'familia' ? 2 : ambito === 'marca' ? 1 : 0;
 }
 
+// Normaliza los campos de una DEVOLUCION que llegan del cliente. Si la anotacion no es
+// una devolucion, todo va a null (para no ensuciar las lineas normales de pedido).
+function _parseDevFields(body: any, tipoFinal: string) {
+  if (tipoFinal !== 'devolucion') {
+    return { estado: null, motivo: null, resolucion: null, cambioProd: null, cambioMotivo: null, retirada: null };
+  }
+  const estado = ['bueno', 'caducado', 'roto'].includes(String(body.dev_estado)) ? String(body.dev_estado) : null;
+  const resolucion = ['mismo', 'otro', 'abono'].includes(String(body.dev_resolucion)) ? String(body.dev_resolucion) : null;
+  const motivo = body.dev_motivo ? String(body.dev_motivo).trim().substring(0, 300) : null;
+  const esOtro = resolucion === 'otro';
+  const cambioProd = (esOtro && body.dev_cambio_producto) ? String(body.dev_cambio_producto).trim().substring(0, 200) : null;
+  const cambioMotivo = (esOtro && body.dev_cambio_motivo) ? String(body.dev_cambio_motivo).trim().substring(0, 300) : null;
+  // Por defecto se asume retirada (el comercial se lleva el genero); solo false si lo dice explicito.
+  const retirada = body.dev_retirada === false ? false : true;
+  return { estado, motivo, resolucion, cambioProd, cambioMotivo, retirada };
+}
+// Devuelve los 6 valores de devolucion en el ORDEN de las columnas del INSERT.
+function _devTuple(d: ReturnType<typeof _parseDevFields>) {
+  return [d.estado, d.motivo, d.resolucion, d.cambioProd, d.cambioMotivo, d.retirada];
+}
+
 // Resuelve la oferta VIGENTE hoy para varios productos. Devuelve mapa product_id -> oferta.
 async function ofertasVigentesLote(productIds: number[]): Promise<Record<number, any>> {
   const out: Record<number, any> = {};
@@ -9736,10 +9767,12 @@ app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, re
       } catch (_) { /* si falla la oferta, la linea se guarda igual */ }
     }
     const notaExtra = req.body.nota_extra ? String(req.body.nota_extra).trim().substring(0, 300) : null;
+    // Campos de devolucion (solo aplican si tipo='devolucion')
+    const dev = _parseDevFields(req.body, tipoFinal);
     const r = await pool.query(
-      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio, referencia, bonificacion, oferta_texto, nota_extra)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING *`,
-      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, dtoFinal, almacen, numSocio, referencia, bonificacion, ofertaTexto, notaExtra]
+      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio, referencia, bonificacion, oferta_texto, nota_extra, dev_estado, dev_motivo, dev_resolucion, dev_cambio_producto, dev_cambio_motivo, dev_retirada)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) RETURNING *`,
+      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, dtoFinal, almacen, numSocio, referencia, bonificacion, ofertaTexto, notaExtra, dev.estado, dev.motivo, dev.resolucion, dev.cambioProd, dev.cambioMotivo, dev.retirada]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {
@@ -9801,9 +9834,14 @@ app.put('/api/annotations/:id', verifyToken, async (req: AuthRequest, res: Respo
     const notaExtra = req.body.nota_extra !== undefined
       ? (req.body.nota_extra ? String(req.body.nota_extra).trim().substring(0, 300) : null)
       : a.rows[0].nota_extra;
+    // Devolucion: si sigue siendo devolucion y llegan campos, se recalculan; si no, se conservan.
+    const dev = (tipoFinal === 'devolucion' && req.body.dev_estado !== undefined)
+      ? _parseDevFields(req.body, tipoFinal)
+      : { estado: a.rows[0].dev_estado, motivo: a.rows[0].dev_motivo, resolucion: a.rows[0].dev_resolucion,
+          cambioProd: a.rows[0].dev_cambio_producto, cambioMotivo: a.rows[0].dev_cambio_motivo, retirada: a.rows[0].dev_retirada };
     const r = await pool.query(
-      `UPDATE annotations SET texto_libre = $1, tipo = $2, cantidad = $3, descuento = $4, almacen = $5, num_socio = $6, bonificacion = $7, nota_extra = $8 WHERE id = $9 RETURNING *`,
-      [String(texto_libre).trim(), tipoFinal, cantidad, descuento, almacen, numSocio, bonificacion, notaExtra, id]
+      `UPDATE annotations SET texto_libre = $1, tipo = $2, cantidad = $3, descuento = $4, almacen = $5, num_socio = $6, bonificacion = $7, nota_extra = $8, dev_estado = $9, dev_motivo = $10, dev_resolucion = $11, dev_cambio_producto = $12, dev_cambio_motivo = $13, dev_retirada = $14 WHERE id = $15 RETURNING *`,
+      [String(texto_libre).trim(), tipoFinal, cantidad, descuento, almacen, numSocio, bonificacion, notaExtra, dev.estado, dev.motivo, dev.resolucion, dev.cambioProd, dev.cambioMotivo, dev.retirada, id]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {
@@ -10464,10 +10502,31 @@ async function enviarEmailConRedireccion(opts: {
 // Plantillas HTML
 // Texto de lo que lleva aplicado la linea: es lo que la oficina necesita para facturar.
 function _condicionesLinea(a: any): string {
+  // Una devolucion NO lleva bonif/dto: en su columna va el resumen de la devolucion,
+  // para que la oficina lo vea sin abrir otra cosa.
+  if (a.tipo === 'devolucion') return _devResumen(a);
   const t: string[] = [];
   if (a.bonificacion) t.push(String(a.bonificacion));
   if (a.descuento != null && a.descuento !== '') t.push('-' + Number(a.descuento) + '%');
   if (a.oferta_texto && !t.length) t.push(String(a.oferta_texto));
+  return t.join(' · ');
+}
+
+// Resumen en TEXTO PLANO (sin emojis, para el PDF) de una devolucion: estado, motivo,
+// que se hace con ella y si el comercial ya retiro la mercancia.
+function _devResumen(a: any): string {
+  const ESTADO: Record<string, string> = { bueno: 'Buen estado', caducado: 'Caducado', roto: 'Roto/dañado' };
+  const t: string[] = [];
+  if (a.dev_estado && ESTADO[a.dev_estado]) t.push(ESTADO[a.dev_estado]);
+  if (a.dev_motivo) t.push('Motivo: ' + a.dev_motivo);
+  if (a.dev_resolucion === 'mismo') t.push('Se repone el mismo, sin cargo');
+  else if (a.dev_resolucion === 'otro') {
+    let s = 'Cambio por otro producto, sin cargo';
+    if (a.dev_cambio_producto) s += ': ' + a.dev_cambio_producto;
+    if (a.dev_cambio_motivo) s += ' (' + a.dev_cambio_motivo + ')';
+    t.push(s);
+  } else if (a.dev_resolucion === 'abono') t.push('Abono');
+  t.push(a.dev_retirada === false ? 'PENDIENTE de retirar de la farmacia' : 'Mercancía retirada por el comercial');
   return t.join(' · ');
 }
 

@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v197 · 27 jul 2026';
+const APP_VERSION = 'v198 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -4294,12 +4294,12 @@ async function pulsarZonaComercial(zona) {
       </div>
 
       <div class="form-group">
-        <label>Nota adicional      <div class="form-group">
-        <label>Nota adicional <small style="color:#9ca3af">opcional</small></label>
+        <label>📝 Nota adicional <small style="color:#9ca3af">opcional</small></label>
         <textarea id="zona-nota" rows="2" placeholder="ej: oferta especial, revisar caducidad…" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box">${anotExistente && anotExistente.nota_extra ? escape(anotExistente.nota_extra) : ''}</textarea>
       </div>
 
       <div id="zona-modal-msg"></div>
+      ${!anotExistente ? `<button type="button" class="btn-devolver-lanzar" onclick="this.closest('.modal-bg').remove(); abrirCuadroDevolucion(window._devPrefillActual)">↩️ ¿El cliente devuelve este producto?</button>` : ''}
       <div class="modal-acciones">
         ${anotExistente ? `<button type="button" class="btn" style="background:#dc2626;color:#fff" onclick="borrarAnotacionZona(${anotExistente.id}, ${sheetId})">🗑️ Quitar</button>` : ''}
         <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
@@ -4307,6 +4307,14 @@ async function pulsarZonaComercial(zona) {
       </div>
     </div>
   `;
+  // Prefill para el cuadro de devolución si el comercial pulsa "¿El cliente devuelve…?".
+  window._devPrefillActual = {
+    product_id: zona.product_id || null,
+    codigo: zona.producto_codigo || '',
+    nombre: zona.producto_nombre || '',
+    zone_id: zona.id || null,
+    sheet_id: sheetId || null
+  };
   document.body.appendChild(modal);
   // En la tablet este cuadro tapa justo las condiciones que hay que leer en la lámina:
   // se aparta arrastrándolo desde cualquier borde (no hace falta acertar en el título).
@@ -11962,14 +11970,45 @@ async function abrirResumenPreEnvio() {
 
 let _resumenPreEnvio = null;
 
+// Etiqueta de color del estado de una devolución (Buen estado / Caducado / Roto).
+function _devBadge(estado) {
+  const M = {
+    bueno: ['Buen estado', '#166534', '#dcfce7'],
+    caducado: ['Caducado', '#b45309', '#fef3c7'],
+    roto: ['Roto/dañado', '#dc2626', '#fee2e2']
+  };
+  const x = M[estado];
+  if (!x) return '';
+  return `<span style="display:inline-block;font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:999px;margin-left:6px;background:${x[2]};color:${x[1]}">${x[0]}</span>`;
+}
+// Texto de qué se hace con la devolución.
+function _devResolTexto(a) {
+  if (a.dev_resolucion === 'mismo') return 'Se repone el mismo, sin cargo';
+  if (a.dev_resolucion === 'otro') {
+    let s = 'Cambio por ' + (a.dev_cambio_producto || 'otro producto') + ', sin cargo';
+    if (a.dev_cambio_motivo) s += ' — ' + a.dev_cambio_motivo;
+    return s;
+  }
+  if (a.dev_resolucion === 'abono') return 'Abono';
+  return '—';
+}
+// Si la devolución no tiene producto Sage, saca el nombre del propio texto guardado.
+function _devNombreDeTexto(txt) {
+  const t = String(txt || '').replace(/^↩️ DEVOLUCIÓN · /, '');
+  const m = t.split(' · ')[0] || t;
+  return m.replace(/^\d+\s*uds\s*·?\s*/i, '');
+}
+
 function renderResumenPreEnvio() {
   document.querySelectorAll('.resumen-preenvio-overlay').forEach(o => o.remove());
   const { anotaciones, cliente } = _resumenPreEnvio;
 
-  const comision = anotaciones.filter(a => a.es_comision);
-  const sueltas = anotaciones.filter(a => a.referencia && !a.es_comision && !a.product_id);
-  const conProducto = anotaciones.filter(a => a.product_id && !a.es_comision);
-  const sinProducto = anotaciones.filter(a => !a.product_id && !a.es_comision && !a.referencia);
+  // Las DEVOLUCIONES van en su propio bloque, nunca mezcladas con el pedido.
+  const devoluciones = anotaciones.filter(a => a.tipo === 'devolucion');
+  const comision = anotaciones.filter(a => a.es_comision && a.tipo !== 'devolucion');
+  const sueltas = anotaciones.filter(a => a.referencia && !a.es_comision && !a.product_id && a.tipo !== 'devolucion');
+  const conProducto = anotaciones.filter(a => a.product_id && !a.es_comision && a.tipo !== 'devolucion');
+  const sinProducto = anotaciones.filter(a => !a.product_id && !a.es_comision && !a.referencia && a.tipo !== 'devolucion');
   let totalPVF = 0;
   conProducto.forEach(a => {
     const cant = Number(a.cantidad) || 0;
@@ -12093,6 +12132,30 @@ function renderResumenPreEnvio() {
             </li>
           `).join('')}
         </ul>
+      ` : ''}
+
+      ${devoluciones.length > 0 ? `
+        <div style="margin-top:22px;padding-top:14px;border-top:2px dashed #dc2626">
+          <h4 style="margin:0 0 8px;color:#b45309">↩️ Devoluciones (${devoluciones.length})</h4>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            ${devoluciones.map(a => {
+              const badge = _devBadge(a.dev_estado);
+              return `
+                <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px 12px">
+                  <div style="font-weight:700;font-size:13.5px">
+                    ${Number(a.cantidad) || 1} uds · ${escape(a.producto_nombre || _devNombreDeTexto(a.texto_libre))}
+                    ${badge}
+                  </div>
+                  ${a.dev_motivo ? `<div style="font-size:12.5px;color:#7c2d12">Motivo: ${escape(a.dev_motivo)}</div>` : ''}
+                  <div style="font-size:12.5px;color:#7c2d12">→ ${escape(_devResolTexto(a))}</div>
+                  <div style="font-size:12px;font-weight:700;margin-top:3px;color:${a.dev_retirada === false ? '#dc2626' : '#166534'}">
+                    ${a.dev_retirada === false ? '⚠ Pendiente de retirar de la farmacia' : '✔ Mercancía retirada por el comercial'}
+                  </div>
+                  <button class="resumen-borrar-mini" data-anot-id="${a.id}" style="margin-top:4px">× Quitar devolución</button>
+                </div>`;
+            }).join('')}
+          </div>
+        </div>
       ` : ''}
 
       ${anotaciones.length === 0 ? `
@@ -13062,11 +13125,166 @@ function renderCarritoContenido() {
       <div class="carrito-sub">${lineas.length} línea${lineas.length === 1 ? '' : 's'}${lineas.length ? ' · pulsa una lámina para ir a ella' : ''}</div>
       <div class="carrito-lista">${filas}</div>
       <div class="carrito-footer">
-        <button class="btn btn-secondary carrito-seguir" onclick="cerrarCarritoVisita()">← Seguir en el catálogo</button>
-        <button class="btn btn-primary" onclick="cerrarCarritoVisita(); cerrarVisitaActiva()">Cerrar visita y enviar →</button>
+        <button class="btn btn-devolver-lanzar" style="margin-bottom:8px" onclick="cerrarCarritoVisita(); abrirCuadroDevolucion(null)">↩️ Devolver un producto</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-secondary carrito-seguir" onclick="cerrarCarritoVisita()">← Seguir en el catálogo</button>
+          <button class="btn btn-primary" onclick="cerrarCarritoVisita(); cerrarVisitaActiva()">Cerrar visita y enviar →</button>
+        </div>
       </div>
     </div>`;
   ov.onclick = () => cerrarCarritoVisita();
+}
+
+// ---------- CUADRO DE DEVOLUCIÓN ----------
+// El cliente devuelve género durante la visita. Se registra como una anotación aparte
+// (tipo='devolucion') para que salga en su propio bloque al final del pedido.
+// prefill = { product_id, codigo, nombre, zone_id, sheet_id } si viene de una zona;
+// null si viene del carrito (el comercial escribe el producto a mano).
+let _devEstado = null, _devResol = null;
+function abrirCuadroDevolucion(prefill) {
+  if (!appState.visitaActiva) { alert('Primero abre una visita.'); return; }
+  _devEstado = null; _devResol = null;
+  prefill = prefill || null;
+  const sheetId = (prefill && prefill.sheet_id) ||
+    Number((document.getElementById('visor-imagen-wrapper') || {}).dataset?.sheetId) || null;
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  const cabProducto = prefill && (prefill.nombre || prefill.codigo)
+    ? `<div class="dev-prod">
+         <div class="dev-prod-n">${escape(prefill.nombre || '')}</div>
+         <div class="dev-prod-c">${escape(prefill.codigo || '')}</div>
+       </div>`
+    : `<div class="form-group" style="margin:0 0 4px">
+         <label>¿Qué producto devuelve?</label>
+         <input type="text" id="dev-prod-libre" placeholder="Escribe el nombre del producto" autocomplete="off"
+                style="width:100%;padding:11px;border:1.5px solid #d1d5db;border-radius:11px;font-size:15px;box-sizing:border-box">
+       </div>`;
+  modal.innerHTML = `
+    <div class="modal-card dev-card">
+      <div class="modal-header dev-header">
+        <h3>↩️ Devolución de producto</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      ${cabProducto}
+
+      <div class="dev-lbl">¿Cuántas unidades?</div>
+      <div class="dev-cont">
+        <button type="button" class="dev-pm" onclick="_devCant(-1)">−</button>
+        <div class="dev-cant" id="dev-cant">1</div>
+        <button type="button" class="dev-pm" onclick="_devCant(1)">+</button>
+      </div>
+
+      <div class="dev-lbl">¿En qué estado?</div>
+      <div class="cond-chips" id="dev-estados">
+        <button type="button" class="cond-chip dev-est" data-e="bueno" onclick="_devPickEstado(this)">🟢 Buen estado</button>
+        <button type="button" class="cond-chip dev-est" data-e="caducado" onclick="_devPickEstado(this)">🟡 Caducado</button>
+        <button type="button" class="cond-chip dev-est" data-e="roto" onclick="_devPickEstado(this)">🔴 Roto/dañado</button>
+      </div>
+
+      <div class="dev-lbl">Motivo <small>(opcional)</small></div>
+      <div class="dev-motivos-rapidos">
+        ${['Caducidad próxima','Caducado','Error de pedido','Deteriorado','No rota'].map(m =>
+          `<button type="button" class="dev-mot-chip" onclick="_devMotivo('${m.replace(/'/g,"\\'")}')">${m}</button>`).join('')}
+      </div>
+      <input type="text" id="dev-motivo" placeholder="ej: caducidad próxima, error de pedido…"
+             style="width:100%;padding:11px;border:1.5px solid #d1d5db;border-radius:11px;font-size:15px;box-sizing:border-box;margin-top:8px">
+
+      <div class="dev-lbl">¿Qué se hace con la devolución?</div>
+      <div class="dev-res-btns" id="dev-resol">
+        <button type="button" class="dev-res" data-r="mismo" onclick="_devPickResol(this)"><span class="dev-res-ic">🔁</span> Reponer el mismo, sin cargo</button>
+        <button type="button" class="dev-res" data-r="otro" onclick="_devPickResol(this)"><span class="dev-res-ic">🔄</span> Cambiar por otro, sin cargo</button>
+        <button type="button" class="dev-res" data-r="abono" onclick="_devPickResol(this)"><span class="dev-res-ic">💶</span> Abono</button>
+      </div>
+      <div class="dev-subcambio" id="dev-subcambio">
+        <div class="dev-lbl" style="margin-top:0">¿Por qué producto?</div>
+        <input type="text" id="dev-cambio-prod" placeholder="Nombre del producto nuevo"
+               style="width:100%;padding:11px;border:1.5px solid #d1d5db;border-radius:11px;font-size:15px;box-sizing:border-box">
+        <div class="dev-lbl">¿Por qué el cambio?</div>
+        <input type="text" id="dev-cambio-motivo" placeholder="ej: el cliente prefiere la versión de silicona"
+               style="width:100%;padding:11px;border:1.5px solid #d1d5db;border-radius:11px;font-size:15px;box-sizing:border-box">
+      </div>
+
+      <label class="dev-retira">
+        <input type="checkbox" id="dev-retira" checked>
+        He retirado la mercancía de la farmacia
+      </label>
+
+      <div id="dev-msg"></div>
+      <button type="button" class="dev-add" id="dev-add" disabled onclick="_devGuardar(${sheetId || 'null'}, ${prefill ? 'true' : 'false'})">↩️ Añadir devolución</button>
+    </div>`;
+  // Guardar el prefill para el guardado
+  window._devPrefill = prefill;
+  document.body.appendChild(modal);
+  hacerDialogoArrastrable(modal.querySelector('.modal-card'), modal.querySelector('.modal-header'), true);
+}
+function _devCant(d) {
+  const c = document.getElementById('dev-cant');
+  c.textContent = Math.max(1, (Number(c.textContent) || 1) + d);
+}
+function _devPickEstado(b) {
+  document.querySelectorAll('#dev-estados .cond-chip').forEach(x => x.classList.remove('sel', 'bueno', 'caducado', 'roto'));
+  b.classList.add('sel', b.dataset.e);
+  _devEstado = b.dataset.e;
+  _devCheck();
+}
+function _devMotivo(txt) {
+  const inp = document.getElementById('dev-motivo');
+  inp.value = txt;
+}
+function _devPickResol(b) {
+  document.querySelectorAll('#dev-resol .dev-res').forEach(x => x.classList.remove('sel'));
+  b.classList.add('sel');
+  _devResol = b.dataset.r;
+  document.getElementById('dev-subcambio').classList.toggle('on', _devResol === 'otro');
+  _devCheck();
+}
+function _devCheck() {
+  const btn = document.getElementById('dev-add');
+  if (btn) btn.disabled = !(_devEstado && _devResol);
+}
+async function _devGuardar(sheetId, tienePrefill) {
+  const modal = document.querySelector('.dev-card')?.closest('.modal-bg');
+  const cant = Number((document.getElementById('dev-cant') || {}).textContent) || 1;
+  const pf = window._devPrefill;
+  const nombre = tienePrefill ? (pf.nombre || pf.codigo || 'producto')
+                              : ((document.getElementById('dev-prod-libre') || {}).value || '').trim();
+  if (!tienePrefill && !nombre) { document.getElementById('dev-msg').innerHTML = '<div class="error-msg">Escribe qué producto se devuelve.</div>'; return; }
+  if (!_devEstado || !_devResol) return;
+  const motivo = ((document.getElementById('dev-motivo') || {}).value || '').trim();
+  const retira = !!(document.getElementById('dev-retira') || {}).checked;
+  const cambioProd = _devResol === 'otro' ? ((document.getElementById('dev-cambio-prod') || {}).value || '').trim() : '';
+  const cambioMotivo = _devResol === 'otro' ? ((document.getElementById('dev-cambio-motivo') || {}).value || '').trim() : '';
+  const cod = tienePrefill ? (pf.codigo || '') : '';
+  // Texto legible (se ve en el carrito y como copia). Los datos van también en columnas.
+  const ESTADO = { bueno: 'buen estado', caducado: 'caducado', roto: 'roto/dañado' };
+  let texto = '↩️ DEVOLUCIÓN · ' + cant + ' uds · ' + (cod ? cod + ' ' : '') + nombre + ' · ' + ESTADO[_devEstado];
+  if (motivo) texto += ' · ' + motivo;
+  if (_devResol === 'mismo') texto += ' · se repone el mismo sin cargo';
+  else if (_devResol === 'otro') texto += ' · cambio por ' + (cambioProd || 'otro producto') + (cambioMotivo ? ' (' + cambioMotivo + ')' : '') + ' sin cargo';
+  else if (_devResol === 'abono') texto += ' · abono';
+  texto += retira ? ' · mercancía retirada' : ' · PENDIENTE de retirar';
+  try {
+    await vAnotar({
+      sheet_id: sheetId || null,
+      texto_libre: texto,
+      tipo: 'devolucion',
+      product_id: tienePrefill ? (pf.product_id || null) : null,
+      cantidad: cant,
+      zone_id: tienePrefill ? (pf.zone_id || null) : null,
+      dev_estado: _devEstado,
+      dev_motivo: motivo || null,
+      dev_resolucion: _devResol,
+      dev_cambio_producto: cambioProd || null,
+      dev_cambio_motivo: cambioMotivo || null,
+      dev_retirada: retira
+    });
+    if (modal) modal.remove();
+    if (sheetId) refrescarAnotacionesVisor(sheetId);
+    if (typeof simpleBarraPedido === 'function' && document.querySelector('.simple-barra')) simpleBarraPedido();
+    mostrarNotificacionOnline('↩️ Devolución registrada', '#92400e');
+  } catch (e) {
+    document.getElementById('dev-msg').innerHTML = '<div class="error-msg">' + escape(e.message) + '</div>';
+  }
 }
 
 function carritoIrALamina(sheetId) {
