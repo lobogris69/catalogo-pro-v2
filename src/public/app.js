@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v204 · 27 jul 2026';
+const APP_VERSION = 'v205 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -7841,6 +7841,17 @@ async function archivoRestaurar(catId, vid, vnum, nombre) {
   }
 }
 
+// Recuperar una lámina borrada: la recrea en el maestro sacando su imagen del ZIP.
+async function archivoRecuperarLamina(vid, orden, titulo) {
+  if (!confirm(`¿Recuperar «${titulo}» al maestro?\n\nSe crea una lámina NUEVA en el maestro con la imagen guardada en esta versión (se añade al final). Luego podrás moverla a su sitio.`)) return;
+  try {
+    await api('/api/catalog-versions/' + vid + '/recuperar-lamina', { method: 'POST', body: { orden } });
+    mostrarNotificacionOnline('♻️ Lámina recuperada al maestro (al final)', '#16a34a');
+  } catch (e) {
+    alert('No se pudo recuperar: ' + e.message);
+  }
+}
+
 // Ver una versión POR DENTRO: sus láminas tal como estaban al cerrarla.
 let _archivoVisorData = null;
 async function archivoVerVersion(versionId) {
@@ -7889,6 +7900,7 @@ function pintarArchivoVisor(filtro) {
           <div class="archivo-visor-noimg" style="display:none">🖼️<br><small>imagen no disponible<br>(está en el ZIP)</small></div>
           <div class="archivo-visor-num">${s.orden || ''}</div>
           <div class="archivo-visor-tit">${escape(s.titulo || 'Sin título')}</div>
+          <button class="archivo-visor-recuperar" onclick="archivoRecuperarLamina(${d.version.id}, ${s.orden || 0}, ${JSON.stringify(s.titulo || 'lámina').replace(/"/g, '&quot;')})" title="Crear esta lámina de nuevo en el maestro">♻️ Recuperar al maestro</button>
         </div>
       `).join('') : '<div class="archivo-vacio" style="grid-column:1/-1;text-align:center">No hay láminas que coincidan.</div>'}
     </div>`;

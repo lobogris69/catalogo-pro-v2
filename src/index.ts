@@ -1605,7 +1605,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v204-archivo-inc3a-restaurar-express-27jul',
+      build: 'v205-archivo-inc3b-recuperar-lamina-zip-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2633,6 +2633,60 @@ app.get('/api/archivo', verifyToken, requireRealAdmin, async (_req: AuthRequest,
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
+});
+
+// ARCHIVO: RECUPERAR una lámina borrada del maestro desde el ZIP de una versión.
+// Saca su imagen del ZIP guardado y la vuelve a crear en el maestro (nueva lámina).
+app.post('/api/catalog-versions/:vid/recuperar-lamina', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const vid = Number(req.params.vid);
+    const orden = Number(req.body.orden);
+    if (!Number.isFinite(orden)) { res.status(400).json({ success: false, error: 'Falta el número (orden) de la lámina' }); return; }
+    const vr = await pool.query(
+      `SELECT cv.zip_path, cv.snapshot_json, c.id AS catalog_id, c.tipo, c.parent_id, c.name AS catalog_name
+       FROM catalog_versions cv JOIN catalogs c ON c.id = cv.catalog_id WHERE cv.id=$1`, [vid]);
+    if (!vr.rows.length) { res.status(404).json({ success: false, error: 'Versión no encontrada' }); return; }
+    const row = vr.rows[0];
+    if (!row.zip_path) { res.status(400).json({ success: false, error: 'Esta versión no tiene ZIP guardado, no se puede recuperar la imagen.' }); return; }
+    // Maestro destino: si la versión es de un express, la lámina se recrea en su maestro padre.
+    const targetCatalog = (row.tipo === 'express') ? row.parent_id : row.catalog_id;
+    if (!targetCatalog) { res.status(400).json({ success: false, error: 'No se pudo determinar el maestro de destino.' }); return; }
+    let snap = row.snapshot_json;
+    if (typeof snap === 'string') { try { snap = JSON.parse(snap); } catch { snap = {}; } }
+    const snapSheet = (snap.sheets || []).find((s: any) => Number(s.orden) === orden);
+    if (!snapSheet) { res.status(404).json({ success: false, error: 'Esa lámina no está en esta versión' }); return; }
+
+    const fs = require('fs');
+    const path = require('path');
+    if (!fs.existsSync(row.zip_path)) { res.status(410).json({ success: false, error: 'El ZIP de esta versión ya no está en el servidor.' }); return; }
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(row.zip_path);
+    const padded = String(orden).padStart(3, '0');
+    const extPref = path.extname(snapSheet.imagen_path || '.jpg') || '.jpg';
+    // Buscar la entrada laminas/003.png (o la extensión que sea).
+    let entry = zip.getEntry('laminas/' + padded + extPref);
+    if (!entry) entry = zip.getEntries().find((e: any) => e.entryName.startsWith('laminas/' + padded + '.'));
+    if (!entry) { res.status(404).json({ success: false, error: 'No se encontró la imagen de esa lámina dentro del ZIP.' }); return; }
+    const buf = entry.getData();
+    const ext = path.extname(entry.entryName) || extPref;
+    const filename = `${Date.now()}_recuperada_${padded}${ext}`;
+    const absPath = path.join(UPLOADS_DIR, filename);
+    fs.writeFileSync(absPath, buf);
+    const imagenPath = '/uploads/' + filename;
+    await normalizarPngColor(absPath);
+    const miniaturaPath = await generarMiniatura(absPath, filename);
+    // Se añade al final del maestro (orden max+1) para no pisar lo que haya ahora.
+    const maxR = await pool.query('SELECT COALESCE(MAX(orden),0) AS m FROM sheets WHERE catalog_id=$1', [targetCatalog]);
+    const nuevoOrden = Number(maxR.rows[0].m) + 1;
+    const ins = await pool.query(
+      `INSERT INTO sheets (catalog_id, orden, titulo, notas, imagen_path, miniatura_path, tags)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [targetCatalog, nuevoOrden, (snapSheet.titulo || 'Lámina recuperada'), (snapSheet.notas || ''), imagenPath, miniaturaPath, (snapSheet.tags || '')]);
+    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id=$1', [targetCatalog]);
+    await logSheetChange('created', ins.rows[0].id, targetCatalog, ins.rows[0].titulo,
+      { recuperada_de_version: vid, orden_original: orden }, { id: req.user?.id, name: req.user?.name });
+    res.json({ success: true, sheet: ins.rows[0], target_catalog_id: targetCatalog });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 // ARCHIVO: RESTAURAR un Express a una versión pasada. Repone la lista y el orden de
