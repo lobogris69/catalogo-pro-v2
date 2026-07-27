@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v214 · 27 jul 2026';
+const APP_VERSION = 'v215 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -617,7 +617,7 @@ async function renderListaCatalogos() {
           : '';
         const esOfflineDescargado = estaDescargadoOffline(c.id);
         html += `
-          <div class="catalogo-card" onclick="abrirCatalogo(${c.id})">
+          <div class="catalogo-card ${c.tipo === 'maestro' ? 'catalogo-card-maestro' : c.tipo === 'express' ? 'catalogo-card-express' : ''}" onclick="abrirCatalogo(${c.id})">
             <div class="catalogo-card-header">
               <span class="catalogo-card-tipo ${tipoClase}">${badgeTxt}</span>
               <span class="catalogo-card-estado ${estadoClase}">${c.estado}</span>

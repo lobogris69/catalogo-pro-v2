@@ -1606,7 +1606,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v214-archivar-borrar-catalogos-27jul',
+      build: 'v215-maestros-destacados-primeros-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1910,7 +1910,7 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
           (SELECT COUNT(*)::int FROM catalogs h WHERE h.parent_id = c.id) AS num_hijos
         FROM catalogs c
         WHERE ${filtroArchivado}
-        ORDER BY c.updated_at DESC
+        ORDER BY (CASE c.tipo WHEN 'maestro' THEN 0 WHEN 'clon' THEN 1 ELSE 2 END), c.updated_at DESC
       `);
     } else {
       r = await pool.query(`

@@ -481,6 +481,20 @@ html {
 .tipo-maestro { background: color-mix(in srgb, var(--brand) 12%, transparent); color: var(--brand); }
 .tipo-clon { background: color-mix(in srgb, var(--violet) 12%, transparent); color: var(--violet); }
 .tipo-express { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
+
+/* MAESTRO: destaca claramente (es el catálogo principal). Barra lateral gruesa de
+   marca, leve tinte y chip sólido; y salen los primeros por el orden del backend. */
+.catalogo-card-maestro {
+  border-left: 7px solid var(--brand);
+  background: linear-gradient(100deg, color-mix(in srgb, var(--brand) 7%, var(--surface)), var(--surface) 55%);
+  box-shadow: 0 2px 4px rgba(0,0,0,.05), 0 8px 22px -14px color-mix(in srgb, var(--brand) 60%, transparent);
+}
+.catalogo-card-maestro .catalogo-card-tipo.tipo-maestro {
+  background: var(--brand); color: #fff; letter-spacing: .07em;
+}
+.catalogo-card-maestro .catalogo-card-nombre { font-size: 17px; }
+/* EXPRESS: se mantiene, pero un pelín más discreto para que el maestro mande. */
+.catalogo-card-express { border-left: 3px solid color-mix(in srgb, var(--amber) 55%, transparent); }
 .catalogo-card-nombre {
   font-size: 16px;
   font-weight: 700;
