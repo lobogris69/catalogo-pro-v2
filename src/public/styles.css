@@ -2800,6 +2800,13 @@ body.solo-visor .navtabs { display: none !important; }
   box-shadow: 0 8px 20px -8px rgba(124,58,237,.7);
 }
 .solovisor-volver:active { transform: scale(.97); }
+.solovisor-instalar {
+  position: fixed; bottom: 14px; left: 14px; z-index: 9700;
+  min-height: 46px; padding: 0 18px; border: none; border-radius: 14px;
+  background: #16a34a; color: #fff; font-size: 15px; font-weight: 800; cursor: pointer;
+  box-shadow: 0 8px 20px -6px rgba(22,163,74,.7);
+}
+.solovisor-instalar:active { transform: scale(.97); }
 .btn-card-mini:hover {
   background: color-mix(in srgb, var(--brand) 8%, var(--surface));
   border-color: color-mix(in srgb, var(--brand) 40%, var(--gris-borde-2));

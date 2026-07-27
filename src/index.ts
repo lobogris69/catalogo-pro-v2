@@ -1609,7 +1609,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v217-mosaico-quitar-seleccionadas-27jul',
+      build: 'v218-acceso-directo-magic-link-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1698,6 +1698,22 @@ app.get('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: R
   try {
     const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, is_active, created_at FROM users ORDER BY role, name');
     res.json({ success: true, users: r.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// ENLACE DE ACCESO DIRECTO ("mágico"): genera un token de larga duración para un usuario
+// y una URL que, al abrirla, deja la sesión iniciada sin teclear nada. Para repartir a
+// los comerciales en modo visor. Solo admin real.
+app.get('/api/users/:id/magic-token', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const u = await pool.query('SELECT id, email, name, role, sage_commercial_code FROM users WHERE id=$1 AND is_active=TRUE', [id]);
+    if (!u.rows.length) { res.status(404).json({ success: false, error: 'Usuario no encontrado o inactivo' }); return; }
+    const user = u.rows[0];
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role, name: user.name, sage_commercial_code: user.sage_commercial_code },
+      JWT_SECRET, { expiresIn: '365d' });
+    res.json({ success: true, token, url: 'https://catalogo.lomhifar.net/?acceso=' + token });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

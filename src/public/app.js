@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v217 · 27 jul 2026';
+const APP_VERSION = 'v218 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -398,9 +398,11 @@ function routerVista() {
     document.body.classList.add('solo-visor');
     document.body.classList.remove('modo-simple');
     renderVisorSoloLector();
+    setTimeout(_mostrarBotonInstalarSoloVisor, 400);
     return;
   }
   document.body.classList.remove('solo-visor');
+  document.querySelectorAll('.solovisor-instalar').forEach(x => x.remove());
   // MODO SENCILLO: un solo camino. Solo se sale de aquí para ver el catálogo durante
   // la visita, que es la única pantalla que se reutiliza tal cual.
   if (esModoSimple()) {
@@ -3216,6 +3218,18 @@ async function renderVisorSoloLector() {
       </div>
     </div>`;
 }
+// Botón flotante para instalar (crear el icono en la tablet) mientras esté en solo-visor.
+function _mostrarBotonInstalarSoloVisor() {
+  document.querySelectorAll('.solovisor-instalar').forEach(x => x.remove());
+  if (typeof appYaInstalada === 'function' && appYaInstalada()) return; // ya instalada
+  const b = document.createElement('button');
+  b.className = 'solovisor-instalar';
+  b.innerHTML = '📲 Poner en la pantalla';
+  b.title = 'Crear el icono del catálogo en la tablet';
+  b.onclick = () => { if (typeof instalarApp === 'function') instalarApp(); };
+  document.body.appendChild(b);
+}
+
 function _soloVisorAbrir(catalogId, unico) {
   appState.catalogoActual = catalogId;
   renderVisorComercial(catalogId);
@@ -19012,8 +19026,33 @@ function mosaicoScroll(dir) {
 }
 
 // ===== ARRANQUE =====
-render();
-// I: inicializar modo offline (IndexedDB, indicador online, etc.)
-if (typeof inicializarOffline === 'function') {
-  inicializarOffline();
+// ENLACE DE ACCESO DIRECTO: si la URL trae ?acceso=<token>, se inicia sesión sola
+// (sin teclear nada) y se limpia la dirección. Para el enlace de un clic de los comerciales.
+async function _procesarAccesoDirecto() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const acc = params.get('acceso');
+    if (!acc) return false;
+    token = acc;
+    localStorage.setItem('cpv2_token', token);
+    localStorage.removeItem('cpv2_impersonate'); impersonating = null;
+    // Cargar el usuario del token
+    const r = await api('/api/auth/me');
+    user = r.user;
+    localStorage.setItem('cpv2_user', JSON.stringify(user));
+    // Limpiar la dirección (quitar el token de la barra)
+    try { history.replaceState(null, '', location.pathname); } catch (_) {}
+    return true;
+  } catch (e) {
+    // Token inválido/caducado: seguir al login normal
+    token = null; localStorage.removeItem('cpv2_token');
+    try { history.replaceState(null, '', location.pathname); } catch (_) {}
+    return false;
+  }
 }
+(async () => {
+  if (location.search.includes('acceso=')) { await _procesarAccesoDirecto(); }
+  render();
+  // I: inicializar modo offline (IndexedDB, indicador online, etc.)
+  if (typeof inicializarOffline === 'function') { inicializarOffline(); }
+})();
