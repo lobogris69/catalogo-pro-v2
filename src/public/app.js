@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v196 · 24 jul 2026';
+const APP_VERSION = 'v197 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -4280,13 +4280,17 @@ async function pulsarZonaComercial(zona) {
         <label>🎁 Bonificación <small style="color:#9ca3af">toca la que apliques</small></label>
         <div class="cond-chips" id="cond-bonif">
           ${['2+1','3+1','6+1','12+1','12+2','24+4'].map(b => `<button type="button" class="cond-chip" data-bonif="${b}">${b}</button>`).join('')}
+          <button type="button" class="cond-chip cond-otra" data-otra="bonif">✏️ Otra</button>
         </div>
+        <input type="text" id="cond-bonif-otra" class="cond-otra-input" placeholder="Escribe la bonificación (ej: 10+2)" style="display:none">
       </div>
       <div class="form-group">
         <label>🏷️ Descuento <small style="color:#9ca3af">toca el que apliques</small></label>
         <div class="cond-chips" id="cond-dto">
           ${[5,10,15,20,25].map(d => `<button type="button" class="cond-chip cond-chip-dto" data-dto="${d}">-${d}%</button>`).join('')}
+          <button type="button" class="cond-chip cond-otra cond-chip-dto" data-otra="dto">✏️ Otro %</button>
         </div>
+        <input type="number" id="cond-dto-otra" class="cond-otra-input" min="0" max="100" step="0.5" placeholder="Escribe el % (ej: 12.5)" style="display:none">
       </div>
 
       <div class="form-group">
@@ -4336,23 +4340,44 @@ async function pulsarZonaComercial(zona) {
   // así para facturar. Igual que ya hacía el cuadro de comisión.
   let bonifSel = bonifInicial || '';
   let dtoSel = dtoInicial;
-  const grupoChips = (contId, onToggle) => {
+  // Cada fila: chips fijos + botón "✏️ Otra" que abre un campo para teclear lo que sea.
+  // El campo, cuando tiene valor, MANDA sobre los chips.
+  const grupoChips = (contId, inputId, onToggle) => {
     const cont = modal.querySelector(contId);
+    const $otra = modal.querySelector(inputId);
     if (!cont) return;
     cont.querySelectorAll('.cond-chip').forEach(ch => {
       ch.addEventListener('click', () => {
+        const esOtra = ch.classList.contains('cond-otra');
         const yaEstaba = ch.classList.contains('sel');
         cont.querySelectorAll('.cond-chip').forEach(x => x.classList.remove('sel'));
-        if (!yaEstaba) ch.classList.add('sel');   // volver a tocar = quitar
-        onToggle(yaEstaba ? null : ch);
+        if ($otra) { $otra.style.display = 'none'; if (!esOtra) $otra.value = ''; }
+        if (!yaEstaba) ch.classList.add('sel');
+        if (esOtra && !yaEstaba) { if ($otra) { $otra.style.display = ''; setTimeout(() => $otra.focus(), 30); } onToggle('__otra__'); }
+        else onToggle(yaEstaba ? null : ch);
       });
     });
+    if ($otra) $otra.addEventListener('input', () => onToggle('__otra__'));
   };
-  grupoChips('#cond-bonif', (ch) => { bonifSel = ch ? ch.dataset.bonif : ''; });
-  grupoChips('#cond-dto',   (ch) => { dtoSel = ch ? Number(ch.dataset.dto) : null; });
-  // Dejar marcado lo que ya llevaba la línea al editar.
-  if (bonifInicial) modal.querySelectorAll('#cond-bonif .cond-chip').forEach(ch => { if (ch.dataset.bonif === bonifInicial) ch.classList.add('sel'); });
-  if (dtoInicial != null) modal.querySelectorAll('#cond-dto .cond-chip').forEach(ch => { if (Number(ch.dataset.dto) === dtoInicial) ch.classList.add('sel'); });
+  grupoChips('#cond-bonif', '#cond-bonif-otra', (ch) => {
+    if (ch === '__otra__') { bonifSel = (modal.querySelector('#cond-bonif-otra').value || '').trim(); }
+    else bonifSel = ch ? ch.dataset.bonif : '';
+  });
+  grupoChips('#cond-dto', '#cond-dto-otra', (ch) => {
+    if (ch === '__otra__') { const v = modal.querySelector('#cond-dto-otra').value; dtoSel = (v !== '' && Number.isFinite(Number(v))) ? Number(v) : null; }
+    else dtoSel = ch ? Number(ch.dataset.dto) : null;
+  });
+  // Al editar: si el valor guardado coincide con un chip, se marca; si no, va al campo "Otra".
+  if (bonifInicial) {
+    const chip = [...modal.querySelectorAll('#cond-bonif .cond-chip')].find(ch => ch.dataset.bonif === bonifInicial);
+    if (chip) chip.classList.add('sel');
+    else { modal.querySelector('#cond-bonif .cond-otra').classList.add('sel'); const o = modal.querySelector('#cond-bonif-otra'); o.style.display = ''; o.value = bonifInicial; }
+  }
+  if (dtoInicial != null) {
+    const chip = [...modal.querySelectorAll('#cond-dto .cond-chip')].find(ch => Number(ch.dataset.dto) === dtoInicial);
+    if (chip) chip.classList.add('sel');
+    else { modal.querySelector('#cond-dto .cond-otra').classList.add('sel'); const o = modal.querySelector('#cond-dto-otra'); o.style.display = ''; o.value = dtoInicial; }
+  }
 
   // ---- FAMILIA: selectores genericos  // ---- FAMILIA: selectores genericos (N ejes) que resuelven al SKU ----
   const $guardar = modal.querySelector('#zona-guardar');

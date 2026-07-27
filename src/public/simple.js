@@ -292,11 +292,19 @@ function simpleModalProducto(zona, sheetId, anotExistente) {
       <div class="simple-cond-titulo">🎁 ¿Lleva regalo?</div>
       <div class="cond-chips" id="simple-bonif">
         ${['3+1', '6+1', '12+1', '12+2'].map(b => `<button type="button" class="cond-chip" data-bonif="${b}">${b}</button>`).join('')}
+        <button type="button" class="cond-chip cond-otra" data-otra="bonif">✏️ Otra</button>
       </div>
+      <input type="text" id="simple-bonif-otra" class="cond-otra-input" placeholder="Escribe la bonificación (ej: 10+2)" style="display:none">
       <div class="simple-cond-titulo">🏷️ ¿Lleva descuento?</div>
       <div class="cond-chips" id="simple-dto">
         ${[10, 15, 20, 25].map(d => `<button type="button" class="cond-chip cond-chip-dto" data-dto="${d}">-${d}%</button>`).join('')}
+        <button type="button" class="cond-chip cond-otra cond-chip-dto" data-otra="dto">✏️ Otro %</button>
       </div>
+      <input type="number" id="simple-dto-otra" class="cond-otra-input" min="0" max="100" step="0.5" placeholder="Escribe el % (ej: 12.5)" style="display:none">
+
+      <div class="simple-cond-titulo">📝 ¿Alguna nota?</div>
+      <input type="text" id="simple-nota" class="cond-otra-input" placeholder="ej: para el jueves, urgente…"
+             value="${anotExistente && anotExistente.nota_extra ? escape(anotExistente.nota_extra) : ''}">
 
       <button class="simple-anadir" onclick="simpleGuardarProducto(${sheetId})">
         ${anotExistente ? '✔ CAMBIAR' : '✔ AÑADIR AL PEDIDO'}
@@ -314,18 +322,30 @@ function simpleModalProducto(zona, sheetId, anotExistente) {
   _simpleAnot = anotExistente;
   _simpleSheet = sheetId;
   // Bonificación y descuento: un toque marca, otro quita. Selección única en cada fila.
-  const grupo = (id) => {
+  const grupo = (id, inputId) => {
     const cont = m.querySelector(id);
+    const $otra = m.querySelector(inputId);
     cont.querySelectorAll('.cond-chip').forEach(ch => ch.addEventListener('click', () => {
+      const esOtra = ch.classList.contains('cond-otra');
       const ya = ch.classList.contains('sel');
       cont.querySelectorAll('.cond-chip').forEach(x => x.classList.remove('sel'));
+      if ($otra) { $otra.style.display = 'none'; if (!esOtra) $otra.value = ''; }
       if (!ya) ch.classList.add('sel');
+      if (esOtra && !ya && $otra) { $otra.style.display = ''; setTimeout(() => $otra.focus(), 30); }
     }));
   };
-  grupo('#simple-bonif'); grupo('#simple-dto');
-  // Al editar, dejar marcado lo que ya llevaba la línea.
-  if (anotExistente && anotExistente.bonificacion) m.querySelectorAll('#simple-bonif .cond-chip').forEach(ch => { if (ch.dataset.bonif === String(anotExistente.bonificacion)) ch.classList.add('sel'); });
-  if (anotExistente && anotExistente.descuento != null && anotExistente.descuento !== '') m.querySelectorAll('#simple-dto .cond-chip').forEach(ch => { if (Number(ch.dataset.dto) === Number(anotExistente.descuento)) ch.classList.add('sel'); });
+  grupo('#simple-bonif', '#simple-bonif-otra'); grupo('#simple-dto', '#simple-dto-otra');
+  // Al editar: si el valor guardado es uno de los chips, se marca; si no, va al campo "Otra".
+  if (anotExistente && anotExistente.bonificacion) {
+    const chip = [...m.querySelectorAll('#simple-bonif .cond-chip')].find(ch => ch.dataset.bonif === String(anotExistente.bonificacion));
+    if (chip) chip.classList.add('sel');
+    else { m.querySelector('#simple-bonif .cond-otra').classList.add('sel'); const o = m.querySelector('#simple-bonif-otra'); o.style.display = ''; o.value = anotExistente.bonificacion; }
+  }
+  if (anotExistente && anotExistente.descuento != null && anotExistente.descuento !== '') {
+    const chip = [...m.querySelectorAll('#simple-dto .cond-chip')].find(ch => Number(ch.dataset.dto) === Number(anotExistente.descuento));
+    if (chip) chip.classList.add('sel');
+    else { m.querySelector('#simple-dto .cond-otra').classList.add('sel'); const o = m.querySelector('#simple-dto-otra'); o.style.display = ''; o.value = anotExistente.descuento; }
+  }
   hacerDialogoArrastrable(m.querySelector('.simple-modal'), m.querySelector('.simple-modal-cab'), true);
 }
 
@@ -346,24 +366,33 @@ async function simpleGuardarProducto(sheetId) {
   const cant = Number((document.getElementById('simple-cant') || {}).textContent) || 1;
   const cod = zona.producto_codigo || '';
   const nom = zona.producto_nombre || '';
-  // Bonificación y descuento elegidos (si los hay).
-  const bSel = (m && m.querySelector('#simple-bonif .cond-chip.sel')) ? m.querySelector('#simple-bonif .cond-chip.sel').dataset.bonif : '';
-  const dSel = (m && m.querySelector('#simple-dto .cond-chip.sel')) ? Number(m.querySelector('#simple-dto .cond-chip.sel').dataset.dto) : null;
+  // Bonificación y descuento elegidos (si los hay). Si está marcado "✏️ Otra", gana el campo escrito.
+  const bChip = m && m.querySelector('#simple-bonif .cond-chip.sel');
+  const dChip = m && m.querySelector('#simple-dto .cond-chip.sel');
+  let bSel = '';
+  if (bChip) bSel = bChip.classList.contains('cond-otra') ? String((m.querySelector('#simple-bonif-otra')?.value || '').trim()) : bChip.dataset.bonif;
+  let dSel = null;
+  if (dChip) {
+    if (dChip.classList.contains('cond-otra')) { const v = (m.querySelector('#simple-dto-otra')?.value || '').trim(); dSel = v === '' ? null : Number(v); }
+    else dSel = Number(dChip.dataset.dto);
+  }
+  const nota = ((m && m.querySelector('#simple-nota')?.value) || '').trim();
   let texto = cant + ' uds · ' + cod + ' ' + nom;
   if (zona.ref_modelo) texto += ' ref. ' + zona.ref_modelo;
   if (bSel) texto += ' · ' + bSel;
   if (dSel != null) texto += ' · -' + dSel + '%';
+  if (nota) texto += ' · 📝 ' + nota;
   const bonifFinal = bSel || null;
   const dtoFinal = (dSel != null) ? dSel : null;
   try {
     if (anot) {
-      await vEditarAnotacion(anot.id, { texto_libre: texto, tipo: 'pedido', cantidad: cant, bonificacion: bonifFinal, descuento: dtoFinal });
+      await vEditarAnotacion(anot.id, { texto_libre: texto, tipo: 'pedido', cantidad: cant, bonificacion: bonifFinal, descuento: dtoFinal, nota_extra: nota || null });
     } else {
       await vAnotar({
           sheet_id: sheetId, texto_libre: texto, tipo: 'pedido',
           product_id: zona.product_id, cantidad: cant, zone_id: zona.id,
           referencia: zona.ref_modelo || null,
-          bonificacion: bonifFinal, descuento: dtoFinal,
+          bonificacion: bonifFinal, descuento: dtoFinal, nota_extra: nota || null,
           pos_x: (zona.x + zona.ancho / 2) / 100, pos_y: (zona.y + zona.alto / 2) / 100
       });
     }

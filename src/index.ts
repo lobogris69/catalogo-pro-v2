@@ -608,6 +608,7 @@ async function initDB(): Promise<void> {
       -- momento del pedido (la campana caduca, la linea del pedido no cambia).
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS bonificacion VARCHAR(60);   -- "3+1", "12+2"
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS oferta_texto VARCHAR(120);  -- etiqueta de la campana aplicada
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS nota_extra VARCHAR(300);    -- nota libre del comercial en la linea
 
       -- MODO SENCILLO. Dos de los comerciales vienen del visor de fotos y el talonario
       -- de papel. Con el modo puesto, la app se reduce a un solo camino guiado:
@@ -1596,7 +1597,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v196-agenda-visitas-24jul',
+      build: 'v197-etiquetas-otra-nota-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -5660,8 +5661,8 @@ app.post('/api/sync/visit-batch', verifyToken, async (req: AuthRequest, res: Res
           const annR = await pool.query(
             `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y,
                                       product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio,
-                                      referencia, bonificacion, oferta_texto)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+                                      referencia, bonificacion, oferta_texto, nota_extra)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
             [
               visitId,
               ann.sheet_id ? Number(ann.sheet_id) : null,
@@ -5679,7 +5680,8 @@ app.post('/api/sync/visit-batch', verifyToken, async (req: AuthRequest, res: Res
               ann.num_socio ? String(ann.num_socio).trim().substring(0, 60) : null,
               ann.referencia ? String(ann.referencia).trim().substring(0, 120) : null,
               ann.bonificacion ? String(ann.bonificacion).trim().substring(0, 60) : null,
-              ann.oferta_texto ? String(ann.oferta_texto).trim().substring(0, 120) : null
+              ann.oferta_texto ? String(ann.oferta_texto).trim().substring(0, 120) : null,
+              ann.nota_extra ? String(ann.nota_extra).trim().substring(0, 300) : null
             ]
           );
           if (ann.local_id) annIdMap[ann.local_id] = annR.rows[0].id;
@@ -9733,10 +9735,11 @@ app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, re
         }
       } catch (_) { /* si falla la oferta, la linea se guarda igual */ }
     }
+    const notaExtra = req.body.nota_extra ? String(req.body.nota_extra).trim().substring(0, 300) : null;
     const r = await pool.query(
-      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio, referencia, bonificacion, oferta_texto)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`,
-      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, dtoFinal, almacen, numSocio, referencia, bonificacion, ofertaTexto]
+      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio, referencia, bonificacion, oferta_texto, nota_extra)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING *`,
+      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, dtoFinal, almacen, numSocio, referencia, bonificacion, ofertaTexto, notaExtra]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {
@@ -9795,9 +9798,12 @@ app.put('/api/annotations/:id', verifyToken, async (req: AuthRequest, res: Respo
       : a.rows[0].bonificacion;
     const almacen = req.body.almacen !== undefined ? (req.body.almacen ? String(req.body.almacen).trim().substring(0,150) : null) : a.rows[0].almacen;
     const numSocio = req.body.num_socio !== undefined ? (req.body.num_socio ? String(req.body.num_socio).trim().substring(0,60) : null) : a.rows[0].num_socio;
+    const notaExtra = req.body.nota_extra !== undefined
+      ? (req.body.nota_extra ? String(req.body.nota_extra).trim().substring(0, 300) : null)
+      : a.rows[0].nota_extra;
     const r = await pool.query(
-      `UPDATE annotations SET texto_libre = $1, tipo = $2, cantidad = $3, descuento = $4, almacen = $5, num_socio = $6, bonificacion = $7 WHERE id = $8 RETURNING *`,
-      [String(texto_libre).trim(), tipoFinal, cantidad, descuento, almacen, numSocio, bonificacion, id]
+      `UPDATE annotations SET texto_libre = $1, tipo = $2, cantidad = $3, descuento = $4, almacen = $5, num_socio = $6, bonificacion = $7, nota_extra = $8 WHERE id = $9 RETURNING *`,
+      [String(texto_libre).trim(), tipoFinal, cantidad, descuento, almacen, numSocio, bonificacion, notaExtra, id]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {

@@ -4252,6 +4252,32 @@ body.con-banner-update {
   border-color: #ea580c;
   box-shadow: 0 4px 12px -4px rgba(234,88,12,.6);
 }
+/* "✏️ Otra" seleccionada: gris pizarra, para distinguirla de los valores fijos. */
+.cond-chip.cond-otra.sel {
+  background: #475569;
+  border-color: #475569;
+  color: #fff;
+  box-shadow: 0 4px 12px -4px rgba(71,85,105,.6);
+}
+/* Campo escribir a mano (otra bonif/dto) y nota. */
+.cond-otra-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 2px solid var(--gris-borde-2, #d1d5db);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  color: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  font-family: inherit;
+}
+.cond-otra-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37,99,235,.18);
+}
 /* Título de cada fila dentro del cuadro sencillo (¿lleva regalo? / ¿descuento?) */
 .simple-cond-titulo {
   font-size: 17px;
