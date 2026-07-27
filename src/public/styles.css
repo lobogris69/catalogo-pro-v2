@@ -4427,6 +4427,32 @@ body.con-banner-update {
   gap: 14px;
   align-content: start;
 }
+/* Barra flotante de navegación rápida del mosaico (inicio/subir/bajar/final). */
+.mosaico-nav {
+  position: absolute;
+  right: 14px;
+  bottom: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 5;
+}
+.mosaico-nav-btn {
+  width: 48px;
+  height: 48px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(216,10,107,.92);
+  color: #fff;
+  font-size: 20px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 6px 16px -4px rgba(0,0,0,.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mosaico-nav-btn:active { transform: scale(.92); }
 .mosaico-card {
   background: var(--surface);
   border-radius: 8px;

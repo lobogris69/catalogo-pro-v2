@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v199 · 27 jul 2026';
+const APP_VERSION = 'v200 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -18037,6 +18037,12 @@ async function abrirMosaicoLaminas(catalogId) {
       <button class="btn btn-secondary btn-pequeno" onclick="limpiarSeleccionMosaico()">Quitar marcas</button>
     </div>
     <div class="mosaico-grid" id="mosaico-grid"></div>
+    <div class="mosaico-nav" id="mosaico-nav">
+      <button class="mosaico-nav-btn" onclick="mosaicoScroll('inicio')" title="Ir al principio">⤒</button>
+      <button class="mosaico-nav-btn" onclick="mosaicoScroll('arriba')" title="Subir una pantalla">▲</button>
+      <button class="mosaico-nav-btn" onclick="mosaicoScroll('abajo')" title="Bajar una pantalla">▼</button>
+      <button class="mosaico-nav-btn" onclick="mosaicoScroll('final')" title="Ir al final">⤓</button>
+    </div>
   `;
   document.body.appendChild(overlay);
   pintarMosaicoReorden();
@@ -18346,6 +18352,17 @@ function cerrarMosaico() {
   _mosaicoSel.clear();
   _mosaicoAncla = null;
   if (_mosaicoCatalogId) renderEditorCatalogo(_mosaicoCatalogId);
+}
+
+// Navegación rápida del mosaico: con cientos de láminas el scroll a mano es eterno.
+function mosaicoScroll(dir) {
+  const grid = document.getElementById('mosaico-grid');
+  if (!grid) return;
+  const salto = Math.round(grid.clientHeight * 0.85);
+  if (dir === 'inicio') grid.scrollTo({ top: 0, behavior: 'smooth' });
+  else if (dir === 'final') grid.scrollTo({ top: grid.scrollHeight, behavior: 'smooth' });
+  else if (dir === 'arriba') grid.scrollBy({ top: -salto, behavior: 'smooth' });
+  else if (dir === 'abajo') grid.scrollBy({ top: salto, behavior: 'smooth' });
 }
 
 // ===== ARRANQUE =====
