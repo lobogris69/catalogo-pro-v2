@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v194 · 24 jul 2026';
+const APP_VERSION = 'v195 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -9687,12 +9687,27 @@ function pintarPlanningResultado() {
   // (La "zona de venta" coincide con la provincia, así que dentro de una provincia
   // daría un único grupo — por eso ahí mandamos el municipio.)
   const porProvincia = !!(_planningState.provincia && String(_planningState.provincia).trim());
-  const grupos = {};
+  // Sage escribe el mismo municipio de varias formas (Donostia-San Sebastián /
+  // San Sebastián-Donostia / DONOSTIA/SAN SEBASTIÁN). Para que caigan en un solo grupo,
+  // la CLAVE ignora acentos, mayúsculas, separadores y el orden de las palabras; como
+  // NOMBRE visible se queda el más completo de las variantes.
+  const claveMuni = (m) => String(m || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean).sort().join(' ');
+  const grupos = {};        // clave -> array de clientes
+  const nombreDe = {};      // clave -> nombre bonito a mostrar
   clientes.forEach(c => {
-    const k = porProvincia
-      ? ((c.municipio && String(c.municipio).trim()) || 'Sin municipio')
-      : ((c.zona_nombre && String(c.zona_nombre).trim()) || (c.municipio && String(c.municipio).trim()) || 'Sin zona asignada');
+    let k, nombre;
+    if (porProvincia) {
+      const muni = (c.municipio && String(c.municipio).trim()) || 'Sin municipio';
+      k = claveMuni(muni) || 'sin';
+      nombre = muni;
+    } else {
+      nombre = (c.zona_nombre && String(c.zona_nombre).trim()) || (c.municipio && String(c.municipio).trim()) || 'Sin zona asignada';
+      k = nombre;
+    }
     (grupos[k] = grupos[k] || []).push(c);
+    // nos quedamos con la forma más larga (suele ser la más completa/legible)
+    if (!nombreDe[k] || nombre.length > nombreDe[k].length) nombreDe[k] = nombre;
   });
   // Orden de las zonas: primero las que tienen urgentes, luego alfabético.
   const nombresZona = Object.keys(grupos).sort((a, b) => {
@@ -9730,7 +9745,7 @@ function pintarPlanningResultado() {
     return `
       <div class="plan-zona">
         <div class="plan-zona-cab">
-          <h3>📍 ${escape(zn)}</h3>
+          <h3>📍 ${escape(nombreDe[zn] || zn)}</h3>
           <span class="plan-zona-cuenta">· ${lista.length} farmacia${lista.length === 1 ? '' : 's'}</span>
           ${urg ? `<span class="plan-zona-urg">${urg} urgente${urg === 1 ? '' : 's'}</span>` : ''}
         </div>
