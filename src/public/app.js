@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v212 · 27 jul 2026';
+const APP_VERSION = 'v213 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -18351,6 +18351,7 @@ async function abrirMosaicoLaminas(catalogId) {
       <span id="mosaico-buscar-cuenta"></span>
       <button class="btn btn-secondary btn-pequeno" onclick="mosaicoBuscarNav(-1)" title="Coincidencia anterior">◀</button>
       <button class="btn btn-secondary btn-pequeno" onclick="mosaicoBuscarNav(1)" title="Siguiente coincidencia">▶</button>
+      <button class="btn btn-secondary btn-pequeno" onclick="limpiarBusquedaMosaico()" title="Quitar la búsqueda y el resaltado">✕ Quitar</button>
     </div>
     <div class="mosaico-barra-sel" id="mosaico-barra-sel" hidden>
       <span class="mosaico-barra-cuenta" id="mosaico-sel-cuenta"></span>
@@ -18808,6 +18809,22 @@ function mosaicoBuscarNav(dir) {
   if (!_mosaicoBuscarMatches.length) return;
   _mosaicoBuscarIdx = (_mosaicoBuscarIdx + dir + _mosaicoBuscarMatches.length) % _mosaicoBuscarMatches.length;
   _pintarMatchesMosaico(true);
+}
+// Quitar del todo la búsqueda: vacía el campo y borra TODO el resaltado (incluida la
+// atenuación del resto). Es lo que faltaba: el resaltado se quedaba pegado si no vaciabas
+// el buscador, porque no se quita al "desmarcar" (eso es otra cosa: las selecciones).
+function limpiarBusquedaMosaico() {
+  const inp = document.getElementById('mosaico-buscar');
+  if (inp) inp.value = '';
+  _mosaicoBuscarMatches = [];
+  _mosaicoBuscarIdx = 0;
+  const grid = document.getElementById('mosaico-grid');
+  if (grid) {
+    grid.classList.remove('mosaico-buscando');
+    grid.querySelectorAll('.mosaico-card').forEach(c => c.classList.remove('mosaico-match', 'mosaico-match-actual'));
+  }
+  const cuenta = document.getElementById('mosaico-buscar-cuenta');
+  if (cuenta) cuenta.textContent = '';
 }
 // Tras repintar (reordenar), vuelve a resaltar lo buscado si el buscador tiene texto.
 function _reaplicarBusquedaMosaico() {
