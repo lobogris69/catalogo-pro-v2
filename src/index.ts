@@ -1605,7 +1605,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v206-cerrar-version-progreso-27jul',
+      build: 'v207-cerrar-version-progreso-real-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2206,7 +2206,7 @@ function nombreFicheroSeguro(s: string): string {
 // J/E: Generar PDF del catálogo a un stream cualquiera (res HTTP o fichero).
 // Devuelve una promesa que resuelve cuando el PDF está completo.
 // calidad: 'alta' = original sin compresión; 'pequena' = redimensionado a 1200px lado largo y JPEG 80% (apto WhatsApp/email)
-async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream: any, calidad: 'alta' | 'pequena' = 'alta'): Promise<void> {
+async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream: any, calidad: 'alta' | 'pequena' = 'alta', onProgress?: (hechas: number) => void): Promise<void> {
   const fs = require('fs');
   const sharp = require('sharp');
   const path = require('path');
@@ -2267,11 +2267,13 @@ async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream:
     );
 
     // Cada lámina en una página, ajustada al tamaño
+    let _pdfHechas = 0;
     for (const sheet of sheets) {
       // Usar imagen procesada si es pequeña y existe, sino la original
       const imgPath = (calidad === 'pequena' && imagenesProcesadas[sheet.id])
         ? imagenesProcesadas[sheet.id]
         : getSheetImagePath(sheet);
+      if (onProgress) { try { onProgress(++_pdfHechas); } catch (_) {} }
       if (!fs.existsSync(imgPath)) {
         console.warn('[PDF] Imagen no encontrada: ' + imgPath);
         continue;
@@ -2298,12 +2300,18 @@ async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream:
 }
 
 // J/E: Generar ZIP del catálogo a un stream cualquiera (res HTTP o fichero).
-async function generarZipCatalogoStream(catalog: any, sheets: any[], destStream: any): Promise<void> {
+async function generarZipCatalogoStream(catalog: any, sheets: any[], destStream: any, onProgress?: (hechas: number) => void): Promise<void> {
   const fs = require('fs');
   const path = require('path');
   const archiver = require('archiver');
   return new Promise(async (resolve, reject) => {
     const archive = archiver('zip', { zlib: { level: 6 } });
+    // 'entry' salta cuando archiver termina de meter cada fichero en el zip: avance REAL.
+    // Descontamos los 2 ficheros de metadatos (manifiesto + README) para contar láminas.
+    let _zipHechas = 0;
+    if (onProgress) {
+      archive.on('entry', () => { _zipHechas++; if (_zipHechas > 2) { try { onProgress(_zipHechas - 2); } catch (_) {} } });
+    }
     archive.on('error', (err: any) => {
       console.error('[ZIP] Error:', err.message);
       reject(err);
@@ -2447,14 +2455,34 @@ function getVersionsDir(): string {
   return dir;
 }
 
-// POST cerrar versión actual del catálogo (solo admin real)
+// Jobs de "cerrar versión" en memoria: el cliente pide el estado y pinta la barra REAL
+// (fase pdf/zip, lámina X de N). Se limpian solos a los 2 min de terminar.
+type CloseVersionJob = {
+  fase: 'pdf' | 'zip' | 'finalizando' | 'listo' | 'error';
+  hechas: number; total: number; done: boolean;
+  error: string | null;
+  resultado: { version_cerrada: number; nueva_version: number } | null;
+  catalog_id: number; t: number;
+};
+const closeVersionJobs = new Map<string, CloseVersionJob>();
+function _limpiarCloseVersionJobs() {
+  const ahora = Date.now();
+  for (const [k, j] of closeVersionJobs) {
+    if (j.done && (ahora - j.t) > 120000) closeVersionJobs.delete(k);
+  }
+}
+
+// POST cerrar versión actual del catálogo (solo admin real). Devuelve un jobId al
+// instante; el trabajo pesado (PDF + ZIP) corre en segundo plano informando del avance.
 // Body: { notas_version: string } (opcional)
 app.post('/api/catalogs/:id/close-version', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { notas_version } = req.body;
+    const notas = (req.body?.notas_version || '').toString().trim() || null;
+    const userId = req.user?.id || null;
+    const userName = req.user?.name || null;
 
-    // Cargar catálogo y láminas
+    // Validación SÍNCRONA: los errores se devuelven de inmediato, antes de arrancar el job.
     const acceso = await cargarCatalogoConAcceso(id, req);
     if (!acceso || 'error' in acceso) {
       const a = acceso as any;
@@ -2466,118 +2494,90 @@ app.post('/api/catalogs/:id/close-version', verifyToken, requireRealAdmin, async
       res.status(400).json({ success: false, error: 'No puedes cerrar versión de un catálogo vacío' });
       return;
     }
-
-    // Calcular versión a cerrar y siguiente
     const versionACerrar = catalog.version || 1;
-
-    // Comprobar que no exista ya esta versión cerrada (idempotencia)
     const yaCerrada = await pool.query(
       `SELECT id FROM catalog_versions WHERE catalog_id = $1 AND version_number = $2`,
-      [id, versionACerrar]
-    );
+      [id, versionACerrar]);
     if (yaCerrada.rows.length > 0) {
       res.status(400).json({ success: false, error: `La versión ${versionACerrar} ya está cerrada. Sigue editando el catálogo y vuelve a cerrar.` });
       return;
     }
 
-    const fs = require('fs');
-    const path = require('path');
-    const versionsDir = getVersionsDir();
-    const baseName = `${nombreFicheroSeguro(catalog.name)}_v${versionACerrar}_${Date.now()}`;
-    const pdfFile = path.join(versionsDir, baseName + '.pdf');
-    const zipFile = path.join(versionsDir, baseName + '.zip');
-
-    // Snapshot JSON con metadatos completos de las láminas (orden, titulos, tags, etc)
-    const snapshot = {
-      version: versionACerrar,
-      fecha_cierre: new Date().toISOString(),
-      catalog: {
-        id: catalog.id,
-        name: catalog.name,
-        description: catalog.description,
-        tipo: catalog.tipo
-      },
-      sheets: sheets.map((s: any) => ({
-        id: s.id,
-        orden: s.orden,
-        titulo: s.titulo,
-        notas: s.notas,
-        tags: s.tags,
-        imagen_path: s.imagen_path
-      }))
+    // Crear el job y responder ya con su id.
+    _limpiarCloseVersionJobs();
+    const jobId = `cv_${id}_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+    const job: CloseVersionJob = {
+      fase: 'pdf', hechas: 0, total: sheets.length, done: false,
+      error: null, resultado: null, catalog_id: id, t: Date.now()
     };
+    closeVersionJobs.set(jobId, job);
+    res.json({ success: true, jobId, total: sheets.length });
 
-    // Generar PDF a disco
-    console.log(`[E] Generando PDF versión ${versionACerrar} de catálogo ${catalog.name}...`);
-    let pdfSize = 0;
-    try {
-      await generarPdfCatalogoStream(catalog, sheets, fs.createWriteStream(pdfFile));
-      pdfSize = fs.statSync(pdfFile).size;
-      console.log(`[E] PDF OK: ${pdfFile} (${pdfSize} bytes)`);
-    } catch (err) {
-      console.error('[E] Error generando PDF:', err);
-      throw new Error('Error generando PDF de la versión: ' + (err as Error).message);
-    }
+    // ---- TRABAJO PESADO EN SEGUNDO PLANO (no bloquea la respuesta) ----
+    (async () => {
+      const fs = require('fs');
+      const path = require('path');
+      try {
+        const versionsDir = getVersionsDir();
+        const baseName = `${nombreFicheroSeguro(catalog.name)}_v${versionACerrar}_${Date.now()}`;
+        const pdfFile = path.join(versionsDir, baseName + '.pdf');
+        const zipFile = path.join(versionsDir, baseName + '.zip');
+        const snapshot = {
+          version: versionACerrar, fecha_cierre: new Date().toISOString(),
+          catalog: { id: catalog.id, name: catalog.name, description: catalog.description, tipo: catalog.tipo },
+          sheets: sheets.map((s: any) => ({ id: s.id, orden: s.orden, titulo: s.titulo, notas: s.notas, tags: s.tags, imagen_path: s.imagen_path }))
+        };
 
-    // Generar ZIP a disco
-    console.log(`[E] Generando ZIP versión ${versionACerrar}...`);
-    let zipSize = 0;
-    try {
-      await generarZipCatalogoStream(catalog, sheets, fs.createWriteStream(zipFile));
-      zipSize = fs.statSync(zipFile).size;
-      console.log(`[E] ZIP OK: ${zipFile} (${zipSize} bytes)`);
-    } catch (err) {
-      console.error('[E] Error generando ZIP:', err);
-      // No bloqueante - guardamos solo PDF si ZIP falla
-    }
+        // Fase PDF
+        job.fase = 'pdf'; job.hechas = 0;
+        let pdfSize = 0;
+        await generarPdfCatalogoStream(catalog, sheets, fs.createWriteStream(pdfFile), 'alta', (h) => { job.hechas = h; });
+        pdfSize = fs.statSync(pdfFile).size;
 
-    // Guardar registro en catalog_versions
-    const r = await pool.query(
-      `INSERT INTO catalog_versions (
-         catalog_id, version_number, snapshot_json, notas_version,
-         published_by, pdf_path, zip_path, pdf_size_bytes, zip_size_bytes,
-         total_laminas, status
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-       RETURNING *`,
-      [
-        id,
-        versionACerrar,
-        JSON.stringify(snapshot),
-        (notas_version || '').toString().trim() || null,
-        req.user?.id || null,
-        pdfFile,
-        zipSize > 0 ? zipFile : null,
-        pdfSize,
-        zipSize > 0 ? zipSize : null,
-        sheets.length,
-        'ok'
-      ]
-    );
+        // Fase ZIP
+        job.fase = 'zip'; job.hechas = 0;
+        let zipSize = 0;
+        try {
+          await generarZipCatalogoStream(catalog, sheets, fs.createWriteStream(zipFile), (h) => { job.hechas = h; });
+          zipSize = fs.statSync(zipFile).size;
+        } catch (errZip) {
+          console.error('[E] Error generando ZIP:', errZip); // no bloqueante
+        }
 
-    // Administracion se entera de que hay version nueva Y de lo que les toca hacer.
-    // Best-effort y sin await: cerrar version no puede fallar porque el correo falle.
-    avisarAdministracionDeVersion(id, versionACerrar, (notas_version || '').toString().trim() || null,
-      req.user?.name || null).catch(() => {});
+        // Fase finalizando: registro + versión + avisos
+        job.fase = 'finalizando'; job.hechas = job.total;
+        await pool.query(
+          `INSERT INTO catalog_versions (catalog_id, version_number, snapshot_json, notas_version,
+             published_by, pdf_path, zip_path, pdf_size_bytes, zip_size_bytes, total_laminas, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [id, versionACerrar, JSON.stringify(snapshot), notas, userId, pdfFile,
+           zipSize > 0 ? zipFile : null, pdfSize, zipSize > 0 ? zipSize : null, sheets.length, 'ok']);
+        avisarAdministracionDeVersion(id, versionACerrar, notas, userName).catch(() => {});
+        await pool.query(`UPDATE catalogs SET version = $1, updated_at = NOW() WHERE id = $2`, [versionACerrar + 1, id]);
+        notificarComercialesNuevaVersion(id, versionACerrar, sheets.length, userId)
+          .catch((e: any) => console.error('[notif] Error disparando notificación:', e.message));
 
-    // Incrementar la versión "viva" del catálogo
-    await pool.query(
-      `UPDATE catalogs SET version = $1, updated_at = NOW() WHERE id = $2`,
-      [versionACerrar + 1, id]
-    );
-
-    // Notificación email a comerciales asignados (fire-and-forget, no bloquea)
-    notificarComercialesNuevaVersion(id, versionACerrar, sheets.length, req.user?.id || null)
-      .catch((e: any) => console.error('[notif] Error disparando notificación:', e.message));
-
-    res.json({
-      success: true,
-      version_cerrada: versionACerrar,
-      nueva_version: versionACerrar + 1,
-      registro: r.rows[0]
-    });
+        job.fase = 'listo'; job.done = true; job.t = Date.now();
+        job.resultado = { version_cerrada: versionACerrar, nueva_version: versionACerrar + 1 };
+      } catch (err) {
+        console.error('[E] Error cerrando versión:', err);
+        job.fase = 'error'; job.done = true; job.t = Date.now();
+        job.error = (err as Error).message || 'Error al cerrar la versión';
+      }
+    })();
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
+});
+
+// Estado de un job de cerrar versión (para pintar la barra de progreso real).
+app.get('/api/close-version-status/:jobId', verifyToken, requireRealAdmin, (req: AuthRequest, res: Response) => {
+  const job = closeVersionJobs.get(req.params.jobId);
+  if (!job) { res.status(404).json({ success: false, error: 'Job no encontrado (puede haber caducado)' }); return; }
+  res.json({
+    success: true, fase: job.fase, hechas: job.hechas, total: job.total,
+    done: job.done, error: job.error, resultado: job.resultado
+  });
 });
 
 // ARCHIVO DE CATÁLOGOS: vista global de todos los catálogos (maestros y express)

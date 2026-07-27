@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v206 · 27 jul 2026';
+const APP_VERSION = 'v207 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -7828,9 +7828,10 @@ function archivoBuscarLamina(q) {
 async function archivoRestaurar(catId, vid, vnum, nombre) {
   if (!confirm(`¿Restaurar «${nombre}» a la versión V${vnum}?\n\nSe reemplazan las láminas y el orden actuales del Express por los de esa versión.\n\nAntes guardo una foto (versión) de lo que hay ahora, por si acaso.`)) return;
   try {
-    // 1. Guardar foto de lo actual. Si ya estaba cerrada o está vacío, se ignora y seguimos.
+    // 1. Guardar foto de lo actual (espera a que termine PDF+ZIP). Si ya estaba cerrada
+    //    o el catálogo está vacío, se ignora y seguimos con la restauración.
     try {
-      await api('/api/catalogs/' + catId + '/close-version', { method: 'POST', body: { notas_version: 'Copia automática antes de restaurar a V' + vnum } });
+      await _cerrarVersionEsperando(catId, 'Copia automática antes de restaurar a V' + vnum, null);
     } catch (_) { /* ya cerrada / vacía: no bloquea la restauración */ }
     // 2. Restaurar.
     const r = await api('/api/catalogs/' + catId + '/restaurar-version/' + vid, { method: 'POST' });
@@ -9044,9 +9045,6 @@ async function enviarLinkMegaEmail(userId, url, catalogName, version, folderName
 // Modal para confirmar el cierre de versión, con campo opcional de notas
 function abrirCerrarVersion(catalogId, versionActual, nombreCatalogo, numLaminas) {
   numLaminas = Number(numLaminas) || 0;
-  // Estimación aproximada: generar PDF + ZIP escala con el nº de láminas. ~0,25 s/lámina
-  // + 3 s de base. Es solo una guía; el contador de segundos muestra lo REAL.
-  const estSeg = Math.max(4, Math.round(numLaminas * 0.25) + 3);
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
   modal.innerHTML = `
@@ -9069,12 +9067,12 @@ function abrirCerrarVersion(catalogId, versionActual, nombreCatalogo, numLaminas
       <div id="cerrar-version-error"></div>
       <div id="cerrar-version-progreso" style="display:none;margin:6px 0 4px">
         <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;margin-bottom:6px">
-          <span>⏳ Generando PDF y ZIP…</span>
+          <span id="cerrar-version-fase">⏳ Preparando…</span>
           <span id="cerrar-version-cronos">0 s</span>
         </div>
         <div class="cerrar-barra"><div class="cerrar-barra-fill" id="cerrar-version-fill"></div></div>
-        <div style="font-size:11.5px;color:var(--gris-texto);margin-top:6px">
-          ${numLaminas} láminas · suele tardar ~${estSeg} s · no cierres esta ventana
+        <div id="cerrar-version-detalle" style="font-size:11.5px;color:var(--gris-texto);margin-top:6px">
+          ${numLaminas} láminas · no cierres esta ventana
         </div>
       </div>
       <div class="modal-acciones" id="cerrar-version-acciones">
@@ -9094,37 +9092,55 @@ function abrirCerrarVersion(catalogId, versionActual, nombreCatalogo, numLaminas
     document.getElementById('cerrar-version-progreso').style.display = '';
     const $fill = document.getElementById('cerrar-version-fill');
     const $cronos = document.getElementById('cerrar-version-cronos');
+    const $fase = document.getElementById('cerrar-version-fase');
+    const $det = document.getElementById('cerrar-version-detalle');
     const t0 = Date.now();
-    // La barra avanza hacia la estimación pero se queda en 92% hasta que llega la
-    // respuesta REAL: nunca dice "100%" antes de tiempo (progreso honesto).
-    const timer = setInterval(() => {
-      const seg = (Date.now() - t0) / 1000;
-      $cronos.textContent = Math.floor(seg) + ' s';
-      const pct = Math.min(92, (seg / estSeg) * 92);
-      $fill.style.width = pct.toFixed(1) + '%';
-    }, 250);
+    const cronos = setInterval(() => { $cronos.textContent = Math.floor((Date.now() - t0) / 1000) + ' s'; }, 250);
     try {
-      const r = await api('/api/catalogs/' + catalogId + '/close-version', {
-        method: 'POST',
-        body: { notas_version: notas }
+      const resultado = await _cerrarVersionEsperando(catalogId, notas, (s) => {
+        // Progreso REAL: fase PDF 0-45%, fase ZIP 45-90%, finalizando 95%.
+        const frac = s.total ? Math.min(1, s.hechas / s.total) : 0;
+        let pct = 95, faseTxt = '⏳ Finalizando…', detTxt = 'Guardando la versión…';
+        if (s.fase === 'pdf') { pct = frac * 45; faseTxt = '📄 Generando PDF…'; detTxt = `Lámina ${s.hechas} de ${s.total}`; }
+        else if (s.fase === 'zip') { pct = 45 + frac * 45; faseTxt = '📦 Comprimiendo ZIP…'; detTxt = `Lámina ${s.hechas} de ${s.total}`; }
+        $fill.style.width = pct.toFixed(1) + '%';
+        $fase.textContent = faseTxt;
+        $det.textContent = detTxt + ' · no cierres esta ventana';
       });
-      clearInterval(timer);
+      clearInterval(cronos);
       $fill.style.width = '100%';
+      $fase.textContent = '✅ Listo';
       $cronos.textContent = Math.floor((Date.now() - t0) / 1000) + ' s ✓';
       setTimeout(() => {
         modal.remove();
         appState.editorPestana = 'historial';
         renderEditorCatalogo(catalogId);
-        alert(`✅ Versión V${r.version_cerrada} cerrada con éxito.\n\nEl catálogo ahora es V${r.nueva_version} y sigue editable.`);
-      }, 350);
+        alert(`✅ Versión V${resultado.version_cerrada} cerrada con éxito.\n\nEl catálogo ahora es V${resultado.nueva_version} y sigue editable.`);
+      }, 400);
     } catch (err) {
-      clearInterval(timer);
+      clearInterval(cronos);
       $err.innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
       document.getElementById('cerrar-version-progreso').style.display = 'none';
-      const $acc = document.getElementById('cerrar-version-acciones');
-      $acc.style.display = '';
+      document.getElementById('cerrar-version-acciones').style.display = '';
     }
   });
+}
+
+// Cierra una versión (POST → jobId) y ESPERA a que termine consultando el estado,
+// llamando onProgreso(estado) en cada consulta. Devuelve {version_cerrada, nueva_version}.
+async function _cerrarVersionEsperando(catalogId, notas, onProgreso) {
+  const r = await api('/api/catalogs/' + catalogId + '/close-version', { method: 'POST', body: { notas_version: notas || '' } });
+  if (!r.jobId) return r.resultado || { version_cerrada: r.version_cerrada, nueva_version: r.nueva_version };
+  // Consultar estado hasta que termine.
+  while (true) {
+    await new Promise(res => setTimeout(res, 500));
+    const s = await api('/api/close-version-status/' + r.jobId);
+    if (onProgreso) { try { onProgreso(s); } catch (_) {} }
+    if (s.done) {
+      if (s.error) throw new Error(s.error);
+      return s.resultado;
+    }
+  }
 }
 
 // Descargar PDF de una versión cerrada
