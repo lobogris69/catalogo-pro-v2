@@ -1576,7 +1576,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v185-visita-sin-terminar-24jul',
+      build: 'v191-bonif-dto-visual-24jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -9664,14 +9664,19 @@ app.put('/api/annotations/:id', verifyToken, async (req: AuthRequest, res: Respo
     // Fase 2.c': permitir actualizar cantidad (D2: re-pulsar zona edita cantidad)
     const cantidad = (req.body.cantidad !== undefined && req.body.cantidad !== null && req.body.cantidad !== '')
       ? Number(req.body.cantidad) : a.rows[0].cantidad;
-    // Comision: actualizar descuento/almacen/num_socio si vienen (si no, conservar)
-    const descuento = (req.body.descuento !== undefined && req.body.descuento !== null && req.body.descuento !== '')
-      ? Number(req.body.descuento) : a.rows[0].descuento;
+    // descuento/bonificacion/almacen/socio: si el campo VIENE (aunque sea null) se hace
+    // caso — así al editar se pueden QUITAR. Si NO viene, se conserva el que había.
+    const descuento = req.body.descuento !== undefined
+      ? ((req.body.descuento === null || req.body.descuento === '') ? null : Number(req.body.descuento))
+      : a.rows[0].descuento;
+    const bonificacion = req.body.bonificacion !== undefined
+      ? (req.body.bonificacion ? String(req.body.bonificacion).trim().substring(0, 60) : null)
+      : a.rows[0].bonificacion;
     const almacen = req.body.almacen !== undefined ? (req.body.almacen ? String(req.body.almacen).trim().substring(0,150) : null) : a.rows[0].almacen;
     const numSocio = req.body.num_socio !== undefined ? (req.body.num_socio ? String(req.body.num_socio).trim().substring(0,60) : null) : a.rows[0].num_socio;
     const r = await pool.query(
-      `UPDATE annotations SET texto_libre = $1, tipo = $2, cantidad = $3, descuento = $4, almacen = $5, num_socio = $6 WHERE id = $7 RETURNING *`,
-      [String(texto_libre).trim(), tipoFinal, cantidad, descuento, almacen, numSocio, id]
+      `UPDATE annotations SET texto_libre = $1, tipo = $2, cantidad = $3, descuento = $4, almacen = $5, num_socio = $6, bonificacion = $7 WHERE id = $8 RETURNING *`,
+      [String(texto_libre).trim(), tipoFinal, cantidad, descuento, almacen, numSocio, bonificacion, id]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {

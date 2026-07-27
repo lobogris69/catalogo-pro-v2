@@ -4118,6 +4118,46 @@ body.con-banner-update {
   cursor: pointer;
   color: #374151;
 }
+
+/* Botones de condiciones (bonificación / descuento): un toque, bien grandes y de color.
+   Reemplazan al buscador de plantillas: lo que pedía Fernando, "más visual y sencillo". */
+.cond-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+.cond-chip {
+  flex: 1 1 auto;
+  min-width: 68px;
+  min-height: 54px;
+  padding: 8px 14px;
+  border: 2px solid var(--gris-borde-2, #d1d5db);
+  border-radius: 14px;
+  background: var(--surface, #fff);
+  color: inherit;
+  font-size: 20px;
+  font-weight: 800;
+  font-family: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform .08s ease;
+}
+.cond-chip:active { transform: scale(.96); }
+/* Bonificación seleccionada: verde. Descuento seleccionado: naranja. Muy distinguibles. */
+.cond-chip.sel {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: #fff;
+  box-shadow: 0 4px 12px -4px rgba(22,163,74,.6);
+}
+.cond-chip-dto.sel {
+  background: #ea580c;
+  border-color: #ea580c;
+  box-shadow: 0 4px 12px -4px rgba(234,88,12,.6);
+}
 .zona-tpl-chip:hover {
   background: color-mix(in srgb, var(--brand) 7%, var(--surface));
   border-color: color-mix(in srgb, var(--brand) 45%, var(--gris-borde-2));

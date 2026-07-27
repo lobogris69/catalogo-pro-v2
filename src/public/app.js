@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v190 · 24 jul 2026';
+const APP_VERSION = 'v191 · 24 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -4184,6 +4184,11 @@ async function pulsarZonaComercial(zona) {
   const plantillas = _plantillasCache || [];
 
   const cantidadInicial = anotExistente && anotExistente.cantidad ? anotExistente.cantidad : 1;
+  // Al editar una línea ya puesta, recuperar la bonificación y el descuento que llevaba
+  // para dejar marcado su botón.
+  const bonifInicial = anotExistente && anotExistente.bonificacion ? String(anotExistente.bonificacion) : '';
+  const dtoInicial = (anotExistente && anotExistente.descuento != null && anotExistente.descuento !== '')
+    ? Number(anotExistente.descuento) : null;
 
   // ¿Es una zona-FAMILIA (gafas de presbicia: color x graduacion)? Cargamos variantes.
   // Si hay lista curada de códigos (familia_skus) manda esa; si no, se resuelve por el modelo.
@@ -4271,34 +4276,21 @@ async function pulsarZonaComercial(zona) {
         <div id="zona-subtotal" style="font-size:13px;color:#16a34a;font-weight:600;margin-top:6px;text-align:right"></div>
       </div>
 
-      ${plantillas.length > 0 ? (() => {
-        const g = _ordenarPlantillas(plantillas);
-        const clsDe = p => (p.tipo === 'pedido' && p.clase === 'descuento') ? ' zona-tpl-descuento'
-          : (p.tipo === 'pedido' && p.clase === 'bonificacion') ? ' zona-tpl-bonif' : '';
-        const chip = p => `<button type="button" class="zona-tpl-chip${clsDe(p)}" data-texto="${escape(p.texto).replace(/"/g,'&quot;')}">${escape(p.texto)}</button>`;
-        const grupo = (titulo, arr) => arr.length ? `
-          <div class="zona-tpl-grupo">
-            <div class="zona-tpl-grupo-tit">${titulo} <span class="zona-tpl-cuenta">${arr.length}</span></div>
-            <div class="zona-plantillas">${arr.map(chip).join('')}</div>
-          </div>` : '';
-        // Con muchas plantillas, un buscador acelera muchísimo (escribe "12" → 12+1, 12+2…)
-        const buscador = plantillas.length > 12
-          ? `<input type="search" id="tpl-filtro" class="zona-tpl-filtro" placeholder="🔍 Filtrar (ej: 12, 15%, 3+1…)" autocomplete="off">`
-          : '';
-        return `<div class="form-group">
-          <label>Selección rápida</label>
-          ${buscador}
-          <div class="zona-tpl-scroll">
-            ${g.frecuentes.length ? grupo('⭐ Frecuentes', g.frecuentes) : ''}
-            ${grupo('🏷️ Descuentos', g.dtos)}
-            ${grupo('🎁 Bonificaciones', g.bons)}
-            ${grupo('Otras', g.otros)}
-            <div id="tpl-sin-resultados" class="zona-tpl-vacio" style="display:none">Sin coincidencias</div>
-          </div>
-        </div>`;
-      })() : ''}
+      <div class="form-group">
+        <label>🎁 Bonificación <small style="color:#9ca3af">toca la que apliques</small></label>
+        <div class="cond-chips" id="cond-bonif">
+          ${['2+1','3+1','6+1','12+1','12+2','24+4'].map(b => `<button type="button" class="cond-chip" data-bonif="${b}">${b}</button>`).join('')}
+        </div>
+      </div>
+      <div class="form-group">
+        <label>🏷️ Descuento <small style="color:#9ca3af">toca el que apliques</small></label>
+        <div class="cond-chips" id="cond-dto">
+          ${[5,10,15,20,25].map(d => `<button type="button" class="cond-chip cond-chip-dto" data-dto="${d}">-${d}%</button>`).join('')}
+        </div>
+      </div>
 
       <div class="form-group">
+        <label>Nota adicional      <div class="form-group">
         <label>Nota adicional <small style="color:#9ca3af">opcional</small></label>
         <textarea id="zona-nota" rows="2" placeholder="ej: oferta especial, revisar caducidad…" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box">${anotExistente && anotExistente.nota_extra ? escape(anotExistente.nota_extra) : ''}</textarea>
       </div>
@@ -4339,50 +4331,30 @@ async function pulsarZonaComercial(zona) {
     });
   });
 
-  // Plantillas de selección rápida → conmutan (marcar/desmarcar) y sincronizan la nota.
-  // Como una plantilla puede salir en "Frecuentes" y en su grupo, sincronizamos TODAS
-  // las instancias con el mismo texto para que el estado sea coherente.
-  const marcarTodas = (txt, sel) => modal.querySelectorAll('.zona-tpl-chip').forEach(c => {
-    if (c.dataset.texto === txt) c.classList.toggle('seleccionada', sel);
-  });
-  modal.querySelectorAll('.zona-tpl-chip').forEach(chip => {
-    chip.addEventListener('click', () => {
-      const txt = chip.dataset.texto;
-      const sel = !chip.classList.contains('seleccionada');
-      marcarTodas(txt, sel);
-      let partes = $nota.value ? $nota.value.split(' · ').map(s => s.trim()).filter(Boolean) : [];
-      if (sel) { if (!partes.includes(txt)) partes.push(txt); _tplUsoInc(txt); }
-      else { partes = partes.filter(s => s !== txt); }
-      $nota.value = partes.join(' · ');
-    });
-  });
-  // Marcar como seleccionadas las plantillas cuyo texto ya está en la nota (al editar).
-  if ($nota.value) {
-    const partes = $nota.value.split(' · ').map(s => s.trim());
-    modal.querySelectorAll('.zona-tpl-chip').forEach(chip => {
-      if (partes.includes(chip.dataset.texto)) chip.classList.add('seleccionada');
-    });
-  }
-  // Buscador en vivo: filtra chips por texto y oculta grupos vacíos.
-  const $filtro = modal.querySelector('#tpl-filtro');
-  if ($filtro) {
-    const $vacio = modal.querySelector('#tpl-sin-resultados');
-    $filtro.addEventListener('input', () => {
-      const q = ($filtro.value || '').toLowerCase().trim();
-      let totalVis = 0;
-      modal.querySelectorAll('.zona-tpl-grupo').forEach(g => {
-        let vis = 0;
-        g.querySelectorAll('.zona-tpl-chip').forEach(ch => {
-          const ok = !q || ch.dataset.texto.toLowerCase().includes(q);
-          ch.style.display = ok ? '' : 'none'; if (ok) vis++;
-        });
-        g.style.display = vis ? '' : 'none'; totalVis += vis;
+  // BONIFICACIÓN y DESCUENTO por botones de un toque (selección única en cada fila).
+  // Se guardan como DATOS de la línea (no solo en el texto): la oficina los necesita
+  // así para facturar. Igual que ya hacía el cuadro de comisión.
+  let bonifSel = bonifInicial || '';
+  let dtoSel = dtoInicial;
+  const grupoChips = (contId, onToggle) => {
+    const cont = modal.querySelector(contId);
+    if (!cont) return;
+    cont.querySelectorAll('.cond-chip').forEach(ch => {
+      ch.addEventListener('click', () => {
+        const yaEstaba = ch.classList.contains('sel');
+        cont.querySelectorAll('.cond-chip').forEach(x => x.classList.remove('sel'));
+        if (!yaEstaba) ch.classList.add('sel');   // volver a tocar = quitar
+        onToggle(yaEstaba ? null : ch);
       });
-      if ($vacio) $vacio.style.display = totalVis ? 'none' : '';
     });
-  }
+  };
+  grupoChips('#cond-bonif', (ch) => { bonifSel = ch ? ch.dataset.bonif : ''; });
+  grupoChips('#cond-dto',   (ch) => { dtoSel = ch ? Number(ch.dataset.dto) : null; });
+  // Dejar marcado lo que ya llevaba la línea al editar.
+  if (bonifInicial) modal.querySelectorAll('#cond-bonif .cond-chip').forEach(ch => { if (ch.dataset.bonif === bonifInicial) ch.classList.add('sel'); });
+  if (dtoInicial != null) modal.querySelectorAll('#cond-dto .cond-chip').forEach(ch => { if (Number(ch.dataset.dto) === dtoInicial) ch.classList.add('sel'); });
 
-  // ---- FAMILIA: selectores genericos (N ejes) que resuelven al SKU ----
+  // ---- FAMILIA: selectores genericos  // ---- FAMILIA: selectores genericos (N ejes) que resuelven al SKU ----
   const $guardar = modal.querySelector('#zona-guardar');
   if (esFamilia && familia && Array.isArray(familia.variantes)) {
     const seleccion = {};                 // { color:'NEGRA', graduacion:'+2.5', ... }
@@ -4473,11 +4445,19 @@ async function pulsarZonaComercial(zona) {
     const refModelo = (!esFamilia && zona.ref_modelo) ? String(zona.ref_modelo).trim() : '';
     let texto = cantidad + ' uds · ' + codFinal + ' ' + nomFinal;
     if (refModelo) texto += ' ref. ' + refModelo;
+    // La bonificación y el descuento también en el texto, para que se lean de un vistazo.
+    if (bonifSel) texto += ' · ' + bonifSel;
+    if (dtoSel != null) texto += ' · -' + dtoSel + '%';
     if (notaExtra) texto += ' · ' + notaExtra;
+    const bonifFinal = bonifSel || null;
+    const dtoFinal = (dtoSel != null) ? dtoSel : null;
     try {
       if (anotExistente) {
-        // D2: editar la existente
-        await vEditarAnotacion(anotExistente.id, { texto_libre: texto, tipo: 'pedido', cantidad });
+        // D2: editar la existente (con la bonif/dto elegidos, aunque se hayan quitado)
+        await vEditarAnotacion(anotExistente.id, {
+          texto_libre: texto, tipo: 'pedido', cantidad,
+          bonificacion: bonifFinal, descuento: dtoFinal
+        });
       } else {
         // crear nueva, vinculada a zona + producto
         await vAnotar({
@@ -4488,6 +4468,8 @@ async function pulsarZonaComercial(zona) {
             cantidad,
             zone_id: zona.id,
             referencia: refModelo || null,   // el nº del modelo, además de dentro del texto
+            bonificacion: bonifFinal,        // datos para la oficina, no solo texto
+            descuento: dtoFinal,
             pos_x: (zona.x + zona.ancho / 2) / 100,  // centro de la zona como pin
             pos_y: (zona.y + zona.alto / 2) / 100
           });
