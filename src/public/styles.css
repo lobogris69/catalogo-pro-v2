@@ -2786,6 +2786,16 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
 }
 .btn-card-borrar { border-color: #fca5a5 !important; color: #dc2626 !important; }
 .btn-card-borrar:hover { background: #fee2e2 !important; border-color: #dc2626 !important; }
+
+/* SOLO VISOR: se ocultan las pestañas de navegación; el comercial solo mira catálogos. */
+body.solo-visor .navtabs { display: none !important; }
+.solovisor-volver {
+  position: fixed; top: 10px; left: 10px; z-index: 9700;
+  min-height: 44px; padding: 0 16px; border: none; border-radius: 12px;
+  background: #7c3aed; color: #fff; font-size: 15px; font-weight: 800; cursor: pointer;
+  box-shadow: 0 8px 20px -8px rgba(124,58,237,.7);
+}
+.solovisor-volver:active { transform: scale(.97); }
 .btn-card-mini:hover {
   background: color-mix(in srgb, var(--brand) 8%, var(--surface));
   border-color: color-mix(in srgb, var(--brand) 40%, var(--gris-borde-2));

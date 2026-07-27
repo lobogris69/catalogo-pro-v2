@@ -623,6 +623,9 @@ async function initDB(): Promise<void> {
       -- EMPEZAR VISITA -> elegir farmacia -> catalogo a pantalla completa -> tocar
       -- producto -> teclado grande de unidades -> ENVIAR PEDIDO. Nada mas.
       ALTER TABLE users ADD COLUMN IF NOT EXISTS modo_simple BOOLEAN NOT NULL DEFAULT FALSE;
+      -- SOLO VISOR: el comercial ve la app SOLO como visor de catálogos (mosaico, abrir
+      -- lámina, zoom, buscar). Nada de visitas, pedidos, clientes ni administración.
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS solo_visor BOOLEAN NOT NULL DEFAULT FALSE;
 
       -- CLIENTE PENDIENTE DE ALTA. Una apertura nueva o una farmacia que aun no es
       -- cliente: el comercial la da de alta ALLI MISMO con todos los datos que necesita
@@ -1606,7 +1609,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v215-maestros-destacados-primeros-27jul',
+      build: 'v216-modo-solo-visor-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1648,12 +1651,12 @@ app.get('/api/auth/me', verifyToken, async (req: AuthRequest, res: Response) => 
     // perdiera su rol hasta volver a entrar.
     const idReal = (req.user as any)._realAdminId || req.user!.id;
     const r = await pool.query(
-      'SELECT id, email, name, role, sage_commercial_code, modo_simple, is_active FROM users WHERE id = $1',
+      'SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, is_active FROM users WHERE id = $1',
       [idReal]
     );
     if (r.rows.length === 0) { res.status(404).json({ success: false, error: 'Usuario no encontrado' }); return; }
     const u = r.rows[0];
-    res.json({ success: true, user: { ...u, modo_simple: !!u.modo_simple } });
+    res.json({ success: true, user: { ...u, modo_simple: !!u.modo_simple, solo_visor: !!u.solo_visor } });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
@@ -1682,7 +1685,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
       JWT_SECRET,
       { expiresIn: (await sesionHorasConfig()) * 3600 }   // en segundos: el tipo de jwt no admite "Nh" dinámico
     );
-    res.json({ success: true, token, user: { id: user.id, email: user.email, role: user.role, name: user.name, modo_simple: !!user.modo_simple } });
+    res.json({ success: true, token, user: { id: user.id, email: user.email, role: user.role, name: user.name, modo_simple: !!user.modo_simple, solo_visor: !!user.solo_visor } });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
@@ -1693,7 +1696,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
 // ============================================================================
 app.get('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, modo_simple, is_active, created_at FROM users ORDER BY role, name');
+    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, is_active, created_at FROM users ORDER BY role, name');
     res.json({ success: true, users: r.rows });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -1749,10 +1752,12 @@ app.put('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequest
     }
     const r = await pool.query(
       `UPDATE users SET name=$1, email=$2, role=$3, sage_commercial_code=$4, is_active=$5,
-              modo_simple = COALESCE($7, modo_simple)
-       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, modo_simple, is_active`,
+              modo_simple = COALESCE($7, modo_simple),
+              solo_visor = COALESCE($8, solo_visor)
+       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, modo_simple, solo_visor, is_active`,
       [name.trim(), email.trim().toLowerCase(), role, sage_commercial_code ? String(sage_commercial_code).trim() : null, is_active !== false, id,
-       req.body.modo_simple === undefined ? null : !!req.body.modo_simple]
+       req.body.modo_simple === undefined ? null : !!req.body.modo_simple,
+       req.body.solo_visor === undefined ? null : !!req.body.solo_visor]
     );
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Usuario no encontrado' });

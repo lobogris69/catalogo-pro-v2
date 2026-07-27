@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v215 · 27 jul 2026';
+const APP_VERSION = 'v216 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -385,7 +385,22 @@ function alternarTema() {
   if (b) b.textContent = nuevo === 'dark' ? '☀️' : '🌙';
 }
 
+// SOLO VISOR: el comercial (o el admin impersonándole) tiene la app reducida a mirar
+// catálogos. Se comprueba sobre el usuario EFECTIVO, como el modo sencillo.
+function esSoloVisor() {
+  const efectivo = (typeof impersonating !== 'undefined' && impersonating) ? impersonating : user;
+  return !!(efectivo && efectivo.solo_visor && rolEfectivo() === 'sales');
+}
+
 function routerVista() {
+  // SOLO VISOR: nada de visitas/pedidos/clientes/admin. Solo el visor de catálogos.
+  if (esSoloVisor()) {
+    document.body.classList.add('solo-visor');
+    document.body.classList.remove('modo-simple');
+    renderVisorSoloLector();
+    return;
+  }
+  document.body.classList.remove('solo-visor');
   // MODO SENCILLO: un solo camino. Solo se sale de aquí para ver el catálogo durante
   // la visita, que es la única pantalla que se reutiliza tal cual.
   if (esModoSimple()) {
@@ -2750,6 +2765,7 @@ async function renderListaComerciales() {
             <button class="btn btn-pequeno btn-secondary" onclick="cambiarContraseñaUsuario(${u.id}, '${escape(u.name)}')" title="Cambiar contraseña">🔑 Contraseña</button>
             ${u.role === 'sales' ? `<button class="btn btn-pequeno" style="background:#eff6ff;color:#1d4ed8" onclick="abrirCarterasComercial(${u.id}, '${escape(u.name).replace(/'/g, "\'")}')" title="Códigos de Sage que lleva y zonas que ve">🗂️ Carteras y zonas</button>` : ''}
             ${u.role === 'sales' ? `<button class="btn btn-pequeno" style="background:${u.modo_simple ? '#16a34a' : '#f3f4f6'};color:${u.modo_simple ? '#fff' : '#374151'};font-weight:700" onclick="toggleModoSimple(${u.id}, ${!u.modo_simple})" title="Modo sencillo: la app se reduce a un solo camino guiado (empezar visita → catálogo → añadir → enviar). Para quien viene del papel.">${u.modo_simple ? '👶 Modo sencillo: SÍ' : '👶 Modo sencillo: no'}</button>` : ''}
+            ${u.role === 'sales' ? `<button class="btn btn-pequeno" style="background:${u.solo_visor ? '#7c3aed' : '#f3f4f6'};color:${u.solo_visor ? '#fff' : '#374151'};font-weight:700" onclick="toggleSoloVisor(${u.id}, ${!u.solo_visor})" title="Solo visor: la app se reduce a MIRAR los catálogos (mosaico, abrir lámina, zoom, buscar). Sin visitas, pedidos, clientes ni administración.">${u.solo_visor ? '👁 Solo visor: SÍ' : '👁 Solo visor: no'}</button>` : ''}
             ${!esYo ? `<button class="btn btn-pequeno btn-danger" onclick="desactivarUsuario(${u.id}, '${escape(u.name)}')" title="${u.is_active ? 'Desactivar' : 'Ya inactivo'}" ${!u.is_active ? 'disabled' : ''}>🗑️</button>` : ''}
           </div>
         </div>
@@ -3164,6 +3180,54 @@ async function elegirZonaCliente(clientId) {
     mostrarNotificacionOnline('📍 Zona guardada: ' + zonas[idx].nombre, '#16a34a');
     renderVisorComercial(_visorCatalog.id);
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+// SOLO VISOR: pantalla de entrada. Muestra los catálogos asignados y, al elegir uno,
+// abre el visor normal (mosaico + lámina + zoom + buscar) en modo mirar. Sin visitas.
+async function renderVisorSoloLector() {
+  const $v = document.getElementById('vista-contenido');
+  if (!$v) return;
+  document.querySelectorAll('.solovisor-volver').forEach(x => x.remove());
+  appState.visitaActiva = null; // por si acaso: en solo visor no hay visita
+  $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogos…</div></div>`;
+  let cats = [];
+  try { const r = await api('/api/catalogs'); cats = r.catalogs || []; }
+  catch (e) {
+    // offline: catálogos descargados
+    try { cats = (await CpDB.listarCatalogosDescargados()).map(c => ({ ...c, _offline: true })); } catch (_) {}
+  }
+  if (!cats.length) {
+    $v.innerHTML = `<div class="contenedor"><div class="empty-state"><div class="empty-state-icono">📚</div>
+      <h3>No tienes catálogos para ver</h3>
+      <p>Avisa al administrador para que te asigne uno.</p></div></div>`;
+    return;
+  }
+  if (cats.length === 1) { _soloVisorAbrir(cats[0].id, true); return; }
+  $v.innerHTML = `
+    <div class="contenedor">
+      <h2 style="margin-top:8px">Elige un catálogo</h2>
+      <p style="color:var(--gris-texto);font-size:13px;margin-top:2px">Toca uno para verlo.</p>
+      <div class="catalogos-grid" style="margin-top:14px">
+        ${cats.map(c => `
+          <div class="catalogo-card ${c.tipo === 'maestro' ? 'catalogo-card-maestro' : ''}" onclick="_soloVisorAbrir(${c.id}, false)">
+            <div class="catalogo-card-nombre">${escape(c.name)}</div>
+            <div class="catalogo-card-info">${c.sheet_count || 0} láminas</div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+}
+function _soloVisorAbrir(catalogId, unico) {
+  appState.catalogoActual = catalogId;
+  renderVisorComercial(catalogId);
+  // Si hay más de un catálogo, botón flotante para volver al listado.
+  document.querySelectorAll('.solovisor-volver').forEach(x => x.remove());
+  if (!unico) {
+    const b = document.createElement('button');
+    b.className = 'solovisor-volver';
+    b.innerHTML = '← Catálogos';
+    b.onclick = () => { b.remove(); renderVisorSoloLector(); };
+    document.body.appendChild(b);
+  }
 }
 
 async function renderVisorComercial(catalogId) {
@@ -4210,6 +4274,8 @@ let _comisionUltimo = { almacen: '', num_socio: '' };
 async function pulsarZonaComercial(zona) {
   // Zona-ENLACE: saltar a otro catálogo (funciona con o sin visita activa)
   if (zona.link_catalog_id) { return navegarAEnlaceCatalogo(zona); }
+  // SOLO VISOR: solo se mira; tocar un producto no anota nada.
+  if (esSoloVisor()) return;
   // Producto de un laboratorio que no se vende en la zona de ESTA farmacia. La lámina
   // se enseña (lleva otros productos que sí se venden), pero este no se puede anotar.
   if (_visorZonasBloqueadas && _visorZonasBloqueadas.has(Number(zona.id))) {
@@ -5154,7 +5220,7 @@ async function abrirSelectorImpersonacion() {
         ` : `
           <div class="comerciales-lista" style="gap:6px">
             ${comerciales.map(c => `
-              <button class="comercial-impersonar" onclick="impersonar(${c.id}, '${escape(c.name)}', '${escape(c.sage_commercial_code || '')}', ${!!c.modo_simple})">
+              <button class="comercial-impersonar" onclick="impersonar(${c.id}, '${escape(c.name)}', '${escape(c.sage_commercial_code || '')}', ${!!c.modo_simple}, ${!!c.solo_visor})">
                 <div>
                   <div style="font-size:13px;font-weight:500;color:var(--texto)">${escape(c.name)}</div>
                   <div style="font-size:11px;color:var(--gris-texto)">
@@ -5175,14 +5241,15 @@ async function abrirSelectorImpersonacion() {
   }
 }
 
-function impersonar(userId, userName, sageCode, modoSimple) {
+function impersonar(userId, userName, sageCode, modoSimple, soloVisor) {
   impersonating = {
     id: userId,
     name: userName,
     sage_commercial_code: sageCode || null,
-    // Para ver la app TAL CUAL la ve él: si tiene el modo sencillo, el admin lo ve
-    // también al impersonarle. Si no, no habría forma de comprobar cómo le queda.
-    modo_simple: !!modoSimple
+    // Para ver la app TAL CUAL la ve él: si tiene el modo sencillo o solo visor, el
+    // admin lo ve igual al impersonarle. Si no, no habría forma de comprobar cómo le queda.
+    modo_simple: !!modoSimple,
+    solo_visor: !!soloVisor
   };
   localStorage.setItem('cpv2_impersonate', JSON.stringify(impersonating));
   // Cerrar modal
@@ -16915,6 +16982,22 @@ async function toggleModoSimple(userId, activar) {
               is_active: u.is_active, modo_simple: activar }
     });
     mostrarNotificacionOnline(activar ? '👶 ' + u.name + ' verá la app en modo sencillo' : u.name + ' vuelve al modo normal', '#16a34a');
+    renderListaComerciales();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// SOLO VISOR: el comercial verá la app únicamente como visor de catálogos.
+async function toggleSoloVisor(userId, activar) {
+  try {
+    const us = await api('/api/users');
+    const u = (us.users || []).find(x => x.id === userId);
+    if (!u) return;
+    await api('/api/users/' + userId, {
+      method: 'PUT',
+      body: { name: u.name, email: u.email, role: u.role, sage_commercial_code: u.sage_commercial_code,
+              is_active: u.is_active, solo_visor: activar }
+    });
+    mostrarNotificacionOnline(activar ? '👁 ' + u.name + ' verá la app SOLO como visor' : u.name + ' vuelve al modo normal', '#16a34a');
     renderListaComerciales();
   } catch (e) { alert('Error: ' + e.message); }
 }
