@@ -1475,7 +1475,8 @@ async function initDB(): Promise<void> {
       `ALTER TABLE catalog_versions ADD COLUMN pdf_size_bytes BIGINT`,
       `ALTER TABLE catalog_versions ADD COLUMN zip_size_bytes BIGINT`,
       `ALTER TABLE catalog_versions ADD COLUMN total_laminas INTEGER`,
-      `ALTER TABLE catalog_versions ADD COLUMN status VARCHAR(20) DEFAULT 'ok'`
+      `ALTER TABLE catalog_versions ADD COLUMN status VARCHAR(20) DEFAULT 'ok'`,
+      `ALTER TABLE catalog_versions ADD COLUMN sin_cambios BOOLEAN DEFAULT FALSE`
     ];
     for (const sql of versionAlters) {
       try {
@@ -1605,7 +1606,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v207-cerrar-version-progreso-real-27jul',
+      build: 'v208-versiones-tarjeta-sin-cambios-27jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1900,7 +1901,9 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
             WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
             ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
           END AS sheet_count,
-          (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name
+          (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
+          (SELECT COUNT(*)::int FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS num_versiones,
+          (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at
         FROM catalogs c
         ORDER BY c.updated_at DESC
       `);
@@ -1911,7 +1914,9 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
             WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
             ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
           END AS sheet_count,
-          (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name
+          (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
+          (SELECT COUNT(*)::int FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS num_versiones,
+          (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at
         FROM catalogs c
         JOIN catalog_assignments ca ON ca.catalog_id = c.id
         WHERE ca.user_id = $1 AND c.estado != 'archivado'
@@ -1927,7 +1932,9 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
             WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
             ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
           END AS sheet_count,
-          (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name
+          (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
+          (SELECT COUNT(*)::int FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS num_versiones,
+          (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at
         FROM catalogs c
         WHERE c.estado != 'archivado'
         ORDER BY c.updated_at DESC
@@ -2455,6 +2462,38 @@ function getVersionsDir(): string {
   return dir;
 }
 
+// "Firma" del contenido de un catálogo: si dos firmas coinciden, no ha cambiado nada
+// relevante (láminas, orden, títulos, notas, tags, imagen). Sirve para no crear
+// versiones idénticas o avisar de que se va a cerrar una copia igual.
+function _firmaContenidoCatalogo(sheets: any[]): string {
+  const norm = (sheets || [])
+    .map((s: any) => ({
+      id: s.id, orden: s.orden,
+      titulo: s.titulo || '', notas: s.notas || '', tags: s.tags || '',
+      imagen_path: s.imagen_path || ''
+    }))
+    .sort((a, b) => (a.orden - b.orden) || (a.id - b.id));
+  return JSON.stringify(norm);
+}
+// Devuelve si el catálogo ha cambiado desde su última versión cerrada. Si no hay
+// versiones cerradas, hay_versiones=false (y hay_cambios=true por convención).
+async function _cambiosDesdeUltimaVersion(catalogId: number, sheets: any[]) {
+  const ult = await pool.query(
+    `SELECT id, version_number, published_at, snapshot_json
+     FROM catalog_versions WHERE catalog_id=$1 ORDER BY version_number DESC LIMIT 1`, [catalogId]);
+  if (!ult.rows.length) return { hay_versiones: false, hay_cambios: true, ultima: null };
+  const row = ult.rows[0];
+  let snap = row.snapshot_json;
+  if (typeof snap === 'string') { try { snap = JSON.parse(snap); } catch { snap = {}; } }
+  const firmaVieja = _firmaContenidoCatalogo(snap.sheets || []);
+  const firmaNueva = _firmaContenidoCatalogo(sheets);
+  return {
+    hay_versiones: true,
+    hay_cambios: firmaVieja !== firmaNueva,
+    ultima: { version_number: row.version_number, published_at: row.published_at }
+  };
+}
+
 // Jobs de "cerrar versión" en memoria: el cliente pide el estado y pinta la barra REAL
 // (fase pdf/zip, lámina X de N). Se limpian solos a los 2 min de terminar.
 type CloseVersionJob = {
@@ -2546,12 +2585,18 @@ app.post('/api/catalogs/:id/close-version', verifyToken, requireRealAdmin, async
 
         // Fase finalizando: registro + versión + avisos
         job.fase = 'finalizando'; job.hechas = job.total;
+        // ¿Es idéntica a la última versión cerrada? (se marca para distinguirla).
+        let sinCambios = false;
+        try {
+          const cmp = await _cambiosDesdeUltimaVersion(id, sheets);
+          sinCambios = cmp.hay_versiones && !cmp.hay_cambios;
+        } catch (_) { /* si falla la comparación, no marcamos nada */ }
         await pool.query(
           `INSERT INTO catalog_versions (catalog_id, version_number, snapshot_json, notas_version,
-             published_by, pdf_path, zip_path, pdf_size_bytes, zip_size_bytes, total_laminas, status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+             published_by, pdf_path, zip_path, pdf_size_bytes, zip_size_bytes, total_laminas, status, sin_cambios)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
           [id, versionACerrar, JSON.stringify(snapshot), notas, userId, pdfFile,
-           zipSize > 0 ? zipFile : null, pdfSize, zipSize > 0 ? zipSize : null, sheets.length, 'ok']);
+           zipSize > 0 ? zipFile : null, pdfSize, zipSize > 0 ? zipSize : null, sheets.length, 'ok', sinCambios]);
         avisarAdministracionDeVersion(id, versionACerrar, notas, userName).catch(() => {});
         await pool.query(`UPDATE catalogs SET version = $1, updated_at = NOW() WHERE id = $2`, [versionACerrar + 1, id]);
         notificarComercialesNuevaVersion(id, versionACerrar, sheets.length, userId)
@@ -2568,6 +2613,21 @@ app.post('/api/catalogs/:id/close-version', verifyToken, requireRealAdmin, async
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
+});
+
+// ¿Ha cambiado el catálogo desde su última versión cerrada? (para avisar en el modal).
+app.get('/api/catalogs/:id/cambios-desde-ultima', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const acceso = await cargarCatalogoConAcceso(id, req);
+    if (!acceso || 'error' in acceso) {
+      const a = acceso as any;
+      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
+      return;
+    }
+    const cmp = await _cambiosDesdeUltimaVersion(id, (acceso as any).sheets);
+    res.json({ success: true, ...cmp });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 // Estado de un job de cerrar versión (para pintar la barra de progreso real).
@@ -2609,7 +2669,7 @@ app.get('/api/archivo', verifyToken, requireRealAdmin, async (_req: AuthRequest,
     const vers = await pool.query(`
       SELECT cv.id, cv.catalog_id, cv.version_number, cv.notas_version, cv.published_at,
              cv.pdf_path IS NOT NULL AS tiene_pdf, cv.zip_path IS NOT NULL AS tiene_zip,
-             cv.pdf_size_bytes, cv.zip_size_bytes, cv.total_laminas, cv.status,
+             cv.pdf_size_bytes, cv.zip_size_bytes, cv.total_laminas, cv.status, cv.sin_cambios,
              u.name AS published_by_name
       FROM catalog_versions cv
       LEFT JOIN users u ON u.id = cv.published_by
@@ -2805,7 +2865,7 @@ app.get('/api/catalogs/:id/versions', verifyToken, async (req: AuthRequest, res:
       `SELECT cv.id, cv.version_number, cv.notas_version, cv.published_at,
               cv.pdf_path IS NOT NULL AS tiene_pdf,
               cv.zip_path IS NOT NULL AS tiene_zip,
-              cv.pdf_size_bytes, cv.zip_size_bytes, cv.total_laminas, cv.status,
+              cv.pdf_size_bytes, cv.zip_size_bytes, cv.total_laminas, cv.status, cv.sin_cambios,
               u.name AS published_by_name, u.email AS published_by_email
        FROM catalog_versions cv
        LEFT JOIN users u ON u.id = cv.published_by

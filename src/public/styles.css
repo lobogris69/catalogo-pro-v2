@@ -4495,6 +4495,13 @@ body.con-banner-update {
 .archivo-sin-versiones { font-size: 12.5px; color: var(--gris-texto, #9ca3af); padding: 6px 2px; }
 .archivo-vacio { color: var(--gris-texto, #9ca3af); font-size: 13px; padding: 10px 2px; }
 .btn-card-restaurar { border-color: #f59e0b !important; color: #b45309 !important; font-weight: 700; }
+/* Línea de "versiones guardadas" en la tarjeta del catálogo. */
+.catalogo-card-versiones { font-size: 12px; color: var(--marca, #d80a6b); font-weight: 600; margin-top: 4px; }
+/* Distintivo "sin cambios" en el historial/archivo de versiones. */
+.version-sincambios {
+  display: inline-block; font-size: 10.5px; font-weight: 800; padding: 1px 7px; border-radius: 999px;
+  background: #fef3c7; color: #92400e; margin-left: 6px; vertical-align: middle;
+}
 /* Barra de progreso al cerrar versión (avance por tiempo estimado, honesta: tope 92%). */
 .cerrar-barra { height: 12px; background: var(--gris-borde, #e5e7eb); border-radius: 999px; overflow: hidden; }
 .cerrar-barra-fill {

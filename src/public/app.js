@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v207 · 27 jul 2026';
+const APP_VERSION = 'v208 · 27 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -591,6 +591,7 @@ async function renderListaCatalogos() {
             <div class="catalogo-card-nombre">${escape(c.name)}</div>
             ${parentLine}
             <div class="catalogo-card-info">${c.sheet_count || 0} láminas · V${c.version}</div>
+            ${Number(c.num_versiones) > 0 ? `<div class="catalogo-card-versiones">📚 ${c.num_versiones} ${c.num_versiones === 1 ? 'versión guardada' : 'versiones guardadas'}${c.ultima_version_at ? ' · última ' + new Date(c.ultima_version_at).toLocaleDateString('es-ES') : ''}</div>` : ''}
             <div class="catalogo-card-acciones">
               <button class="btn-card-mini" onclick="event.stopPropagation();abrirModalDescargarCatalogo(${c.id}, '${escape((c.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">
                 📥 PDF/ZIP
@@ -7774,7 +7775,7 @@ function _archivoCard(c) {
               <div class="archivo-version">
                 <span class="archivo-vbadge">V${v.version_number}</span>
                 <span class="archivo-vinfo">
-                  <b>${escape(fecha)}</b> · ${v.total_laminas || '?'} láminas${v.published_by_name ? ' · ' + escape(v.published_by_name) : ''}
+                  <b>${escape(fecha)}</b> · ${v.total_laminas || '?'} láminas${v.published_by_name ? ' · ' + escape(v.published_by_name) : ''}${v.sin_cambios ? ' <span class="version-sincambios">sin cambios</span>' : ''}
                   ${v.notas_version ? `<span class="archivo-vnotas">"${escape(v.notas_version)}"</span>` : ''}
                 </span>
                 <span class="archivo-vacc">
@@ -7949,7 +7950,7 @@ async function pintarPestanaHistorial(catalogId) {
                 <div class="version-badge">V${v.version_number}</div>
                 <div class="version-info">
                   <div class="version-cabecera">
-                    <span class="version-titulo">Versión ${v.version_number}</span>
+                    <span class="version-titulo">Versión ${v.version_number}${v.sin_cambios ? ' <span class="version-sincambios">sin cambios</span>' : ''}</span>
                     <span class="version-meta">${v.total_laminas || '?'} láminas</span>
                   </div>
                   <div class="version-fecha">
@@ -9064,6 +9065,7 @@ function abrirCerrarVersion(catalogId, versionActual, nombreCatalogo, numLaminas
         <label>Notas de esta versión <span style="color:var(--gris-texto);font-weight:normal">(opcional, ej: "Catálogo primavera 2026")</span></label>
         <textarea id="cerrar-version-notas" rows="2" placeholder="Describir brevemente esta versión..."></textarea>
       </div>
+      <div id="cerrar-version-aviso"></div>
       <div id="cerrar-version-error"></div>
       <div id="cerrar-version-progreso" style="display:none;margin:6px 0 4px">
         <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;margin-bottom:6px">
@@ -9082,6 +9084,22 @@ function abrirCerrarVersion(catalogId, versionActual, nombreCatalogo, numLaminas
     </div>
   `;
   document.body.appendChild(modal);
+
+  // Aviso si no ha cambiado nada desde la última versión cerrada: sería una copia igual.
+  (async () => {
+    try {
+      const cmp = await api('/api/catalogs/' + catalogId + '/cambios-desde-ultima');
+      if (cmp.hay_versiones && !cmp.hay_cambios) {
+        const $av = document.getElementById('cerrar-version-aviso');
+        const fecha = cmp.ultima?.published_at ? new Date(cmp.ultima.published_at).toLocaleDateString('es-ES') : '';
+        if ($av) $av.innerHTML = `
+          <div style="background:#fef3c7;border:1px solid #fcd34d;color:#78350f;border-radius:10px;padding:11px 13px;font-size:13px;margin-bottom:12px;line-height:1.5">
+            ⚠️ <b>No has cambiado nada</b> desde la versión <b>V${cmp.ultima?.version_number}</b>${fecha ? ' del ' + fecha : ''}.
+            Si cierras ahora, será una <b>copia idéntica</b> (quedará marcada como "sin cambios" en el historial).
+          </div>`;
+      }
+    } catch (_) { /* si falla la comprobación, no pasa nada: se puede cerrar igual */ }
+  })();
 
   document.getElementById('btn-confirmar-cerrar').addEventListener('click', async () => {
     const $err = document.getElementById('cerrar-version-error');
