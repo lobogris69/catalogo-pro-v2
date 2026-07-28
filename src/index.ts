@@ -1609,7 +1609,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v228-auto-actualizacion-28jul',
+      build: 'v229-anotar-producto-y-falta-cuadro-28jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1754,6 +1754,33 @@ app.post('/api/uso', verifyToken, async (req: AuthRequest, res: Response) => {
     else if (evento === 'offline_listo') msg = `📲 *${nombre}* ya tiene el catálogo descargado en la tablet (uso sin datos)${detalle ? `: ${detalle}` : ''}`;
     else msg = `ℹ️ *${nombre}*: ${evento}${detalle ? ` — ${detalle}` : ''}`;
     await enviarTelegramUso(msg);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// OPCIÓN 3: el comercial avisa de que en una lámina falta un cuadro o una referencia.
+// Llega por Telegram a Fernando y queda como incidencia en la bandeja para arreglarlo.
+app.post('/api/reportar-falta-cuadro', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const u = req.user!;
+    const sheetId = Number(req.body?.sheet_id) || 0;
+    const catId = Number(req.body?.catalog_id) || 0;
+    const laminaNum = String(req.body?.lamina_num ?? '?').slice(0, 10);
+    const nota = String(req.body?.nota || '').slice(0, 300);
+    const version = String(req.body?.version || '').slice(0, 30);
+    let catName = '';
+    try { const c = await pool.query('SELECT name FROM catalogs WHERE id=$1', [catId]); catName = c.rows[0]?.name || ''; } catch (_) { /* nada */ }
+    const nombre = u.name || ('usuario ' + u.id);
+    await enviarTelegramUso(`⚠️ *${nombre}* avisa: falta un cuadro/referencia en la lámina *${laminaNum}*${catName ? ` de "${catName}"` : ''}${nota ? `\n📝 ${nota}` : ''}`);
+    // Queda también en la bandeja de incidencias (registro + versión + pantalla).
+    try {
+      await pool.query(
+        `INSERT INTO incidencias (user_id, autor, rol, tipo, texto, version_app, pantalla)
+         VALUES ($1,$2,$3,'incidencia',$4,$5,$6)`,
+        [u.id, nombre, u.role,
+         `Falta cuadro/referencia en la lámina ${laminaNum}${catName ? ' de ' + catName : ''}${nota ? ': ' + nota : ''}`,
+         version, `visor/sheet/${sheetId}`]);
+    } catch (e) { console.error('[falta-cuadro] no se pudo registrar incidencia:', (e as Error).message); }
     res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });

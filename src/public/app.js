@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v228 · 28 jul 2026';
+const APP_VERSION = 'v229 · 28 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3693,7 +3693,10 @@ function pintarPanelAnotaciones(sheet, numero) {
     <div class="visor-anotaciones">
       <div class="visor-anotaciones-header">
         <span>📝 Anotaciones para esta lámina (${anots.length})</span>
-        <button class="btn btn-primary btn-pequeno" onclick="abrirModalAnotar(${sid}, ${JSON.stringify(sheet.titulo || '').replace(/"/g,'&quot;')}, ${numero})">+ Anotar</button>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-secondary btn-pequeno" onclick="reportarFaltaCuadro(${sid}, ${numero})" title="Avisar al administrador de que en esta lámina falta un cuadro o una referencia">⚠️ Falta cuadro</button>
+          <button class="btn btn-primary btn-pequeno" onclick="abrirModalAnotar(${sid}, ${JSON.stringify(sheet.titulo || '').replace(/"/g,'&quot;')}, ${numero})">+ Anotar</button>
+        </div>
       </div>
       ${anots.length === 0
         ? `<div class="visor-anotaciones-vacio">Aún no has anotado nada en esta lámina.</div>`
@@ -13343,6 +13346,22 @@ async function descartarVisitaActiva() {
 // ----- AÑADIR / EDITAR / BORRAR ANOTACIONES -----
 
 // Modal genérico para añadir anotación sobre una lámina
+// OPCIÓN 3: avisar al administrador de que en esta lámina falta un cuadro o una referencia.
+// Llega por Telegram a Fernando y queda registrado como incidencia. No corta la venta
+// (para eso está el "+ Anotar" con producto), solo cierra el círculo para arreglarlo.
+async function reportarFaltaCuadro(sheetId, numero) {
+  const nota = prompt('Vas a avisar al administrador de que en esta lámina falta un cuadro o una referencia.\n\n¿Qué falta o qué producto necesitabas? (opcional)', '');
+  if (nota === null) return; // canceló
+  try {
+    await api('/api/reportar-falta-cuadro', {
+      method: 'POST',
+      body: { sheet_id: sheetId, catalog_id: (_visorCatalog ? _visorCatalog.id : null), lamina_num: numero, nota: nota, version: (typeof APP_VERSION !== 'undefined' ? APP_VERSION : '') }
+    });
+    if (typeof mostrarNotificacionOnline === 'function') mostrarNotificacionOnline('⚠️ Aviso enviado al administrador. ¡Gracias!', '#0d9488');
+    else alert('Aviso enviado al administrador. ¡Gracias!');
+  } catch (e) { alert('No se pudo enviar el aviso: ' + e.message); }
+}
+
 async function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
   if (!appState.visitaActiva) {
     alert('Para anotar, primero inicia una visita desde la ficha del cliente.');
@@ -13395,6 +13414,11 @@ async function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
           </div>
         ` : ''}
         <div class="form-group">
+          <label>Producto <span style="font-weight:400;color:var(--gris-texto)">(opcional — por si esta lámina no tiene cuadro o falta una referencia)</span></label>
+          <div id="anot-producto-ac"></div>
+          <div style="font-size:11px;color:var(--gris-texto);margin-top:3px">Búscalo por nombre o código y se añade con su <b>código de Sage</b>, para que la oficina lo identifique sin dudas.</div>
+        </div>
+        <div class="form-group">
           <label>Texto</label>
           <textarea id="anot-texto" rows="3" required placeholder="Ej: 12+12 oferta · 6 cajas · revisar caducidad..."></textarea>
         </div>
@@ -13407,6 +13431,28 @@ async function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
   `;
   document.body.appendChild(modal);
   setTimeout(() => { const t = document.getElementById('anot-texto'); if (t) t.focus(); }, 50);
+
+  // OPCIÓN 2: buscador de producto dentro del "+ Anotar". Si el comercial llega a una lámina
+  // sin cuadro (o falta una referencia), busca el producto y la línea sale con el CÓDIGO Sage.
+  const acCont = document.getElementById('anot-producto-ac');
+  if (acCont && typeof montarAutocompleteProducto === 'function') {
+    montarAutocompleteProducto(acCont, {
+      placeholder: 'Buscar producto por nombre, código o EAN…',
+      onSelect: (p) => {
+        if (!p) return;
+        const ta = document.getElementById('anot-texto');
+        const tipoSel = document.getElementById('anot-tipo');
+        const etiqueta = `«${p.codigo || 's/c'}» ${p.nombre || ''}`.trim();
+        const actual = (ta.value || '').trim();
+        // Si ya empieza por una etiqueta «...» la sustituimos; si no, la anteponemos.
+        const resto = actual.replace(/^«[^»]*»[^—]*—\s*/, '').trim();
+        ta.value = resto ? (etiqueta + ' — ' + resto) : (etiqueta + ' — ');
+        if (tipoSel && tipoSel.value === 'pedido') { /* deja pedido */ }
+        ta.focus();
+        try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (_) {}
+      }
+    });
+  }
 
   // Click en chip de plantilla: inserta el texto y ajusta el tipo
   modal.querySelectorAll('.chip-plantilla').forEach(chip => {
