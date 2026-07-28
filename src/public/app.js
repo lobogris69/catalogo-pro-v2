@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v225 · 28 jul 2026';
+const APP_VERSION = 'v226 · 28 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3483,6 +3483,7 @@ function pintarVisor() {
         ${appState.visitaActiva ? `<div style="display:flex;align-items:center">${ayuda('Estás en visita. Toca las zonas marcadas sobre las láminas para añadir productos al pedido (aparecen al pasar el dedo o ratón). También puedes anotar manualmente con el icono ✏️. Al terminar, pulsa "Cerrar visita" para enviar el pedido.', 'abajo')}</div>` : ''}
         <div class="visor-modo-switch">
           <button class="visor-modo-btn solovisor-solo" onclick="toggleVisorBuscadorSolo(this)" title="Buscar / categorías">🔍</button>
+          <button class="visor-modo-btn solovisor-solo" onclick="descargarPdfCatalogoHoy(${_visorCatalog.id}, this)" title="Descargar este catálogo en PDF">📄</button>
           ${appState.visitaActiva ? `<button class="visor-modo-btn" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Última visita con este cliente">📋</button>` : ''}
           <button class="visor-modo-btn" onclick="abrirModalDescargarCatalogo(${_visorCatalog.id}, '${escape((_visorCatalog.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">📥</button>
           <button class="visor-modo-btn ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
@@ -4221,12 +4222,24 @@ async function descargarLaminaHoy(sheetId) {
 
 async function descargarPdfCatalogoHoy(catalogId, btn) {
   if (!catalogId) { alert('No hay catálogo activo'); return; }
+  // Un catálogo grande tarda ~1 min en generarse: aviso claro (no reescribir el botón,
+  // que puede ser un icono pequeño) y bloqueo para que no se pulse dos veces.
   const orig = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando PDF…'; }
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `<div class="modal-card" style="text-align:center;max-width:340px">
+      <div style="font-size:34px;margin-bottom:6px">📄</div>
+      <div style="font-weight:800;margin-bottom:6px">Generando el PDF del catálogo…</div>
+      <div style="font-size:13px;color:var(--gris-texto)">Puede tardar hasta un minuto. No cierres esta pantalla.</div>
+      <div style="margin-top:12px" class="spinner"></div>
+    </div>`;
+  document.body.appendChild(modal);
   try {
     await _descargarBlobAuth('/api/catalogs/' + catalogId + '/pdf-hoy?tarifa=' + _tarifaVisor(), 'catalogo_' + catalogId + '_precios_hoy.pdf');
   } catch (e) { alert('No se pudo generar el PDF: ' + e.message); }
-  if (btn) { btn.disabled = false; btn.textContent = orig; }
+  modal.remove();
+  if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.textContent = orig; }
 }
 
 // FASE 1 (precios dinámicos): trae el precio de HOY de los productos de la lámina y repinta.

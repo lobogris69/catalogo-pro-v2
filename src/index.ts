@@ -1609,7 +1609,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v225-solovisor-dvh-fallback-vh-28jul',
+      build: 'v226-pdf-ligero-comprimido-28jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -9347,8 +9347,21 @@ app.get('/api/catalogs/:id/pdf-hoy', verifyToken, async (req: AuthRequest, res: 
       const m = await sharp(buf).metadata();
       const w = m.width || pageW, h = m.height || pageW;
       const pageH = pageW * h / w;
+      // COMPRIMIR cada pagina: sin esto el PDF de un catalogo grande pesaba ~616MB y el
+      // navegador se quedaba sin memoria al descargarlo (incidencia susana). Reescalamos a
+      // ~1240px (150 dpi para A4, sobra nitidez), aplanamos sobre BLANCO (las laminas son
+      // PNG con transparencia: en JPEG las zonas transparentes saldrian negras) y JPEG q75.
+      // Resultado: ~30-40MB, descargable sin problema.
+      let pageImg = buf;
+      try {
+        pageImg = await sharp(buf)
+          .resize({ width: 1240, withoutEnlargement: true })
+          .flatten({ background: '#ffffff' })
+          .jpeg({ quality: 75 })
+          .toBuffer();
+      } catch (_) { pageImg = buf; }   // si algo falla, cae a la imagen original
       doc.addPage({ size: [pageW, pageH], margin: 0 });
-      doc.image(buf, 0, 0, { width: pageW, height: pageH });
+      doc.image(pageImg, 0, 0, { width: pageW, height: pageH });
     }
     doc.end();
   } catch (e) {
