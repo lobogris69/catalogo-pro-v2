@@ -1609,7 +1609,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v229-anotar-producto-y-falta-cuadro-28jul',
+      build: 'v230-pdf-descarga-directa-28jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -9503,14 +9503,23 @@ app.get('/api/pdf-hoy-status/:jobId', verifyToken, (req: AuthRequest, res: Respo
   res.json({ success: true, hechas: j.hechas, total: j.total, done: j.done, error: j.error, listo: j.done && !j.error && !!j.file });
 });
 
-app.get('/api/pdf-hoy-download/:jobId', verifyToken, (req: AuthRequest, res: Response) => {
+// Descarga DIRECTA (streaming nativo del navegador), sin blob en memoria. Como un
+// <a download> no puede mandar cabeceras, aceptamos el token por ?t= además de por header.
+// Así la descarga la maneja el gestor de descargas del navegador (más robusto: evita que un
+// antivirus/proxy corrompa el blob reensamblado por JS, que es lo que le pasaba a susana).
+app.get('/api/pdf-hoy-download/:jobId', (req: Request, res: Response) => {
+  const raw = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || String((req.query as any).t || '');
+  try { jwt.verify(raw, JWT_SECRET); } catch { res.status(401).json({ success: false, error: 'No autorizado' }); return; }
   const j = pdfHoyJobs.get(req.params.jobId);
   if (!j || !j.done || j.error || !j.file) { res.status(404).json({ success: false, error: 'PDF no disponible' }); return; }
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const fs = require('fs');
   if (!fs.existsSync(j.file)) { res.status(404).json({ success: false, error: 'PDF caducado, vuelve a generarlo' }); return; }
+  const stat = fs.statSync(j.file);
   res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Length', String(stat.size));   // el navegador sabe cuánto ocupa → descarga fiable
   res.setHeader('Content-Disposition', `attachment; filename="${j.nombre}"`);
+  res.setHeader('Cache-Control', 'no-store');
   fs.createReadStream(j.file).pipe(res);
 });
 

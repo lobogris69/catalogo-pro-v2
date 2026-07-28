@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v229 · 28 jul 2026';
+const APP_VERSION = 'v230 · 28 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -4282,7 +4282,15 @@ async function descargarPdfCatalogoHoy(catalogId, btn) {
     if (!listo) throw new Error('El PDF tardó demasiado; inténtalo de nuevo');
     if ($barra) $barra.style.width = '100%';
     if ($estado) $estado.textContent = 'Descargando…';
-    await _descargarBlobAuth('/api/pdf-hoy-download/' + jobId, 'catalogo_' + catalogId + '_precios_hoy.pdf');
+    // DESCARGA DIRECTA por el gestor del navegador (streaming nativo), NO blob en memoria.
+    // Más robusto: evita corrupciones al reensamblar el archivo por JavaScript (susana veía
+    // "no podemos abrir este archivo"). El token va en ?t= porque un <a download> no manda cabeceras.
+    const urlDesc = API + '/api/pdf-hoy-download/' + jobId + '?t=' + encodeURIComponent(token);
+    const a = document.createElement('a');
+    a.href = urlDesc;
+    a.download = 'catalogo_' + catalogId + '_precios_hoy.pdf';
+    document.body.appendChild(a); a.click(); a.remove();
+    await new Promise(r => setTimeout(r, 2000)); // dar tiempo a que arranque la descarga antes de cerrar
   } catch (e) { alert('No se pudo generar el PDF: ' + e.message); }
   modal.remove();
   if (btn) { btn.disabled = false; btn.style.opacity = ''; }
