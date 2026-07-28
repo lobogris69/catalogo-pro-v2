@@ -1609,7 +1609,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v226-pdf-ligero-comprimido-28jul',
+      build: 'v227-pdf-segundo-plano-28jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -9368,6 +9368,123 @@ app.get('/api/catalogs/:id/pdf-hoy', verifyToken, async (req: AuthRequest, res: 
     if (!res.headersSent) res.status(500).json({ success: false, error: (e as Error).message });
     else res.end();
   }
+});
+
+// ============================================================================
+// PDF del catalogo "de hoy" EN SEGUNDO PLANO (para catalogos grandes).
+// Tener la conexion del comercial colgada ~45s mientras se genera la corta en redes con
+// proxy (incidencia susana: "Failed to fetch"). Se genera a un fichero temporal, el
+// comercial ve una barra de progreso por polling y descarga el PDF ya hecho, de un tiron.
+// ============================================================================
+interface PdfHoyJob { hechas: number; total: number; done: boolean; error: string | null; file: string | null; nombre: string; t: number; }
+const pdfHoyJobs = new Map<string, PdfHoyJob>();
+function _limpiarPdfHoyJobs(): void {
+  const ahora = Date.now();
+  for (const [k, j] of pdfHoyJobs) {
+    if (ahora - j.t > 20 * 60 * 1000) {   // caducan a los 20 min: borra el fichero y la entrada
+      try { if (j.file) require('fs').unlinkSync(j.file); } catch (_) { /* ya no estaba */ }
+      pdfHoyJobs.delete(k);
+    }
+  }
+}
+// Selecciona las laminas del catalogo (express -> express_sheets) filtrando por zona si toca.
+async function _laminasParaPdfHoy(catId: number, zonaId: number): Promise<{ nombre: string; tipo: string; laminas: any[] } | { error: string; status: number }> {
+  const cat = await pool.query('SELECT name, tipo FROM catalogs WHERE id=$1', [catId]);
+  if (!cat.rows.length) return { error: 'Catalogo no encontrado', status: 404 };
+  let laminas = cat.rows[0].tipo === 'express'
+    ? (await pool.query(
+        `SELECT s.id FROM express_sheets es JOIN sheets s ON s.id = es.sheet_id
+          WHERE es.express_catalog_id = $1 AND (s.oculta IS NULL OR s.oculta = FALSE)
+          ORDER BY es.orden, es.id`, [catId])).rows
+    : (await pool.query(
+        `SELECT id FROM sheets WHERE catalog_id=$1 AND (oculta IS NULL OR oculta=FALSE) ORDER BY orden, id`, [catId])).rows;
+  if (!laminas.length) return { error: 'El catalogo no tiene laminas', status: 400 };
+  let nombre = String(cat.rows[0].name || 'catalogo');
+  if (zonaId) {
+    const z = await pool.query(`SELECT nombre FROM zonas_venta WHERE id=$1`, [zonaId]);
+    if (z.rows.length) {
+      const veto = new Set((await laminasRestringidasEnZona(zonaId)).map(Number));
+      laminas = laminas.filter((s: any) => !veto.has(Number(s.id)));
+      nombre += '_' + String(z.rows[0].nombre).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/gi, '_');
+    }
+  }
+  if (!laminas.length) return { error: 'No queda ninguna lamina para esa zona', status: 400 };
+  return { nombre, tipo: cat.rows[0].tipo, laminas };
+}
+// Escribe el PDF comprimido (misma compresion que el sincrono) a un stream, avisando del avance.
+async function _escribirPdfHoy(laminas: any[], tarifa: number, destStream: any, onProgress?: (h: number) => void): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const PDFDocument = require('pdfkit');
+  const doc = new PDFDocument({ autoFirstPage: false, margin: 0 });
+  doc.pipe(destStream);
+  const pageW = 595;
+  let hechas = 0;
+  for (const s of laminas) {
+    const buf = await recomponerLaminaHoy(s.id, tarifa);
+    if (buf) {
+      const m = await sharp(buf).metadata();
+      const w = m.width || pageW, h = m.height || pageW;
+      const pageH = pageW * h / w;
+      let pageImg = buf;
+      try {
+        pageImg = await sharp(buf).resize({ width: 1240, withoutEnlargement: true }).flatten({ background: '#ffffff' }).jpeg({ quality: 75 }).toBuffer();
+      } catch (_) { pageImg = buf; }
+      doc.addPage({ size: [pageW, pageH], margin: 0 });
+      doc.image(pageImg, 0, 0, { width: pageW, height: pageH });
+    }
+    hechas++;
+    if (onProgress) onProgress(hechas);
+  }
+  doc.end();
+  await new Promise<void>((resolve, reject) => { destStream.on('finish', () => resolve()); destStream.on('error', reject); });
+}
+
+app.post('/api/catalogs/:id/pdf-hoy-job', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const catId = Number(req.params.id);
+    const tarifa = Number(req.query.tarifa) || 1;
+    const zonaId = Number(req.query.zona_id) || 0;
+    const sel = await _laminasParaPdfHoy(catId, zonaId);
+    if ('error' in sel) { res.status(sel.status).json({ success: false, error: sel.error }); return; }
+    _limpiarPdfHoyJobs();
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs'); const path = require('path');
+    const jobId = `ph_${catId}_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+    const file = path.join(getVersionsDir(), jobId + '.pdf');
+    const nombreFichero = sel.nombre.replace(/[^a-z0-9._-]+/gi, '_') + '_precios_hoy.pdf';
+    const job: PdfHoyJob = { hechas: 0, total: sel.laminas.length, done: false, error: null, file, nombre: nombreFichero, t: Date.now() };
+    pdfHoyJobs.set(jobId, job);
+    res.json({ success: true, jobId, total: sel.laminas.length });
+    // Trabajo pesado en segundo plano (no bloquea la respuesta ni la conexion del comercial).
+    (async () => {
+      try {
+        await _escribirPdfHoy(sel.laminas, tarifa, fs.createWriteStream(file), (h) => { job.hechas = h; });
+        job.done = true;
+      } catch (e) {
+        job.error = (e as Error).message; job.done = true; job.file = null;
+        try { fs.unlinkSync(file); } catch (_) { /* nada */ }
+      }
+    })();
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+app.get('/api/pdf-hoy-status/:jobId', verifyToken, (req: AuthRequest, res: Response) => {
+  const j = pdfHoyJobs.get(req.params.jobId);
+  if (!j) { res.status(404).json({ success: false, error: 'Trabajo no encontrado o caducado' }); return; }
+  res.json({ success: true, hechas: j.hechas, total: j.total, done: j.done, error: j.error, listo: j.done && !j.error && !!j.file });
+});
+
+app.get('/api/pdf-hoy-download/:jobId', verifyToken, (req: AuthRequest, res: Response) => {
+  const j = pdfHoyJobs.get(req.params.jobId);
+  if (!j || !j.done || j.error || !j.file) { res.status(404).json({ success: false, error: 'PDF no disponible' }); return; }
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fs = require('fs');
+  if (!fs.existsSync(j.file)) { res.status(404).json({ success: false, error: 'PDF caducado, vuelve a generarlo' }); return; }
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${j.nombre}"`);
+  fs.createReadStream(j.file).pipe(res);
 });
 
 // ============================================================================

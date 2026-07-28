@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v226 · 28 jul 2026';
+const APP_VERSION = 'v227 · 28 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -4222,24 +4222,44 @@ async function descargarLaminaHoy(sheetId) {
 
 async function descargarPdfCatalogoHoy(catalogId, btn) {
   if (!catalogId) { alert('No hay catálogo activo'); return; }
-  // Un catálogo grande tarda ~1 min en generarse: aviso claro (no reescribir el botón,
-  // que puede ser un icono pequeño) y bloqueo para que no se pulse dos veces.
-  const orig = btn ? btn.textContent : '';
+  // Se genera en el SERVIDOR en segundo plano (no colgamos la conexión del comercial: en
+  // redes con proxy se cortaba con "Failed to fetch"). Barra de progreso por polling y, al
+  // terminar, se descarga el PDF ya hecho de un tirón.
   if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
   const modal = document.createElement('div');
   modal.className = 'modal-bg';
-  modal.innerHTML = `<div class="modal-card" style="text-align:center;max-width:340px">
+  modal.innerHTML = `<div class="modal-card" style="text-align:center;max-width:360px">
       <div style="font-size:34px;margin-bottom:6px">📄</div>
-      <div style="font-weight:800;margin-bottom:6px">Generando el PDF del catálogo…</div>
-      <div style="font-size:13px;color:var(--gris-texto)">Puede tardar hasta un minuto. No cierres esta pantalla.</div>
-      <div style="margin-top:12px" class="spinner"></div>
+      <div style="font-weight:800;margin-bottom:10px">Preparando el PDF del catálogo…</div>
+      <div style="background:#e5e7eb;height:18px;border-radius:9px;overflow:hidden;margin-bottom:8px">
+        <div id="pdfhoy-barra" style="background:linear-gradient(90deg,#cc007a,#dc2675);height:100%;width:0%;transition:width .3s"></div>
+      </div>
+      <div id="pdfhoy-estado" style="font-size:13px;color:var(--gris-texto)">Empezando…</div>
+      <div style="font-size:11px;color:var(--gris-texto);margin-top:6px">Puede tardar un minuto. No cierres esta pantalla.</div>
     </div>`;
   document.body.appendChild(modal);
+  const $barra = modal.querySelector('#pdfhoy-barra'), $estado = modal.querySelector('#pdfhoy-estado');
   try {
-    await _descargarBlobAuth('/api/catalogs/' + catalogId + '/pdf-hoy?tarifa=' + _tarifaVisor(), 'catalogo_' + catalogId + '_precios_hoy.pdf');
+    const r = await api('/api/catalogs/' + catalogId + '/pdf-hoy-job?tarifa=' + _tarifaVisor(), { method: 'POST' });
+    if (!r.success) throw new Error(r.error || 'No se pudo iniciar');
+    const jobId = r.jobId, total = r.total || 1;
+    let done = false, err = null, listo = false;
+    for (let i = 0; i < 800 && !done; i++) {
+      await new Promise(res => setTimeout(res, 1500));
+      let st; try { st = await api('/api/pdf-hoy-status/' + jobId); } catch (_) { continue; }
+      const pct = Math.min(100, Math.round((st.hechas / total) * 100));
+      if ($barra) $barra.style.width = pct + '%';
+      if ($estado) $estado.textContent = `Lámina ${st.hechas} de ${total}`;
+      if (st.done) { done = true; err = st.error; listo = st.listo; }
+    }
+    if (err) throw new Error(err);
+    if (!listo) throw new Error('El PDF tardó demasiado; inténtalo de nuevo');
+    if ($barra) $barra.style.width = '100%';
+    if ($estado) $estado.textContent = 'Descargando…';
+    await _descargarBlobAuth('/api/pdf-hoy-download/' + jobId, 'catalogo_' + catalogId + '_precios_hoy.pdf');
   } catch (e) { alert('No se pudo generar el PDF: ' + e.message); }
   modal.remove();
-  if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.textContent = orig; }
+  if (btn) { btn.disabled = false; btn.style.opacity = ''; }
 }
 
 // FASE 1 (precios dinámicos): trae el precio de HOY de los productos de la lámina y repinta.
