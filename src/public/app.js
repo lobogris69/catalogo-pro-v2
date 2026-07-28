@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v227 · 28 jul 2026';
+const APP_VERSION = 'v228 · 28 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -21,10 +21,33 @@ async function comprobarNuevaVersionServidor() {
     const t = await r.text();
     const m = t.match(/cpv2-shell-(v\d+)/);
     const servidor = m ? m[1] : '';
-    if (servidor && _APP_VER_NUM && servidor !== _APP_VER_NUM && typeof mostrarBannerActualizacion === 'function') {
-      mostrarBannerActualizacion();
+    if (servidor && _APP_VER_NUM && servidor !== _APP_VER_NUM) {
+      _intentarAutoActualizar(servidor);
     }
   } catch (e) { /* sin red: se reintenta luego */ }
+}
+// AUTO-ACTUALIZACIÓN. Antes solo salía un banner y el comercial no lo pulsaba → se quedaba
+// clavado en una versión vieja (susana: el PDF fallaba porque no le llegó el arreglo). Ahora
+// la app se actualiza SOLA, con dos seguridades: (1) no recargar en mitad de una visita o con
+// un modal/formulario abierto —no cortar una venta ni perder algo a medias—; en ese caso deja
+// el banner y se aplicará cuando esté libre. (2) Anti-bucle: si ya se intentó a esta versión y
+// seguimos en la vieja (p. ej. sin red al recargar), no reintenta en bucle; deja el banner.
+function _intentarAutoActualizar(servidorVer) {
+  try {
+    if (sessionStorage.getItem('cpv2_autoupd_ver') === servidorVer) {
+      if (typeof mostrarBannerActualizacion === 'function') mostrarBannerActualizacion();
+      return;
+    }
+  } catch (_) { /* sessionStorage no disponible */ }
+  const ocupado = !!document.querySelector('.modal-bg') ||
+    !!(typeof appState !== 'undefined' && appState && appState.visitaActiva);
+  if (ocupado) {
+    if (typeof mostrarBannerActualizacion === 'function') mostrarBannerActualizacion();
+    return;
+  }
+  try { sessionStorage.setItem('cpv2_autoupd_ver', servidorVer); } catch (_) { /* nada */ }
+  if (typeof window.aplicarActualizacionPWA === 'function') window.aplicarActualizacionPWA();
+  else window.location.reload();
 }
 window.addEventListener('load', () => setTimeout(comprobarNuevaVersionServidor, 2500));
 document.addEventListener('visibilitychange', () => { if (!document.hidden) comprobarNuevaVersionServidor(); });
