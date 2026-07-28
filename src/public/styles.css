@@ -2816,6 +2816,7 @@ body.solo-visor .solovisor-solo { display: inline-flex; }
 body.solo-visor .visor-presentacion {
   padding: 2px;
   gap: 4px;
+  min-height: calc(100vh - 52px);   /* respaldo para navegadores viejos (Chrome <108 sin dvh) */
   min-height: calc(100dvh - 52px);
   justify-content: center;
 }
@@ -2831,6 +2832,7 @@ body.solo-visor .visor-export-bar { display: none; }   /* descargas: no en modo 
    Así la barra nunca se solapa con la lámina. */
 body.solo-visor .visor-imagen-contenedor {
   max-width: 100vw;
+  max-height: calc(100vh - 112px);   /* respaldo Chrome <108 (sin dvh): si no, la lamina no tiene tope y se corta abajo */
   max-height: calc(100dvh - 112px);
   background: transparent;
   border: none;
@@ -2852,6 +2854,7 @@ body.solo-visor .visor-imagen {
   width: auto;
   height: auto;
   max-width: 100%;
+  max-height: calc(100vh - 112px);   /* respaldo Chrome <108 (sin dvh) */
   max-height: calc(100dvh - 112px);
   border-radius: 6px;
 }
