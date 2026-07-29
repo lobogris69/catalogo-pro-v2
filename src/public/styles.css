@@ -4838,7 +4838,9 @@ body.con-banner-update {
   left: 18px;
   right: auto;
   bottom: 18px;
-  z-index: 9000;
+  /* POR ENCIMA de los cuadros (.modal-bg va a 99000): si no, con un cuadro abierto el 🛟
+     quedaba tapado y no se podía avisar del problema que se estaba viendo justo ahí. */
+  z-index: 99500;
   min-width: 52px;
   height: 52px;
   padding: 0 14px;
@@ -6119,7 +6121,7 @@ body.modo-simple .visor-anotaciones-header { display: none !important; }
    también quiere ver todas las láminas de golpe (mosaico). */
 body.modo-simple .visor-modo-btn.visor-modo-vista { display: inline-flex !important; }
 /* El 🛟 de incidencias no debe quedar tapado por la barra negra del pedido (misma altura). */
-body.modo-simple .btn-incidencia { bottom: 96px; z-index: 9001; }
+body.modo-simple .btn-incidencia { bottom: 96px; z-index: 99500; }
 
 /* PARTE DE ARRIBA DESPEJADA en modo sencillo: antes se apilaban 50px muertos + cabecera
    con buscador + categorías + toggle (~245px) y en la tablet los botones rosas de navegación

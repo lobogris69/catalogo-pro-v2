@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v247 · 29 jul 2026';
+const APP_VERSION = 'v248 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -4599,6 +4599,13 @@ async function pulsarZonaComercial(zona) {
   let anotExistente = null;
   const anotsSheet = _anotacionesVisita[sheetId] || [];
   anotExistente = anotsSheet.find(a => a.zone_id === zona.id) || null;
+  // FAMILIA: una gafa lleva MUCHAS líneas (colores × graduaciones). Si al volver a tocar la
+  // zona abriésemos en modo "Editar producto" la línea que ya hay, no se podría añadir otra
+  // variante: justo lo que pasaba (2ª vez entrabas a editar en vez de seguir sumando).
+  // Para corregir una línea concreta está el ✏️ de cada línea en el carrito.
+  if (zona.familia_ref || (Array.isArray(zona.familia_skus) && zona.familia_skus.length > 1)) {
+    anotExistente = null;
+  }
 
   // MODO SENCILLO: cuadro con contador gigante y un solo botón. Las familias y la
   // comisión siguen con su cuadro normal: ahí hay que elegir de verdad.
@@ -6706,7 +6713,11 @@ async function capturarPantallaActual(cuadroAOcultar) {
     // y por tanto MUCHO más rápido (con el body tardaba más de 20 segundos y parecía
     // colgada). Escala 1: para ver qué falla en una pantalla sobra, y el archivo pesa
     // poco, que se envía desde la tablet.
-    const raiz = document.querySelector('.app-shell') || document.body;
+    // ...PERO si hay un cuadro abierto (modal, desplegable, carrito) hay que fotografiar el
+    // <body>: esos cuadros se cuelgan del body, NO del .app-shell, así que ANTES NO SALÍAN
+    // en la foto — justo lo que hacía falta enseñar. Sin cuadros seguimos con .app-shell.
+    const hayCuadro = !!document.querySelector('.modal-bg, .carrito-overlay, .simple-modal-bg');
+    const raiz = hayCuadro ? document.body : (document.querySelector('.app-shell') || document.body);
     const blob = await window.modernScreenshot.domToBlob(raiz, {
       type: 'image/jpeg',
       quality: 0.8,
