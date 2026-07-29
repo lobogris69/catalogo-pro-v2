@@ -539,7 +539,18 @@ html {
   justify-content: center;
   padding: 1rem;
   z-index: 99000; /* Más alto que el visor fullscreen para que el modal de anotar pedido salga por delante */
+  /* LEY: TODAS las ventanas se tienen que poder recorrer de arriba abajo. El fondo mismo
+     scrollea (con inercia táctil) para el caso que rompía en la tablet: al abrirse salta el
+     foco a un campo, sube el teclado y tapa la mitad de abajo; con la ventana centrada y el
+     fondo fijo, los botones quedaban detrás del teclado sin forma de subirlos. */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
+/* margin:auto centra la ventana cuando cabe y, cuando NO cabe (teclado arriba, pantalla
+   baja), deja llegar tanto al principio como al final sin que se corte por arriba (el bug
+   clásico de flex + align-items:center + overflow). */
+.modal-bg > .modal,
+.modal-bg > .modal-card { margin: auto; }
 /* Diálogos que usan class="modal" (ficha de recuadro, selector de campo/variante,
    ofertas…): DEBEN tener fondo sólido. Sin esto se veían transparentes y, sobre una
    lámina de fondo, el texto era ilegible. */
@@ -553,6 +564,7 @@ html {
   max-width: 480px;
   max-height: 90vh;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;   /* inercia al arrastrar con el dedo (iPad) */
   box-shadow: 0 10px 40px rgba(0,0,0,0.35);
   box-sizing: border-box;
 }
@@ -566,6 +578,7 @@ html {
   max-width: 480px;
   max-height: 90vh;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;   /* inercia al arrastrar con el dedo (iPad) */
   box-shadow: var(--shadow-lg);
 }
 .modal-header {
