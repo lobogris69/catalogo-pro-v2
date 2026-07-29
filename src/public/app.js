@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v238 · 29 jul 2026';
+const APP_VERSION = 'v239 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -300,6 +300,70 @@ function renderLogin() {
   });
 }
 
+// ===== NAVEGACIÓN AGRUPADA =====
+// El panel tenía 15 pestañas sueltas en una fila que en tablet se partía en varias líneas:
+// imposible de recorrer y muy denso. Ahora: fila 1 = 5 menús, fila 2 = los apartados del menú
+// abierto. NO cambia ninguna pantalla: son las mismas vistas y el mismo irA(), solo agrupadas.
+function _gruposNav(esAdmin, esOficina) {
+  const G = [
+    { id: 'catalogo', icon: '📚', label: 'Catálogo', items: [
+      { v: 'catalogos',   icon: '📚', label: 'Catálogos',  ok: true },
+      { v: 'archivo',     icon: '🗄️', label: 'Archivo',    ok: esAdmin },
+      { v: 'productos',   icon: '📦', label: 'Productos',  ok: esAdmin },
+      { v: 'plantillas',  icon: '🏷️', label: 'Plantillas', ok: esAdmin },
+    ]},
+    { id: 'ruta', icon: '🏥', label: 'Clientes y ruta', items: [
+      { v: 'clientes',          icon: '🏥', label: 'Clientes',    ok: !esOficina },
+      { v: 'planning',          icon: '🗓️', label: 'Planning',    ok: !esOficina },
+      { v: 'mapa',              icon: '🗺️', label: 'Mapa',        ok: !esOficina },
+      { v: 'pedidos-guardados', icon: '📁', label: 'Mis pedidos', ok: !esOficina },
+    ]},
+    { id: 'equipo', icon: '👥', label: 'Equipo', items: [
+      { v: 'comerciales',  icon: '👥', label: 'Comerciales',  ok: esAdmin },
+      { v: 'aula',         icon: '🎓', label: 'Aula',         ok: !esOficina },
+      { v: 'coordinacion', icon: '🔄', label: 'Coordinación', ok: esAdmin || esOficina },
+    ]},
+    { id: 'ajustes', icon: '⚙️', label: 'Ajustes', items: [
+      { v: 'configuracion', icon: '⚙️', label: 'Configuración', ok: esAdmin },
+      { v: 'cuenta',        icon: '👤', label: 'Mi cuenta',     ok: true },
+    ]},
+    { id: 'ayuda', icon: '📖', label: 'Ayuda', items: [
+      { v: 'manual', icon: '📖', label: esAdmin ? 'Manual' : 'Ayuda', ok: true },
+    ]},
+  ];
+  return G.map(g => ({ ...g, items: g.items.filter(i => i.ok) })).filter(g => g.items.length);
+}
+
+function irAGrupo(id) {
+  const esAdmin = rolEfectivo() === 'admin';
+  const esOficina = !!(user && user.role === 'oficina');
+  const g = _gruposNav(esAdmin, esOficina).find(x => x.id === id);
+  if (!g) return;
+  appState.navGrupo = id;
+  // Un solo apartado dentro: entrar directo (un toque en vez de dos).
+  if (g.items.length === 1) { irA(g.items[0].v); return; }
+  render();
+}
+
+function pintarNavAgrupada(esAdmin, esOficina) {
+  const grupos = _gruposNav(esAdmin, esOficina);
+  if (!grupos.length) return '';
+  // Se muestra abierto el menú que contiene la pantalla actual; si no, el último que se abrió.
+  let act = grupos.find(g => g.items.some(i => i.v === appState.vista));
+  if (!act) act = grupos.find(g => g.id === appState.navGrupo) || grupos[0];
+  return `
+      <div class="navtabs">
+        ${esAdmin ? `<button class="navtab ${appState.vista === 'dashboard' ? 'navtab-activa' : ''}" onclick="irA('dashboard')">🏠 Inicio</button>` : ''}
+        ${grupos.map(g => `<button class="navtab navtab-grupo ${act && g.id === act.id ? 'navtab-activa' : ''}" onclick="irAGrupo('${g.id}')">${g.icon} ${escape(g.label)}</button>`).join('')}
+        <button class="navtab navtab-lupa" onclick="abrirBusquedaGlobal()" title="Buscar (Ctrl+K)" style="margin-left:auto">🔍</button>
+      </div>
+      ${act && act.items.length > 1 ? `
+      <div class="navtabs navtabs-sub">
+        ${act.items.map(i => `<button class="navtab ${appState.vista === i.v ? 'navtab-activa' : ''}" onclick="irA('${i.v}')">${i.icon} ${escape(i.label)}</button>`).join('')}
+      </div>` : ''}
+  `;
+}
+
 // ===== APP PRINCIPAL =====
 async function renderApp() {
   // B6: cargar visita activa una vez al arrancar la sesión.
@@ -383,24 +447,7 @@ async function renderApp() {
           <button class="topbar-logout" onclick="logout()">Salir</button>
         </div>
       </div>
-      <div class="navtabs">
-        ${esAdmin ? `<button class="navtab ${appState.vista === 'dashboard' ? 'navtab-activa' : ''}" onclick="irA('dashboard')">🏠 Dashboard</button>` : ''}
-        <button class="navtab ${appState.vista === 'catalogos' ? 'navtab-activa' : ''}" onclick="irA('catalogos')">📚 Catálogos</button>
-        ${esOficina ? '' : `<button class="navtab ${appState.vista === 'clientes' ? 'navtab-activa' : ''}" onclick="irA('clientes')">🏥 Clientes</button>`}
-        ${esOficina ? '' : `<button class="navtab ${appState.vista === 'planning' ? 'navtab-activa' : ''}" onclick="irA('planning')">🗓️ Planning</button>`}
-        ${esOficina ? '' : `<button class="navtab ${appState.vista === 'aula' ? 'navtab-activa' : ''}" onclick="irA('aula')">🎓 Aula</button>`}
-        ${esOficina ? '' : `<button class="navtab ${appState.vista === 'mapa' ? 'navtab-activa' : ''}" onclick="irA('mapa')">🗺️ Mapa</button>`}
-        ${esAdmin ? `<button class="navtab ${appState.vista === 'archivo' ? 'navtab-activa' : ''}" onclick="irA('archivo')" title="Archivo de catálogos y versiones">🗄️ Archivo</button>` : ''}
-        ${esAdmin ? `<button class="navtab ${appState.vista === 'productos' ? 'navtab-activa' : ''}" onclick="irA('productos')">📦 Productos</button>` : ''}
-        ${esAdmin ? `<button class="navtab ${appState.vista === 'comerciales' ? 'navtab-activa' : ''}" onclick="irA('comerciales')">👥 Comerciales</button>` : ''}
-        ${esAdmin ? `<button class="navtab ${appState.vista === 'plantillas' ? 'navtab-activa' : ''}" onclick="irA('plantillas')">🏷️ Plantillas</button>` : ''}
-        ${esAdmin ? `<button class="navtab ${appState.vista === 'configuracion' ? 'navtab-activa' : ''}" onclick="irA('configuracion')">⚙️ Configuración</button>` : ''}
-        ${esOficina ? '' : `<button class="navtab ${appState.vista === 'pedidos-guardados' ? 'navtab-activa' : ''}" onclick="irA('pedidos-guardados')" title="Pedidos guardados localmente">📁 Mis pedidos</button>`}
-        ${(esAdmin || esOficina) ? `<button class="navtab ${appState.vista === 'coordinacion' ? 'navtab-activa' : ''}" onclick="irA('coordinacion')" title="Altas de producto y cambios que hay que reflejar en Sage">🔄 Coordinación</button>` : ''}
-        <button class="navtab ${appState.vista === 'manual' ? 'navtab-activa' : ''}" onclick="irA('manual')" title="${esAdmin ? 'Manual de instrucciones: todos los procesos paso a paso' : 'Ayuda rápida para el día a día'}">${esAdmin ? '📖 Manual' : '❓ Ayuda'}</button>
-        <button class="navtab navtab-lupa" onclick="abrirBusquedaGlobal()" title="Buscar (Ctrl+K)" style="margin-left:auto">🔍</button>
-        <button class="navtab ${appState.vista === 'cuenta' ? 'navtab-activa' : ''}" onclick="irA('cuenta')">⚙️ Mi cuenta</button>
-      </div>
+      ${pintarNavAgrupada(esAdmin, esOficina)}
       <div id="vista-contenido"></div>
       <div style="text-align:center;font-size:11px;color:#9ca3af;padding:14px 0 8px">CatalogPRO ${APP_VERSION}</div>
     </div>
