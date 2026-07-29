@@ -617,6 +617,13 @@ async function initDB(): Promise<void> {
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS dev_cambio_producto VARCHAR(200); -- si es 'otro', por que producto
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS dev_cambio_motivo VARCHAR(300);   -- si es 'otro', por que el cambio
       ALTER TABLE annotations ADD COLUMN IF NOT EXISTS dev_retirada BOOLEAN DEFAULT TRUE; -- mercancia retirada por el comercial
+      -- REPOSICION DE EXPOSITOR DE GAFAS. El cliente repone recorriendo su expositor y
+      -- canta modelo/color/graduacion en el orden que le da la vista, saltando de uno a
+      -- otro. Anotarlo linea a linea obligaba a ir y volver por el catalogo. La rejilla
+      -- (modelos en filas, graduaciones en columnas) permite rellenar celdas sin orden.
+      -- Cada celda sigue siendo una linea normal de pedido; rep_celda solo guarda de que
+      -- casilla salio ("MODELO|COLOR|+1.50") para poder REDIBUJAR la rejilla al volver.
+      ALTER TABLE annotations ADD COLUMN IF NOT EXISTS rep_celda VARCHAR(160);
 
       -- MODO SENCILLO. Dos de los comerciales vienen del visor de fotos y el talonario
       -- de papel. Con el modo puesto, la app se reduce a un solo camino guiado:
@@ -1612,7 +1619,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v251-buscar-min3-29jul',
+      build: 'v252-rejilla-reposicion-29jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -6223,9 +6230,9 @@ app.post('/api/sync/visit-batch', verifyToken, async (req: AuthRequest, res: Res
           const annR = await pool.query(
             `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y,
                                       product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio,
-                                      referencia, bonificacion, oferta_texto, nota_extra,
+                                      referencia, bonificacion, oferta_texto, nota_extra, rep_celda,
                                       dev_estado, dev_motivo, dev_resolucion, dev_cambio_producto, dev_cambio_motivo, dev_retirada)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) RETURNING id`,
             [
               visitId,
               ann.sheet_id ? Number(ann.sheet_id) : null,
@@ -6245,6 +6252,7 @@ app.post('/api/sync/visit-batch', verifyToken, async (req: AuthRequest, res: Res
               ann.bonificacion ? String(ann.bonificacion).trim().substring(0, 60) : null,
               ann.oferta_texto ? String(ann.oferta_texto).trim().substring(0, 120) : null,
               ann.nota_extra ? String(ann.nota_extra).trim().substring(0, 300) : null,
+              ann.rep_celda ? String(ann.rep_celda).trim().substring(0, 160) : null,
               ..._devTuple(_parseDevFields(ann, tipoFinal))
             ]
           );
@@ -10508,12 +10516,14 @@ app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, re
       } catch (_) { /* si falla la oferta, la linea se guarda igual */ }
     }
     const notaExtra = req.body.nota_extra ? String(req.body.nota_extra).trim().substring(0, 300) : null;
+    // Casilla de la rejilla de reposicion de la que salio esta linea (ver migracion).
+    const repCelda = req.body.rep_celda ? String(req.body.rep_celda).trim().substring(0, 160) : null;
     // Campos de devolucion (solo aplican si tipo='devolucion')
     const dev = _parseDevFields(req.body, tipoFinal);
     const r = await pool.query(
-      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio, referencia, bonificacion, oferta_texto, nota_extra, dev_estado, dev_motivo, dev_resolucion, dev_cambio_producto, dev_cambio_motivo, dev_retirada)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) RETURNING *`,
-      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, dtoFinal, almacen, numSocio, referencia, bonificacion, ofertaTexto, notaExtra, dev.estado, dev.motivo, dev.resolucion, dev.cambioProd, dev.cambioMotivo, dev.retirada]
+      `INSERT INTO annotations (visit_id, sheet_id, orden_en_visita, texto_libre, tipo, pos_x, pos_y, product_id, cantidad, zone_id, es_comision, descuento, almacen, num_socio, referencia, bonificacion, oferta_texto, nota_extra, rep_celda, dev_estado, dev_motivo, dev_resolucion, dev_cambio_producto, dev_cambio_motivo, dev_retirada)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25) RETURNING *`,
+      [visitId, sheet_id ? Number(sheet_id) : null, orden, String(texto_libre).trim(), tipoFinal, posX, posY, productId, cantidad, zoneId, esComision, dtoFinal, almacen, numSocio, referencia, bonificacion, ofertaTexto, notaExtra, repCelda, dev.estado, dev.motivo, dev.resolucion, dev.cambioProd, dev.cambioMotivo, dev.retirada]
     );
     res.json({ success: true, annotation: r.rows[0] });
   } catch (e) {
@@ -13136,6 +13146,90 @@ app.get('/api/families/resolve', verifyToken, async (req: AuthRequest, res: Resp
     if (!ref) { res.status(400).json({ success: false, error: 'Falta ref o ids' }); return; }
     const fam = await resolverFamilia(ref);
     res.json({ success: true, familia: fam || null });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// REJILLA DE REPOSICION: buscar modelos para añadir una fila.
+// A diferencia de resolverFamilia (que elige el grupo que MEJOR casa), aqui hacen falta
+// TODOS los candidatos: el comercial escribe "new york" y tiene que poder ver y elegir
+// entre los modelos que salgan, con sus colores. Cada modelo trae ya sus variantes
+// (color x graduacion -> product_id), que es lo que la rejilla necesita para saber que
+// casillas existen y que codigo Sage lleva cada una.
+async function buscarFamiliasReposicion(q: string, limite = 10): Promise<any[]> {
+  const palabras = q
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !STOPWORDS_FAMILIA.has(w));
+  if (palabras.length === 0) return [];
+  // Mismo criterio que el resto de busquedas de la app: subcadena O parecido por
+  // trigramas, para que "newyork" o "nueva york" encuentren igual.
+  const conds = palabras
+    .map((_, i) => `(LOWER(nombre) LIKE '%' || $${i + 1} || '%' OR word_similarity($${i + 1}, LOWER(nombre)) > 0.45)`)
+    .join(' AND ');
+  const r = await pool.query(
+    `SELECT id, codigo, nombre, precio_pvf_1, precio_pvf
+       FROM products WHERE ${conds} AND activo = TRUE ORDER BY nombre LIMIT 400`,
+    palabras
+  );
+  const grupos = new Map<string, any[]>();
+  for (const p of r.rows) {
+    const { ejes, base } = extraerEjesProducto(p.nombre);
+    if (!base) continue;
+    if (!grupos.has(base)) grupos.set(base, []);
+    grupos.get(base)!.push({ p, ejes });
+  }
+  // FUSIONAR "ESMIRNA PEACH" dentro de "ESMIRNA". Cuando una base es otra base mas
+  // palabras, casi siempre es el MISMO modelo con un color que Sage escribe en el nombre
+  // y que no esta en la lista de colores conocidos. Importa de verdad porque el aviso del
+  // 1+1 cuenta por MODELO: separados, 3 carey + 3 peach salen como dos impares cuando el
+  // modelo suma 6 y cuadra perfectamente.
+  const basesPorLongitud = Array.from(grupos.keys()).sort((a, b) => a.length - b.length);
+  for (const corta of basesPorLongitud) {
+    if (!grupos.has(corta)) continue;
+    for (const larga of Array.from(grupos.keys())) {
+      if (larga !== corta && larga.startsWith(corta + ' ')) {
+        grupos.get(corta)!.push(...grupos.get(larga)!);
+        grupos.delete(larga);
+      }
+    }
+  }
+  const salida: any[] = [];
+  for (const [base, items] of grupos) {
+    // Mismo criterio que las zonas-familia: el color que no se reconoce por lista se
+    // deduce por DIFERENCIA entre los nombres del grupo.
+    const conEjes = items.map(({ p, ejes }: any) => ({
+      product_id: p.id, codigo: p.codigo, nombre: p.nombre, ejes,
+      pvf: p.precio_pvf_1 ?? p.precio_pvf ?? null
+    }));
+    _deducirVariantePorDiferencia(conEjes);
+    const variantes = conEjes.map((v: any) => ({
+      product_id: v.product_id,
+      codigo: v.codigo,
+      nombre: v.nombre,
+      color: v.ejes.color || null,
+      graduacion: v.ejes.graduacion || null,
+      pvf: v.pvf
+    }));
+    const colores = Array.from(new Set(variantes.map(v => v.color).filter(Boolean)));
+    const graduaciones = Array.from(new Set(variantes.map(v => v.graduacion).filter(Boolean)))
+      .sort((a: any, b: any) => gradNum(a) - gradNum(b));
+    salida.push({ modelo: base, colores, graduaciones, n_variantes: variantes.length, variantes });
+  }
+  // Primero lo que de verdad se gradua (gafas) y, dentro, lo que mas variantes tiene.
+  salida.sort((a, b) => (b.graduaciones.length - a.graduaciones.length) || (b.n_variantes - a.n_variantes));
+  return salida.slice(0, limite);
+}
+
+app.get('/api/reposicion/familias', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    // Igual que el buscador de laminas: por debajo de 3 letras no se busca nada.
+    if (q.length < 3) { res.json({ success: true, familias: [] }); return; }
+    res.json({ success: true, familias: await buscarFamiliasReposicion(q) });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }

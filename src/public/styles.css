@@ -4460,6 +4460,128 @@ body.con-banner-update {
 }
 .btn-devolver-lanzar:active { transform: scale(.98); }
 
+/* ---------- REJILLA DE REPOSICIÓN DE GAFAS ---------- */
+/* Modelos en filas, graduaciones en columnas. Va a pantalla casi completa porque en la
+   tablet hay que ver a la vez las 6 graduaciones y el total de la derecha. */
+.btn-reposicion-lanzar {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 6px;
+  border: 2px solid var(--rosa, #d80a6b);
+  border-radius: 12px;
+  background: #fff1f7;
+  color: #9a1259;
+  font-size: 15px;
+  font-weight: 800;
+  font-family: inherit;
+  cursor: pointer;
+}
+.btn-reposicion-lanzar:active { transform: scale(.98); }
+.rep-card {
+  width: min(1100px, 96vw);
+  max-width: 96vw;
+  height: min(88vh, 900px);
+  display: flex;
+  flex-direction: column;
+}
+.rep-buscador-fila { position: relative; padding: 0 4px 8px; }
+.rep-buscador {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1.5px solid var(--gris-borde, #d1d5db);
+  border-radius: 10px;
+  font-size: 15px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.rep-buscador:focus { border-color: var(--rosa, #d80a6b); outline: none; }
+.rep-resultados {
+  position: absolute;
+  left: 4px; right: 4px; top: 100%;
+  z-index: 20;
+  max-height: 46vh;
+  overflow-y: auto;
+  background: var(--surface, #fff);
+  border: 1px solid var(--gris-borde, #d1d5db);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.14);
+}
+.rep-res-info { padding: 12px 14px; color: var(--gris-texto, #6b7280); font-size: 14px; }
+.rep-res-fam { padding: 10px 12px; border-bottom: 1px solid var(--gris-borde, #eee); }
+.rep-res-fam:last-child { border-bottom: 0; }
+.rep-res-nombre { font-weight: 800; font-size: 15px; }
+.rep-res-sub { font-weight: 500; font-size: 12px; color: var(--gris-texto, #6b7280); margin-left: 8px; }
+.rep-res-colores { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.rep-color-btn {
+  min-height: 40px;
+  padding: 6px 14px;
+  border: 1.5px solid var(--rosa, #d80a6b);
+  border-radius: 999px;
+  background: #fff;
+  color: #9a1259;
+  font-size: 14px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+.rep-color-btn:active { background: #ffe4f0; }
+/* La tabla scrollea sola (a lo ancho y a lo alto) sin arrastrar el modal. */
+.rep-tabla-caja {
+  flex: 1 1 auto;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--gris-borde, #e5e7eb);
+  border-radius: 10px;
+}
+.rep-vacio { padding: 28px 18px; text-align: center; color: var(--gris-texto, #6b7280); line-height: 1.7; }
+table.rep-tabla { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 14px; }
+table.rep-tabla th, table.rep-tabla td { border-bottom: 1px solid var(--gris-borde, #e5e7eb); padding: 4px; text-align: center; }
+table.rep-tabla thead th {
+  position: sticky; top: 0; z-index: 3;
+  background: #fff1f7; color: #9a1259; font-weight: 800; padding: 10px 4px; white-space: nowrap;
+}
+/* Primera columna pegada a la izquierda: al mirar la +3,50 hay que seguir viendo el modelo. */
+table.rep-tabla .rep-fila-cab {
+  position: sticky; left: 0; z-index: 2;
+  background: var(--surface, #fff);
+  text-align: left;
+  padding: 6px 10px;
+  min-width: 165px;
+  font-weight: 700;
+}
+table.rep-tabla thead .rep-fila-cab { z-index: 4; background: #fff1f7; }
+.rep-fila-modelo { display: block; }
+.rep-fila-color { display: inline-block; font-size: 12px; font-weight: 600; color: var(--gris-texto, #6b7280); }
+.rep-fila-quitar {
+  float: right; border: 0; background: transparent; cursor: pointer;
+  color: var(--gris-texto, #9ca3af); font-size: 15px; padding: 2px 4px;
+}
+input.rep-celda {
+  width: 54px; min-height: 44px;
+  border: 1.5px solid var(--gris-borde, #d1d5db);
+  border-radius: 8px;
+  text-align: center;
+  font-size: 17px; font-weight: 700; font-family: inherit;
+  background: var(--surface, #fff);
+}
+input.rep-celda:focus { border-color: var(--rosa, #d80a6b); outline: none; }
+input.rep-celda.rep-celda-guardando { border-color: #93c5fd; }
+input.rep-celda.rep-celda-error { border-color: #dc2626; background: #fef2f2; }
+.rep-celda-no { color: #d1d5db; font-size: 18px; }
+.rep-fila-total { font-weight: 800; font-size: 16px; min-width: 54px; }
+tr.rep-subtotal th, tr.rep-subtotal td { background: #f9fafb; font-size: 13px; }
+tr.rep-subtotal td { text-align: left; padding-left: 10px; }
+tr.rep-subtotal-impar th, tr.rep-subtotal-impar td { background: #fef2f2; }
+.rep-sub-cero { color: #9ca3af; }
+.rep-aviso-impar { color: #dc2626; font-weight: 800; }
+.rep-pie { display: flex; align-items: center; gap: 12px; padding-top: 10px; }
+.rep-total { flex: 1; font-size: 16px; }
+@media (max-width: 700px) {
+  .rep-card { width: 98vw; height: 92vh; }
+  table.rep-tabla .rep-fila-cab { min-width: 130px; }
+  input.rep-celda { width: 46px; font-size: 16px; }
+}
+
 /* La tarjeta puede quedar alta en la tablet: se hace desplazable y el botón "Añadir"
    se queda fijo abajo, siempre a mano, sin tener que buscarlo con scroll. */
 .dev-card {

@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v251 · 29 jul 2026';
+const APP_VERSION = 'v252 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -14038,6 +14038,7 @@ function renderCarritoContenido() {
       <div class="carrito-sub">${lineas.length} línea${lineas.length === 1 ? '' : 's'}${lineas.length ? ' · pulsa una lámina para ir a ella' : ''}</div>
       <div class="carrito-lista">${filas}</div>
       <div class="carrito-footer">
+        <button class="btn btn-reposicion-lanzar" style="margin-bottom:8px" onclick="cerrarCarritoVisita(); abrirRejillaReposicion()">👓 Reposición de gafas (rejilla)</button>
         <button class="btn btn-devolver-lanzar" style="margin-bottom:8px" onclick="cerrarCarritoVisita(); abrirCuadroDevolucion(null)">↩️ Devolver un producto</button>
         <div style="display:flex;gap:8px">
           <button class="btn btn-secondary carrito-seguir" onclick="cerrarCarritoVisita()">← Seguir en el catálogo</button>
@@ -14198,6 +14199,346 @@ async function _devGuardar(sheetId, tienePrefill) {
   } catch (e) {
     document.getElementById('dev-msg').innerHTML = '<div class="error-msg">' + escape(e.message) + '</div>';
   }
+}
+
+// ============================================================================
+// REPOSICIÓN DE EXPOSITOR DE GAFAS — rejilla modelos × graduaciones
+// ----------------------------------------------------------------------------
+// El cliente con expositor grande repone recorriéndolo con la vista y cantando
+// "New York negra +1,50 tres" y al rato vuelve a la New York. Anotarlo línea a
+// línea obligaba a ir y volver por el catálogo. Aquí las graduaciones son
+// columnas fijas y los modelos van cayendo como filas, así que no hay orden que
+// seguir: la casilla siempre está a la vista y se le suman unidades cuando toque.
+//
+// Cada casilla con unidades es una LÍNEA NORMAL del pedido (mismo product_id,
+// mismo código Sage, misma vía que el resto). Lo único que se guarda de más es
+// `rep_celda` = "MODELO|COLOR|+1.50", para poder redibujar la rejilla al volver.
+//
+// El total que importa es el del MODELO (sumando sus colores): la bonificación de
+// gafas suele ser 1+1, así que un modelo con un total impar no cuadra y se avisa.
+// ============================================================================
+const REP_GRADS = ['+1.0', '+1.5', '+2.0', '+2.5', '+3.0', '+3.5'];
+let _repFilas = [];          // filas de esta sesión: { modelo, color, variantes }
+let _repBuscarTimer = null;
+
+function repFmtGrad(g) {
+  const n = parseFloat(String(g).replace('+', '').replace(',', '.'));
+  return isNaN(n) ? String(g) : '+' + n.toFixed(2).replace('.', ',');
+}
+function repClave(modelo, color, grad) {
+  return [modelo || '', color || '', grad || ''].join('|');
+}
+function _repSheetId() {
+  const w = document.getElementById('visor-imagen-wrapper');
+  const id = w && w.dataset ? Number(w.dataset.sheetId) : 0;
+  return id || null;
+}
+// Todas las líneas del pedido que salieron de la rejilla
+function _repLineas() {
+  const out = [];
+  Object.keys(_anotacionesVisita || {}).forEach(sid => {
+    (_anotacionesVisita[sid] || []).forEach(a => { if (a.rep_celda) out.push(a); });
+  });
+  return out;
+}
+function _repAnotDe(clave) {
+  return _repLineas().find(a => String(a.rep_celda) === clave) || null;
+}
+function _repFilaDe(modelo, color) {
+  return _repFilas.find(f => (f.modelo || '') === (modelo || '') && (f.color || '') === (color || '')) || null;
+}
+function _repVarianteDe(modelo, color, grad) {
+  const f = _repFilaDe(modelo, color);
+  if (!f || !f.variantes) return null;
+  return f.variantes.find(v => v.graduacion === grad) || null;
+}
+// Filas a pintar: las añadidas en esta sesión + las que se deducen de líneas ya
+// guardadas (si se recargó la app en mitad de la visita, el pedido manda).
+function repFilasVisibles() {
+  const mapa = new Map();
+  const meter = (modelo, color, variantes) => {
+    const k = (modelo || '') + '|' + (color || '');
+    if (!mapa.has(k)) mapa.set(k, { modelo: modelo || '', color: color || '', variantes: variantes || null });
+    else if (variantes && !mapa.get(k).variantes) mapa.get(k).variantes = variantes;
+  };
+  _repFilas.forEach(f => meter(f.modelo, f.color, f.variantes));
+  _repLineas().forEach(a => {
+    const p = String(a.rep_celda).split('|');
+    meter(p[0], p[1] || '', null);
+  });
+  return Array.from(mapa.values()).sort((a, b) =>
+    (a.modelo || '').localeCompare(b.modelo || '') || (a.color || '').localeCompare(b.color || ''));
+}
+// Columnas: las fijas + cualquier graduación rara que aparezca (+4,00 y similares)
+function repColumnas() {
+  const extra = new Set();
+  repFilasVisibles().forEach(f => (f.variantes || []).forEach(v => {
+    if (v.graduacion && REP_GRADS.indexOf(v.graduacion) < 0) extra.add(v.graduacion);
+  }));
+  _repLineas().forEach(a => {
+    const g = String(a.rep_celda).split('|')[2];
+    if (g && REP_GRADS.indexOf(g) < 0) extra.add(g);
+  });
+  return REP_GRADS.concat(Array.from(extra).sort((a, b) =>
+    (parseFloat(a.replace('+', '')) || 0) - (parseFloat(b.replace('+', '')) || 0)));
+}
+
+function abrirRejillaReposicion() {
+  if (!appState.visitaActiva) { alert('Primero abre una visita.'); return; }
+  const prev = document.getElementById('rep-modal');
+  if (prev) prev.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.id = 'rep-modal';
+  modal.innerHTML = `
+    <div class="modal-card rep-card" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>👓 Reposición de expositor</h3>
+        <button class="modal-cerrar" onclick="cerrarRejillaReposicion()">✕</button>
+      </div>
+      <div class="rep-buscador-fila">
+        <input type="search" id="rep-buscar" class="rep-buscador" autocomplete="off"
+               placeholder="🔍 Escribe el modelo y añádelo (mín. 3 letras)…">
+        <div id="rep-resultados" class="rep-resultados" hidden></div>
+      </div>
+      <div id="rep-tabla" class="rep-tabla-caja"></div>
+      <div class="rep-pie">
+        <div id="rep-total" class="rep-total"></div>
+        <button class="btn btn-primary" onclick="cerrarRejillaReposicion()">Listo</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  repPintarRejilla();
+  const $b = document.getElementById('rep-buscar');
+  $b.addEventListener('input', () => {
+    clearTimeout(_repBuscarTimer);
+    _repBuscarTimer = setTimeout(() => repBuscarModelos($b.value), 300);
+  });
+  setTimeout(() => $b.focus(), 100);
+  // Si se recargó la app a media visita, las filas guardadas no saben qué código
+  // Sage lleva cada graduación: se recuperan de fondo para poder seguir rellenando.
+  repCompletarFilasSueltas();
+}
+
+function cerrarRejillaReposicion() {
+  const m = document.getElementById('rep-modal');
+  if (m) m.remove();
+  const sid = _repSheetId();
+  if (sid) refrescarAnotacionesVisor(sid);
+  else if (typeof pintarVisor === 'function') pintarVisor();
+}
+
+async function repBuscarModelos(q) {
+  const $r = document.getElementById('rep-resultados');
+  if (!$r) return;
+  const texto = String(q || '').trim();
+  if (texto.length < 3) { $r.hidden = true; $r.innerHTML = ''; return; }
+  $r.hidden = false;
+  $r.innerHTML = '<div class="rep-res-info">Buscando…</div>';
+  try {
+    const r = await api('/api/reposicion/familias?q=' + encodeURIComponent(texto));
+    const fams = r.familias || [];
+    if (!fams.length) { $r.innerHTML = '<div class="rep-res-info">No encuentro ningún modelo con ese nombre.</div>'; return; }
+    $r.innerHTML = fams.map((f, i) => {
+      const cols = (f.colores || []);
+      const botones = cols.length
+        ? cols.map(c => `<button type="button" class="rep-color-btn" onclick="repAnadirFila(${i}, '${escape(String(c)).replace(/'/g, "\\'")}')">${escape(c)}</button>`).join('')
+        : `<button type="button" class="rep-color-btn" onclick="repAnadirFila(${i}, '')">Añadir</button>`;
+      return `
+        <div class="rep-res-fam">
+          <div class="rep-res-nombre">${escape(f.modelo)}
+            <span class="rep-res-sub">${f.graduaciones.length} graduaciones · ${f.n_variantes} variantes</span>
+          </div>
+          <div class="rep-res-colores">${botones}</div>
+        </div>`;
+    }).join('');
+    window._repUltimaBusqueda = fams;
+  } catch (e) {
+    $r.innerHTML = '<div class="rep-res-info">' + escape(e.message) + '</div>';
+  }
+}
+
+function repAnadirFila(indice, color) {
+  const fams = window._repUltimaBusqueda || [];
+  const f = fams[indice];
+  if (!f) return;
+  const variantes = (f.variantes || []).filter(v => (v.color || '') === (color || ''));
+  if (!_repFilaDe(f.modelo, color)) {
+    _repFilas.push({ modelo: f.modelo, color: color || '', variantes });
+  }
+  const $b = document.getElementById('rep-buscar');
+  if ($b) $b.value = '';
+  const $r = document.getElementById('rep-resultados');
+  if ($r) { $r.hidden = true; $r.innerHTML = ''; }
+  repPintarRejilla();
+  if ($b) $b.focus();
+}
+
+function repQuitarFila(modelo, color) {
+  const conLineas = _repLineas().some(a => {
+    const p = String(a.rep_celda).split('|');
+    return p[0] === modelo && (p[1] || '') === (color || '');
+  });
+  if (conLineas) {
+    alert('Esa fila tiene unidades en el pedido. Pon sus casillas a 0 y vuelve a quitarla.');
+    return;
+  }
+  _repFilas = _repFilas.filter(f => !(f.modelo === modelo && (f.color || '') === (color || '')));
+  repPintarRejilla();
+}
+
+function repPintarRejilla() {
+  const $t = document.getElementById('rep-tabla');
+  if (!$t) return;
+  const filas = repFilasVisibles();
+  if (!filas.length) {
+    $t.innerHTML = `<div class="rep-vacio">Busca arriba el primer modelo que te cante el cliente y añádelo.<br>
+      Las graduaciones ya están puestas: tú solo pones las unidades en su casilla.</div>`;
+    repRecalcular();
+    return;
+  }
+  const cols = repColumnas();
+  const cab = cols.map(g => `<th>${repFmtGrad(g)}</th>`).join('');
+  let cuerpo = '';
+  let modeloPrev = null;
+  filas.forEach((f, idx) => {
+    // Al cambiar de modelo, cerrar el anterior con su subtotal (el par va por modelo).
+    if (modeloPrev !== null && f.modelo !== modeloPrev) cuerpo += repFilaSubtotal(modeloPrev);
+    modeloPrev = f.modelo;
+    const celdas = cols.map(g => {
+      const clave = repClave(f.modelo, f.color, g);
+      const anot = _repAnotDe(clave);
+      const v = _repVarianteDe(f.modelo, f.color, g);
+      // Sin variante y sin línea previa: esa graduación no existe para este modelo.
+      if (!v && !anot) return `<td class="rep-celda-no" title="Este modelo no tiene esa graduación">·</td>`;
+      const val = anot && anot.cantidad ? anot.cantidad : '';
+      return `<td><input type="number" class="rep-celda" inputmode="numeric" min="0" max="9999"
+                  value="${val}" data-modelo="${escape(f.modelo)}" data-color="${escape(f.color || '')}"
+                  data-grad="${escape(g)}" onchange="repGuardarCelda(this)"></td>`;
+    }).join('');
+    cuerpo += `
+      <tr data-fila="${idx}">
+        <th class="rep-fila-cab">
+          <span class="rep-fila-modelo">${escape(f.modelo)}</span>
+          ${f.color ? `<span class="rep-fila-color">${escape(f.color)}</span>` : ''}
+          <button type="button" class="rep-fila-quitar" title="Quitar esta fila"
+                  onclick="repQuitarFila('${escape(f.modelo).replace(/'/g, "\\'")}', '${escape(f.color || '').replace(/'/g, "\\'")}')">✕</button>
+        </th>
+        ${celdas}
+        <td class="rep-fila-total" data-total-modelo="${escape(f.modelo)}">0</td>
+      </tr>`;
+  });
+  if (modeloPrev !== null) cuerpo += repFilaSubtotal(modeloPrev);
+  $t.innerHTML = `
+    <table class="rep-tabla">
+      <thead><tr><th class="rep-fila-cab">Modelo</th>${cab}<th class="rep-fila-total">Uds</th></tr></thead>
+      <tbody>${cuerpo}</tbody>
+    </table>`;
+  repRecalcular();
+}
+
+function repFilaSubtotal(modelo) {
+  return `<tr class="rep-subtotal" data-subtotal="${escape(modelo)}">
+            <th class="rep-fila-cab">${escape(modelo)} — total</th>
+            <td class="rep-subtotal-celda" colspan="99"></td>
+          </tr>`;
+}
+
+// Recalcula totales de fila, subtotales por modelo y total general. Lee las casillas
+// directamente (no el servidor) para que el número cambie a la vez que se escribe.
+function repRecalcular() {
+  const $t = document.getElementById('rep-tabla');
+  if (!$t) return;
+  const porModelo = {};
+  let total = 0;
+  $t.querySelectorAll('tr[data-fila]').forEach(tr => {
+    let suma = 0;
+    tr.querySelectorAll('input.rep-celda').forEach(i => { suma += Math.max(0, Number(i.value) || 0); });
+    const $tot = tr.querySelector('.rep-fila-total');
+    if ($tot) $tot.textContent = suma || '';
+    const modelo = $tot ? $tot.dataset.totalModelo : null;
+    if (modelo) porModelo[modelo] = (porModelo[modelo] || 0) + suma;
+    total += suma;
+  });
+  $t.querySelectorAll('tr.rep-subtotal').forEach(tr => {
+    const modelo = tr.dataset.subtotal;
+    const n = porModelo[modelo] || 0;
+    const impar = n > 0 && n % 2 !== 0;
+    tr.classList.toggle('rep-subtotal-impar', impar);
+    const $c = tr.querySelector('.rep-subtotal-celda');
+    if ($c) $c.innerHTML = n === 0 ? '<span class="rep-sub-cero">sin unidades</span>'
+      : `<b>${n} uds</b>${impar ? ' <span class="rep-aviso-impar">⚠️ impar: no cuadra el 1+1</span>' : ' ✔'}`;
+  });
+  const $g = document.getElementById('rep-total');
+  if ($g) {
+    const modelosImpares = Object.keys(porModelo).filter(m => porModelo[m] > 0 && porModelo[m] % 2 !== 0);
+    $g.innerHTML = `<b>${total}</b> gafas en total` +
+      (modelosImpares.length ? ` · <span class="rep-aviso-impar">${modelosImpares.length} modelo${modelosImpares.length === 1 ? '' : 's'} con total impar</span>` : '');
+  }
+}
+
+// Guardar una casilla: crea, actualiza o borra la línea del pedido según el número.
+async function repGuardarCelda(inp) {
+  const modelo = inp.dataset.modelo;
+  const color = inp.dataset.color || '';
+  const grad = inp.dataset.grad;
+  const clave = repClave(modelo, color, grad);
+  let n = Math.floor(Number(inp.value) || 0);
+  if (n < 0) n = 0;
+  if (n > 9999) n = 9999;
+  inp.value = n || '';
+  repRecalcular();
+  const anot = _repAnotDe(clave);
+  inp.classList.remove('rep-celda-error');
+  inp.classList.add('rep-celda-guardando');
+  try {
+    if (!anot && n > 0) {
+      const v = _repVarianteDe(modelo, color, grad);
+      if (!v) throw new Error('No tengo el código de esa graduación. Vuelve a añadir el modelo con el buscador.');
+      await vAnotar({
+        sheet_id: _repSheetId(),
+        texto_libre: '👓 REPOSICIÓN · ' + n + ' uds · ' + (v.codigo ? v.codigo + ' ' : '') + (v.nombre || modelo),
+        tipo: 'pedido',
+        product_id: v.product_id,
+        cantidad: n,
+        rep_celda: clave
+      });
+    } else if (anot && n > 0) {
+      const texto = String(anot.texto_libre || '').replace(/\d+\s*uds/, n + ' uds');
+      await vEditarAnotacion(anot.id, { texto_libre: texto, tipo: 'pedido', cantidad: n });
+    } else if (anot && n === 0) {
+      await vBorrarAnotacion(anot.id);
+    }
+    await cargarAnotacionesDeVisita();
+    inp.classList.remove('rep-celda-guardando');
+  } catch (e) {
+    inp.classList.remove('rep-celda-guardando');
+    inp.classList.add('rep-celda-error');
+    alert('No se pudo guardar esa casilla: ' + e.message);
+  }
+}
+
+// Filas que vienen de líneas ya guardadas (tras recargar la app) no traen los códigos
+// de cada graduación: se piden al servidor para poder seguir rellenando esa fila.
+async function repCompletarFilasSueltas() {
+  const pendientes = repFilasVisibles().filter(f => !f.variantes && f.modelo);
+  if (!pendientes.length || !navigator.onLine) return;
+  const modelos = Array.from(new Set(pendientes.map(f => f.modelo)));
+  for (const modelo of modelos) {
+    try {
+      const r = await api('/api/reposicion/familias?q=' + encodeURIComponent(modelo));
+      const fam = (r.familias || []).find(x => x.modelo === modelo) || (r.familias || [])[0];
+      if (!fam) continue;
+      pendientes.filter(f => f.modelo === modelo).forEach(f => {
+        if (_repFilaDe(f.modelo, f.color)) return;
+        _repFilas.push({
+          modelo: f.modelo, color: f.color,
+          variantes: (fam.variantes || []).filter(v => (v.color || '') === (f.color || ''))
+        });
+      });
+    } catch (_) { /* sin cobertura se sigue pudiendo tocar lo ya anotado */ }
+  }
+  if (document.getElementById('rep-modal')) repPintarRejilla();
 }
 
 function carritoIrALamina(sheetId) {
