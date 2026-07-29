@@ -2823,9 +2823,12 @@ body.solo-visor .solovisor-solo { display: inline-flex; }
 /* BUSCAR LÁMINA: en el visor normal la barra de búsqueda está siempre a la vista, así que el
    botón sobra. En solo-visor y en modo sencillo la cabecera va despejada y el buscador se
    pliega: ahí SÍ hace falta el 🔍 para poder buscar por nombre, número o categoría. */
+/* OJO con la especificidad: más abajo hay `body.modo-simple .visor-modo-btn {display:none}`
+   con la MISMA fuerza y, al ir después, ganaba y el 🔍 seguía oculto. Por eso aquí se
+   encadena `.visor-modo-btn.btn-buscar-lamina` (más específico): gana esté donde esté. */
 .btn-buscar-lamina { display: none; }
-body.solo-visor .btn-buscar-lamina,
-body.modo-simple .btn-buscar-lamina { display: inline-flex !important; }
+body.solo-visor .visor-modo-btn.btn-buscar-lamina,
+body.modo-simple .visor-modo-btn.btn-buscar-lamina { display: inline-flex !important; }
 
 body.solo-visor .visor-presentacion {
   padding: 2px;
