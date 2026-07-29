@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v244 · 29 jul 2026';
+const APP_VERSION = 'v245 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -4726,10 +4726,11 @@ async function pulsarZonaComercial(zona) {
       </div>
 
       <div id="zona-modal-msg"></div>
+      <div id="fam-anadidas" class="fam-anadidas" style="display:none"></div>
       ${!anotExistente ? `<button type="button" class="btn-devolver-lanzar" onclick="this.closest('.modal-bg').remove(); abrirCuadroDevolucion(window._devPrefillActual)">↩️ ¿El cliente devuelve este producto?</button>` : ''}
       <div class="modal-acciones">
         ${anotExistente ? `<button type="button" class="btn" style="background:#dc2626;color:#fff" onclick="borrarAnotacionZona(${anotExistente.id}, ${sheetId})">🗑️ Quitar</button>` : ''}
-        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button type="button" class="btn btn-secondary" id="zona-cerrar" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
         <button type="button" class="btn btn-primary" id="zona-guardar">${anotExistente ? 'Actualizar' : 'Anotar'}</button>
       </div>
     </div>
@@ -4933,6 +4934,28 @@ async function pulsarZonaComercial(zona) {
             pos_x: (zona.x + zona.ancho / 2) / 100,  // centro de la zona como pin
             pos_y: (zona.y + zona.alto / 2) / 100
           });
+      }
+      // FAMILIA (gafas: color × graduación): NO cerrar. El cliente suele pedir varias
+      // graduaciones/colores del mismo modelo y cerrar en cada línea obligaba a volver a
+      // entrar una y otra vez. Se apunta la línea en una lista dentro del propio cuadro y
+      // los selectores quedan listos para la siguiente. Cierra el comercial con "Terminar".
+      if (!anotExistente && esFamilia && ejesFamilia.length > 0) {
+        const $lista = document.getElementById('fam-anadidas');
+        if ($lista) {
+          $lista.style.display = 'block';
+          const fila = document.createElement('div');
+          fila.className = 'fam-anadida';
+          fila.textContent = '✓ ' + texto;
+          $lista.appendChild(fila);
+          $lista.scrollTop = $lista.scrollHeight;
+        }
+        const $cerrar = document.getElementById('zona-cerrar');
+        if ($cerrar) { $cerrar.textContent = '✓ Terminar'; $cerrar.classList.add('btn-terminar-fam'); }
+        const $cant = document.getElementById('zona-cantidad');
+        if ($cant) { $cant.value = 1; }
+        refrescarAnotacionesVisor(sheetId);
+        mostrarNotificacionOnline('✅ ' + texto, '#16a34a');
+        return;
       }
       modal.remove();
       refrescarAnotacionesVisor(sheetId);
