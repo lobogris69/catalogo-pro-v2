@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v248 · 29 jul 2026';
+const APP_VERSION = 'v249 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -4919,6 +4919,7 @@ async function pulsarZonaComercial(zona) {
     if (notaExtra) texto += ' · ' + notaExtra;
     const bonifFinal = bonifSel || null;
     const dtoFinal = (dtoSel != null) ? dtoSel : null;
+    let _nuevaAnot = null;   // la línea recién creada: hace falta su id para poder ajustarla
     try {
       if (anotExistente) {
         // D2: editar la existente (con la bonif/dto elegidos, aunque se hayan quitado)
@@ -4928,7 +4929,7 @@ async function pulsarZonaComercial(zona) {
         });
       } else {
         // crear nueva, vinculada a zona + producto
-        await vAnotar({
+        _nuevaAnot = await vAnotar({
             sheet_id: sheetId,
             texto_libre: texto,
             tipo: 'pedido',
@@ -4950,9 +4951,34 @@ async function pulsarZonaComercial(zona) {
         const $lista = document.getElementById('fam-anadidas');
         if ($lista) {
           $lista.style.display = 'block';
+          // El cliente cambia de idea sobre la marcha ("de la +1.5 ponme 4 en vez de 6"), así
+          // que cada línea lleva − / + para ajustar unidades y 🗑️ para quitarla, sin salir.
+          const anotId = (_nuevaAnot && (_nuevaAnot.id || (_nuevaAnot.annotation && _nuevaAnot.annotation.id))) || null;
+          let cant = cantidad;
           const fila = document.createElement('div');
           fila.className = 'fam-anadida';
-          fila.textContent = '✓ ' + texto;
+          const txt = document.createElement('span');
+          txt.className = 'fam-anadida-txt';
+          const textoCon = (n) => texto.replace(/^\d+\s*uds/, n + ' uds');
+          const pintar = () => { txt.textContent = '✓ ' + textoCon(cant); };
+          pintar();
+          const mkBtn = (t, cls) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'fam-anadida-btn ' + cls; b.textContent = t; return b; };
+          const bMenos = mkBtn('−', 'fam-btn-menos'), bMas = mkBtn('+', 'fam-btn-mas'), bQuitar = mkBtn('🗑️', 'fam-btn-quitar');
+          const guardarCant = async () => {
+            if (!anotId) return;
+            try {
+              await vEditarAnotacion(anotId, { texto_libre: textoCon(cant), tipo: 'pedido', cantidad: cant, bonificacion: bonifFinal, descuento: dtoFinal });
+              refrescarAnotacionesVisor(sheetId);
+            } catch (e) { alert('No se pudo cambiar las unidades: ' + e.message); }
+          };
+          bMenos.onclick = async () => { if (cant <= 1) return; cant--; pintar(); await guardarCant(); };
+          bMas.onclick = async () => { cant++; pintar(); await guardarCant(); };
+          bQuitar.onclick = async () => {
+            if (!anotId) { fila.remove(); return; }
+            try { await vBorrarAnotacion(anotId); fila.remove(); refrescarAnotacionesVisor(sheetId); }
+            catch (e) { alert('No se pudo quitar: ' + e.message); }
+          };
+          fila.appendChild(txt); fila.appendChild(bMenos); fila.appendChild(bMas); fila.appendChild(bQuitar);
           $lista.appendChild(fila);
           $lista.scrollTop = $lista.scrollHeight;
         }
