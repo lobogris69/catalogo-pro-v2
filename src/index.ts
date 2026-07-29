@@ -1619,7 +1619,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v253-sync-devoluciones-29jul',
+      build: 'v254-reposicion-pdf-email-29jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -10879,6 +10879,45 @@ function _sinEmojis(s: any): string {
     .trim();
 }
 
+// ============================================================================
+// REPOSICION DE EXPOSITOR: reconstruye la REJILLA que vio el cliente a partir de las
+// lineas del pedido (las que llevan rep_celda = "MODELO|COLOR|+1.50"). Sale como bloque
+// propio en el resumen, el PDF y el email — 30 lineas sueltas de gafas no las lee nadie;
+// el cuadro se entiende de un vistazo y ademas deja ver si el modelo cuadra el 1+1.
+// ============================================================================
+function _fmtGradPdf(g: string): string {
+  const n = parseFloat(String(g).replace('+', '').replace(',', '.'));
+  return isNaN(n) ? String(g) : '+' + n.toFixed(2).replace('.', ',');
+}
+function _rejillaReposicion(annotations: any[]): any | null {
+  const lineas = (annotations || []).filter((a: any) => a.rep_celda && (Number(a.cantidad) || 0) > 0);
+  if (!lineas.length) return null;
+  const cols = new Set<string>();
+  const porModelo = new Map<string, Map<string, any>>();
+  for (const a of lineas) {
+    const partes = String(a.rep_celda).split('|');
+    const modelo = partes[0], color = partes[1] || '', grad = partes[2] || '';
+    if (!modelo || !grad) continue;
+    cols.add(grad);
+    if (!porModelo.has(modelo)) porModelo.set(modelo, new Map());
+    const filas = porModelo.get(modelo)!;
+    if (!filas.has(color)) filas.set(color, { color, celdas: {} as any, codigos: [] as any[], total: 0 });
+    const f = filas.get(color);
+    const n = Number(a.cantidad) || 0;
+    f.celdas[grad] = (f.celdas[grad] || 0) + n;
+    f.total += n;
+    f.codigos.push({ codigo: a.producto_codigo || '', grad, n });
+  }
+  const columnas = Array.from(cols).sort((x, y) => gradNum(x) - gradNum(y));
+  const modelos = Array.from(porModelo.entries()).map(([modelo, filasMap]) => {
+    const filas = Array.from(filasMap.values()).sort((a: any, b: any) => String(a.color).localeCompare(String(b.color)));
+    const total = filas.reduce((s: number, f: any) => s + f.total, 0);
+    // El par va por MODELO (sumando colores): la bonificacion de gafas suele ser 1+1.
+    return { modelo, filas, total, impar: total % 2 !== 0 };
+  }).sort((a, b) => a.modelo.localeCompare(b.modelo));
+  return { columnas, modelos, total: modelos.reduce((s, m) => s + m.total, 0) };
+}
+
 function generarPdfVisitaBuffer(visit: any, annotations: any[], verImportes = false): Promise<Buffer> {
   annotations = (annotations || []).map((a: any) => ({ ...a, texto_libre: _sinEmojis(a.texto_libre) }));
   return new Promise((resolve, reject) => {
@@ -10932,7 +10971,11 @@ function generarPdfVisitaBuffer(visit: any, annotations: any[], verImportes = fa
 
       // ---------- ANOTACIONES ----------
       const grupos: any = { pedido: [], devolucion: [], nota: [] };
+      // Las gafas de reposicion salen en su propio cuadro, no mezcladas con el resto
+      // del pedido (si no, son 30 lineas seguidas que nadie lee).
+      const rejilla = _rejillaReposicion(annotations);
       annotations.forEach((a: any) => {
+        if (a.rep_celda && (Number(a.cantidad) || 0) > 0) return;
         if (grupos[a.tipo]) grupos[a.tipo].push(a);
         else grupos.nota.push(a);
       });
@@ -11028,7 +11071,69 @@ function generarPdfVisitaBuffer(visit: any, annotations: any[], verImportes = fa
         doc.moveDown(0.4);
       };
 
+      // ---------- REJILLA DE REPOSICION DE GAFAS ----------
+      const pintarRejilla = (rej: any) => {
+        if (!rej) return;
+        const x0 = 40, anchoTotal = 515;
+        const anchoUds = 40;
+        const anchoModelo = 148;
+        const nCols = Math.max(1, rej.columnas.length);
+        const anchoCol = Math.floor((anchoTotal - anchoModelo - anchoUds) / nCols);
+        if (doc.y > 640) doc.addPage();
+        doc.font('Helvetica-Bold').fontSize(11).fillColor('#9a1259')
+           .text('REPOSICION DE EXPOSITOR DE GAFAS (' + rej.total + ' uds)', x0, doc.y);
+        doc.moveDown(0.3);
+        // Cabecera de la rejilla
+        let y = doc.y;
+        doc.font('Helvetica-Bold').fontSize(8).fillColor('#666');
+        doc.text('MODELO / COLOR', x0, y, { width: anchoModelo });
+        rej.columnas.forEach((g: string, i: number) => {
+          doc.text(_fmtGradPdf(g), x0 + anchoModelo + i * anchoCol, y, { width: anchoCol, align: 'center' });
+        });
+        doc.text('UDS', x0 + anchoModelo + nCols * anchoCol, y, { width: anchoUds, align: 'right' });
+        doc.moveDown(0.25);
+        doc.strokeColor('#d80a6b').lineWidth(0.8).moveTo(x0, doc.y).lineTo(555, doc.y).stroke();
+        doc.moveDown(0.25);
+        rej.modelos.forEach((m: any) => {
+          m.filas.forEach((f: any) => {
+            if (doc.y > 760) doc.addPage();
+            const yR = doc.y;
+            doc.font('Helvetica').fontSize(8).fillColor('#000')
+               .text(m.modelo + (f.color ? ' · ' + f.color : ''), x0, yR, { width: anchoModelo });
+            rej.columnas.forEach((g: string, i: number) => {
+              const n = f.celdas[g];
+              doc.font(n ? 'Helvetica-Bold' : 'Helvetica').fillColor(n ? '#000' : '#ccc')
+                 .text(n ? String(n) : '·', x0 + anchoModelo + i * anchoCol, yR, { width: anchoCol, align: 'center' });
+            });
+            doc.font('Helvetica-Bold').fillColor('#000')
+               .text(String(f.total), x0 + anchoModelo + nCols * anchoCol, yR, { width: anchoUds, align: 'right' });
+            doc.moveDown(0.45);
+          });
+          // Total del modelo + aviso de impar (la bonificacion de gafas suele ser 1+1)
+          if (doc.y > 765) doc.addPage();
+          doc.font('Helvetica-Bold').fontSize(8).fillColor(m.impar ? '#dc2626' : '#166534')
+             .text(m.modelo + ' - total ' + m.total + ' uds' + (m.impar ? '   (IMPAR: no cuadra el 1+1)' : ''),
+                   x0, doc.y, { width: anchoTotal });
+          doc.moveDown(0.5);
+        });
+        doc.strokeColor('#ddd').lineWidth(0.5).moveTo(x0, doc.y).lineTo(555, doc.y).stroke();
+        doc.moveDown(0.3);
+        // Codigos para la oficina: la rejilla se lee, pero para servir hace falta el codigo.
+        const codigos: string[] = [];
+        rej.modelos.forEach((m: any) => m.filas.forEach((f: any) => f.codigos
+          .sort((a: any, b: any) => gradNum(a.grad) - gradNum(b.grad))
+          .forEach((c: any) => { if (c.codigo) codigos.push(c.codigo + ' x' + c.n); })));
+        if (codigos.length) {
+          if (doc.y > 740) doc.addPage();
+          doc.font('Helvetica').fontSize(7).fillColor('#555')
+             .text('Codigos: ' + codigos.join('  ·  '), x0, doc.y, { width: anchoTotal });
+          doc.fillColor('#000');
+          doc.moveDown(0.6);
+        }
+      };
+
       pintarGrupo('PEDIDOS (' + grupos.pedido.length + ')', grupos.pedido, '#166534');
+      pintarRejilla(rejilla);
       pintarGrupo('DEVOLUCIONES (' + grupos.devolucion.length + ')', grupos.devolucion, '#92400e');
       pintarGrupo('NOTAS (' + grupos.nota.length + ')', grupos.nota, '#374151');
 
@@ -11321,7 +11426,10 @@ function plantillaEmailOficina(visit: any, annotations: any[], cfg: Record<strin
   // hacerlo son las BONIFICACIONES y DESCUENTOS, no el PVF.
   const verImportes = false;
   const fecha = visit.confirmed_at ? new Date(visit.confirmed_at).toLocaleString('es-ES') : new Date(visit.created_at).toLocaleString('es-ES');
-  const peds = annotations.filter((a: any) => a.tipo === 'pedido');
+  // Las gafas de reposicion van en su propio cuadro, no sueltas entre los pedidos.
+  const rejilla = _rejillaReposicion(annotations);
+  const esRepo = (a: any) => a.rep_celda && (Number(a.cantidad) || 0) > 0;
+  const peds = annotations.filter((a: any) => a.tipo === 'pedido' && !esRepo(a));
   const devs = annotations.filter((a: any) => a.tipo === 'devolucion');
   const nots = annotations.filter((a: any) => a.tipo === 'nota');
   const grupo = (titulo: string, items: any[], color: string) => {
@@ -11402,6 +11510,7 @@ function plantillaEmailOficina(visit: any, annotations: any[], cfg: Record<strin
         <tr><td style="padding:4px 12px 4px 0;color:#666"><b>Resultado:</b></td><td>${visit.hubo_pedido ? '<b style="color:#166534">🛒 Con pedido</b>' : '<span style="color:#6b7280">Sin pedido</span>'}</td></tr>
       </table>
       ${grupo('PEDIDOS', peds, '#166534')}
+      ${_htmlRejillaReposicion(rejilla, true)}
       ${grupo('DEVOLUCIONES', devs, '#92400e')}
       ${grupo('NOTAS', nots, '#374151')}
       ${visit.notas_generales ? `
@@ -11416,7 +11525,10 @@ function plantillaEmailOficina(visit: any, annotations: any[], cfg: Record<strin
 
 function plantillaEmailCliente(visit: any, annotations: any[], cfg: Record<string,string>): string {
   const fecha = visit.confirmed_at ? new Date(visit.confirmed_at).toLocaleDateString('es-ES') : new Date(visit.created_at).toLocaleDateString('es-ES');
-  const peds = annotations.filter((a: any) => a.tipo === 'pedido');
+  // Al cliente, la reposicion en cuadro (lo que fue viendo del expositor) y sin codigos.
+  const rejilla = _rejillaReposicion(annotations);
+  const esRepo = (a: any) => a.rep_celda && (Number(a.cantidad) || 0) > 0;
+  const peds = annotations.filter((a: any) => a.tipo === 'pedido' && !esRepo(a));
   const devs = annotations.filter((a: any) => a.tipo === 'devolucion');
   return `
     <div style="font-family:Arial,sans-serif;color:#222;max-width:680px">
@@ -11429,13 +11541,14 @@ function plantillaEmailCliente(visit: any, annotations: any[], cfg: Record<strin
           ${peds.map((a: any) => `<li><b>${a.sheet_titulo ? escapeHtml(a.sheet_titulo) : 'Lám.' + (a.sheet_orden || '—')}</b>: ${escapeHtml(a.texto_libre)}</li>`).join('')}
         </ul>
       ` : ''}
+      ${_htmlRejillaReposicion(rejilla, false)}
       ${devs.length > 0 ? `
         <h3 style="color:#92400e;margin-top:18px;margin-bottom:6px;font-size:15px">Devoluciones (${devs.length})</h3>
         <ul style="font-size:14px;line-height:1.7">
           ${devs.map((a: any) => `<li><b>${a.sheet_titulo ? escapeHtml(a.sheet_titulo) : 'Lám.' + (a.sheet_orden || '—')}</b>: ${escapeHtml(a.texto_libre)}</li>`).join('')}
         </ul>
       ` : ''}
-      ${peds.length === 0 && devs.length === 0 ? `
+      ${peds.length === 0 && devs.length === 0 && !rejilla ? `
         <p style="font-size:14px;background:#f3f4f6;padding:10px;border-radius:6px;color:#374151">En esta visita no se registró pedido. Si detecta alguna discrepancia, contacte con nosotros.</p>
       ` : ''}
       <p style="margin-top:24px;font-size:14px">Nuestro equipo procesará el pedido a la mayor brevedad. Si necesita modificar algo, no dude en contactar con su comercial.</p>
@@ -11462,6 +11575,49 @@ function plantillaEmailComercial(visit: any, annotations: any[], cfg: Record<str
       ${cfg.firma_html || ''}
     </div>
   `;
+}
+
+// La rejilla de reposicion en HTML, para los emails. `conCodigos` solo para la oficina
+// (el cliente no necesita ver codigos de Sage) y el aviso de impar tambien es interno:
+// al cliente se le manda el cuadro limpio de lo que ha pedido.
+function _htmlRejillaReposicion(rej: any, conCodigos: boolean): string {
+  if (!rej) return '';
+  const th = 'padding:5px 6px;border-bottom:2px solid #d80a6b;font-size:12px;color:#9a1259';
+  const td = 'padding:5px 6px;border-bottom:1px solid #eee;font-size:13px;text-align:center';
+  let html = `<h3 style="color:#9a1259;margin-top:18px;margin-bottom:6px;font-size:15px">👓 Reposición de expositor (${rej.total} uds)</h3>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+      <thead><tr style="background:#fff1f7;text-align:center">
+        <th style="${th};text-align:left">Modelo / color</th>
+        ${rej.columnas.map((g: string) => `<th style="${th}">${_fmtGradPdf(g)}</th>`).join('')}
+        <th style="${th};text-align:right">Uds</th>
+      </tr></thead><tbody>`;
+  rej.modelos.forEach((m: any) => {
+    m.filas.forEach((f: any) => {
+      html += `<tr>
+        <td style="${td};text-align:left">${escapeHtml(m.modelo)}${f.color ? ' · <span style="color:#6b7280">' + escapeHtml(f.color) + '</span>' : ''}</td>
+        ${rej.columnas.map((g: string) => `<td style="${td}">${f.celdas[g] ? '<b>' + f.celdas[g] + '</b>' : '<span style="color:#d1d5db">·</span>'}</td>`).join('')}
+        <td style="${td};text-align:right"><b>${f.total}</b></td>
+      </tr>`;
+    });
+    html += `<tr style="background:${m.impar && conCodigos ? '#fef2f2' : '#f9fafb'}">
+      <td colspan="${rej.columnas.length + 2}" style="padding:4px 6px;font-size:12px;border-bottom:1px solid #eee">
+        <b>${escapeHtml(m.modelo)} — total ${m.total} uds</b>
+        ${m.impar && conCodigos ? '<span style="color:#dc2626;font-weight:bold"> · IMPAR: no cuadra el 1+1</span>' : ''}
+      </td></tr>`;
+  });
+  html += '</tbody></table>';
+  if (conCodigos) {
+    const codigos: string[] = [];
+    rej.modelos.forEach((m: any) => m.filas.forEach((f: any) => f.codigos
+      .slice()
+      .sort((a: any, b: any) => gradNum(a.grad) - gradNum(b.grad))
+      .forEach((c: any) => { if (c.codigo) codigos.push(escapeHtml(c.codigo) + ' ×' + c.n); })));
+    if (codigos.length) {
+      html += `<p style="font-size:12px;color:#555;margin:0 0 10px">
+        <b>Códigos:</b> ${codigos.join(' · ')}</p>`;
+    }
+  }
+  return html;
 }
 
 // Helper escapado HTML basico

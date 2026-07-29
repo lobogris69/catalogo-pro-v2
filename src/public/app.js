@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v253 · 29 jul 2026';
+const APP_VERSION = 'v254 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -12895,7 +12895,11 @@ function renderResumenPreEnvio() {
   const devoluciones = anotaciones.filter(a => a.tipo === 'devolucion');
   const comision = anotaciones.filter(a => a.es_comision && a.tipo !== 'devolucion');
   const sueltas = anotaciones.filter(a => a.referencia && !a.es_comision && !a.product_id && a.tipo !== 'devolucion');
-  const conProducto = anotaciones.filter(a => a.product_id && !a.es_comision && a.tipo !== 'devolucion');
+  // Las gafas de la rejilla de reposición van en su propio cuadro, no como 30 líneas
+  // sueltas entre el resto del pedido (mismo criterio que el PDF y el email).
+  const esRepo = (a) => a.rep_celda && (Number(a.cantidad) || 0) > 0;
+  const reposicion = anotaciones.filter(a => esRepo(a) && a.tipo !== 'devolucion');
+  const conProducto = anotaciones.filter(a => a.product_id && !a.es_comision && !esRepo(a) && a.tipo !== 'devolucion');
   const sinProducto = anotaciones.filter(a => !a.product_id && !a.es_comision && !a.referencia && a.tipo !== 'devolucion');
   let totalPVF = 0;
   conProducto.forEach(a => {
@@ -13021,6 +13025,8 @@ function renderResumenPreEnvio() {
           `).join('')}
         </ul>
       ` : ''}
+
+      ${reposicion.length > 0 ? resumenRejillaHtml(reposicion) : ''}
 
       ${devoluciones.length > 0 ? `
         <div style="margin-top:22px;padding-top:14px;border-top:2px dashed #dc2626">
@@ -14299,6 +14305,59 @@ function repColumnas() {
   });
   return REP_GRADS.concat(Array.from(extra).sort((a, b) =>
     (parseFloat(a.replace('+', '')) || 0) - (parseFloat(b.replace('+', '')) || 0)));
+}
+
+// La rejilla, ya cerrada, para el repaso antes de enviar el pedido. Se reconstruye desde
+// las propias líneas (rep_celda), igual que hacen el PDF y el email en el servidor: así
+// el comercial repasa el MISMO cuadro que le enseñó al cliente, no 30 líneas seguidas.
+function resumenRejillaHtml(lineas) {
+  const cols = new Set();
+  const porModelo = new Map();
+  lineas.forEach(a => {
+    const p = String(a.rep_celda).split('|');
+    const modelo = p[0], color = p[1] || '', grad = p[2] || '';
+    if (!modelo || !grad) return;
+    cols.add(grad);
+    if (!porModelo.has(modelo)) porModelo.set(modelo, new Map());
+    const filas = porModelo.get(modelo);
+    if (!filas.has(color)) filas.set(color, { color, celdas: {}, total: 0 });
+    const f = filas.get(color);
+    const n = Number(a.cantidad) || 0;
+    f.celdas[grad] = (f.celdas[grad] || 0) + n;
+    f.total += n;
+  });
+  const gradN = (g) => parseFloat(String(g).replace('+', '')) || 0;
+  const columnas = Array.from(cols).sort((a, b) => gradN(a) - gradN(b));
+  let total = 0, impares = 0, cuerpo = '';
+  Array.from(porModelo.keys()).sort().forEach(modelo => {
+    const filas = Array.from(porModelo.get(modelo).values()).sort((a, b) => a.color.localeCompare(b.color));
+    const tm = filas.reduce((s, f) => s + f.total, 0);
+    total += tm;
+    const impar = tm % 2 !== 0;
+    if (impar) impares++;
+    filas.forEach(f => {
+      cuerpo += `<tr>
+        <th class="rep-fila-cab"><span class="rep-fila-modelo">${escape(modelo)}</span>${f.color ? `<span class="rep-fila-color">${escape(f.color)}</span>` : ''}</th>
+        ${columnas.map(g => `<td>${f.celdas[g] ? `<b>${f.celdas[g]}</b>` : '<span class="rep-celda-no">·</span>'}</td>`).join('')}
+        <td class="rep-fila-total">${f.total}</td>
+      </tr>`;
+    });
+    cuerpo += `<tr class="rep-subtotal ${impar ? 'rep-subtotal-impar' : ''}">
+      <th class="rep-fila-cab">${escape(modelo)} — total</th>
+      <td class="rep-subtotal-celda" colspan="99"><b>${tm} uds</b>${impar ? ' <span class="rep-aviso-impar">⚠️ impar: no cuadra el 1+1</span>' : ' ✔'}</td>
+    </tr>`;
+  });
+  return `
+    <div style="margin-top:22px;padding-top:14px;border-top:2px dashed #d80a6b">
+      <h4 style="margin:0 0 8px;color:#9a1259">👓 Reposición de expositor (${total} uds)</h4>
+      ${impares > 0 ? `<div class="error-msg" style="margin-bottom:8px">Hay ${impares} modelo${impares === 1 ? '' : 's'} con un total impar: con la bonificación 1+1 no cuadra. Puedes cerrar este repaso y ajustarlo en la rejilla.</div>` : ''}
+      <div class="rep-tabla-caja" style="max-height:320px">
+        <table class="rep-tabla">
+          <thead><tr><th class="rep-fila-cab">Modelo</th>${columnas.map(g => `<th>${repFmtGrad(g)}</th>`).join('')}<th class="rep-fila-total">Uds</th></tr></thead>
+          <tbody>${cuerpo}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 function abrirRejillaReposicion() {
