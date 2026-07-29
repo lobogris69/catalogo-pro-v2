@@ -1612,7 +1612,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v243-familia-variante-sin-stopwords-29jul',
+      build: 'v244-eje-variante-etiqueta-29jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -4668,7 +4668,11 @@ async function resolverFamilia(ref: string | null): Promise<any | null> {
   for (const def of EJES_DEF) {
     let valores = Array.from(new Set(items.map((it: any) => it.ejes[def.key]).filter(Boolean)));
     if (def.key === 'graduacion') valores = valores.sort((a, b) => gradNum(a) - gradNum(b));
-    if (valores.length > 1) ejes.push({ key: def.key, label: def.label, valores });
+    // Si lo que distingue no es un color de verdad (HOMBRE/MUJER, DEMI…), no lo llamamos
+    // "Color": el comercial vería "Color: HOMBRE, MUJER" y no tendría ningún sentido.
+    let label = def.label;
+    if (def.key === 'color' && !valores.some((v: any) => COLORES_CONOCIDOS.has(String(v).toUpperCase()))) label = 'Variante';
+    if (valores.length > 1) ejes.push({ key: def.key, label, valores });
   }
 
   return {
@@ -4745,7 +4749,11 @@ async function resolverFamiliaPorIds(ids: number[]): Promise<any | null> {
   for (const def of EJES_DEF) {
     let valores = Array.from(new Set(variantes.map((v: any) => v.ejes[def.key]).filter(Boolean)));
     if (def.key === 'graduacion') valores = valores.sort((a, b) => gradNum(a) - gradNum(b));
-    if (valores.length > 1) ejes.push({ key: def.key, label: def.label, valores });
+    // Si lo que distingue no es un color de verdad (HOMBRE/MUJER, DEMI…), no lo llamamos
+    // "Color": el comercial vería "Color: HOMBRE, MUJER" y no tendría ningún sentido.
+    let label = def.label;
+    if (def.key === 'color' && !valores.some((v: any) => COLORES_CONOCIDOS.has(String(v).toUpperCase()))) label = 'Variante';
+    if (valores.length > 1) ejes.push({ key: def.key, label, valores });
   }
   // Modelo = base comun mas frecuente (solo etiqueta informativa)
   const bases = ordenados.map((p: any) => extraerEjesProducto(p.nombre).base);
