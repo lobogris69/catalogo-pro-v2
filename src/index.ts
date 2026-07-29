@@ -1619,7 +1619,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v254-reposicion-pdf-email-29jul',
+      build: 'v255-modelo-color-gafas-29jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -13336,13 +13336,35 @@ async function buscarFamiliasReposicion(q: string, limite = 10): Promise<any[]> 
 
 // Agrupa filas de products en familias listas para la rejilla. Lo usan la busqueda
 // (online) y la descarga completa que se guarda en la tablet para trabajar sin cobertura.
+// Para una gafa graduada: el MODELO son las palabras ANTES del primer color, y el COLOR
+// es TODO lo que va detras. Asi "NEW INOVA GRIS-VERDE" y "NEW INOVA CELESTE-AZUL MATE" son
+// el MISMO modelo (NEW INOVA) con dos colores, no dos modelos distintos. Esto importa para
+// el aviso del 1+1: el par se cuenta por modelo sumando sus colores (3 verde + 5 gris = 8,
+// par), no color a color. Devuelve null si no hay un color reconocible antes del cual
+// cortar (entonces se sigue por el camino de siempre: base + deduccion por diferencia).
+function _modeloColorGafa(nombre: string): { modelo: string; color: string } | null {
+  const limpio = (nombre || '').toUpperCase()
+    .replace(/\+\s?\d(?:[.,]\d)?/g, ' ')     // graduacion +X.X
+    .replace(/\([^)]*\)/g, ' ')              // cantidades/CN entre parentesis
+    .replace(/[^A-ZÑ\s]/g, ' ');             // guiones, digitos, asteriscos -> espacio
+  const tokens = limpio.split(/\s+/).filter(t => t.length >= 2 && !STOPWORDS_FAMILIA.has(t.toLowerCase()));
+  const idx = tokens.findIndex(t => COLORES_CONOCIDOS.has(t));
+  if (idx <= 0) return null;                 // sin color, o el color es la 1a palabra (modelo vacio)
+  return { modelo: tokens.slice(0, idx).join(' '), color: tokens.slice(idx).join(' ') };
+}
+
 function _agruparFamiliasReposicion(filas: any[]): any[] {
   const grupos = new Map<string, any[]>();
   for (const p of filas) {
     const { ejes, base } = extraerEjesProducto(p.nombre);
-    if (!base) continue;
-    if (!grupos.has(base)) grupos.set(base, []);
-    grupos.get(base)!.push({ p, ejes });
+    // El modelo/color por "primer color" manda cuando existe: agrupa bien los colores de
+    // dos palabras. Si no hay color reconocible, se cae a la base de siempre.
+    const mc = _modeloColorGafa(p.nombre);
+    const clave = (mc && mc.modelo) ? mc.modelo : base;
+    if (!clave) continue;
+    if (mc && mc.color) ejes.color = mc.color;
+    if (!grupos.has(clave)) grupos.set(clave, []);
+    grupos.get(clave)!.push({ p, ejes });
   }
   // FUSIONAR "ESMIRNA PEACH" dentro de "ESMIRNA". Cuando una base es otra base mas
   // palabras, casi siempre es el MISMO modelo con un color que Sage escribe en el nombre
