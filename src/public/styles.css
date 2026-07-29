@@ -5998,3 +5998,12 @@ body.modo-simple .visor-anotaciones-header { display: none !important; }
 body.modo-simple .visor-modo-btn.visor-modo-vista { display: inline-flex !important; }
 /* El 🛟 de incidencias no debe quedar tapado por la barra negra del pedido (misma altura). */
 body.modo-simple .btn-incidencia { bottom: 96px; z-index: 9001; }
+
+/* PARTE DE ARRIBA DESPEJADA en modo sencillo: antes se apilaban 50px muertos + cabecera
+   con buscador + categorías + toggle (~245px) y en la tablet los botones rosas de navegación
+   quedaban cortados por el borde. Recuperamos los 50px y quitamos buscador/categorías del
+   visor (el modo sencillo va guiado y despejado); arriba queda solo volver + título + 📺/▦. */
+body.modo-simple { padding-top: 0 !important; }
+body.modo-simple .visor-cabecera { padding: 6px 10px; gap: 4px; }
+body.modo-simple .visor-buscador-fila,
+body.modo-simple .visor-chips-cats { display: none !important; }
