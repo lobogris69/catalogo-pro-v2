@@ -1612,7 +1612,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v241-configuracion-secciones-plegables-29jul',
+      build: 'v242-familia-variante-auto-29jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -4682,6 +4682,40 @@ async function resolverFamilia(ref: string | null): Promise<any | null> {
 
 // Igual que resolverFamilia pero a partir de una LISTA CONCRETA de product_ids que el
 // admin ha curado a mano. Reusa la extraccion de ejes; no busca por nombre (cero adivinar).
+// Deduce la VARIANTE (normalmente el color) por DIFERENCIA entre los nombres de la familia.
+// COLORES_CONOCIDOS es una lista cerrada: si entra un color nuevo de Sage ("PEACH", "TEJA"...)
+// no se reconocía, la mitad de la familia se quedaba sin color y el selector desaparecía
+// (caso real: GAFA ESMIRNA CAREY / PEACH → solo salía Graduación y no se podía elegir color).
+// Aquí: los tokens que están en TODOS los productos son el modelo; lo que queda distingue.
+// Esa palabra ES la variante, se llame como se llame. Solo se aplica si el residuo parece
+// un color/variante (1-2 palabras, solo letras): así no inventamos ejes con números de modelo.
+function _deducirVariantePorDiferencia(variantes: any[]): void {
+  if (!Array.isArray(variantes) || variantes.length < 2) return;
+  const tokensDe = (nombre: string): string[] => {
+    const s = (nombre || '').toUpperCase()
+      .replace(/\+\s?\d(?:[.,]\d)?/g, ' ')            // graduación
+      .replace(/\bT[\/\-]\s?[A-ZÑ0-9]+/g, ' ')        // talla T/XX
+      .replace(/\bTALLA\s+[A-Z0-9]+/g, ' ')
+      .replace(/\(\d{2,3}\s*-\s*\d{2,3}\)/g, ' ')
+      .replace(/\([^)]*\)/g, ' ')
+      .replace(/[^A-ZÑ0-9\s]/g, ' ');
+    return s.split(/\s+/).filter(t => t.length >= 2 && !STOPWORDS_FAMILIA.has(t.toLowerCase()));
+  };
+  const listas = variantes.map(v => tokensDe(v.nombre));
+  if (listas.some(l => l.length === 0)) return;
+  const comunes = new Set(listas[0].filter(t => listas.every(l => l.includes(t))));
+  const restos = listas.map(l => Array.from(new Set(l.filter(t => !comunes.has(t)))).join(' ').trim());
+  const pareceVariante = (s: string) => {
+    const t = s.split(' ').filter(Boolean);
+    return t.length >= 1 && t.length <= 2 && t.every(x => /^[A-ZÑ]+$/.test(x));
+  };
+  if (!restos.every(r => !r || pareceVariante(r))) return;   // residuo raro → no inventamos nada
+  if (new Set(restos.filter(Boolean)).size < 2) return;      // no hay nada que elegir
+  variantes.forEach((v, i) => {
+    if (!v.ejes.color && restos[i]) v.ejes.color = restos[i];
+  });
+}
+
 async function resolverFamiliaPorIds(ids: number[]): Promise<any | null> {
   const limpios = Array.from(new Set((ids || []).map(n => Number(n)).filter(n => Number.isInteger(n) && n > 0)));
   if (limpios.length === 0) return null;
@@ -4702,6 +4736,7 @@ async function resolverFamiliaPorIds(ids: number[]): Promise<any | null> {
       activo: p.activo
     };
   });
+  _deducirVariantePorDiferencia(variantes);   // color nuevo de Sage que no está en la lista
   const ejes: Array<{ key: string; label: string; valores: string[] }> = [];
   for (const def of EJES_DEF) {
     let valores = Array.from(new Set(variantes.map((v: any) => v.ejes[def.key]).filter(Boolean)));
