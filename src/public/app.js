@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v231 · 28 jul 2026';
+const APP_VERSION = 'v232 · 28 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3510,10 +3510,10 @@ function pintarVisor() {
           <button class="visor-modo-btn solovisor-solo" onclick="activarEnvioLaminas()" title="Enviar láminas por email a un cliente">✉️</button>
           ${appState.visitaActiva ? `<button class="visor-modo-btn" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Última visita con este cliente">📋</button>` : ''}
           <button class="visor-modo-btn" onclick="abrirModalDescargarCatalogo(${_visorCatalog.id}, '${escape((_visorCatalog.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">📥</button>
-          <button class="visor-modo-btn ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
+          <button class="visor-modo-btn visor-modo-vista ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
             📺
           </button>
-          <button class="visor-modo-btn ${appState.visorModo === 'mosaico' ? 'activo' : ''}" onclick="cambiarVisorModo('mosaico')" title="Modo mosaico">
+          <button class="visor-modo-btn visor-modo-vista ${appState.visorModo === 'mosaico' ? 'activo' : ''}" onclick="cambiarVisorModo('mosaico')" title="Modo mosaico">
             ▦
           </button>
         </div>

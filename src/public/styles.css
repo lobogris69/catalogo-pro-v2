@@ -5993,3 +5993,8 @@ body.modo-simple .visor-modo-btn,
 body.modo-simple .carrito-fab,
 body.modo-simple .visor-export-bar,
 body.modo-simple .visor-anotaciones-header { display: none !important; }
+/* ...pero SÍ dejamos el conmutador presentación/mosaico: el comercial en modo sencillo
+   también quiere ver todas las láminas de golpe (mosaico). */
+body.modo-simple .visor-modo-btn.visor-modo-vista { display: inline-flex !important; }
+/* El 🛟 de incidencias no debe quedar tapado por la barra negra del pedido (misma altura). */
+body.modo-simple .btn-incidencia { bottom: 96px; z-index: 9001; }
