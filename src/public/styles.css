@@ -956,6 +956,15 @@ html {
   font-size: 14px;
   padding: 4px 8px;
 }
+/* Aviso de "faltan letras" mientras escribes 1-2 caracteres (ver búsqueda en pintarVisor).
+   Ocupa toda la fila (por eso el flex-wrap) y desaparece en cuanto la búsqueda arranca. */
+.visor-buscador-fila { flex-wrap: wrap; }
+.visor-buscador-pista {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--gris-texto);
+}
 
 /* ===== Modo presentación ===== */
 .visor-presentacion {

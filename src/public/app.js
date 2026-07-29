@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v250 · 29 jul 2026';
+const APP_VERSION = 'v251 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3576,6 +3576,7 @@ function pintarVisor() {
                value="${escape(appState.visorBusqueda)}"
                class="visor-buscador">
         ${appState.visorBusqueda ? '<button class="visor-buscador-clear" onclick="limpiarVisorBusqueda()">✕</button>' : ''}
+        <div class="visor-buscador-pista" id="visor-buscar-pista" hidden>Escribe al menos 3 letras (o pulsa Enter para buscar ya)</div>
       </div>
       ${(() => {
         // Recopilar todas las categorías que aparecen en este catálogo
@@ -3620,28 +3621,43 @@ function pintarVisor() {
   // Si el carrito estaba abierto (p.ej. tras editar una línea), refrescar su contenido
   if (_carritoAbierto) renderCarritoContenido();
 
-  // Listener de búsqueda con debounce
+  // BÚSQUEDA DE LÁMINA. No filtra hasta la 3ª letra: con cientos de láminas, teclear una
+  // sola letra ya volcaba media lista y el visor saltaba de lámina en cada tecla, así que
+  // buscar era incomodísimo (incidencia #8, jul 2026). Con 1-2 caracteres solo se avisa y
+  // NO se repinta nada. Para lo corto (el número de una lámina), Enter fuerza la búsqueda.
   const $busca = document.getElementById('visor-buscar');
   if ($busca) {
+    const MIN_LETRAS = 3;
     let timer;
-    $busca.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        appState.visorBusqueda = $busca.value;
-        if (appState.visorModo === 'presentacion') {
-          appState.visorIndice = 0;
+    const aplicar = (texto) => {
+      if (texto === appState.visorBusqueda) return; // nada nuevo: no repintamos
+      appState.visorBusqueda = texto;
+      if (appState.visorModo === 'presentacion') {
+        appState.visorIndice = 0;
+      }
+      pintarVisor();
+      // Mantener foco (pintarVisor rehace el input)
+      setTimeout(() => {
+        const $b = document.getElementById('visor-buscar');
+        if ($b) {
+          $b.focus();
+          const len = $b.value.length;
+          $b.setSelectionRange(len, len);
         }
-        pintarVisor();
-        // Mantener foco
-        setTimeout(() => {
-          const $b = document.getElementById('visor-buscar');
-          if ($b) {
-            $b.focus();
-            const len = $b.value.length;
-            $b.setSelectionRange(len, len);
-          }
-        }, 0);
-      }, 400);
+      }, 0);
+    };
+    $busca.addEventListener('input', () => {
+      const q = $busca.value.trim();
+      const $pista = document.getElementById('visor-buscar-pista');
+      if ($pista) $pista.hidden = !(q.length > 0 && q.length < MIN_LETRAS);
+      clearTimeout(timer);
+      timer = setTimeout(() => aplicar(q.length >= MIN_LETRAS ? $busca.value : ''), 300);
+    });
+    $busca.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      clearTimeout(timer);
+      aplicar($busca.value);
     });
   }
 
