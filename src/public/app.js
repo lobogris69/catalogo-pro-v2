@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v239 · 29 jul 2026';
+const APP_VERSION = 'v240 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -340,17 +340,17 @@ function irAGrupo(id) {
   const g = _gruposNav(esAdmin, esOficina).find(x => x.id === id);
   if (!g) return;
   appState.navGrupo = id;
-  // Un solo apartado dentro: entrar directo (un toque en vez de dos).
-  if (g.items.length === 1) { irA(g.items[0].v); return; }
-  render();
+  // Pulsar un menú LLEVA a su primer apartado. Antes solo abría la fila de abajo y la
+  // pantalla no cambiaba: parecía que "en todos los menús salía lo mismo".
+  irA(g.items[0].v);
 }
 
 function pintarNavAgrupada(esAdmin, esOficina) {
   const grupos = _gruposNav(esAdmin, esOficina);
   if (!grupos.length) return '';
-  // Se muestra abierto el menú que contiene la pantalla actual; si no, el último que se abrió.
-  let act = grupos.find(g => g.items.some(i => i.v === appState.vista));
-  if (!act) act = grupos.find(g => g.id === appState.navGrupo) || grupos[0];
+  // Se marca abierto SOLO el menú que contiene la pantalla actual. En Inicio no se marca
+  // ninguno (antes se resaltaban "Inicio" y "Catálogo" a la vez y confundía).
+  const act = grupos.find(g => g.items.some(i => i.v === appState.vista)) || null;
   return `
       <div class="navtabs">
         ${esAdmin ? `<button class="navtab ${appState.vista === 'dashboard' ? 'navtab-activa' : ''}" onclick="irA('dashboard')">🏠 Inicio</button>` : ''}
