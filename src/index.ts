@@ -626,6 +626,9 @@ async function initDB(): Promise<void> {
       -- SOLO VISOR: el comercial ve la app SOLO como visor de catálogos (mosaico, abrir
       -- lámina, zoom, buscar). Nada de visitas, pedidos, clientes ni administración.
       ALTER TABLE users ADD COLUMN IF NOT EXISTS solo_visor BOOLEAN NOT NULL DEFAULT FALSE;
+      -- COPIA DE PEDIDOS: emails (separados por coma) que reciben COPIA de los pedidos de
+      -- este comercial al cerrar la visita (p.ej. administracion). No es el email de login.
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS copia_pedidos_email VARCHAR(300);
 
       -- CLIENTE PENDIENTE DE ALTA. Una apertura nueva o una farmacia que aun no es
       -- cliente: el comercial la da de alta ALLI MISMO con todos los datos que necesita
@@ -1609,7 +1612,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v233-modo-simple-cabecera-despejada-29jul',
+      build: 'v234-copia-pedidos-admin-29jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1696,7 +1699,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
 // ============================================================================
 app.get('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, is_active, created_at FROM users ORDER BY role, name');
+    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, copia_pedidos_email, is_active, created_at FROM users ORDER BY role, name');
     res.json({ success: true, users: r.rows });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -1837,11 +1840,13 @@ app.put('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequest
     const r = await pool.query(
       `UPDATE users SET name=$1, email=$2, role=$3, sage_commercial_code=$4, is_active=$5,
               modo_simple = COALESCE($7, modo_simple),
-              solo_visor = COALESCE($8, solo_visor)
-       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, modo_simple, solo_visor, is_active`,
+              solo_visor = COALESCE($8, solo_visor),
+              copia_pedidos_email = COALESCE($9, copia_pedidos_email)
+       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, modo_simple, solo_visor, is_active, copia_pedidos_email`,
       [name.trim(), email.trim().toLowerCase(), role, sage_commercial_code ? String(sage_commercial_code).trim() : null, is_active !== false, id,
        req.body.modo_simple === undefined ? null : !!req.body.modo_simple,
-       req.body.solo_visor === undefined ? null : !!req.body.solo_visor]
+       req.body.solo_visor === undefined ? null : !!req.body.solo_visor,
+       req.body.copia_pedidos_email === undefined ? null : String(req.body.copia_pedidos_email || '').trim()]
     );
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Usuario no encontrado' });
@@ -10783,7 +10788,8 @@ async function cargarDatosVisitaCompleta(visitId: number) {
            c.commercial_code AS cliente_comercial_codigo,
            c.pendiente_alta_notas AS cliente_notas_alta,
            cat.name AS catalog_nombre,
-           u.name AS comercial_nombre, u.email AS comercial_email
+           u.name AS comercial_nombre, u.email AS comercial_email,
+           u.copia_pedidos_email AS comercial_copia_email
     FROM visits v
     LEFT JOIN clients c ON c.id = v.client_id
     LEFT JOIN catalogs cat ON cat.id = v.catalog_id
@@ -11587,6 +11593,30 @@ async function enviarEmailsVisita(visitId: number, opciones?: { emailClienteOver
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [visitId, r.destinatarioFinal, comercialReal, 'comercial', r.modo, `[COPIA] ${asuntoBase}`, r.ok, r.error || null, r.messageId || null]
       );
+    }
+
+    // 4) COPIA de pedidos a los emails extra del comercial (p.ej. administración). Mismo
+    //    contenido y PDF que la copia del comercial. Se manda a cada dirección por separado.
+    const copiaExtra = String(visit.comercial_copia_email || '')
+      .split(',').map((s: string) => s.trim()).filter((s: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s));
+    for (const dir of copiaExtra) {
+      try {
+        const rc = await enviarEmailConRedireccion({
+          rol: 'comercial',
+          destinatarioReal: dir,
+          asunto: `[COPIA] ${asuntoBase}`,
+          html: plantillaEmailComercial(visit, annotations, cfg),
+          attachments: adjuntoPdf,
+          visitId
+        });
+        await pool.query(
+          `INSERT INTO visit_emails (visit_id, destinatario, destinatario_real, rol, modo, asunto, ok, error, message_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [visitId, rc.destinatarioFinal, dir, 'comercial', rc.modo, `[COPIA] ${asuntoBase}`, rc.ok, rc.error || null, rc.messageId || null]
+        );
+      } catch (e) {
+        console.error('[visita] Error enviando copia de pedido a ' + dir + ':', (e as Error).message);
+      }
     }
   } catch (e) {
     console.error('Error en enviarEmailsVisita(' + visitId + '):', (e as Error).message);

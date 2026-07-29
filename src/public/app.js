@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v233 · 29 jul 2026';
+const APP_VERSION = 'v234 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -2922,6 +2922,11 @@ async function editarUsuario(id) {
             <input type="text" id="eu-sage" value="${escape(u.sage_commercial_code || '')}">
           </div>
           <div class="form-group">
+            <label>Copia de pedidos a <span style="font-weight:400;color:var(--gris-texto)">(opcional)</span></label>
+            <input type="text" id="eu-copia" placeholder="administracion@lomhifar.com, otro@correo.com" value="${escape(u.copia_pedidos_email || '')}">
+            <div style="font-size:11px;color:var(--gris-texto);margin-top:3px">Estos correos reciben una <b>copia de los pedidos</b> de este comercial al cerrar la visita. Separa varios con comas. No es el email de acceso.</div>
+          </div>
+          <div class="form-group">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
               <input type="checkbox" id="eu-active" ${u.is_active ? 'checked' : ''} style="width:auto">
               <span>Usuario activo</span>
@@ -2943,6 +2948,7 @@ async function editarUsuario(id) {
           email: document.getElementById('eu-email').value.trim(),
           role: document.getElementById('eu-role').value,
           sage_commercial_code: document.getElementById('eu-sage').value.trim(),
+          copia_pedidos_email: document.getElementById('eu-copia').value.trim(),
           is_active: document.getElementById('eu-active').checked
         };
         await api('/api/users/' + id, { method: 'PUT', body: data });
