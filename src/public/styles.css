@@ -2872,6 +2872,38 @@ body.solo-visor .visor-imagen {
   box-shadow: 0 8px 20px -6px rgba(22,163,74,.7);
 }
 .solovisor-instalar:active { transform: scale(.97); }
+
+/* ENVIAR LÁMINAS: barra flotante inferior + selección en el mosaico */
+.barra-enviar-laminas {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 9800;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  background: rgba(255,255,255,.98); border-top: 1px solid var(--gris-borde);
+  box-shadow: 0 -6px 20px -8px rgba(0,0,0,.25);
+}
+.barra-enviar-laminas .bel-cancel {
+  flex: 0 0 auto; width: 42px; height: 42px; border-radius: 12px;
+  border: 1px solid var(--gris-borde); background: var(--gris-bg); color: #444;
+  font-size: 16px; font-weight: 800; cursor: pointer;
+}
+.barra-enviar-laminas .bel-info { flex: 1; font-size: 13px; color: var(--gris-texto); }
+.barra-enviar-laminas .bel-enviar {
+  flex: 0 0 auto; min-height: 44px; padding: 0 18px; border: none; border-radius: 12px;
+  background: #16a34a; color: #fff; font-size: 15px; font-weight: 800; cursor: pointer;
+}
+.barra-enviar-laminas .bel-enviar:disabled { background: var(--gris-borde); color: #888; cursor: not-allowed; }
+/* la barra no debe tapar el final del mosaico */
+.visor-mosaico.mosaico-enviar { padding-bottom: 80px; }
+/* casilla de selección en cada celda */
+.visor-mosaico-celda .celda-check {
+  position: absolute; top: 6px; right: 6px; width: 26px; height: 26px;
+  border-radius: 50%; background: rgba(255,255,255,.9); border: 2px solid #cbd5e1;
+  color: transparent; display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 900; z-index: 3;
+}
+.visor-mosaico-celda.celda-sel { outline: 3px solid #16a34a; outline-offset: -3px; }
+.visor-mosaico-celda.celda-sel .celda-check { background: #16a34a; border-color: #16a34a; color: #fff; }
+.visor-mosaico.mosaico-enviar .visor-mosaico-celda { cursor: pointer; }
 .btn-card-mini:hover {
   background: color-mix(in srgb, var(--brand) 8%, var(--surface));
   border-color: color-mix(in srgb, var(--brand) 40%, var(--gris-borde-2));

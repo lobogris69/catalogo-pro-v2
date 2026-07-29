@@ -1609,7 +1609,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v230-pdf-descarga-directa-28jul',
+      build: 'v231-enviar-laminas-email-28jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -9521,6 +9521,54 @@ app.get('/api/pdf-hoy-download/:jobId', (req: Request, res: Response) => {
   res.setHeader('Content-Disposition', `attachment; filename="${j.nombre}"`);
   res.setHeader('Cache-Control', 'no-store');
   fs.createReadStream(j.file).pipe(res);
+});
+
+// ENVIAR LÁMINAS SELECCIONADAS AL CLIENTE (por email, en un PDF adjunto). El comercial marca
+// en el mosaico las láminas que le pide el cliente y las manda. Tope 20 (email no rebota).
+app.post('/api/catalogs/:id/enviar-laminas', verifyToken, async (req: AuthRequest, res: Response) => {
+  const esc = (s: any) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
+  try {
+    const catId = Number(req.params.id);
+    const email = String(req.body?.email || '').trim();
+    const mensaje = String(req.body?.mensaje || '').slice(0, 1000);
+    const tarifa = Number(req.body?.tarifa) || 1;
+    const reqIds: number[] = Array.isArray(req.body?.sheet_ids) ? req.body.sheet_ids.map(Number).filter((n: number) => n > 0) : [];
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { res.status(400).json({ success: false, error: 'Escribe un email de cliente válido' }); return; }
+    if (!reqIds.length) { res.status(400).json({ success: false, error: 'Selecciona al menos una lámina' }); return; }
+    if (reqIds.length > 20) { res.status(400).json({ success: false, error: 'Máximo 20 láminas por envío' }); return; }
+    const sel = await _laminasParaPdfHoy(catId, 0);
+    if ('error' in sel) { res.status(sel.status).json({ success: false, error: sel.error }); return; }
+    const pedido = new Set(reqIds);
+    const laminas = sel.laminas.filter((s: any) => pedido.has(Number(s.id)));  // en orden del catálogo y solo las válidas
+    if (!laminas.length) { res.status(400).json({ success: false, error: 'Esas láminas no están en este catálogo' }); return; }
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs'); const path = require('path');
+    const file = path.join(getVersionsDir(), `envio_${catId}_${Date.now()}_${Math.floor(Math.random() * 100000)}.pdf`);
+    await _escribirPdfHoy(laminas, tarifa, fs.createWriteStream(file));
+    const nombreCat = String(sel.nombre).replace(/_+/g, ' ').trim();
+    const fname = String(sel.nombre).replace(/[^a-z0-9._-]+/gi, '_') + '_laminas.pdf';
+    const nombreComercial = req.user?.name || 'tu comercial de LOMHIFAR';
+    const html = `
+      <div style="font-family:Arial,Helvetica,sans-serif;color:#222;max-width:640px;line-height:1.55;font-size:15px">
+        <div style="background:linear-gradient(120deg,#d80a6b,#9a1259);color:#fff;padding:18px 20px;border-radius:12px 12px 0 0">
+          <div style="font-size:20px;font-weight:800">📄 Láminas de ${esc(nombreCat)}</div>
+        </div>
+        <div style="border:1px solid #eee;border-top:none;border-radius:0 0 12px 12px;padding:20px">
+          <p>Hola,</p>
+          <p>Te env&iacute;o ${laminas.length === 1 ? 'la l&aacute;mina que me pediste' : `las ${laminas.length} l&aacute;minas que me pediste`}, en el PDF adjunto.</p>
+          ${mensaje ? `<div style="background:#f9fafb;border-left:3px solid #d80a6b;padding:10px 14px;margin:14px 0;white-space:pre-wrap">${esc(mensaje)}</div>` : ''}
+          <p>Un saludo,<br><b>${esc(nombreComercial)}</b><br>LOMHIFAR</p>
+        </div>
+      </div>`;
+    const r = await enviarEmailConRedireccion({
+      rol: 'cliente', destinatarioReal: email,
+      asunto: `Láminas de ${nombreCat} — LOMHIFAR`,
+      html, attachments: [{ filename: fname, path: file }]
+    });
+    try { fs.unlinkSync(file); } catch (_) { /* nada */ }
+    if (!r.ok) { res.status(500).json({ success: false, error: r.error || 'No se pudo enviar el email' }); return; }
+    res.json({ success: true, destinatario: r.destinatarioFinal, modo: r.modo, laminas: laminas.length });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 // ============================================================================

@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v230 · 28 jul 2026';
+const APP_VERSION = 'v231 · 28 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3507,6 +3507,7 @@ function pintarVisor() {
         <div class="visor-modo-switch">
           <button class="visor-modo-btn solovisor-solo" onclick="toggleVisorBuscadorSolo(this)" title="Buscar / categorías">🔍</button>
           <button class="visor-modo-btn solovisor-solo" onclick="descargarPdfCatalogoHoy(${_visorCatalog.id}, this)" title="Descargar este catálogo en PDF">📄</button>
+          <button class="visor-modo-btn solovisor-solo" onclick="activarEnvioLaminas()" title="Enviar láminas por email a un cliente">✉️</button>
           ${appState.visitaActiva ? `<button class="visor-modo-btn" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Última visita con este cliente">📋</button>` : ''}
           <button class="visor-modo-btn" onclick="abrirModalDescargarCatalogo(${_visorCatalog.id}, '${escape((_visorCatalog.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">📥</button>
           <button class="visor-modo-btn ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
@@ -3728,23 +3729,132 @@ function pintarMosaico(visibles) {
       </div>
     `;
   }
+  const enModoEnviar = _modoEnviar;
   return `
-    <div class="visor-mosaico">
+    <div class="visor-mosaico ${enModoEnviar ? 'mosaico-enviar' : ''}">
       ${visibles.map((s) => {
         const idxOriginal = _visorSheets.indexOf(s);
         const numeroOriginal = idxOriginal + 1;
         const anots = (appState.visitaActiva && _anotacionesVisita[s.id]) ? _anotacionesVisita[s.id].length : 0;
+        const sel = enModoEnviar && _seleccionEnviar.has(s.id);
         return `
-          <div class="visor-mosaico-celda" onclick="abrirLaminaDesdeMosaico(${idxOriginal})">
+          <div class="visor-mosaico-celda ${sel ? 'celda-sel' : ''}" data-sid="${s.id}"
+               onclick="${enModoEnviar ? `toggleSeleccionEnviar(${s.id}, this)` : `abrirLaminaDesdeMosaico(${idxOriginal})`}">
             <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="visor-mosaico-img" alt="" loading="lazy" decoding="async">
             <div class="visor-mosaico-num">${numeroOriginal}</div>
             ${anots > 0 ? `<div class="visor-mosaico-anots" title="${anots} anotaciones">📝 ${anots}</div>` : ''}
             ${s.titulo ? `<div class="visor-mosaico-titulo">${escape(s.titulo)}</div>` : ''}
+            ${enModoEnviar ? `<div class="celda-check">✓</div>` : ''}
           </div>
         `;
       }).join('')}
     </div>
   `;
+}
+
+// ===== ENVIAR LÁMINAS SELECCIONADAS A UN CLIENTE (por email, PDF adjunto) =====
+let _modoEnviar = false;
+let _seleccionEnviar = new Set();
+const _MAX_ENVIAR = 20;
+
+function activarEnvioLaminas() {
+  _modoEnviar = true;
+  _seleccionEnviar = new Set();
+  appState.visorModo = 'mosaico';   // la selección se hace en el mosaico
+  pintarVisor();
+  _mostrarBarraEnviar();
+}
+function salirEnvioLaminas() {
+  _modoEnviar = false;
+  _seleccionEnviar = new Set();
+  document.querySelectorAll('.barra-enviar-laminas').forEach(x => x.remove());
+  pintarVisor();
+}
+function toggleSeleccionEnviar(sid, cell) {
+  if (_seleccionEnviar.has(sid)) {
+    _seleccionEnviar.delete(sid);
+    if (cell) cell.classList.remove('celda-sel');
+  } else {
+    if (_seleccionEnviar.size >= _MAX_ENVIAR) {
+      alert('Puedes enviar como máximo ' + _MAX_ENVIAR + ' láminas de una vez.\nQuita alguna si quieres cambiarla.');
+      return;
+    }
+    _seleccionEnviar.add(sid);
+    if (cell) cell.classList.add('celda-sel');
+  }
+  _actualizarBarraEnviar();
+}
+function _mostrarBarraEnviar() {
+  document.querySelectorAll('.barra-enviar-laminas').forEach(x => x.remove());
+  const bar = document.createElement('div');
+  bar.className = 'barra-enviar-laminas';
+  bar.innerHTML = `
+    <button class="bel-cancel" onclick="salirEnvioLaminas()">✕</button>
+    <div class="bel-info">Toca las láminas que te pide el cliente</div>
+    <button class="bel-enviar" id="bel-enviar" disabled onclick="abrirModalEnviarLaminas()">✉️ Enviar (0)</button>`;
+  document.body.appendChild(bar);
+}
+function _actualizarBarraEnviar() {
+  const b = document.getElementById('bel-enviar');
+  if (!b) return;
+  const n = _seleccionEnviar.size;
+  b.textContent = `✉️ Enviar (${n})`;
+  b.disabled = n === 0;
+}
+function abrirModalEnviarLaminas() {
+  const n = _seleccionEnviar.size;
+  if (!n) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>✉️ Enviar ${n} lámina${n > 1 ? 's' : ''} al cliente</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <div class="form-group">
+        <label>Email del cliente</label>
+        <input type="email" id="env-email" inputmode="email" autocomplete="email" placeholder="cliente@correo.com"
+               style="width:100%;padding:11px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:15px">
+      </div>
+      <div class="form-group">
+        <label>Mensaje para el cliente (opcional)</label>
+        <textarea id="env-msg" rows="3" placeholder="Ej: Aquí tienes lo que me pediste. Un saludo."
+                  style="width:100%;padding:11px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font-size:14px"></textarea>
+      </div>
+      <div id="env-error"></div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn btn-primary" id="env-btn" onclick="enviarLaminasSeleccionadas(this)">Enviar PDF</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(() => { const e = document.getElementById('env-email'); if (e) e.focus(); }, 60);
+}
+async function enviarLaminasSeleccionadas(btn) {
+  const email = (document.getElementById('env-email').value || '').trim();
+  const mensaje = (document.getElementById('env-msg').value || '').trim();
+  const $err = document.getElementById('env-error');
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    $err.innerHTML = '<div class="error-msg">Escribe un email de cliente válido.</div>';
+    return;
+  }
+  const ids = Array.from(_seleccionEnviar);
+  btn.disabled = true; btn.textContent = '⏳ Enviando…';
+  try {
+    const r = await api('/api/catalogs/' + (_visorCatalog ? _visorCatalog.id : '') + '/enviar-laminas', {
+      method: 'POST', body: { sheet_ids: ids, email, mensaje, tarifa: _tarifaVisor() }
+    });
+    const dest = r.destinatario || email;
+    const aviso = (r.modo === 'pruebas') ? ` (modo prueba → ${dest})` : ` a ${dest}`;
+    document.querySelector('.modal-bg').remove();
+    salirEnvioLaminas();
+    if (typeof mostrarNotificacionOnline === 'function') mostrarNotificacionOnline(`✉️ ${r.laminas} lámina(s) enviadas${aviso}`, '#16a34a');
+    else alert(`Enviadas ${r.laminas} lámina(s)${aviso}`);
+  } catch (e) {
+    $err.innerHTML = '<div class="error-msg">' + escape(e.message) + '</div>';
+    btn.disabled = false; btn.textContent = 'Enviar PDF';
+  }
 }
 
 function cambiarVisorModo(modo) {
