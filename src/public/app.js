@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v252 · 29 jul 2026';
+const APP_VERSION = 'v253 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -7791,6 +7791,11 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo) {
       console.warn('[offline] no se pudieron guardar las zonas:', e.message);
     }
 
+    // 2c. Gafas graduadas para la rejilla de reposición. Una reposición de expositor se
+    // hace muchas veces sin cobertura, y sin esta lista no se podría ni añadir una fila.
+    $estado.textContent = 'Guardando las gafas para la rejilla…';
+    await descargarReposicionOffline();
+
     // 3. Descargar cada lámina (imagen como Blob)
     const total = sheets.length;
     let okCount = 0;
@@ -8124,7 +8129,20 @@ async function sincronizarPendientes(esManual = false) {
             num_socio: a.num_socio,
             referencia: a.referencia,
             bonificacion: a.bonificacion,
-            oferta_texto: a.oferta_texto
+            oferta_texto: a.oferta_texto,
+            nota_extra: a.nota_extra,
+            rep_celda: a.rep_celda,
+            // Y lo de la DEVOLUCIÓN. Sin esto, la devolución anotada en una farmacia sin
+            // cobertura llegaba a la oficina como texto suelto: sin estado (bueno/caducado/
+            // roto), sin motivo, sin resolución (mismo/otro/abono) y sin saber si el
+            // comercial se llevó la mercancía. Con cobertura sí iba, porque esa vía usa
+            // POST /annotations, que manda la línea entera.
+            dev_estado: a.dev_estado,
+            dev_motivo: a.dev_motivo,
+            dev_resolucion: a.dev_resolucion,
+            dev_cambio_producto: a.dev_cambio_producto,
+            dev_cambio_motivo: a.dev_cambio_motivo,
+            dev_retirada: a.dev_retirada
           }))
         }
       });
@@ -14318,6 +14336,48 @@ function abrirRejillaReposicion() {
   // Si se recargó la app a media visita, las filas guardadas no saben qué código
   // Sage lleva cada graduación: se recuperan de fondo para poder seguir rellenando.
   repCompletarFilasSueltas();
+  // Con cobertura, se refresca de fondo la copia de gafas de la tablet. Así la próxima
+  // farmacia sin línea tiene la lista al día sin que el comercial haga nada.
+  if (navigator.onLine) descargarReposicionOffline().catch(() => {});
+}
+
+// Guarda en la tablet TODAS las gafas graduadas (modelo → colores × graduaciones →
+// código Sage). Es lo que permite montar la rejilla sin cobertura.
+async function descargarReposicionOffline() {
+  if (!window.CpDB || !CpDB.guardarFamiliasReposicion) return 0;
+  const r = await api('/api/reposicion/familias-todas');
+  const familias = r.familias || [];
+  if (!familias.length) return 0;
+  await CpDB.guardarFamiliasReposicion(familias);
+  return familias.length;
+}
+
+// Búsqueda de modelos en la copia de la tablet (sin servidor). No hay trigramas aquí,
+// así que se busca por trozos de palabra, que para el nombre de un modelo sobra.
+async function repBuscarEnTablet(q) {
+  if (!window.CpDB || !CpDB.listarFamiliasReposicion) return [];
+  const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const palabras = norm(q).split(/\s+/).filter(w => w.length >= 3);
+  if (!palabras.length) return [];
+  const todas = await CpDB.listarFamiliasReposicion();
+  return todas
+    .filter(f => { const n = norm(f.modelo); return palabras.every(w => n.includes(w)); })
+    .sort((a, b) => (b.graduaciones || []).length - (a.graduaciones || []).length)
+    .slice(0, 10);
+}
+
+// Un modelo concreto: primero el servidor, y si no hay línea, la copia de la tablet.
+async function _repFamiliaDeModelo(modelo) {
+  if (navigator.onLine) {
+    try {
+      const r = await api('/api/reposicion/familias?q=' + encodeURIComponent(modelo));
+      const fams = r.familias || [];
+      const f = fams.find(x => x.modelo === modelo) || fams[0];
+      if (f) return f;
+    } catch (_) { /* se cayó la línea: seguimos con lo guardado */ }
+  }
+  const locales = await repBuscarEnTablet(modelo);
+  return locales.find(x => x.modelo === modelo) || locales[0] || null;
 }
 
 function cerrarRejillaReposicion() {
@@ -14336,10 +14396,28 @@ async function repBuscarModelos(q) {
   $r.hidden = false;
   $r.innerHTML = '<div class="rep-res-info">Buscando…</div>';
   try {
-    const r = await api('/api/reposicion/familias?q=' + encodeURIComponent(texto));
-    const fams = r.familias || [];
-    if (!fams.length) { $r.innerHTML = '<div class="rep-res-info">No encuentro ningún modelo con ese nombre.</div>'; return; }
-    $r.innerHTML = fams.map((f, i) => {
+    // Sin cobertura (o si se cae la línea a media búsqueda) se tira de la copia de
+    // gafas guardada en la tablet: la reposición se hace mucho en farmacias sin línea.
+    let fams = [];
+    let deLaTablet = false;
+    if (navigator.onLine) {
+      try {
+        fams = (await api('/api/reposicion/familias?q=' + encodeURIComponent(texto))).familias || [];
+      } catch (_) {
+        fams = await repBuscarEnTablet(texto);
+        deLaTablet = true;
+      }
+    } else {
+      fams = await repBuscarEnTablet(texto);
+      deLaTablet = true;
+    }
+    if (!fams.length) {
+      $r.innerHTML = '<div class="rep-res-info">No encuentro ningún modelo con ese nombre.' +
+        (deLaTablet ? '<br>Estás sin cobertura: solo busco en las gafas descargadas en la tablet.' : '') + '</div>';
+      return;
+    }
+    $r.innerHTML = (deLaTablet ? '<div class="rep-res-info">📴 Sin cobertura: buscando en las gafas guardadas en la tablet.</div>' : '') +
+      fams.map((f, i) => {
       const cols = (f.colores || []);
       const botones = cols.length
         ? cols.map(c => `<button type="button" class="rep-color-btn" onclick="repAnadirFila(${i}, '${escape(String(c)).replace(/'/g, "\\'")}')">${escape(c)}</button>`).join('')
@@ -14522,12 +14600,11 @@ async function repGuardarCelda(inp) {
 // de cada graduación: se piden al servidor para poder seguir rellenando esa fila.
 async function repCompletarFilasSueltas() {
   const pendientes = repFilasVisibles().filter(f => !f.variantes && f.modelo);
-  if (!pendientes.length || !navigator.onLine) return;
+  if (!pendientes.length) return;
   const modelos = Array.from(new Set(pendientes.map(f => f.modelo)));
   for (const modelo of modelos) {
     try {
-      const r = await api('/api/reposicion/familias?q=' + encodeURIComponent(modelo));
-      const fam = (r.familias || []).find(x => x.modelo === modelo) || (r.familias || [])[0];
+      const fam = await _repFamiliaDeModelo(modelo);
       if (!fam) continue;
       pendientes.filter(f => f.modelo === modelo).forEach(f => {
         if (_repFilaDe(f.modelo, f.color)) return;

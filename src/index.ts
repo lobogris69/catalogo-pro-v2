@@ -1619,7 +1619,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v252-rejilla-reposicion-29jul',
+      build: 'v253-sync-devoluciones-29jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -13175,8 +13175,14 @@ async function buscarFamiliasReposicion(q: string, limite = 10): Promise<any[]> 
        FROM products WHERE ${conds} AND activo = TRUE ORDER BY nombre LIMIT 400`,
     palabras
   );
+  return _agruparFamiliasReposicion(r.rows).slice(0, limite);
+}
+
+// Agrupa filas de products en familias listas para la rejilla. Lo usan la busqueda
+// (online) y la descarga completa que se guarda en la tablet para trabajar sin cobertura.
+function _agruparFamiliasReposicion(filas: any[]): any[] {
   const grupos = new Map<string, any[]>();
-  for (const p of r.rows) {
+  for (const p of filas) {
     const { ejes, base } = extraerEjesProducto(p.nombre);
     if (!base) continue;
     if (!grupos.has(base)) grupos.set(base, []);
@@ -13221,7 +13227,7 @@ async function buscarFamiliasReposicion(q: string, limite = 10): Promise<any[]> 
   }
   // Primero lo que de verdad se gradua (gafas) y, dentro, lo que mas variantes tiene.
   salida.sort((a, b) => (b.graduaciones.length - a.graduaciones.length) || (b.n_variantes - a.n_variantes));
-  return salida.slice(0, limite);
+  return salida;
 }
 
 app.get('/api/reposicion/familias', verifyToken, async (req: AuthRequest, res: Response) => {
@@ -13230,6 +13236,26 @@ app.get('/api/reposicion/familias', verifyToken, async (req: AuthRequest, res: R
     // Igual que el buscador de laminas: por debajo de 3 letras no se busca nada.
     if (q.length < 3) { res.json({ success: true, familias: [] }); return; }
     res.json({ success: true, familias: await buscarFamiliasReposicion(q) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// TODAS las gafas graduadas, para que la tablet se las lleve descargadas. Una reposicion
+// de expositor se hace muchas veces en una farmacia sin cobertura, y sin esto el comercial
+// no podria ni añadir una fila nueva a la rejilla (el buscador preguntaba al servidor).
+// Son productos con "+X.X" en el nombre: pocos cientos de filas, cabe de sobra.
+app.get('/api/reposicion/familias-todas', verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, codigo, nombre, precio_pvf_1, precio_pvf
+         FROM products
+        WHERE activo = TRUE AND nombre ~ '\\+\\s?[0-9]'
+        ORDER BY nombre LIMIT 3000`
+    );
+    // Solo las familias que de verdad se graduan (una crema con "+50" no es una gafa).
+    const familias = _agruparFamiliasReposicion(r.rows).filter(f => f.graduaciones.length >= 2);
+    res.json({ success: true, familias, total: familias.length });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }

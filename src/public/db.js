@@ -11,7 +11,9 @@
  * ============================================================================ */
 
 const DB_NAME = 'catalogpro_v2';
-const DB_VERSION = 2;
+// v3: store `reposicion` — las gafas graduadas descargadas para poder montar la rejilla
+// de reposición en una farmacia sin cobertura.
+const DB_VERSION = 3;
 
 let _db = null;
 
@@ -56,6 +58,11 @@ function abrirDB() {
       if (!db.objectStoreNames.contains('annotations_offline')) {
         const s = db.createObjectStore('annotations_offline', { keyPath: 'local_id' });
         s.createIndex('visit_local_id', 'visit_local_id');
+      }
+      // Gafas graduadas para la rejilla de reposición sin cobertura (una familia por
+      // modelo, con sus colores, graduaciones y códigos Sage).
+      if (!db.objectStoreNames.contains('reposicion')) {
+        db.createObjectStore('reposicion', { keyPath: 'modelo' });
       }
     };
     req.onsuccess = () => { _db = req.result; resolve(_db); };
@@ -195,6 +202,34 @@ window.CpDB = {
         }
       };
       req.onerror = () => resolve(0);
+    });
+  },
+
+  // ============================================================================
+  // GAFAS GRADUADAS PARA LA REJILLA DE REPOSICIÓN (offline)
+  // Se descargan junto con el catálogo. Sin esto, en una farmacia sin cobertura no
+  // se podría ni añadir una fila nueva a la rejilla.
+  // ============================================================================
+  async guardarFamiliasReposicion(familias) {
+    const db = await abrirDB();
+    return new Promise((resolve, reject) => {
+      const t = db.transaction('reposicion', 'readwrite');
+      const store = t.objectStore('reposicion');
+      // Se reemplaza entera: si un modelo desaparece de Sage, no debe quedarse pegado.
+      store.clear();
+      (familias || []).forEach(f => { if (f && f.modelo) store.put(f); });
+      t.oncomplete = () => resolve((familias || []).length);
+      t.onerror = () => reject(t.error);
+    });
+  },
+  async listarFamiliasReposicion() {
+    const db = await abrirDB();
+    return new Promise((resolve) => {
+      try {
+        const r = db.transaction('reposicion').objectStore('reposicion').getAll();
+        r.onsuccess = () => resolve(r.result || []);
+        r.onerror = () => resolve([]);
+      } catch (_) { resolve([]); }
     });
   },
 
