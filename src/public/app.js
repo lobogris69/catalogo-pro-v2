@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v240 · 29 jul 2026';
+const APP_VERSION = 'v241 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -6329,6 +6329,7 @@ async function renderConfiguracion() {
       </div>
     `;
     $v.innerHTML = html;
+    _ordenarPantallaConfiguracion();   // 19 bloques → 5 secciones plegables
     // Cargar stats geocoding tras pintar
     actualizarStatsGeocoding();
     // Cargar recuento de datos de prueba
@@ -6350,6 +6351,69 @@ async function renderConfiguracion() {
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
   }
+}
+
+// ===== CONFIGURACIÓN ORDENADA EN SECCIONES PLEGABLES =====
+// La pantalla tenía 19 bloques seguidos en un scroll infinito (imposible encontrar nada).
+// En vez de reescribir todo el HTML —arriesgado—, aquí se AGRUPAN los bloques YA PINTADOS
+// moviendo los nodos: así conservan sus ids y sus onclick, y nada deja de funcionar.
+// Abierta solo la primera sección (la del día a día); el resto se abren al tocarlas.
+const _CONFIG_SECCIONES = [
+  { id: 'emails', icon: '📧', titulo: 'Emails y avisos', abierto: true,
+    claves: ['modo de envio', 'emails de oficina', 'emails de prueba', 'remitente y firma', 'resumen a oficina'] },
+  { id: 'catalogo', icon: '📚', titulo: 'Catálogo y precios', abierto: false,
+    claves: ['categorias de laminas', 'precios dinamicos', 'ofertas y campanas', 'tablas de expositor', 'tipografia de precios'] },
+  { id: 'visitas', icon: '🗓️', titulo: 'Visitas y ruta', abierto: false,
+    claves: ['planning de visitas', 'geocoding'] },
+  { id: 'ia', icon: '🤖', titulo: 'Herramientas de IA', abierto: false,
+    claves: ['tags automaticos', 'deteccion automatica de zonas', 'corregir colores'] },
+  { id: 'sistema', icon: '🔧', titulo: 'Sistema y mantenimiento', abierto: false,
+    claves: ['duracion de la sesion', 'sincronizacion con sage', 'carpetas mega', 'zona de peligro'] },
+];
+
+function _ordenarPantallaConfiguracion() {
+  const cont = document.getElementById('vista-contenido');
+  if (!cont) return;
+  const raiz = cont.querySelector('.contenedor') || cont;
+  const paneles = Array.from(raiz.querySelectorAll('.editor-panel'));
+  if (paneles.length < 3 || raiz.querySelector('.cfg-seccion')) return;   // nada que agrupar o ya hecho
+  const norm = s => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const barra = raiz.querySelector('.config-barra-guardar');
+  const msg = raiz.querySelector('#config-msg');
+
+  function crearSeccion(icon, titulo, items, abierto) {
+    const d = document.createElement('details');
+    d.className = 'cfg-seccion';
+    if (abierto) d.open = true;
+    const s = document.createElement('summary');
+    s.className = 'cfg-seccion-titulo';
+    s.innerHTML = `<span>${icon} ${escape(titulo)}</span><span class="cfg-seccion-num">${items.length}</span>`;
+    d.appendChild(s);
+    items.forEach(p => d.appendChild(p));
+    return d;
+  }
+
+  const usados = new Set();
+  const wrap = document.createElement('div');
+  wrap.className = 'cfg-secciones';
+  _CONFIG_SECCIONES.forEach(sec => {
+    const suyos = paneles.filter(p => {
+      if (usados.has(p)) return false;
+      const h = p.querySelector('h3');
+      if (!h) return false;
+      if (!sec.claves.some(c => norm(h.textContent).includes(c))) return false;
+      usados.add(p);
+      return true;
+    });
+    if (suyos.length) wrap.appendChild(crearSeccion(sec.icon, sec.titulo, suyos, sec.abierto));
+  });
+  // Red de seguridad: lo que no encaje en ninguna sección NO se pierde, va a "Otros ajustes".
+  const resto = paneles.filter(p => !usados.has(p));
+  if (resto.length) wrap.appendChild(crearSeccion('⚙️', 'Otros ajustes', resto, false));
+
+  raiz.appendChild(wrap);
+  if (barra) raiz.appendChild(barra);   // el Guardar, siempre el último (sticky abajo)
+  if (msg) raiz.appendChild(msg);
 }
 
 // ===== F4 OFERTAS / CAMPAÑAS (gestión admin) =====
