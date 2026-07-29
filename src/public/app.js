@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v237 · 29 jul 2026';
+const APP_VERSION = 'v238 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -6057,9 +6057,12 @@ async function renderConfiguracion() {
           </div>
         </div>
 
-        <!-- ACCIONES -->
-        <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:14px">
-          <button class="btn btn-secondary" onclick="enviarEmailPrueba()">📨 Enviar email de prueba</button>
+        <!-- ACCIONES: barra SIEMPRE VISIBLE. Antes el "Guardar" quedaba enterrado a mitad de
+             un scroll larguísimo (y con más contenido debajo): se escribían los emails y no se
+             veía dónde guardarlos. Ahora la barra se queda pegada abajo mientras editas. -->
+        <div class="config-barra-guardar">
+          <span class="config-barra-txt">Cambios sin guardar se pierden al salir</span>
+          <button class="btn btn-secondary" onclick="enviarEmailPrueba()">📨 Email de prueba</button>
           <button class="btn btn-primary" onclick="guardarConfiguracion()">💾 Guardar cambios</button>
         </div>
 

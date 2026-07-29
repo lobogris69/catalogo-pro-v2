@@ -5933,6 +5933,23 @@ body.con-banner-update {
 /* En pantalla completa la capa negra también usa z-index 9000: la barra del pedido debe ir
    POR ENCIMA, o el toque se lo come la capa y parece que el botón no responde. */
 body.visor-fullscreen-activo .simple-barra { z-index: 9500; }
+
+/* CONFIGURACIÓN: barra de guardar SIEMPRE a la vista (sticky) mientras se edita. */
+.config-barra-guardar {
+  position: sticky;
+  bottom: 0;
+  z-index: 50;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end;
+  margin: 14px 0;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--gris-borde);
+  border-radius: 12px;
+  box-shadow: 0 -6px 20px -10px rgba(0,0,0,.35);
+}
+.config-barra-guardar .config-barra-txt {
+  margin-right: auto; font-size: 12px; color: var(--gris-texto);
+}
 /* Cambiar de catálogo sin salir de la visita (el general, el de promociones…) */
 .simple-barra-cat {
   min-width: 56px; min-height: 56px; border-radius: 14px; cursor: pointer;
