@@ -1627,10 +1627,9 @@ html {
 .carrito-fab {
   position: fixed;
   right: 16px;
-  /* Justo ENCIMA del botón 🛟 (que ocupa 52px de alto + 18px de margen): antes estaban
-     los dos en el mismo sitio y el de incidencias, que va en una capa superior, se
-     tragaba el toque. De ahí el "pulso el carrito y no hace nada". */
-  bottom: 84px;
+  /* Carrito abajo a la DERECHA. El 🛟 de incidencias se movió a la izquierda, así que ya
+     no hace falta apilar el carrito encima; va a su sitio, en la esquina. */
+  bottom: 20px;
   z-index: 9100;
   display: inline-flex;
   align-items: center;
@@ -2872,6 +2871,9 @@ body.solo-visor .visor-imagen {
   box-shadow: 0 8px 20px -6px rgba(22,163,74,.7);
 }
 .solovisor-instalar:active { transform: scale(.97); }
+/* En solo-visor la esquina inferior IZQUIERDA la ocupa el botón verde de instalar, así que
+   ahí el 🛟 se queda a la DERECHA (no hay carrito en solo-visor con el que chocar). */
+body.solo-visor .btn-incidencia { left: auto; right: 18px; }
 
 /* ENVIAR LÁMINAS: barra flotante inferior + selección en el mosaico */
 .barra-enviar-laminas {
@@ -4813,7 +4815,10 @@ body.con-banner-update {
 /* --- Canal de incidencias: botón flotante siempre a mano --- */
 .btn-incidencia {
   position: fixed;
-  right: 18px;
+  /* Incidencias a la IZQUIERDA; el carrito va a la DERECHA. Antes estaban los dos a la
+     derecha, casi pegados, y se tocaba uno por otro. */
+  left: 18px;
+  right: auto;
   bottom: 18px;
   z-index: 9000;
   min-width: 52px;
