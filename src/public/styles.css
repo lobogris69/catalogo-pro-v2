@@ -2818,8 +2818,14 @@ body.solo-visor .visor-buscador-fila,
 body.solo-visor .visor-chips-cats { display: none; }
 body.solo-visor .visor-cabecera.solovisor-buscar-abierto .visor-buscador-fila { display: flex; }
 body.solo-visor .visor-cabecera.solovisor-buscar-abierto .visor-chips-cats { display: flex; flex-wrap: wrap; }
-.solovisor-solo { display: none; }        /* botón 🔍 solo visible en modo solo-visor */
+.solovisor-solo { display: none; }        /* 📄 y ✉️: solo en modo solo-visor */
 body.solo-visor .solovisor-solo { display: inline-flex; }
+/* BUSCAR LÁMINA: en el visor normal la barra de búsqueda está siempre a la vista, así que el
+   botón sobra. En solo-visor y en modo sencillo la cabecera va despejada y el buscador se
+   pliega: ahí SÍ hace falta el 🔍 para poder buscar por nombre, número o categoría. */
+.btn-buscar-lamina { display: none; }
+body.solo-visor .btn-buscar-lamina,
+body.modo-simple .btn-buscar-lamina { display: inline-flex !important; }
 
 body.solo-visor .visor-presentacion {
   padding: 2px;
@@ -6120,3 +6126,6 @@ body.modo-simple { padding-top: 0 !important; }
 body.modo-simple .visor-cabecera { padding: 6px 10px; gap: 4px; }
 body.modo-simple .visor-buscador-fila,
 body.modo-simple .visor-chips-cats { display: none !important; }
+/* ...pero se despliegan al pulsar el 🔍 (si no, no había forma de buscar una lámina). */
+body.modo-simple .visor-cabecera.solovisor-buscar-abierto .visor-buscador-fila { display: flex !important; }
+body.modo-simple .visor-cabecera.solovisor-buscar-abierto .visor-chips-cats { display: flex !important; flex-wrap: wrap; }

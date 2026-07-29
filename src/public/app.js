@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v245 · 29 jul 2026';
+const APP_VERSION = 'v246 · 29 jul 2026';
 const API = '';
 
 // ============================================================================
@@ -3558,7 +3558,7 @@ function pintarVisor() {
         </div>
         ${appState.visitaActiva ? `<div style="display:flex;align-items:center">${ayuda('Estás en visita. Toca las zonas marcadas sobre las láminas para añadir productos al pedido (aparecen al pasar el dedo o ratón). También puedes anotar manualmente con el icono ✏️. Al terminar, pulsa "Cerrar visita" para enviar el pedido.', 'abajo')}</div>` : ''}
         <div class="visor-modo-switch">
-          <button class="visor-modo-btn solovisor-solo" onclick="toggleVisorBuscadorSolo(this)" title="Buscar / categorías">🔍</button>
+          <button class="visor-modo-btn btn-buscar-lamina" onclick="toggleVisorBuscadorSolo(this)" title="Buscar una lámina (nombre, número, categoría…)">🔍</button>
           <button class="visor-modo-btn solovisor-solo" onclick="descargarPdfCatalogoHoy(${_visorCatalog.id}, this)" title="Descargar este catálogo en PDF">📄</button>
           <button class="visor-modo-btn solovisor-solo" onclick="activarEnvioLaminas()" title="Enviar láminas por email a un cliente">✉️</button>
           ${appState.visitaActiva ? `<button class="visor-modo-btn" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Última visita con este cliente">📋</button>` : ''}
