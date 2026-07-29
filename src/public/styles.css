@@ -5916,7 +5916,23 @@ body.con-banner-update {
   padding: 12px 16px; background: #111827; color: #fff;
   box-shadow: 0 -6px 20px rgba(0,0,0,.28);
 }
-.simple-barra-cuenta { font-size: 19px; font-weight: 700; }
+/* La cuenta del pedido ES un botón (abre el pedido). Se le quita el aspecto de botón del
+   navegador para que siga viéndose como el texto blanco de la barra negra. */
+.simple-barra-cuenta {
+  font-size: 19px; font-weight: 700;
+  background: transparent; border: none; color: inherit; font-family: inherit;
+  padding: 10px 12px; border-radius: 12px; cursor: pointer;
+}
+.simple-barra-cuenta:active { background: rgba(255,255,255,.14); }
+/* Nada de la barra debe poder seleccionarse: en tablet, mantener el dedo sobre un texto
+   abre el menú de Android ("Buscar en Google") en vez de pulsar. */
+.simple-barra, .simple-barra * {
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+/* En pantalla completa la capa negra también usa z-index 9000: la barra del pedido debe ir
+   POR ENCIMA, o el toque se lo come la capa y parece que el botón no responde. */
+body.visor-fullscreen-activo .simple-barra { z-index: 9500; }
 /* Cambiar de catálogo sin salir de la visita (el general, el de promociones…) */
 .simple-barra-cat {
   min-width: 56px; min-height: 56px; border-radius: 14px; cursor: pointer;

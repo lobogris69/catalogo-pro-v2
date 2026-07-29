@@ -297,9 +297,12 @@ function simpleBarraPedido() {
     b.className = 'simple-barra';
     document.body.appendChild(b);
   }
+  // La cuenta del pedido es un BOTÓN de verdad: al tocarla se abre el pedido. Antes era un
+  // <div> de texto suelto: al pulsarlo no pasaba nada y, si el dedo se entretenía, Android
+  // seleccionaba el texto y ofrecía "Buscar en Google" (parecía que la app fallaba).
   b.innerHTML = `
     <button class="simple-barra-cat" onclick="simpleCambiarCatalogo()" title="Ver otro catálogo sin perder el pedido">📚</button>
-    <div class="simple-barra-cuenta">🛒 ${n} ${n === 1 ? 'producto' : 'productos'}</div>
+    <button class="simple-barra-cuenta" onclick="abrirCarritoVisita()" title="Ver el pedido de esta visita">🛒 ${n} ${n === 1 ? 'producto' : 'productos'}</button>
     <button class="simple-barra-btn" onclick="simpleTerminar()">TERMINAR ▸</button>`;
 }
 
