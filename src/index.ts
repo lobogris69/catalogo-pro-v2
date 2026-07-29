@@ -1612,7 +1612,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v242-familia-variante-auto-29jul',
+      build: 'v243-familia-variante-sin-stopwords-29jul',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -4699,7 +4699,11 @@ function _deducirVariantePorDiferencia(variantes: any[]): void {
       .replace(/\(\d{2,3}\s*-\s*\d{2,3}\)/g, ' ')
       .replace(/\([^)]*\)/g, ' ')
       .replace(/[^A-ZÑ0-9\s]/g, ' ');
-    return s.split(/\s+/).filter(t => t.length >= 2 && !STOPWORDS_FAMILIA.has(t.toLowerCase()));
+    // OJO: aquí NO se filtran las palabras genéricas (gafa, mujer, hombre…). Para hallar la
+    // diferencia no hace falta: lo genérico es común a todos y se descarta solo en el paso
+    // siguiente. Filtrarlas se cargaba familias que se distinguen justo por eso
+    // (PLANTILLA GEL HOMBRE / MUJER se quedaba sin selector).
+    return s.split(/\s+/).filter(t => t.length >= 2);
   };
   const listas = variantes.map(v => tokensDe(v.nombre));
   if (listas.some(l => l.length === 0)) return;
