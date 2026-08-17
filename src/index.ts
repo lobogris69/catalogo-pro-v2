@@ -1619,7 +1619,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v256-modales-scroll-29jul',
+      build: 'v257-enlace-catalogo-solovisor-3ago',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -3209,6 +3209,8 @@ app.post('/api/catalogs/:id/sheets/insert-blank', verifyToken, requireRealAdmin,
     await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
     await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
       { orden: r.rows[0].orden, blank: true }, { id: req.user?.id, name: req.user?.name });
+    // Insertar en medio desplaza el orden del resto -> propagar a los Express.
+    await propagarOrdenAExpress(catalogId);
     res.status(201).json({ success: true, sheet: r.rows[0] });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
@@ -3311,6 +3313,45 @@ app.post('/api/catalogs/:id/sheets/bulk', verifyToken, requireAdmin,
   }
 });
 
+// ============================================================================
+// PROPAGACION DE ORDEN maestro -> Express.
+// El contenido de un Express es un espejo en vivo del maestro (misma fila de
+// sheets), pero el ORDEN es propio de cada Express (express_sheets.orden). Por eso
+// una lamina nueva entraba al final y, al colocarla el admin en su sitio en el
+// maestro, los comerciales seguian viendola donde estaba -> "no se refleja".
+// Ahora, al reordenar el maestro, los Express hijos se recolocan siguiendo ese
+// orden. NO cambia el conjunto de laminas: respeta las exclusiones de cada comercial.
+// ============================================================================
+async function reordenarExpressComoMaestro(expressId: number): Promise<number> {
+  const r = await pool.query(`
+    WITH ordenados AS (
+      SELECT es.sheet_id, ROW_NUMBER() OVER (ORDER BY s.orden, s.id) AS nuevo
+      FROM express_sheets es
+      JOIN sheets s ON s.id = es.sheet_id
+      WHERE es.express_catalog_id = $1
+    )
+    UPDATE express_sheets es SET orden = o.nuevo
+    FROM ordenados o
+    WHERE es.express_catalog_id = $1 AND es.sheet_id = o.sheet_id
+  `, [expressId]);
+  await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [expressId]);
+  return r.rowCount || 0;
+}
+
+// Propaga el orden de un maestro a TODOS sus Express. Nunca lanza: un fallo aqui
+// no debe tumbar la operacion principal (el reorden del maestro ya se guardo).
+async function propagarOrdenAExpress(masterId: number): Promise<number[]> {
+  const tocados: number[] = [];
+  try {
+    const hijos = await pool.query(`SELECT id FROM catalogs WHERE tipo='express' AND parent_id=$1`, [masterId]);
+    for (const h of hijos.rows) {
+      try { await reordenarExpressComoMaestro(h.id); tocados.push(h.id); }
+      catch (e) { console.warn('[orden-express] fallo en express', h.id, (e as Error).message); }
+    }
+  } catch (e) { console.warn('[orden-express] no se pudo propagar:', (e as Error).message); }
+  return tocados;
+}
+
 // Reordenar lamina
 app.put('/api/catalogs/:cid/sheets/:sid/order', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
@@ -3321,7 +3362,8 @@ app.put('/api/catalogs/:cid/sheets/:sid/order', verifyToken, requireAdmin, async
     }
     await pool.query('UPDATE sheets SET orden = $1 WHERE id = $2 AND catalog_id = $3',
       [nuevo_orden, Number(req.params.sid), Number(req.params.cid)]);
-    res.json({ success: true });
+    const exp = await propagarOrdenAExpress(Number(req.params.cid)); // el orden llega a los comerciales
+    res.json({ success: true, express_reordenados: exp.length });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
   }
@@ -3349,7 +3391,9 @@ app.put('/api/catalogs/:cid/sheets/reorder', verifyToken, requireAdmin, async (r
     }
     await client.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [catalogId]);
     await client.query('COMMIT');
-    res.json({ success: true, reordenadas: sheet_ids.length });
+    // El nuevo orden llega a los catálogos de los comerciales (Express hijos).
+    const exp = await propagarOrdenAExpress(catalogId);
+    res.json({ success: true, reordenadas: sheet_ids.length, express_reordenados: exp.length });
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     res.status(400).json({ success: false, error: (e as Error).message });

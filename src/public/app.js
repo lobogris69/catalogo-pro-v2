@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v256 · 29 jul 2026';
+const APP_VERSION = 'v257 · 3 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -5051,7 +5051,11 @@ async function navegarAEnlaceCatalogo(zona) {
     } catch (_) { /* si falla, abre por la 1 */ }
   }
   appState.visorIndice = indice;
-  render();
+  // SOLO VISOR: render()/routerVista pinta el SELECTOR de catálogos e ignora catalogoActual,
+  // así que el salto entre catálogos nunca abría el destino (incidencia #9: enlace EVA→ESSITY
+  // "no entra"). Abrimos el catálogo enlazado igual que las tarjetas del selector.
+  if (esSoloVisor()) renderVisorComercial(appState.catalogoActual);
+  else render();
   actualizarBarraEnlace();
 }
 async function volverDeEnlaceCatalogo() {
@@ -5071,7 +5075,10 @@ async function volverDeEnlaceCatalogo() {
       } catch (_) { /* si falla, vuelve a donde estaba */ }
     }
     appState.visorIndice = indice;
-    render();
+    // Igual que al ir (ver navegarAEnlaceCatalogo): en solo visor abrimos el catálogo de
+    // origen directamente; render() nos devolvería al selector.
+    if (esSoloVisor()) renderVisorComercial(appState.catalogoActual);
+    else render();
   }
   actualizarBarraEnlace();
 }
