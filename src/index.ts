@@ -3485,7 +3485,24 @@ app.delete('/api/catalogs/:cid/sheets/all', verifyToken, requireAdmin, async (re
       res.json({ success: true, eliminadas: r.rowCount, archivos_borrados: 0 });
       return;
     }
-    // Maestro/clon: borrado real
+    // Maestro/clon: NO se destruye nada. Todas las láminas van a la PAPELERA, desde
+    // donde se recuperan o se eliminan a conciencia. (Antes borraba filas + ficheros.)
+    const papId = await idCatalogoEspecial('papelera');
+    if (papId && papId !== catalogId) {
+      const mov = await pool.query(
+        `WITH base AS (SELECT COALESCE(MAX(orden),0) AS m FROM sheets WHERE catalog_id=$1)
+         UPDATE sheets s SET catalog_id=$1,
+                orden = (SELECT m FROM base) + ROW_NUMBER() OVER (ORDER BY s.orden, s.id),
+                origen_catalog_id = COALESCE(s.origen_catalog_id, $2),
+                retirada_at = NOW(), retirada_por = $3, updated_at = NOW()
+          WHERE s.catalog_id = $2 RETURNING s.id`, [papId, catalogId, req.user?.id || null]);
+      await pool.query(`DELETE FROM express_sheets WHERE sheet_id IN
+        (SELECT id FROM sheets WHERE catalog_id=$1 AND origen_catalog_id=$2)`, [papId, catalogId]);
+      await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id IN ($1,$2)', [catalogId, papId]);
+      res.json({ success: true, eliminadas: mov.rowCount || 0, archivos_borrados: 0, movidas_a_papelera: true });
+      return;
+    }
+    // Sin papelera disponible (caso raro): comportamiento antiguo para no dejar el catálogo a medias
     const r = await pool.query('DELETE FROM sheets WHERE catalog_id = $1 RETURNING imagen_path', [catalogId]);
     // Borrar archivos físicos
     let borrados = 0;
@@ -4392,21 +4409,34 @@ app.post('/api/catalogs/:id/sheets/borrar', verifyToken, requireRealAdmin, async
     const c = await pool.query(`SELECT tipo FROM catalogs WHERE id=$1`, [catId]);
     if (!c.rows.length) { res.status(404).json({ success: false, error: 'Catálogo no encontrado' }); return; }
     if (c.rows[0].tipo === 'express') { res.status(400).json({ success: false, error: 'En un Express usa "quitar del Express", no borrar.' }); return; }
+    // YA NO DESTRUYE: mueve a Papelera (por defecto) o al Fondo, igual que el borrado de
+    // una en una. Antes esta via SI borraba fila + imagen sin vuelta atras.
+    const destino: 'papelera' | 'fondo' = String(req.body?.destino || '') === 'fondo' ? 'fondo' : 'papelera';
+    const destinoId = await idCatalogoEspecial(destino);
+    if (!destinoId) { res.status(500).json({ success: false, error: 'No existe el catálogo ' + destino }); return; }
     const bloqueadas: any[] = [];
     let borradas = 0;
     for (const id of ids) {
-      const s = await pool.query(`SELECT titulo, imagen_path, miniatura_path, catalog_id FROM sheets WHERE id=$1`, [id]);
+      const s = await pool.query(`SELECT titulo, catalog_id FROM sheets WHERE id=$1`, [id]);
       if (!s.rows.length || s.rows[0].catalog_id !== catId) continue; // solo láminas de este catálogo
+      // Las usadas en pedidos se mueven igual: al no borrarse nada, el historial no corre
+      // peligro. Solo se avisa de cuáles son para que el admin lo sepa.
       const en = await pool.query(`SELECT COUNT(*)::int AS n FROM annotations WHERE sheet_id=$1`, [id]);
-      if (Number(en.rows[0].n) > 0) { bloqueadas.push({ id, titulo: s.rows[0].titulo }); continue; }
-      await pool.query(`DELETE FROM sheets WHERE id=$1`, [id]);
-      borrarUploadSeguro(s.rows[0].imagen_path);
-      borrarUploadSeguro(s.rows[0].miniatura_path);
-      try { await logSheetChange('deleted', id, catId, s.rows[0].titulo, {}, { id: req.user?.id, name: req.user?.name }); } catch (_) {}
+      const enPedidos = Number(en.rows[0].n) > 0;
+      const ordR = await pool.query(`SELECT COALESCE(MAX(orden),0)+1 AS n FROM sheets WHERE catalog_id=$1`, [destinoId]);
+      await pool.query(
+        `UPDATE sheets SET catalog_id=$1, orden=$2,
+                origen_catalog_id = COALESCE(origen_catalog_id, $3),
+                retirada_at = NOW(), retirada_por = $4, updated_at = NOW()
+          WHERE id=$5`,
+        [destinoId, ordR.rows[0].n, catId, req.user?.id || null, id]);
+      await pool.query('DELETE FROM express_sheets WHERE sheet_id=$1', [id]);
+      try { await logSheetChange('deleted', id, catId, s.rows[0].titulo, { movida_a: destino }, { id: req.user?.id, name: req.user?.name }); } catch (_) {}
       borradas++;
+      if (enPedidos) bloqueadas.push({ id, titulo: s.rows[0].titulo, en_pedidos: true });
     }
-    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id=$1', [catId]);
-    res.json({ success: true, borradas, bloqueadas });
+    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id IN ($1,$2)', [catId, destinoId]);
+    res.json({ success: true, borradas, bloqueadas, destino, catalog_id: destinoId });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 

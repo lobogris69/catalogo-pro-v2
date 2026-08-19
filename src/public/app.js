@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v260 · 3 ago 2026';
+const APP_VERSION = 'v261 · 3 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -1900,6 +1900,40 @@ async function abrirFondoYPapelera() {
     </div>`;
 }
 
+// Diálogo compartido: a dónde va lo que se quita (1 lámina o un lote). Devuelve
+// 'fondo' | 'papelera' | null. Lo usan el borrado suelto y el del mosaico.
+function _pedirDestinoQuitar(cuantas) {
+  return new Promise(resolve => {
+    const n = cuantas > 1 ? `${cuantas} láminas` : 'esta lámina';
+    const m = document.createElement('div');
+    m.className = 'modal-bg';
+    m.innerHTML = `
+      <div class="modal" style="max-width:520px">
+        <h3 style="margin-top:0">Quitar ${escape(n)} del catálogo</h3>
+        <p style="font-size:13px;color:var(--gris-texto);margin-top:0">No se borra nada. Elige qué ${cuantas > 1 ? 'son' : 'es'}:</p>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <button type="button" class="btn quitar-op" data-destino="fondo"
+            style="text-align:left;padding:14px;background:#eff6ff;color:#1d4ed8;border:1.5px solid #1d4ed8;font-weight:800">
+            📦 Se retira${cuantas > 1 ? 'n' : ''} del catálogo
+            <div style="font-weight:400;font-size:12px;margin-top:3px;color:var(--gris-texto)">El producto existe y puede quedar stock. Va al <b>Fondo</b>: podrás consultarlo y seguir pidiéndolo.</div>
+          </button>
+          <button type="button" class="btn quitar-op" data-destino="papelera"
+            style="text-align:left;padding:14px;background:#fef2f2;color:#b91c1c;border:1.5px solid #b91c1c;font-weight:800">
+            🗑️ Fue un error
+            <div style="font-weight:400;font-size:12px;margin-top:3px;color:var(--gris-texto)">Duplicada, mal escaneada o subida sin querer. Va a la <b>Papelera</b>: no se ve en ningún sitio, y desde ahí ${cuantas > 1 ? 'las recuperas' : 'la recuperas'} o ${cuantas > 1 ? 'las eliminas' : 'la eliminas'} del todo.</div>
+          </button>
+        </div>
+        <div class="modal-acciones" style="margin-top:14px">
+          <button type="button" class="btn btn-secondary quitar-op" data-destino="">Cancelar</button>
+        </div>
+      </div>`;
+    m.querySelectorAll('.quitar-op').forEach(b => b.addEventListener('click', () => {
+      const d = b.dataset.destino; m.remove(); resolve(d || null);
+    }));
+    document.body.appendChild(m);
+  });
+}
+
 // Devolver una lámina del Fondo/Papelera a su catálogo de origen.
 async function restaurarLamina(sheetId, catalogId) {
   if (!confirm('¿Devolver esta lámina a su catálogo?\n\nVuelve al catálogo del que salió, colocada al final y sin número hasta que renumeres.')) return;
@@ -1962,40 +1996,30 @@ async function borrarLamina(sheetId, catalogId) {
       </div>`;
     }
   } catch (_) { /* si falla la comprobación, seguimos: no bloqueamos el borrado */ }
-  const m = document.createElement('div');
-  m.className = 'modal-bg';
-  m.innerHTML = `
-    <div class="modal" style="max-width:520px">
-      <h3 style="margin-top:0">Quitar esta lámina del catálogo</h3>
-      ${aviso}
-      <p style="font-size:13px;color:var(--gris-texto);margin-top:0">No se borra nada todavía. Elige qué es:</p>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <button type="button" class="btn quitar-op" data-destino="fondo"
-          style="text-align:left;padding:14px;background:#eff6ff;color:#1d4ed8;border:1.5px solid #1d4ed8;font-weight:800">
-          📦 Se retira del catálogo
-          <div style="font-weight:400;font-size:12px;margin-top:3px;color:var(--gris-texto)">El producto existe y puede quedar stock. Va al <b>Fondo</b>: podrás consultarla y seguir pidiéndola.</div>
-        </button>
-        <button type="button" class="btn quitar-op" data-destino="papelera"
-          style="text-align:left;padding:14px;background:#fef2f2;color:#b91c1c;border:1.5px solid #b91c1c;font-weight:800">
-          🗑️ Fue un error
-          <div style="font-weight:400;font-size:12px;margin-top:3px;color:var(--gris-texto)">Duplicada, mal escaneada o subida sin querer. Va a la <b>Papelera</b>: no se ve en ningún sitio, y desde ahí la recuperas o la eliminas del todo.</div>
-        </button>
-      </div>
-      <div class="modal-acciones" style="margin-top:14px">
-        <button type="button" class="btn btn-secondary quitar-op" data-destino="">Cancelar</button>
-      </div>
-    </div>`;
-  document.body.appendChild(m);
-  m.querySelectorAll('.quitar-op').forEach(b => b.addEventListener('click', async () => {
-    const destino = b.dataset.destino;
-    m.remove();
-    if (!destino) return;
-    try {
-      await api('/api/sheets/' + sheetId + '?destino=' + destino, { method: 'DELETE' });
-      mostrarNotificacionOnline(destino === 'fondo' ? '📦 Lámina movida al Fondo' : '🗑️ Lámina enviada a la Papelera', '#6b7280');
-      renderEditorCatalogo(catalogId);
-    } catch (err) { alert('Error: ' + err.message); }
-  }));
+  if (aviso) {
+    // Enseñamos primero el aviso de enlaces rotos; si sigue adelante, elige destino.
+    const av = document.createElement('div');
+    av.className = 'modal-bg';
+    av.innerHTML = `<div class="modal" style="max-width:520px">
+      <h3 style="margin-top:0">Antes de quitarla…</h3>${aviso}
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" id="av-no">Cancelar</button>
+        <button class="btn btn-primary" id="av-si">Seguir y quitarla</button>
+      </div></div>`;
+    document.body.appendChild(av);
+    const seguir = await new Promise(r => {
+      av.querySelector('#av-no').onclick = () => { av.remove(); r(false); };
+      av.querySelector('#av-si').onclick = () => { av.remove(); r(true); };
+    });
+    if (!seguir) return;
+  }
+  const destino = await _pedirDestinoQuitar(1);
+  if (!destino) return;
+  try {
+    await api('/api/sheets/' + sheetId + '?destino=' + destino, { method: 'DELETE' });
+    mostrarNotificacionOnline(destino === 'fondo' ? '📦 Lámina movida al Fondo' : '🗑️ Lámina enviada a la Papelera', '#6b7280');
+    renderEditorCatalogo(catalogId);
+  } catch (err) { alert('Error: ' + err.message); }
 }
 
 // Inserta una HOJA EN BLANCO justo debajo de la lámina indicada (o al principio si afterSheetId=null)
@@ -19755,22 +19779,23 @@ async function quitarSeleccionadasMosaico() {
       pintarMosaicoReorden();
       if (estado) { estado.textContent = '✓ Quitadas ' + (r.quitadas || 0); setTimeout(() => { if (estado) estado.textContent = ''; }, 3000); }
     } else {
-      if (!confirm(`¿BORRAR DEFINITIVAMENTE ${ids.length} lámina(s) del maestro?\n\nSe borran con su imagen. Las que estén usadas en pedidos NO se borrarán (se protege el historial). NO se puede deshacer.`)) return;
-      const t = prompt('Para confirmar, escribe:  BORRAR');
-      if ((t || '').trim().toUpperCase() !== 'BORRAR') { alert('Cancelado (no escribiste BORRAR).'); return; }
-      if (estado) estado.textContent = 'Borrando…';
-      const r = await api('/api/catalogs/' + _mosaicoCatalogId + '/sheets/borrar', { method: 'POST', body: { sheet_ids: ids } });
+      // Mismo criterio que al quitar una lámina suelta: no se destruye nada, hay que
+      // decir POR QUÉ. Fondo = se retira pero sigue viva y pedible; Papelera = error.
+      const destino = await _pedirDestinoQuitar(ids.length);
+      if (!destino) return;
+      if (estado) estado.textContent = destino === 'fondo' ? 'Moviendo al Fondo…' : 'Enviando a la Papelera…';
+      const r = await api('/api/catalogs/' + _mosaicoCatalogId + '/sheets/borrar', { method: 'POST', body: { sheet_ids: ids, destino } });
       const bloqueadasIds = new Set((r.bloqueadas || []).map(b => b.id));
       _mosaicoSheets = _mosaicoSheets.filter(s => !(_mosaicoSel.has(s.id) && !bloqueadasIds.has(s.id)));
       _mosaicoSel.clear(); _mosaicoAncla = null;
       _mosaicoOrdenPrev = _mosaicoSheets.map(s => s.id);
       pintarMosaicoReorden();
-      let msg = '🗑️ Borradas ' + (r.borradas || 0);
-      if ((r.bloqueadas || []).length) msg += ' · ' + r.bloqueadas.length + ' no se pudieron';
-      if (estado) { estado.textContent = msg; setTimeout(() => { if (estado) estado.textContent = ''; }, 5000); }
+      const dest = r.destino === 'fondo' ? '📦 Movidas al Fondo ' : '🗑️ Enviadas a la Papelera ';
+      if (estado) { estado.textContent = dest + (r.borradas || 0); setTimeout(() => { if (estado) estado.textContent = ''; }, 5000); }
       if ((r.bloqueadas || []).length) {
-        alert('No se borraron ' + r.bloqueadas.length + ' lámina(s) porque están usadas en pedidos:\n\n' +
-          r.bloqueadas.map(b => '· ' + (b.titulo || ('nº ' + b.id))).join('\n') + '\n\n(Se quedan como están para no perder historial.)');
+        alert('Aviso: ' + r.bloqueadas.length + ' de las láminas movidas están usadas en pedidos:\n\n' +
+          r.bloqueadas.map(b => '· ' + (b.titulo || ('nº ' + b.id))).join('\n') +
+          '\n\nNo se ha perdido nada: siguen guardadas y el historial de pedidos queda intacto. Puedes devolverlas cuando quieras.');
       }
     }
   } catch (e) {
