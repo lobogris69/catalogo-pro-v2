@@ -562,6 +562,30 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_zones_sheet ON sheet_zones(sheet_id);
       CREATE INDEX IF NOT EXISTS idx_zones_product ON sheet_zones(product_id);
 
+      -- ===== PAPELERA y FONDO (catalogos especiales) =====
+      -- Al quitar una lamina hay dos motivos MUY distintos y se tratan aparte:
+      --  * 'fondo'    = se retira del catalogo comercial pero el producto existe y puede
+      --                 quedar stock -> catalogo consultable y PEDIBLE con normalidad.
+      --  * 'papelera' = fue un error (duplicada, mal escaneada) -> no se ve en ningun
+      --                 sitio; se recupera o se elimina definitivamente.
+      -- Se implementan como CATALOGOS NORMALES para reutilizar visor/zonas/precios/pedidos
+      -- sin inventar nada; 'especial' los marca para excluirlos de los listados normales.
+      ALTER TABLE catalogs ADD COLUMN IF NOT EXISTS especial VARCHAR(10);
+      -- De donde salio la lamina, para poder devolverla a su sitio al restaurar.
+      ALTER TABLE sheets ADD COLUMN IF NOT EXISTS origen_catalog_id INTEGER;
+      ALTER TABLE sheets ADD COLUMN IF NOT EXISTS retirada_at TIMESTAMP;
+      ALTER TABLE sheets ADD COLUMN IF NOT EXISTS retirada_por INTEGER;
+      CREATE INDEX IF NOT EXISTS idx_catalogs_especial ON catalogs(especial);
+
+      INSERT INTO catalogs (name, tipo, estado, especial, description)
+        SELECT '🗑️ Papelera', 'maestro', 'borrador', 'papelera',
+               'Laminas quitadas por error. No se ven en ningun catalogo: se recuperan o se eliminan definitivamente.'
+        WHERE NOT EXISTS (SELECT 1 FROM catalogs WHERE especial = 'papelera');
+      INSERT INTO catalogs (name, tipo, estado, especial, description)
+        SELECT '📦 Fondo (retirados)', 'maestro', 'borrador', 'fondo',
+               'Laminas retiradas del catalogo comercial. Se pueden consultar y seguir pidiendo mientras quede stock.'
+        WHERE NOT EXISTS (SELECT 1 FROM catalogs WHERE especial = 'fondo');
+
       -- NUMERO FIJO de lamina: el numero que ve la gente NO puede ser la posicion, porque
       -- al reordenar se renumeraba todo y las listas que manda la socia ("cambia la 6, la
       -- 14 y la 23") dejaban de valer a la segunda modificacion. Ahora el numero es un dato
@@ -2032,7 +2056,7 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
           (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at,
           (SELECT COUNT(*)::int FROM catalogs h WHERE h.parent_id = c.id) AS num_hijos
         FROM catalogs c
-        WHERE ${filtroArchivado}
+        WHERE ${filtroArchivado} AND c.especial IS NULL
         ORDER BY (CASE c.tipo WHEN 'maestro' THEN 0 WHEN 'clon' THEN 1 ELSE 2 END), c.updated_at DESC
       `);
     } else {
@@ -2064,7 +2088,7 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
           (SELECT COUNT(*)::int FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS num_versiones,
           (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at
         FROM catalogs c
-        WHERE c.estado != 'archivado'
+        WHERE c.estado != 'archivado' AND (c.especial IS NULL OR c.especial = 'fondo')
         ORDER BY c.updated_at DESC
       `);
     }
@@ -4506,28 +4530,107 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
 });
 
 // Eliminar lamina
+// Id del catalogo especial ('papelera' | 'fondo'). Se crean solos en el arranque.
+async function idCatalogoEspecial(cual: 'papelera' | 'fondo'): Promise<number | null> {
+  const r = await pool.query(`SELECT id FROM catalogs WHERE especial=$1 LIMIT 1`, [cual]);
+  return r.rows.length ? Number(r.rows[0].id) : null;
+}
+
+// QUITAR una lamina. YA NO BORRA NADA: la mueve a Papelera (error) o al Fondo (retirada
+// del catalogo pero sigue existiendo y se puede pedir). Antes era destructivo de verdad
+// —borraba la fila Y el fichero del disco— y no habia forma de recuperarla.
+// ?destino=fondo para retirarla; por defecto va a la papelera.
 app.delete('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
-    // Snapshot ANTES para audit
+    const destino: 'papelera' | 'fondo' = String(req.query.destino || '') === 'fondo' ? 'fondo' : 'papelera';
     const antesR = await pool.query('SELECT catalog_id, titulo, tags FROM sheets WHERE id=$1', [id]);
+    if (!antesR.rows.length) { res.status(404).json({ success: false, error: 'Lamina no encontrada' }); return; }
     const antes = antesR.rows[0];
-    const r = await pool.query('DELETE FROM sheets WHERE id = $1 RETURNING imagen_path, miniatura_path', [id]);
-    if (r.rows.length === 0) {
-      res.status(404).json({ success: false, error: 'Lamina no encontrada' });
-      return;
-    }
-    // Limpiar archivos huerfanos en disco
-    borrarUploadSeguro(r.rows[0].imagen_path);
-    borrarUploadSeguro(r.rows[0].miniatura_path);
-    if (antes) {
-      await logSheetChange('deleted', id, antes.catalog_id, antes.titulo,
-        { tags: antes.tags }, { id: req.user?.id, name: req.user?.name });
-    }
-    res.json({ success: true });
+    const destinoId = await idCatalogoEspecial(destino);
+    if (!destinoId) { res.status(500).json({ success: false, error: 'No existe el catálogo ' + destino }); return; }
+    if (Number(antes.catalog_id) === destinoId) { res.status(400).json({ success: false, error: 'La lámina ya está ahí' }); return; }
+    const ordR = await pool.query(`SELECT COALESCE(MAX(orden),0)+1 AS n FROM sheets WHERE catalog_id=$1`, [destinoId]);
+    await pool.query(
+      `UPDATE sheets SET catalog_id=$1, orden=$2,
+              origen_catalog_id = COALESCE(origen_catalog_id, $3),
+              retirada_at = NOW(), retirada_por = $4, updated_at = NOW()
+        WHERE id=$5`,
+      [destinoId, ordR.rows[0].n, antes.catalog_id, req.user?.id || null, id]);
+    // Quitarla de los Express: deja de repartirse a los comerciales.
+    await pool.query('DELETE FROM express_sheets WHERE sheet_id=$1', [id]);
+    await pool.query('UPDATE catalogs SET updated_at=NOW() WHERE id IN ($1,$2)', [antes.catalog_id, destinoId]);
+    await logSheetChange('deleted', id, antes.catalog_id, antes.titulo,
+      { tags: antes.tags, movida_a: destino }, { id: req.user?.id, name: req.user?.name });
+    res.json({ success: true, destino, catalog_id: destinoId });
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
   }
+});
+
+// RESTAURAR: devuelve la lamina a su catalogo de origen (o al que se indique).
+app.post('/api/sheets/:id/restaurar', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const s = await pool.query('SELECT catalog_id, origen_catalog_id, titulo FROM sheets WHERE id=$1', [id]);
+    if (!s.rows.length) { res.status(404).json({ success: false, error: 'Lamina no encontrada' }); return; }
+    const destinoId = Number(req.body?.catalog_id) || Number(s.rows[0].origen_catalog_id) || null;
+    if (!destinoId) { res.status(400).json({ success: false, error: 'No se sabe a qué catálogo devolverla: elige uno' }); return; }
+    const ok = await pool.query(`SELECT 1 FROM catalogs WHERE id=$1 AND especial IS NULL`, [destinoId]);
+    if (!ok.rows.length) { res.status(400).json({ success: false, error: 'Catálogo de destino no válido' }); return; }
+    const ordR = await pool.query(`SELECT COALESCE(MAX(orden),0)+1 AS n FROM sheets WHERE catalog_id=$1`, [destinoId]);
+    await pool.query(
+      `UPDATE sheets SET catalog_id=$1, orden=$2, retirada_at=NULL, retirada_por=NULL,
+              origen_catalog_id=NULL, numero_fijo=NULL, updated_at=NOW() WHERE id=$3`,
+      [destinoId, ordR.rows[0].n, id]);
+    await logSheetChange('updated_meta', id, destinoId, s.rows[0].titulo,
+      { restaurada: true }, { id: req.user?.id, name: req.user?.name });
+    res.json({ success: true, catalog_id: destinoId });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// ELIMINAR DEFINITIVAMENTE (solo desde la papelera). Esto SI destruye: fila + ficheros.
+app.delete('/api/sheets/:id/definitivo', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const pap = await idCatalogoEspecial('papelera');
+    const s = await pool.query('SELECT catalog_id, titulo, tags FROM sheets WHERE id=$1', [id]);
+    if (!s.rows.length) { res.status(404).json({ success: false, error: 'Lamina no encontrada' }); return; }
+    if (Number(s.rows[0].catalog_id) !== pap) {
+      res.status(400).json({ success: false, error: 'Solo se puede eliminar definitivamente desde la papelera' }); return;
+    }
+    const r = await pool.query('DELETE FROM sheets WHERE id=$1 RETURNING imagen_path, miniatura_path', [id]);
+    borrarUploadSeguro(r.rows[0].imagen_path);
+    borrarUploadSeguro(r.rows[0].miniatura_path);
+    await logSheetChange('deleted', id, s.rows[0].catalog_id, s.rows[0].titulo,
+      { definitivo: true }, { id: req.user?.id, name: req.user?.name });
+    res.json({ success: true });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// VACIAR la papelera entera (definitivo). Devuelve cuantas se eliminaron.
+app.delete('/api/papelera/vaciar', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const pap = await idCatalogoEspecial('papelera');
+    if (!pap) { res.status(500).json({ success: false, error: 'No existe la papelera' }); return; }
+    const r = await pool.query('DELETE FROM sheets WHERE catalog_id=$1 RETURNING imagen_path, miniatura_path', [pap]);
+    for (const f of r.rows) { borrarUploadSeguro(f.imagen_path); borrarUploadSeguro(f.miniatura_path); }
+    res.json({ success: true, eliminadas: r.rowCount || 0 });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// Estado de papelera y fondo: cuantas hay y cuantas llevan mucho tiempo (recordatorio).
+app.get('/api/papelera/estado', verifyToken, requireAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`
+      SELECT c.especial, COUNT(s.id)::int AS n, c.id AS catalog_id,
+             COUNT(s.id) FILTER (WHERE s.retirada_at < NOW() - INTERVAL '6 months')::int AS antiguas
+        FROM catalogs c LEFT JOIN sheets s ON s.catalog_id = c.id
+       WHERE c.especial IS NOT NULL GROUP BY c.especial, c.id`);
+    const out: any = {};
+    r.rows.forEach((x: any) => { out[x.especial] = { catalog_id: x.catalog_id, total: x.n, antiguas: x.antiguas }; });
+    res.json({ success: true, ...out });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 // ============================================================================

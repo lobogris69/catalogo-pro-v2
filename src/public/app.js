@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v258 · 3 ago 2026';
+const APP_VERSION = 'v259 · 3 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -686,6 +686,7 @@ async function renderListaCatalogos() {
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             ${esAdmin && !modoOffline && !_verArchivados ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoCatalogo()">+ Nuevo catálogo</button>${ayuda('Crea un catálogo nuevo. Tipo "Maestro" = catálogo principal con todas las láminas. Tipo "Express" = subcatálogo de ofertas que selecciona algunas láminas del maestro (ej: ofertas verano).', 'izq')}` : ''}
             ${esAdmin && !modoOffline ? `<button class="btn btn-secondary btn-pequeno" onclick="toggleVerArchivados()">${_verArchivados ? '← Volver a los activos' : '🗄️ Ver archivados'}</button>` : ''}
+            ${esAdmin && !modoOffline && !_verArchivados ? `<button class="btn btn-secondary btn-pequeno" id="btn-fondo-papelera" onclick="abrirFondoYPapelera()" title="Láminas retiradas del catálogo (Fondo) y láminas quitadas por error (Papelera)">📦 Fondo y papelera</button>` : ''}
             ${!modoOffline && !_verArchivados ? `<button class="btn btn-secondary btn-pequeno" onclick="descargarMisClientes()" title="Descargar tu lista de clientes a este dispositivo para uso offline">👥 Descargar clientes</button>` : ''}
           </div>
         </div>
@@ -1062,7 +1063,10 @@ async function renderEditorCatalogo(id) {
                     <button onclick="regenerarTagsIA(${s.id}, this)" title="Generar tags con IA (GPT-4 Vision)">🤖</button>
                     <button onclick="sustituirImagenLamina(${s.id})" title="Sustituir imagen">🔄</button>
                     <button onclick="editarLamina(${s.id})" title="Editar todo">✏️</button>
-                    <button class="btn-borrar" onclick="borrarLamina(${s.id}, ${id})" title="Borrar">🗑️</button>
+                    ${c.especial
+                      ? `<button onclick="restaurarLamina(${s.id}, ${id})" title="Devolver esta lámina a su catálogo">↩️</button>
+                         ${c.especial === 'papelera' ? `<button class="btn-borrar" onclick="eliminarLaminaDefinitivo(${s.id}, ${id})" title="Eliminar DEFINITIVAMENTE (no se puede deshacer)">🗑️</button>` : ''}`
+                      : `<button class="btn-borrar" onclick="borrarLamina(${s.id}, ${id})" title="Quitar del catálogo">🗑️</button>`}
                   </div>
                   ` : ''}
                 </div>
@@ -1858,14 +1862,122 @@ async function subirPDF(catalogId, file) {
 }
 
 // ===== BORRAR LAMINA =====
-async function borrarLamina(sheetId, catalogId) {
-  if (!confirm('¿Borrar esta lámina? Esta acción no se puede deshacer.')) return;
+// Fondo y Papelera. El Fondo es un catálogo normal (se abre y se pide como cualquiera);
+// la Papelera solo se ve aquí. Desde aquí se restaura, se elimina o se vacía.
+async function abrirFondoYPapelera() {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:640px"><h3 style="margin-top:0">📦 Fondo y papelera</h3><div class="loading" style="padding:14px">Cargando…</div></div>`;
+  document.body.appendChild(m);
+  let est;
+  try { est = await api('/api/papelera/estado'); }
+  catch (e) { m.querySelector('.modal').innerHTML = `<div class="error-msg">${escape(e.message)}</div>`; return; }
+  const f = est.fondo || { total: 0 }, p = est.papelera || { total: 0, antiguas: 0 };
+  m.querySelector('.modal').innerHTML = `
+    <h3 style="margin-top:0">📦 Fondo y papelera</h3>
+    <div style="border:1px solid var(--gris-borde);border-radius:10px;padding:14px;margin-bottom:12px">
+      <div style="font-weight:700;font-size:15px">📦 Fondo — ${f.total} lámina${f.total === 1 ? '' : 's'}</div>
+      <div style="font-size:13px;color:var(--gris-texto);margin:4px 0 10px">
+        Retiradas del catálogo pero vivas: se pueden consultar y <b>seguir pidiendo</b> mientras quede stock.
+        Solo lo ves tú, salvo que se lo asignes a algún comercial.
+      </div>
+      ${f.catalog_id ? `<button class="btn btn-pequeno btn-primary" onclick="this.closest('.modal-bg').remove();renderEditorCatalogo(${f.catalog_id})">Abrir el Fondo</button>` : ''}
+    </div>
+    <div style="border:1px solid var(--gris-borde);border-radius:10px;padding:14px">
+      <div style="font-weight:700;font-size:15px">🗑️ Papelera — ${p.total} lámina${p.total === 1 ? '' : 's'}</div>
+      <div style="font-size:13px;color:var(--gris-texto);margin:4px 0 10px">
+        Quitadas por error. No se ven en ningún catálogo. Desde dentro puedes devolver cada una a su sitio o eliminarla del todo.
+      </div>
+      ${p.antiguas > 0 ? `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:9px 12px;font-size:13px;color:#78350f;margin-bottom:10px">
+        🧹 <b>${p.antiguas}</b> llevan más de 6 meses ahí. Si ya no las necesitas, buen momento para vaciar.</div>` : ''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${p.catalog_id ? `<button class="btn btn-pequeno btn-secondary" onclick="this.closest('.modal-bg').remove();renderEditorCatalogo(${p.catalog_id})">Abrir la Papelera</button>` : ''}
+        ${p.total > 0 ? `<button class="btn btn-pequeno" style="background:#fee2e2;color:#b91c1c" onclick="vaciarPapelera(this)">🗑️ Vaciar papelera (${p.total})</button>` : ''}
+      </div>
+    </div>
+    <div class="modal-acciones" style="margin-top:14px">
+      <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+    </div>`;
+}
+
+// Devolver una lámina del Fondo/Papelera a su catálogo de origen.
+async function restaurarLamina(sheetId, catalogId) {
+  if (!confirm('¿Devolver esta lámina a su catálogo?\n\nVuelve al catálogo del que salió, colocada al final y sin número hasta que renumeres.')) return;
   try {
-    await api('/api/sheets/' + sheetId, { method: 'DELETE' });
+    await api('/api/sheets/' + sheetId + '/restaurar', { method: 'POST', body: {} });
+    mostrarNotificacionOnline('↩️ Lámina devuelta a su catálogo', '#16a34a');
     renderEditorCatalogo(catalogId);
-  } catch (err) {
-    alert('Error: ' + err.message);
+  } catch (e) {
+    // Si no se sabe de dónde vino (láminas antiguas), que elija destino
+    if (String(e.message).includes('elige uno')) {
+      const destino = prompt('No consta de qué catálogo salió.\n\nEscribe el número (id) del catálogo al que quieres devolverla:');
+      if (!destino) return;
+      try {
+        await api('/api/sheets/' + sheetId + '/restaurar', { method: 'POST', body: { catalog_id: Number(destino) } });
+        renderEditorCatalogo(catalogId);
+      } catch (e2) { alert('Error: ' + e2.message); }
+      return;
+    }
+    alert('Error: ' + e.message);
   }
+}
+
+async function eliminarLaminaDefinitivo(sheetId, catalogId) {
+  if (!confirm('¿ELIMINAR esta lámina definitivamente?\n\nSe borra la lámina y su imagen del servidor. Esto NO se puede deshacer.')) return;
+  try {
+    await api('/api/sheets/' + sheetId + '/definitivo', { method: 'DELETE' });
+    mostrarNotificacionOnline('🗑️ Lámina eliminada definitivamente', '#b91c1c');
+    renderEditorCatalogo(catalogId);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function vaciarPapelera(btn) {
+  if (!confirm('¿Vaciar la papelera?\n\nSe eliminarán DEFINITIVAMENTE todas las láminas que hay dentro, junto con sus imágenes. Esto no se puede deshacer.')) return;
+  if (!confirm('Última confirmación: se borran de verdad y no hay vuelta atrás. ¿Seguimos?')) return;
+  btn.disabled = true; btn.textContent = '⏳ Vaciando…';
+  try {
+    const r = await api('/api/papelera/vaciar', { method: 'DELETE' });
+    btn.closest('.modal-bg').remove();
+    mostrarNotificacionOnline('🗑️ ' + (r.eliminadas || 0) + ' láminas eliminadas definitivamente', '#6b7280');
+  } catch (e) { alert('Error: ' + e.message); btn.disabled = false; btn.textContent = '🗑️ Vaciar papelera'; }
+}
+
+// Quitar una lámina ya NO la destruye: hay que decir POR QUÉ, y según el motivo va al
+// Fondo (sigue consultable y pedible) o a la Papelera (recuperable / eliminable).
+async function borrarLamina(sheetId, catalogId) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `
+    <div class="modal" style="max-width:520px">
+      <h3 style="margin-top:0">Quitar esta lámina del catálogo</h3>
+      <p style="font-size:13px;color:var(--gris-texto);margin-top:0">No se borra nada todavía. Elige qué es:</p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <button type="button" class="btn quitar-op" data-destino="fondo"
+          style="text-align:left;padding:14px;background:#eff6ff;color:#1d4ed8;border:1.5px solid #1d4ed8;font-weight:800">
+          📦 Se retira del catálogo
+          <div style="font-weight:400;font-size:12px;margin-top:3px;color:var(--gris-texto)">El producto existe y puede quedar stock. Va al <b>Fondo</b>: podrás consultarla y seguir pidiéndola.</div>
+        </button>
+        <button type="button" class="btn quitar-op" data-destino="papelera"
+          style="text-align:left;padding:14px;background:#fef2f2;color:#b91c1c;border:1.5px solid #b91c1c;font-weight:800">
+          🗑️ Fue un error
+          <div style="font-weight:400;font-size:12px;margin-top:3px;color:var(--gris-texto)">Duplicada, mal escaneada o subida sin querer. Va a la <b>Papelera</b>: no se ve en ningún sitio, y desde ahí la recuperas o la eliminas del todo.</div>
+        </button>
+      </div>
+      <div class="modal-acciones" style="margin-top:14px">
+        <button type="button" class="btn btn-secondary quitar-op" data-destino="">Cancelar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  m.querySelectorAll('.quitar-op').forEach(b => b.addEventListener('click', async () => {
+    const destino = b.dataset.destino;
+    m.remove();
+    if (!destino) return;
+    try {
+      await api('/api/sheets/' + sheetId + '?destino=' + destino, { method: 'DELETE' });
+      mostrarNotificacionOnline(destino === 'fondo' ? '📦 Lámina movida al Fondo' : '🗑️ Lámina enviada a la Papelera', '#6b7280');
+      renderEditorCatalogo(catalogId);
+    } catch (err) { alert('Error: ' + err.message); }
+  }));
 }
 
 // Inserta una HOJA EN BLANCO justo debajo de la lámina indicada (o al principio si afterSheetId=null)
