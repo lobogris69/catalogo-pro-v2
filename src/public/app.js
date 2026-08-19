@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v259 · 3 ago 2026';
+const APP_VERSION = 'v260 · 3 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -1945,11 +1945,29 @@ async function vaciarPapelera(btn) {
 // Quitar una lámina ya NO la destruye: hay que decir POR QUÉ, y según el motivo va al
 // Fondo (sigue consultable y pedible) o a la Papelera (recuperable / eliminable).
 async function borrarLamina(sheetId, catalogId) {
+  // ¿Hay enlaces de otras láminas apuntando a esta? Si la quitamos, esos saltos se
+  // quedan huérfanos y abrirían el catálogo por la primera página sin avisar.
+  let aviso = '';
+  try {
+    const en = await api('/api/sheets/' + sheetId + '/enlaces-entrantes');
+    if (en.total > 0) {
+      const filas = (en.enlaces || []).map(e =>
+        `<li style="margin-bottom:3px">${escape(e.desde_catalog)} · lámina ${e.desde_numero != null ? e.desde_numero : '?'} <span style="color:var(--gris-texto)">${escape((e.desde_titulo || '').slice(0, 38))}</span> <b style="color:#b45309">${e.es_regreso ? '(vuelta)' : '(destino)'}</b></li>`
+      ).join('');
+      aviso = `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:11px 14px;margin-bottom:12px;font-size:13px;color:#78350f">
+        ⚠️ <b>${en.total} enlace${en.total === 1 ? '' : 's'} apunta${en.total === 1 ? '' : 'n'} a esta lámina.</b>
+        Si la quitas, ${en.total === 1 ? 'ese salto se queda' : 'esos saltos se quedan'} sin destino y abrirá el catálogo por la primera página.
+        <ul style="margin:7px 0 0;padding-left:18px">${filas}</ul>
+        <div style="margin-top:7px">Arregla ${en.total === 1 ? 'el enlace' : 'los enlaces'} en esas láminas antes, o hazlo después.</div>
+      </div>`;
+    }
+  } catch (_) { /* si falla la comprobación, seguimos: no bloqueamos el borrado */ }
   const m = document.createElement('div');
   m.className = 'modal-bg';
   m.innerHTML = `
     <div class="modal" style="max-width:520px">
       <h3 style="margin-top:0">Quitar esta lámina del catálogo</h3>
+      ${aviso}
       <p style="font-size:13px;color:var(--gris-texto);margin-top:0">No se borra nada todavía. Elige qué es:</p>
       <div style="display:flex;flex-direction:column;gap:10px">
         <button type="button" class="btn quitar-op" data-destino="fondo"

@@ -4536,6 +4536,29 @@ async function idCatalogoEspecial(cual: 'papelera' | 'fondo'): Promise<number | 
   return r.rows.length ? Number(r.rows[0].id) : null;
 }
 
+// ENLACES ENTRANTES: que zonas-enlace de OTRAS laminas apuntan a esta (como pagina de
+// destino o como pagina de regreso). Los enlaces guardan el ID de la lamina, asi que
+// reordenar NO los rompe; pero si la lamina se quita del catalogo, el salto se queda
+// huerfano y abriria el catalogo por la primera pagina sin avisar. Esto permite
+// avisar ANTES de quitarla y poder arreglarlos.
+app.get('/api/sheets/:id/enlaces-entrantes', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(`
+      SELECT z.id AS zone_id, z.link_label,
+             (z.link_sheet_id = $1) AS es_destino,
+             (z.link_back_sheet_id = $1) AS es_regreso,
+             s.id AS desde_sheet_id, s.titulo AS desde_titulo, s.numero_fijo AS desde_numero,
+             c.id AS desde_catalog_id, c.name AS desde_catalog
+        FROM sheet_zones z
+        JOIN sheets s ON s.id = z.sheet_id
+        JOIN catalogs c ON c.id = s.catalog_id
+       WHERE z.link_sheet_id = $1 OR z.link_back_sheet_id = $1
+       ORDER BY c.name, s.orden`, [id]);
+    res.json({ success: true, total: r.rows.length, enlaces: r.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
 // QUITAR una lamina. YA NO BORRA NADA: la mueve a Papelera (error) o al Fondo (retirada
 // del catalogo pero sigue existiendo y se puede pedir). Antes era destructivo de verdad
 // —borraba la fila Y el fichero del disco— y no habia forma de recuperarla.
