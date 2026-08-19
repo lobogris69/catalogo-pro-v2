@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v261 · 3 ago 2026';
+const APP_VERSION = 'v262 · 3 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -1340,7 +1340,7 @@ function pintarEditorExpress() {
               : expressFiltradas.map((s, idx) => `
                 <div class="express-fila lamina-fila" data-id="${s.id}" draggable="true">
                   <div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>
-                  <div class="lamina-numero">${idx + 1}</div>
+                  <div class="lamina-numero${(s.numero_fijo != null && s.numero_fijo !== idx + 1) ? ' desfasado' : ''}" title="${s.numero_fijo == null ? 'Sin número: renumera el maestro' : 'Número ' + s.numero_fijo + ' · aquí va en la posición ' + (idx + 1)}">${s.numero_fijo == null ? '·' : s.numero_fijo}${(s.numero_fijo != null && s.numero_fijo !== idx + 1) ? `<span class="lamina-pos">pos ${idx + 1}</span>` : ''}</div>
                   <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async" draggable="false"
                        onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
@@ -3874,7 +3874,7 @@ function pintarPresentacion(visibles) {
 
   if (appState.visorIndice >= visibles.length) appState.visorIndice = 0;
   const sheet = visibles[appState.visorIndice];
-  const numeroOriginal = _visorSheets.indexOf(sheet) + 1;
+  const numeroOriginal = (sheet && sheet.numero_fijo != null) ? sheet.numero_fijo : (_visorSheets.indexOf(sheet) + 1);
   const prevDisabled = appState.visorIndice === 0 ? 'disabled' : '';
   const nextDisabled = appState.visorIndice === visibles.length - 1 ? 'disabled' : '';
 
@@ -3997,7 +3997,7 @@ function pintarMosaico(visibles) {
     <div class="visor-mosaico ${enModoEnviar ? 'mosaico-enviar' : ''}">
       ${visibles.map((s) => {
         const idxOriginal = _visorSheets.indexOf(s);
-        const numeroOriginal = idxOriginal + 1;
+        const numeroOriginal = (s.numero_fijo != null) ? s.numero_fijo : (idxOriginal + 1);
         const anots = (appState.visitaActiva && _anotacionesVisita[s.id]) ? _anotacionesVisita[s.id].length : 0;
         const sel = enModoEnviar && _seleccionEnviar.has(s.id);
         return `
@@ -5623,7 +5623,7 @@ function engancharLongPressParaPin() {
 async function abrirModalAnotarConPin(sheetId, posX, posY) {
   // Necesitamos info de la lamina actual
   const sheet = _visorSheets.find(s => s.id === sheetId);
-  const numeroOriginal = _visorSheets.indexOf(sheet) + 1;
+  const numeroOriginal = (sheet && sheet.numero_fijo != null) ? sheet.numero_fijo : (_visorSheets.indexOf(sheet) + 1);
   const titulo = sheet && sheet.titulo || '';
   // Almacenar pos en variables globales para el modal
   window._pendingPinPos = { x: posX, y: posY };
