@@ -575,6 +575,10 @@ async function initDB(): Promise<void> {
       ALTER TABLE sheets ADD COLUMN IF NOT EXISTS origen_catalog_id INTEGER;
       ALTER TABLE sheets ADD COLUMN IF NOT EXISTS retirada_at TIMESTAMP;
       ALTER TABLE sheets ADD COLUMN IF NOT EXISTS retirada_por INTEGER;
+      -- En que Express estaba la lamina al quitarla, para DEVOLVERLA a los mismos al
+      -- restaurar. Sin esto, restaurar la devolvia al maestro pero los comerciales se
+      -- quedaban sin ella y nadie se enteraba.
+      ALTER TABLE sheets ADD COLUMN IF NOT EXISTS origen_express_ids JSONB;
       CREATE INDEX IF NOT EXISTS idx_catalogs_especial ON catalogs(especial);
 
       INSERT INTO catalogs (name, tipo, estado, especial, description)
@@ -4430,6 +4434,9 @@ app.post('/api/catalogs/:id/sheets/borrar', verifyToken, requireRealAdmin, async
                 retirada_at = NOW(), retirada_por = $4, updated_at = NOW()
           WHERE id=$5`,
         [destinoId, ordR.rows[0].n, catId, req.user?.id || null, id]);
+      const exR = await pool.query('SELECT express_catalog_id FROM express_sheets WHERE sheet_id=$1', [id]);
+      await pool.query('UPDATE sheets SET origen_express_ids=$1 WHERE id=$2',
+        [JSON.stringify(exR.rows.map((x: any) => Number(x.express_catalog_id))), id]);
       await pool.query('DELETE FROM express_sheets WHERE sheet_id=$1', [id]);
       try { await logSheetChange('deleted', id, catId, s.rows[0].titulo, { movida_a: destino }, { id: req.user?.id, name: req.user?.name }); } catch (_) {}
       borradas++;
@@ -4610,7 +4617,11 @@ app.delete('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest
               retirada_at = NOW(), retirada_por = $4, updated_at = NOW()
         WHERE id=$5`,
       [destinoId, ordR.rows[0].n, antes.catalog_id, req.user?.id || null, id]);
-    // Quitarla de los Express: deja de repartirse a los comerciales.
+    // Guardar en QUE Express estaba y quitarla de ellos: deja de repartirse a los
+    // comerciales, pero al restaurar sabremos a cuales devolverla.
+    const exR = await pool.query('SELECT express_catalog_id FROM express_sheets WHERE sheet_id=$1', [id]);
+    const exIds = exR.rows.map((x: any) => Number(x.express_catalog_id));
+    await pool.query('UPDATE sheets SET origen_express_ids=$1 WHERE id=$2', [JSON.stringify(exIds), id]);
     await pool.query('DELETE FROM express_sheets WHERE sheet_id=$1', [id]);
     await pool.query('UPDATE catalogs SET updated_at=NOW() WHERE id IN ($1,$2)', [antes.catalog_id, destinoId]);
     await logSheetChange('deleted', id, antes.catalog_id, antes.titulo,
@@ -4625,20 +4636,28 @@ app.delete('/api/sheets/:id', verifyToken, requireAdmin, async (req: AuthRequest
 app.post('/api/sheets/:id/restaurar', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const s = await pool.query('SELECT catalog_id, origen_catalog_id, titulo FROM sheets WHERE id=$1', [id]);
+    const s = await pool.query('SELECT catalog_id, origen_catalog_id, origen_express_ids, titulo FROM sheets WHERE id=$1', [id]);
     if (!s.rows.length) { res.status(404).json({ success: false, error: 'Lamina no encontrada' }); return; }
     const destinoId = Number(req.body?.catalog_id) || Number(s.rows[0].origen_catalog_id) || null;
     if (!destinoId) { res.status(400).json({ success: false, error: 'No se sabe a qué catálogo devolverla: elige uno' }); return; }
     const ok = await pool.query(`SELECT 1 FROM catalogs WHERE id=$1 AND especial IS NULL`, [destinoId]);
     if (!ok.rows.length) { res.status(400).json({ success: false, error: 'Catálogo de destino no válido' }); return; }
     const ordR = await pool.query(`SELECT COALESCE(MAX(orden),0)+1 AS n FROM sheets WHERE catalog_id=$1`, [destinoId]);
+    // Devolverla tambien a los EXPRESS de los que salio: si no, vuelve al maestro pero
+    // los comerciales se quedan sin ella y no se entera nadie (paso de verdad).
+    const exPrev: number[] = Array.isArray(s.rows[0].origen_express_ids) ? s.rows[0].origen_express_ids : [];
     await pool.query(
       `UPDATE sheets SET catalog_id=$1, orden=$2, retirada_at=NULL, retirada_por=NULL,
-              origen_catalog_id=NULL, numero_fijo=NULL, updated_at=NOW() WHERE id=$3`,
+              origen_catalog_id=NULL, origen_express_ids=NULL, numero_fijo=NULL, updated_at=NOW() WHERE id=$3`,
       [destinoId, ordR.rows[0].n, id]);
+    const vueltos: number[] = [];
+    for (const exId of exPrev) {
+      try { if (await insertarEnExpressPorPosicion(Number(exId), id, false)) vueltos.push(Number(exId)); }
+      catch (e) { console.warn('[restaurar] no se pudo devolver al express', exId, (e as Error).message); }
+    }
     await logSheetChange('updated_meta', id, destinoId, s.rows[0].titulo,
-      { restaurada: true }, { id: req.user?.id, name: req.user?.name });
-    res.json({ success: true, catalog_id: destinoId });
+      { restaurada: true, express: vueltos }, { id: req.user?.id, name: req.user?.name });
+    res.json({ success: true, catalog_id: destinoId, express_devueltos: vueltos });
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
 });
 
