@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v262 · 3 ago 2026';
+const APP_VERSION = 'v263 · 3 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -4121,6 +4121,13 @@ async function enviarLaminasSeleccionadas(btn) {
 }
 
 function cambiarVisorModo(modo) {
+  // Si estábamos en pantalla completa, SALIR antes de cambiar de modo. Si no, la clase
+  // del body se quedaba puesta: al volver a una lámina desde la cuadrícula se pintaba a
+  // pantalla completa (sin la barra de arriba) y sin los botones flotantes para salir
+  // -> había que abandonar el catálogo y volver a entrar (incidencia reportada).
+  if (_fullscreenActivo || document.body.classList.contains('visor-fullscreen-activo')) {
+    salirPantallaCompleta();
+  }
   appState.visorModo = modo;
   appState.visorZoom = 1;
   appState.visorPanX = 0;
@@ -4164,6 +4171,11 @@ function visorZoomReset() {
 }
 
 function abrirLaminaDesdeMosaico(idx) {
+  // Red de seguridad: nunca abrir una lámina con la pantalla completa a medio salir
+  // (se quedaba sin barra de arriba y sin botones para volver).
+  if (_fullscreenActivo || document.body.classList.contains('visor-fullscreen-activo')) {
+    salirPantallaCompleta();
+  }
   appState.visorIndice = idx;
   appState.visorModo = 'presentacion';
   appState.visorZoom = 1;
