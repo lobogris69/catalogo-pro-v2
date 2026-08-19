@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v257 · 3 ago 2026';
+const APP_VERSION = 'v258 · 3 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -992,6 +992,12 @@ async function renderEditorCatalogo(id) {
           <div class="editor-panel">
             <div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem; flex-wrap:wrap">
               <h3 style="margin-bottom:0">Láminas (${sheets.length})</h3>
+              ${esAdmin ? (() => {
+                // Los números NO se mueven al reordenar: solo cambian al pulsar Renumerar.
+                // Avisamos cuando el orden ya no coincide con la numeración.
+                const desf = sheets.filter((s, i) => s.numero_fijo == null || s.numero_fijo !== i + 1).length;
+                return `<button onclick="renumerarLaminas(${id}, this)" class="btn btn-pequeno" style="background:${desf ? '#fef3c7' : '#f3f4f6'};color:${desf ? '#b45309' : '#4b5563'};font-weight:700" title="Vuelve a numerar las láminas 1,2,3… siguiendo el orden actual. Hasta que lo pulses, los números NO cambian aunque muevas láminas.">🔢 Renumerar${desf ? ' (' + desf + ' descuadradas)' : ''}</button>`;
+              })() : ''}
               ${esAdmin ? `
                 <button onclick="insertarHojaEnBlanco(null, ${id})" class="btn btn-pequeno btn-secondary" title="Insertar una hoja en blanco al principio del catálogo">📄➕ Hoja al principio</button>
                 <button onclick="abrirReglasReparto()" class="btn btn-pequeno" style="background:#f5f3ff;color:#6d28d9;font-weight:700" title="Qué láminas van solas al catálogo de cada comercial según su laboratorio">🔀 Reparto automático</button>
@@ -1011,9 +1017,14 @@ async function renderEditorCatalogo(id) {
                   `<span class="lamina-cat-chip" style="background:${escape(c.color || '#cc007a')}20;color:${escape(c.color || '#cc007a')};border:1px solid ${escape(c.color || '#cc007a')}40">${escape(c.nombre)}</span>`
                 ).join('');
                 return `
-                <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${idx + 1}" data-cambio="${s.ultimo_cambio || ''}" data-pendiente="${_pendienteRepaso(s) ? '1' : '0'}" ${esAdmin ? 'draggable="true"' : ''}>
+                <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${s.numero_fijo != null ? s.numero_fijo : ''}" data-pos="${idx + 1}" data-cambio="${s.ultimo_cambio || ''}" data-pendiente="${_pendienteRepaso(s) ? '1' : '0'}" ${esAdmin ? 'draggable="true"' : ''}>
                   ${esAdmin ? `<div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>` : ''}
-                  <div class="lamina-numero">${idx + 1}</div>
+                  <div class="lamina-numero${(s.numero_fijo != null && s.numero_fijo !== idx + 1) ? ' desfasado' : ''}"${
+                    s.numero_fijo == null ? ' title="Lámina nueva: aún no tiene número. Pulsa Renumerar cuando termines de ordenar."'
+                    : (s.numero_fijo !== idx + 1 ? ` title="Número ${s.numero_fijo} · ahora va en la posición ${idx + 1}. Pulsa Renumerar cuando termines."` : '')
+                  }>${s.numero_fijo == null ? '·' : s.numero_fijo}${
+                    (s.numero_fijo != null && s.numero_fijo !== idx + 1) ? `<span class="lamina-pos">pos ${idx + 1}</span>` : ''
+                  }</div>
                   <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async" draggable="false" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
@@ -1552,6 +1563,22 @@ function activarDragDropExpress(expressId) {
       }
     });
   });
+}
+
+// Renumerar: iguala los números al orden actual. Es lo ÚLTIMO que se hace tras una
+// sesión de reordenación; hasta entonces los números se quedan quietos a propósito.
+async function renumerarLaminas(catalogId, boton) {
+  if (!confirm('¿Renumerar las láminas 1, 2, 3… siguiendo el orden actual?\n\nHazlo cuando hayas TERMINADO de mover láminas.\n\nOJO: a partir de ese momento, las listas de referencia que te hayan pasado con los números viejos dejan de coincidir.')) return;
+  const orig = boton ? boton.textContent : '';
+  if (boton) { boton.disabled = true; boton.textContent = '⏳ Renumerando…'; }
+  try {
+    const r = await api('/api/catalogs/' + catalogId + '/renumerar', { method: 'POST' });
+    mostrarNotificacionOnline('🔢 ' + (r.renumeradas || 0) + ' láminas renumeradas', '#16a34a');
+    renderEditorCatalogo(catalogId);
+  } catch (e) {
+    alert('Error al renumerar: ' + e.message);
+    if (boton) { boton.disabled = false; boton.textContent = orig; }
+  }
 }
 
 // ===== SUBIR LAMINA =====
@@ -2130,22 +2157,38 @@ function activarDragDropLaminas(catalogId) {
     document.querySelectorAll('.lamina-arrastrando-target').forEach(f => f.classList.remove('lamina-arrastrando-target'));
     if (cambios) {
       cambios = false;
-      // Recalcular números visibles + enviar al backend
       const filas = Array.from(lista.querySelectorAll('.lamina-fila'));
       const ids = filas.map(f => Number(f.dataset.id));
-      // Actualizar UI inmediato
+      // Los NÚMEROS ya NO se recalculan aquí: se quedan como están hasta que el admin
+      // pulse "Renumerar". Solo actualizamos la POSICIÓN que se ve bajo el número.
       filas.forEach((f, i) => {
-        f.dataset.numero = String(i + 1);
+        f.dataset.pos = String(i + 1);
         const num = f.querySelector('.lamina-numero');
-        if (num) num.textContent = String(i + 1);
+        if (!num) return;
+        const fijo = f.dataset.numero;
+        const desf = (fijo === '' || Number(fijo) !== i + 1);
+        num.classList.toggle('desfasado', desf);
+        num.innerHTML = (fijo === '' ? '·' : fijo) + (desf ? `<span class="lamina-pos">pos ${i + 1}</span>` : '');
       });
       try {
         await api(`/api/catalogs/${catalogId}/sheets/reorder`, {
           method: 'PUT',
           body: { sheet_ids: ids }
         });
-        // Pequeño feedback visual
-        const $cont = document.querySelector('.editor-panel');
+      } catch (err) {
+        // Solo un fallo REAL de guardado llega aquí (antes el feedback visual de abajo
+        // estaba dentro de este try: si petaba, se mostraba "Error guardando el orden"
+        // aunque el orden SÍ se hubiera guardado, y encima recargaba la lista).
+        alert('Error guardando el orden: ' + err.message + '\n\nRecargo la lista.');
+        renderEditorCatalogo(catalogId);
+        arrastrando = null;
+        return;
+      }
+      // Feedback visual, aparte y a prueba de fallos: se inserta en el PADRE REAL de la
+      // lista (document.querySelector('.editor-panel') cogía el primer panel de la página,
+      // que no siempre es el que contiene la lista -> insertBefore reventaba).
+      try {
+        const $cont = lista.parentNode;
         if ($cont) {
           const $msg = document.createElement('div');
           $msg.className = 'exito-msg';
@@ -2154,10 +2197,7 @@ function activarDragDropLaminas(catalogId) {
           $cont.insertBefore($msg, lista);
           setTimeout(() => $msg.remove(), 1500);
         }
-      } catch (err) {
-        alert('Error guardando el orden: ' + err.message + '\n\nRecargo la lista.');
-        renderEditorCatalogo(catalogId);
-      }
+      } catch (_) { /* el orden ya está guardado; el aviso es lo de menos */ }
     }
     arrastrando = null;
   });

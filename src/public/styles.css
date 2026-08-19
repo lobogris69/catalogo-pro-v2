@@ -679,6 +679,18 @@ html {
   font-weight: 600;
   color: var(--rosa);
   text-align: center;
+  flex-shrink: 0;
+}
+/* El número NO cambia al reordenar (solo al pulsar Renumerar). Cuando deja de coincidir
+   con la posición, se marca en ámbar y se muestra debajo la posición real. */
+.lamina-numero.desfasado { color: #b45309; }
+.lamina-pos {
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--gris-texto);
+  letter-spacing: .02em;
+  margin-top: 1px;
 }
 .lamina-mini {
   width: 54px;

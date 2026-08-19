@@ -562,6 +562,13 @@ async function initDB(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_zones_sheet ON sheet_zones(sheet_id);
       CREATE INDEX IF NOT EXISTS idx_zones_product ON sheet_zones(product_id);
 
+      -- NUMERO FIJO de lamina: el numero que ve la gente NO puede ser la posicion, porque
+      -- al reordenar se renumeraba todo y las listas que manda la socia ("cambia la 6, la
+      -- 14 y la 23") dejaban de valer a la segunda modificacion. Ahora el numero es un dato
+      -- de la lamina y SOLO cambia cuando el admin pulsa "Renumerar".
+      ALTER TABLE sheets ADD COLUMN IF NOT EXISTS numero_fijo INTEGER;
+      CREATE INDEX IF NOT EXISTS idx_sheets_numero_fijo ON sheets(catalog_id, numero_fijo);
+
       -- Marca cuando se paso la deteccion de zonas por IA (para no repetir)
       ALTER TABLE sheets ADD COLUMN IF NOT EXISTS zones_ia_at TIMESTAMP;
       CREATE INDEX IF NOT EXISTS idx_sheets_zones_ia ON sheets(zones_ia_at);
@@ -1085,6 +1092,21 @@ async function initDB(): Promise<void> {
       -- Horas que dura la sesion antes de pedir la contrasena otra vez. Configurable
       -- desde el panel: 8h obligaba a los comerciales a re-entrar a media jornada.
       INSERT INTO app_config (clave, valor) VALUES ('sesion_horas', '168') ON CONFLICT (clave) DO NOTHING;
+
+      -- Relleno inicial del numero fijo: UNA SOLA VEZ (marca en app_config). A partir de
+      -- ahi las laminas nuevas se quedan SIN numero hasta que el admin pulse "Renumerar"
+      -- — es lo acordado: el numero no debe moverse solo nunca.
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM app_config WHERE clave = 'numero_fijo_inicializado') THEN
+          UPDATE sheets s SET numero_fijo = t.pos
+            FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY catalog_id ORDER BY orden, id) AS pos
+                    FROM sheets) t
+           WHERE s.id = t.id AND s.numero_fijo IS NULL;
+          INSERT INTO app_config (clave, valor) VALUES ('numero_fijo_inicializado', '1')
+            ON CONFLICT (clave) DO NOTHING;
+        END IF;
+      END $$;
 
       -- Cambios de precio PROGRAMADOS con fecha de entrada en vigor. El "precio de hoy"
       -- de un producto+tarifa = la fila con fecha_vigencia <= hoy más reciente; si no hay,
@@ -3311,6 +3333,25 @@ app.post('/api/catalogs/:id/sheets/bulk', verifyToken, requireAdmin,
   } catch (e) {
     res.status(400).json({ success: false, error: (e as Error).message });
   }
+});
+
+// RENUMERAR: iguala el numero fijo a la posicion actual (1,2,3...). Es la unica via por
+// la que cambian los numeros: mientras no se pulse, reordenar NO los toca, para que las
+// listas de referencia ("cambia la 6, la 14 y la 23") sigan valiendo toda la sesion.
+app.post('/api/catalogs/:id/renumerar', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const catalogId = Number(req.params.id);
+    const c = await pool.query(`SELECT tipo FROM catalogs WHERE id=$1`, [catalogId]);
+    if (!c.rows.length) { res.status(404).json({ success: false, error: 'Catálogo no encontrado' }); return; }
+    if (c.rows[0].tipo === 'express') { res.status(400).json({ success: false, error: 'Los Express no tienen numeración propia: renumera el maestro' }); return; }
+    const r = await pool.query(`
+      UPDATE sheets s SET numero_fijo = t.pos, updated_at = NOW()
+        FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY orden, id) AS pos
+                FROM sheets WHERE catalog_id = $1) t
+       WHERE s.id = t.id AND s.catalog_id = $1
+         AND (s.numero_fijo IS DISTINCT FROM t.pos)`, [catalogId]);
+    res.json({ success: true, renumeradas: r.rowCount || 0 });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 // ============================================================================
