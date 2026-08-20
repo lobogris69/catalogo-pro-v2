@@ -1011,6 +1011,19 @@ async function initDB(): Promise<void> {
         created_at TIMESTAMP DEFAULT NOW(),
         UNIQUE(express_catalog_id, sheet_id)
       );
+      -- EXCLUSIONES por comercial: "esta lamina NO la quiero en mi catalogo". Se guarda
+      -- como DECISION, no como simple ausencia: si solo se quitara de express_sheets, el
+      -- reparto automatico o "copiar del maestro" se la devolverian sin que nadie se entere.
+      CREATE TABLE IF NOT EXISTS express_excluidas (
+        express_catalog_id INTEGER NOT NULL REFERENCES catalogs(id) ON DELETE CASCADE,
+        sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+        motivo VARCHAR(200),
+        creado_por INTEGER REFERENCES users(id),
+        created_at TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (express_catalog_id, sheet_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_excluidas_cat ON express_excluidas(express_catalog_id);
+
       CREATE INDEX IF NOT EXISTS idx_express_catalog ON express_sheets(express_catalog_id);
       CREATE INDEX IF NOT EXISTS idx_express_orden ON express_sheets(express_catalog_id, orden);
 
@@ -4222,6 +4235,10 @@ async function insertarEnExpressPorPosicion(expressId: number, sheetId: number, 
   const ya = await pool.query(
     `SELECT 1 FROM express_sheets WHERE express_catalog_id=$1 AND sheet_id=$2`, [expressId, sheetId]);
   if (ya.rows.length) return false;   // ya la tiene: no se toca ni su posicion
+  // El comercial la tiene EXCLUIDA a proposito: no se le cuela por reparto automatico.
+  const exc = await pool.query(
+    `SELECT 1 FROM express_excluidas WHERE express_catalog_id=$1 AND sheet_id=$2`, [expressId, sheetId]);
+  if (exc.rows.length) return false;
   // Vecino: la lamina mas cercana POR DELANTE en el maestro que tambien este en el Express.
   const vecino = await pool.query(
     `SELECT es.orden
@@ -4255,6 +4272,36 @@ async function repartirLamina(sheetId: number): Promise<{ anadida_en: any[]; des
   return { anadida_en: anadida, destinos };
 }
 
+// LISTA de laminas que este comercial NO quiere llevar (con quien y cuando lo decidio).
+app.get('/api/catalogs/:id/excluidas', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query(`
+      SELECT e.sheet_id, e.motivo, e.created_at,
+             s.titulo, s.numero_fijo, s.miniatura_path, s.imagen_path,
+             u.name AS quien
+        FROM express_excluidas e
+        JOIN sheets s ON s.id = e.sheet_id
+        LEFT JOIN users u ON u.id = e.creado_por
+       WHERE e.express_catalog_id = $1
+       ORDER BY s.orden, s.id`, [Number(req.params.id)]);
+    res.json({ success: true, total: r.rows.length, excluidas: r.rows });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// READMITIR: quitar la exclusion y devolverle la lamina a su sitio.
+app.post('/api/catalogs/:id/excluidas/readmitir', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const expressId = Number(req.params.id);
+    const ids = (req.body?.sheet_ids || []).map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n));
+    if (!ids.length) { res.status(400).json({ success: false, error: 'No hay láminas seleccionadas' }); return; }
+    await pool.query(`DELETE FROM express_excluidas WHERE express_catalog_id=$1 AND sheet_id = ANY($2::int[])`, [expressId, ids]);
+    let devueltas = 0;
+    for (const id of ids) { try { if (await insertarEnExpressPorPosicion(expressId, id, false)) devueltas++; } catch (_) {} }
+    await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id=$1', [expressId]);
+    res.json({ success: true, devueltas });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
 // Copiar TODAS las laminas del maestro a un Express que ya existe, respetando su orden.
 // Para los Express creados antes de que esto fuera el comportamiento por defecto, y para
 // "empezar de cero desde el maestro" si te has liado quitando laminas.
@@ -4271,12 +4318,18 @@ app.post('/api/catalogs/:id/express-sheets/copiar-maestro', verifyToken, require
     const base = await pool.query(
       `SELECT COALESCE(MAX(orden),0) AS m FROM express_sheets WHERE express_catalog_id=$1`, [expressId]);
     const r = await pool.query(
+      // RESPETA las exclusiones del comercial: lo que ha dicho que no quiere llevar no se
+      // le devuelve aunque se copie el maestro entero.
       `INSERT INTO express_sheets (express_catalog_id, sheet_id, orden)
-       SELECT $1, id, $3 + ROW_NUMBER() OVER (ORDER BY orden, id)
-         FROM sheets WHERE catalog_id = $2 AND oculta = FALSE
+       SELECT $1, s.id, $3 + ROW_NUMBER() OVER (ORDER BY s.orden, s.id)
+         FROM sheets s
+        WHERE s.catalog_id = $2 AND s.oculta = FALSE
+          AND NOT EXISTS (SELECT 1 FROM express_excluidas e
+                           WHERE e.express_catalog_id = $1 AND e.sheet_id = s.id)
        ON CONFLICT (express_catalog_id, sheet_id) DO NOTHING
        RETURNING id`, [expressId, c.rows[0].parent_id, Number(base.rows[0].m)]);
-    res.json({ success: true, anadidas: r.rowCount || 0 });
+    const nExc = await pool.query(`SELECT COUNT(*)::int AS n FROM express_excluidas WHERE express_catalog_id=$1`, [expressId]);
+    res.json({ success: true, anadidas: r.rowCount || 0, excluidas_respetadas: nExc.rows[0].n });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
@@ -4339,6 +4392,10 @@ app.post('/api/catalogs/:id/express-sheets', verifyToken, requireAdmin, async (r
       return;
     }
     await client.query('BEGIN');
+    // Si se anade a mano, es que ya NO esta excluida: se levanta la exclusion.
+    await client.query(
+      `DELETE FROM express_excluidas WHERE express_catalog_id=$1 AND sheet_id = ANY($2::int[])`,
+      [expressId, validIds]);
     // Orden actual maximo
     const maxR = await client.query(
       `SELECT COALESCE(MAX(orden),0) AS m FROM express_sheets WHERE express_catalog_id = $1`,
@@ -4398,6 +4455,15 @@ app.post('/api/catalogs/:id/express-sheets/quitar', verifyToken, requireRealAdmi
     const c = await pool.query(`SELECT tipo FROM catalogs WHERE id=$1`, [expressId]);
     if (!c.rows.length || c.rows[0].tipo !== 'express') { res.status(400).json({ success: false, error: 'Solo aplicable a catálogos Express' }); return; }
     const r = await pool.query(`DELETE FROM express_sheets WHERE express_catalog_id=$1 AND sheet_id = ANY($2::int[])`, [expressId, ids]);
+    // Queda registrado como EXCLUSION: ni el reparto automatico ni "copiar del maestro"
+    // se las devolveran. Se puede readmitir desde la lista de excluidas.
+    if (req.body?.excluir !== false) {
+      await pool.query(
+        `INSERT INTO express_excluidas (express_catalog_id, sheet_id, motivo, creado_por)
+         SELECT $1, x, $2, $3 FROM UNNEST($4::int[]) AS x
+         ON CONFLICT (express_catalog_id, sheet_id) DO NOTHING`,
+        [expressId, (req.body?.motivo || null), req.user?.id || null, ids]);
+    }
     await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id=$1', [expressId]);
     res.json({ success: true, quitadas: r.rowCount || 0 });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }

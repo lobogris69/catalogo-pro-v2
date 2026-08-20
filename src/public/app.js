@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v263 · 3 ago 2026';
+const APP_VERSION = 'v264 · 20 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -1165,6 +1165,50 @@ let _expressEditor = {
   seleccionMaestro: new Set(),
 };
 
+// Láminas que este comercial ha dicho que NO quiere llevar. Se guardan como decisión:
+// ni el reparto automático ni "traer del maestro" se las devuelven.
+async function abrirExcluidasExpress(expressId) {
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `<div class="modal" style="max-width:640px"><h3 style="margin-top:0">🚫 Láminas que no quiere llevar</h3><div class="loading" style="padding:14px">Cargando…</div></div>`;
+  document.body.appendChild(m);
+  let r;
+  try { r = await api('/api/catalogs/' + expressId + '/excluidas'); }
+  catch (e) { m.querySelector('.modal').innerHTML = `<div class="error-msg">${escape(e.message)}</div>`; return; }
+  const lista = r.excluidas || [];
+  const filas = lista.map(x => `
+    <label style="display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid var(--gris-borde);cursor:pointer">
+      <input type="checkbox" class="exc-chk" value="${x.sheet_id}" style="width:auto;flex:0 0 auto">
+      <img src="${escape(vurl(x.miniatura_path || x.imagen_path, x))}" style="width:38px;height:50px;object-fit:cover;border-radius:4px;background:#f3f4f6" alt="">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600">${x.numero_fijo != null ? x.numero_fijo + ' · ' : ''}${escape((x.titulo || '').slice(0, 46))}</div>
+        <div style="font-size:11px;color:var(--gris-texto)">Excluida ${x.created_at ? 'el ' + String(x.created_at).slice(0, 10).split('-').reverse().join('/') : ''}${x.quien ? ' por ' + escape(x.quien) : ''}${x.motivo ? ' · ' + escape(x.motivo) : ''}</div>
+      </div>
+    </label>`).join('');
+  m.querySelector('.modal').innerHTML = `
+    <h3 style="margin-top:0">🚫 Láminas que no quiere llevar (${lista.length})</h3>
+    ${lista.length === 0
+      ? `<p style="color:var(--gris-texto);font-size:13px">Ninguna. Cuando quites una lámina de este Express, quedará apuntada aquí y no se le devolverá sola.</p>`
+      : `<p style="font-size:12px;color:var(--gris-texto);margin-top:0">No se le devuelven ni con el reparto automático ni al traer el maestro. Marca las que quieras volver a darle.</p>
+         <div style="max-height:340px;overflow-y:auto;border:1px solid var(--gris-borde);border-radius:8px">${filas}</div>`}
+    <div class="modal-acciones" style="margin-top:14px">
+      ${lista.length ? `<button class="btn btn-primary" onclick="readmitirExcluidas(${expressId}, this)">↩️ Volver a dárselas</button>` : ''}
+      <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
+    </div>`;
+}
+
+async function readmitirExcluidas(expressId, btn) {
+  const ids = Array.from(document.querySelectorAll('.exc-chk:checked')).map(c => Number(c.value));
+  if (!ids.length) { alert('Marca primero las láminas que quieras volver a darle.'); return; }
+  btn.disabled = true; btn.textContent = '⏳ Devolviendo…';
+  try {
+    const r = await api('/api/catalogs/' + expressId + '/excluidas/readmitir', { method: 'POST', body: { sheet_ids: ids } });
+    btn.closest('.modal-bg').remove();
+    mostrarNotificacionOnline('↩️ ' + (r.devueltas || 0) + ' láminas devueltas a su catálogo', '#16a34a');
+    if (typeof renderEditorExpress === 'function') renderEditorExpress(expressId);
+  } catch (e) { alert('Error: ' + e.message); btn.disabled = false; btn.textContent = '↩️ Volver a dárselas'; }
+}
+
 // Trae el maestro entero al Express (o lo reemplaza para recuperar su orden exacto).
 async function copiarMaestroAExpress(expressId) {
   const yaHay = (_expressEditor.expressData?.sheets || []).length;
@@ -1329,7 +1373,10 @@ function pintarEditorExpress() {
         <div class="editor-panel express-panel">
           <div class="express-panel-header">
             <h3 style="margin:0">En este Express (${sheetsExpress.length})</h3>
-            <div style="font-size:11px;color:var(--gris-texto)">arrastra ⋮⋮ para reordenar</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <button class="btn btn-pequeno btn-secondary" onclick="abrirExcluidasExpress(${_expressEditor.catalogId})" title="Láminas que este comercial ha dicho que NO quiere llevar. No se le devuelven ni con el reparto automático ni al copiar del maestro.">🚫 No las quiere</button>
+              <div style="font-size:11px;color:var(--gris-texto)">arrastra ⋮⋮ para reordenar</div>
+            </div>
           </div>
           <input type="text" id="filtro-express" placeholder="🔍 Buscar en este Express..."
                  value="${escape(_expressEditor.filtroExpress)}"
