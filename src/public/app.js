@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v264 · 20 ago 2026';
+const APP_VERSION = 'v265 · 20 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -19717,6 +19717,7 @@ async function abrirMosaicoLaminas(catalogId) {
       <button class="btn btn-secondary btn-pequeno" onclick="seleccionarTodasMosaico()">Marcar todas</button>
       <button class="btn btn-secondary btn-pequeno" onclick="limpiarSeleccionMosaico()">Quitar marcas</button>
       <span class="mosaico-barra-sep"></span>
+      ${!_mosaicoEsExpress ? `<button class="btn btn-pequeno" style="background:#fef2f2;color:#b91c1c;font-weight:700" onclick="excluirSeleccionadasDeComercial()" title="Que un comercial concreto NO lleve las láminas marcadas. El resto las sigue viendo.">🚫 Que un comercial no las lleve</button>` : ''}
       <button class="btn btn-pequeno mosaico-btn-quitar" onclick="quitarSeleccionadasMosaico()" title="${_mosaicoEsExpress ? 'Quitar del Express las marcadas (siguen en el maestro)' : 'Borrar de verdad las láminas marcadas'}">🗑️ ${_mosaicoEsExpress ? 'Quitar del Express' : 'Borrar'} seleccionadas</button>
     </div>
     <div class="mosaico-grid" id="mosaico-grid"></div>
@@ -19823,6 +19824,66 @@ function limpiarSeleccionMosaico() {
 // Quitar/borrar las láminas MARCADAS. En Express: las saca de este Express (siguen en
 // el maestro). En maestro: borra de verdad (con doble confirmación); las que estén en
 // pedidos no se borran (se informan). El borrado NO se puede deshacer.
+// Desde el mosaico del MAESTRO: marcar varias láminas y decir que un comercial no las
+// lleve. Es donde de verdad se trabaja; antes había que ir a su Express una por una.
+async function excluirSeleccionadasDeComercial() {
+  const ids = Array.from(_mosaicoSel);
+  if (!ids.length) { alert('Marca primero las láminas.'); return; }
+  let comerciales = [];
+  try {
+    const r = await api('/api/catalogs');
+    comerciales = (r.catalogs || []).filter(c => c.tipo === 'express' && c.parent_id === _mosaicoCatalogId);
+  } catch (e) { alert('No pude cargar los catálogos: ' + e.message); return; }
+  if (!comerciales.length) { alert('Este catálogo no tiene catálogos de comerciales (Express) colgando.'); return; }
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `
+    <div class="modal" style="max-width:520px">
+      <h3 style="margin-top:0">🚫 Que no lleven estas ${ids.length} lámina${ids.length === 1 ? '' : 's'}</h3>
+      <p style="font-size:13px;color:var(--gris-texto);margin-top:0">Marca a quién NO se las quieres dar. Se le quitan de su catálogo y <b>no se le devuelven solas</b> (ni por reparto automático ni al traer el maestro). El resto las sigue viendo.</p>
+      <div style="display:flex;flex-direction:column;gap:8px;max-height:260px;overflow-y:auto">
+        ${comerciales.map(c => `
+          <label style="display:flex;gap:10px;align-items:center;padding:10px;border:1px solid var(--gris-borde);border-radius:8px;cursor:pointer">
+            <input type="checkbox" class="exc-com" value="${c.id}" style="width:auto;flex:0 0 auto">
+            <span style="font-weight:600;font-size:14px">${escape(c.name)}</span>
+          </label>`).join('')}
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label>Motivo <small style="color:#9ca3af">opcional, para acordarte luego</small></label>
+        <input type="text" id="exc-motivo" placeholder="ej: no trabaja este laboratorio" maxlength="200">
+      </div>
+      <div id="exc-msg"></div>
+      <div class="modal-acciones">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="confirmarExcluirDeComercial(this)">Aplicar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  m.dataset.ids = JSON.stringify(ids);
+}
+
+async function confirmarExcluirDeComercial(btn) {
+  const m = btn.closest('.modal-bg');
+  const ids = JSON.parse(m.dataset.ids || '[]');
+  const cats = Array.from(m.querySelectorAll('.exc-com:checked')).map(c => Number(c.value));
+  const $msg = m.querySelector('#exc-msg');
+  if (!cats.length) { $msg.innerHTML = '<div class="error-msg">Marca al menos un comercial.</div>'; return; }
+  const motivo = (m.querySelector('#exc-motivo').value || '').trim() || null;
+  btn.disabled = true; btn.textContent = '⏳ Aplicando…';
+  let total = 0;
+  try {
+    for (const cid of cats) {
+      const r = await api('/api/catalogs/' + cid + '/express-sheets/quitar', { method: 'POST', body: { sheet_ids: ids, motivo } });
+      total += (r.quitadas || 0);
+    }
+    m.remove();
+    mostrarNotificacionOnline('🚫 ' + ids.length + ' lámina(s) excluidas en ' + cats.length + ' catálogo(s)', '#b45309');
+  } catch (e) {
+    $msg.innerHTML = '<div class="error-msg">' + escape(e.message) + '</div>';
+    btn.disabled = false; btn.textContent = 'Aplicar';
+  }
+}
+
 async function quitarSeleccionadasMosaico() {
   const ids = [..._mosaicoSel];
   if (!ids.length) { alert('Marca primero las láminas que quieras quitar (tócalas).'); return; }
