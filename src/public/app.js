@@ -416,7 +416,11 @@ async function renderApp() {
   ` : '';
 
   // B6: Barra de visita activa (si el usuario tiene una visita en curso)
-  const va = appState.visitaActiva;
+  // En SOLO VISOR no hay visitas: si a alguien se le queda una a medias y luego se le
+  // pone en solo visor, esta barra aparecia igual encima del catalogo — con botones
+  // ("Cerrar visita", "Descartar") que ahi no pintan nada, y ademas robaba alto a la
+  // pantalla y cortaba la lamina por abajo (incidencias #4 y #5 de eva).
+  const va = esSoloVisor() ? null : appState.visitaActiva;
   const barraVisita = va ? `
     <div class="banner-visita">
       <span>🛒 Visita en curso: <b>${escape(va.cliente_nombre || ('Cliente #' + va.client_id))}</b></span>
@@ -460,6 +464,13 @@ async function renderApp() {
     <button class="btn-incidencia" onclick="abrirIncidencia()" title="Avisar de un problema, una duda o una idea">🛟</button>
     ${adminReal ? `<button class="btn-incidencia-bandeja" id="btn-bandeja-inc" onclick="abrirBandejaIncidencias()" title="Bandeja de avisos" style="display:none">📥</button>` : ''}
   `;
+  // Lo que ocupan las barras fijas de arriba (banner de impersonación, barra de visita).
+  // El visor en modo solo-visor descuenta esto de la altura de la lámina: con un alto
+  // fijo, en cuanto aparecía una barra la lámina se cortaba por abajo (incidencia #5).
+  const alturaBarras = ['.banner-impersonacion', '.banner-visita']
+    .reduce((n, sel) => { const el = $app.querySelector(sel); return n + (el ? el.offsetHeight : 0); }, 0);
+  document.documentElement.style.setProperty('--solovisor-extra', alturaBarras + 'px');
+
   routerVista();
   if (esAdmin) refrescarAvisoIncidencias();
   // I: re-aplicar estado del indicador online tras cada render
