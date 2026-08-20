@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v265 · 20 ago 2026';
+const APP_VERSION = 'v266 · 20 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -451,8 +451,14 @@ async function renderApp() {
       <div id="vista-contenido"></div>
       <div style="text-align:center;font-size:11px;color:#9ca3af;padding:14px 0 8px">CatalogPRO ${APP_VERSION}</div>
     </div>
-    <!-- Canal de incidencias: siempre a mano, también en la visita -->
+    <!-- Canal de incidencias: siempre a mano, también en la visita.
+         El 🛟 SIEMPRE sirve para ESCRIBIR un aviso, en cualquier pantalla y también
+         siendo administrador. Antes, si el admin tenía avisos sin cerrar (o sea casi
+         siempre), este mismo botón se convertía en "abrir la bandeja" y ya no había
+         forma de reportar un fallo desde el administrador: solo salía estando en la
+         vista de comercial. La bandeja tiene ahora su propio botón (incidencia #11). -->
     <button class="btn-incidencia" onclick="abrirIncidencia()" title="Avisar de un problema, una duda o una idea">🛟</button>
+    ${adminReal ? `<button class="btn-incidencia-bandeja" id="btn-bandeja-inc" onclick="abrirBandejaIncidencias()" title="Bandeja de avisos" style="display:none">📥</button>` : ''}
   `;
   routerVista();
   if (esAdmin) refrescarAvisoIncidencias();
@@ -3571,8 +3577,13 @@ function _mostrarBotonInstalarSoloVisor() {
 // AUTOMÁTICO (solo-visor): guarda en la tablet los catálogos asignados para verlos SIN DATOS.
 // Descarga solo lo que falte o lo que haya cambiado (compara updated_at). Reutiliza la misma
 // barra de progreso que la descarga manual. Se llama al entrar, con conexión.
+let _offlineAutoHecho = false;   // una sola pasada por sesión de la app
 async function _soloVisorPrepararOffline(cats) {
   if (!window.CpDB || !navigator.onLine || !cats || !cats.length) return;
+  // Volver a la lista de catálogos dentro de la misma sesión no vuelve a lanzar la
+  // preparación: si algo cambia mientras tanto, se recoge en la siguiente entrada.
+  if (_offlineAutoHecho) return;
+  _offlineAutoHecho = true;
   try { await refrescarCacheCatalogosDescargados(); } catch (_) {}
   const pendientes = [];
   for (const c of cats) {
@@ -6900,14 +6911,14 @@ function abrirIncidencia() {
       <textarea id="inc-texto" rows="5" placeholder="Ej.: al abrir el catálogo de Essity, la lámina 12 sale sin precios."
                 style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-family:inherit"></textarea></div>
     <div class="form-group">
-      <label>Captura (opcional pero ayuda mucho)</label>
+      <label>Capturas (opcional pero ayuda mucho) — puedes adjuntar varias</label>
       <button type="button" class="btn btn-primary" id="inc-captura-auto"
               style="width:100%;padding:12px;margin-bottom:8px">📸 Capturar esta pantalla</button>
-      <small style="color:var(--gris-texto);display:block;margin:-4px 0 8px">Se guarda una foto de lo que hay detrás de este cuadro, sin el cuadro.</small>
-      <input type="file" id="inc-captura" accept="image/*" capture="environment"
+      <small style="color:var(--gris-texto);display:block;margin:-4px 0 8px">Se guarda una foto de lo que hay detrás de este cuadro, sin el cuadro. Puedes capturar varias pantallas seguidas: se van sumando.</small>
+      <input type="file" id="inc-captura" accept="image/*" multiple
              style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px">
-      <small style="color:var(--gris-texto);display:block;margin-top:4px">O adjunta una imagen tuya. También puedes <b>pegar</b> una con Ctrl+V.</small>
-      <div id="inc-previa" style="margin-top:8px"></div>
+      <small style="color:var(--gris-texto);display:block;margin-top:4px">O adjunta imágenes tuyas (puedes seleccionar <b>varias a la vez</b>). También puedes <b>pegar</b> con Ctrl+V.</small>
+      <div id="inc-previa" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"></div>
     </div>
     <div id="inc-msg" style="font-size:13px;margin-top:4px"></div>
     <div class="modal-acciones" style="margin-top:12px">
@@ -6920,13 +6931,40 @@ function abrirIncidencia() {
   document.body.appendChild(m);
   hacerDialogoArrastrable(m.querySelector('.modal'), m.querySelector('h3'));
   const $f = m.querySelector('#inc-captura'), $prev = m.querySelector('#inc-previa');
-  let pegada = null;   // captura pegada con Ctrl+V
-  const pintarPrevia = (file) => {
-    if (!file) { $prev.innerHTML = ''; return; }
-    const url = URL.createObjectURL(file);
-    $prev.innerHTML = `<img src="${url}" style="max-width:100%;max-height:160px;border:1px solid var(--gris-borde);border-radius:8px">`;
+  // VARIAS capturas (antes solo se admitía UNA y se pisaban entre sí): un fallo suele
+  // necesitar dos fotos —la pantalla y el mensaje de error—, y obligar a mandar dos
+  // avisos partía la información en dos (pedido en la incidencia #11).
+  const adjuntos = [];
+  const MAX_ADJ = 6;
+  const pintarPrevia = () => {
+    $prev.innerHTML = '';
+    adjuntos.forEach((file, i) => {
+      const cont = document.createElement('div');
+      cont.style.cssText = 'position:relative;display:inline-block';
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(file);
+      img.style.cssText = 'height:88px;max-width:140px;object-fit:cover;border:1px solid var(--gris-borde);border-radius:8px;display:block';
+      const x = document.createElement('button');
+      x.type = 'button'; x.textContent = '×'; x.title = 'Quitar esta captura';
+      x.style.cssText = 'position:absolute;top:-7px;right:-7px;width:22px;height:22px;border-radius:50%;border:0;background:#991b1b;color:#fff;font-weight:700;cursor:pointer;line-height:1';
+      x.onclick = () => { adjuntos.splice(i, 1); pintarPrevia(); };
+      cont.appendChild(img); cont.appendChild(x);
+      $prev.appendChild(cont);
+    });
+    if (adjuntos.length) {
+      const n = document.createElement('small');
+      n.style.cssText = 'color:var(--gris-texto);width:100%';
+      n.textContent = adjuntos.length + ' captura(s) adjuntas' + (adjuntos.length >= MAX_ADJ ? ' — máximo alcanzado' : '');
+      $prev.appendChild(n);
+    }
   };
-  $f.onchange = () => { pegada = null; pintarPrevia($f.files[0]); };
+  const anadirAdjunto = (file) => {
+    if (!file) return;
+    if (adjuntos.length >= MAX_ADJ) return;
+    adjuntos.push(file);
+    pintarPrevia();
+  };
+  $f.onchange = () => { [...($f.files || [])].forEach(anadirAdjunto); $f.value = ''; };
 
   // 📸 CAPTURA AUTOMÁTICA DE LA PANTALLA. El comercial no tiene por qué saber hacer una
   // captura con los botones del aparato ni buscarla después en la galería: pulsa aquí,
@@ -6937,8 +6975,8 @@ function abrirIncidencia() {
     b.disabled = true; b.textContent = '📸 Capturando… (unos segundos)';
     try {
       const img = await capturarPantallaActual(m);
-      pegada = img; $f.value = ''; pintarPrevia(img);
-      b.textContent = '✅ Pantalla capturada · repetir';
+      anadirAdjunto(img);
+      b.textContent = '✅ Pantalla capturada · añadir otra';
       setTimeout(() => { b.textContent = txt; }, 2500);
     } catch (e) {
       m.querySelector('#inc-msg').innerHTML =
@@ -6949,9 +6987,9 @@ function abrirIncidencia() {
     }
   };
   m.addEventListener('paste', (e) => {
-    const it = [...(e.clipboardData?.items || [])].find(x => x.type.startsWith('image/'));
-    if (!it) return;
-    pegada = it.getAsFile(); $f.value = ''; pintarPrevia(pegada);
+    const imgs = [...(e.clipboardData?.items || [])].filter(x => x.type.startsWith('image/'));
+    if (!imgs.length) return;
+    imgs.forEach(it => anadirAdjunto(it.getAsFile()));
   });
   m.querySelector('#inc-enviar').onclick = async (ev) => {
     const b = ev.currentTarget;
@@ -6964,8 +7002,8 @@ function abrirIncidencia() {
     fd.append('tipo', m.querySelector('input[name="inc-tipo"]:checked').value);
     fd.append('version', APP_VERSION);
     fd.append('pantalla', (appState && appState.vista) || location.hash || '');
-    const cap = pegada || $f.files[0];
-    if (cap) fd.append('captura', cap, cap.name || 'captura.png');
+    // Se mandan TODAS con el mismo nombre de campo: el backend las recoge en orden.
+    adjuntos.forEach((cap, i) => fd.append('captura', cap, cap.name || ('captura' + (i + 1) + '.png')));
     const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
     try {
       const r = await fetch(API + '/api/incidencias', { method: 'POST', headers, body: fd });
@@ -7006,7 +7044,7 @@ async function capturarPantallaActual(cuadroAOcultar) {
   const ocultar = [];
   if (cuadroAOcultar) ocultar.push(cuadroAOcultar);
   // El botón flotante y los avisos de la propia app no pintan en la foto.
-  document.querySelectorAll('.btn-incidencia, #toast-deshacer').forEach(el => ocultar.push(el));
+  document.querySelectorAll('.btn-incidencia, .btn-incidencia-bandeja, #toast-deshacer').forEach(el => ocultar.push(el));
   ocultar.forEach(el => { el.dataset._visPrev = el.style.visibility || ''; el.style.visibility = 'hidden'; });
   // Un respiro para que el navegador repinte sin el cuadro antes de la foto.
   await new Promise(r => setTimeout(r, 220));
@@ -7027,7 +7065,7 @@ async function capturarPantallaActual(cuadroAOcultar) {
       backgroundColor: getComputedStyle(document.body).backgroundColor || '#ffffff',
       width: document.documentElement.clientWidth,
       height: document.documentElement.clientHeight,
-      filter: (n) => !(n.classList && (n.classList.contains('btn-incidencia') || n.id === 'toast-deshacer'))
+      filter: (n) => !(n.classList && (n.classList.contains('btn-incidencia') || n.classList.contains('btn-incidencia-bandeja') || n.id === 'toast-deshacer'))
     });
     if (!blob || !blob.size) throw new Error('la imagen salió vacía');
     return new File([blob], 'pantalla.jpg', { type: 'image/jpeg' });
@@ -7064,12 +7102,13 @@ async function verMisIncidencias() {
 async function refrescarAvisoIncidencias() {
   try {
     const r = await api('/api/admin/incidencias/pendientes');
-    const b = document.querySelector('.btn-incidencia');
-    if (!b) return;
-    b.classList.toggle('con-pendientes', r.pendientes > 0);
-    b.textContent = r.pendientes > 0 ? '🛟' + r.pendientes : '🛟';
-    b.title = r.pendientes > 0 ? r.pendientes + ' aviso(s) sin cerrar — pulsa para verlos' : 'Avisar de un problema, una duda o una idea';
-    b.onclick = r.pendientes > 0 ? abrirBandejaIncidencias : abrirIncidencia;
+    // OJO: el 🛟 NO se toca — siempre escribe un aviso nuevo. El contador va en su
+    // propio botón (📥), que solo aparece si hay algo sin cerrar.
+    const bandeja = document.getElementById('btn-bandeja-inc');
+    if (!bandeja) return;
+    bandeja.style.display = r.pendientes > 0 ? '' : 'none';
+    bandeja.textContent = '📥' + (r.pendientes > 0 ? r.pendientes : '');
+    bandeja.title = r.pendientes + ' aviso(s) sin cerrar — pulsa para verlos';
   } catch (_) { /* sin conexión: se queda como está */ }
 }
 
@@ -7097,7 +7136,8 @@ async function abrirBandejaIncidencias(filtro) {
             · <b>${escape(i.version_app || 'sin versión')}</b>${i.pantalla ? ' · ' + escape(i.pantalla) : ''}
           </div>
           <div style="margin:6px 0;white-space:pre-wrap">${escape(i.texto)}</div>
-          ${i.captura_path ? `<button class="btn btn-secondary btn-pequeno" onclick="verCapturaIncidencia(${i.id})">🖼️ Ver captura</button>` : ''}
+          ${_nCapturasInc(i) ? Array.from({ length: _nCapturasInc(i) }, (_, k) =>
+              `<button class="btn btn-secondary btn-pequeno" onclick="verCapturaIncidencia(${i.id}, ${k})" style="margin-right:6px">🖼️ Captura${_nCapturasInc(i) > 1 ? ' ' + (k + 1) : ''}</button>`).join('') : ''}
           ${i.respuesta ? `<div style="background:#ecfdf5;border-left:3px solid #16a34a;padding:8px;border-radius:6px;font-size:13px;margin-top:6px"><b>Respondido:</b> ${escape(i.respuesta)}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
             <input id="resp-${i.id}" placeholder="Responder al comercial…" style="flex:1;min-width:180px;padding:7px;border:1px solid #d1d5db;border-radius:6px">
@@ -7111,17 +7151,23 @@ async function abrirBandejaIncidencias(filtro) {
   hacerDialogoArrastrable(m.querySelector('.modal-card'), m.querySelector('.modal-header'));
 }
 
-function verCapturaIncidencia(id) {
+// Cuántas capturas trae un aviso. Los antiguos solo tienen captura_path (=1).
+function _nCapturasInc(i) {
+  if (Array.isArray(i.capturas_paths) && i.capturas_paths.length) return i.capturas_paths.length;
+  return i.captura_path ? 1 : 0;
+}
+
+function verCapturaIncidencia(id, n) {
   const m = document.createElement('div');
   m.className = 'modal-bg';
   m.innerHTML = `<div class="modal-card" style="max-width:92vw;max-height:92vh;display:flex;flex-direction:column">
-    <div class="modal-header"><h3>🖼️ Captura del aviso</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div class="modal-header"><h3>🖼️ Captura del aviso${n ? ' (' + (n + 1) + ')' : ''}</h3><button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button></div>
     <div style="overflow:auto;text-align:center"><img style="max-width:100%;height:auto" alt="Cargando…"></div></div>`;
   document.body.appendChild(m);
   hacerDialogoArrastrable(m.querySelector('.modal-card'), m.querySelector('.modal-header'));
   const img = m.querySelector('img');
   const headers = {}; if (token) headers['Authorization'] = 'Bearer ' + token;
-  fetch(API + '/api/incidencias/' + id + '/captura', { headers })
+  fetch(API + '/api/incidencias/' + id + '/captura?n=' + (n || 0), { headers })
     .then(r => r.blob()).then(b => { img.src = URL.createObjectURL(b); })
     .catch(() => { img.alt = 'No se pudo cargar la captura'; });
 }
@@ -8057,23 +8103,37 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo) {
     await descargarReposicionOffline();
 
     // 3. Descargar cada lámina (imagen como Blob)
+    // REAPROVECHANDO lo que ya está en el aparato: si la lámina ya está guardada y su
+    // imagen es la misma (mismo fichero), NO se vuelve a bajar — solo se refresca el
+    // texto/orden/zonas. Antes, cualquier cambio en el catálogo (mover una lámina,
+    // tocar un precio) obligaba a bajar otra vez las 337 imágenes enteras: en la tablet
+    // eso son cientos de MB de datos cada vez que se entra (incidencia #10).
     const total = sheets.length;
     let okCount = 0;
     let errCount = 0;
+    let reusadas = 0;
     const token = localStorage.getItem('cpv2_token');
 
     for (let i = 0; i < total; i++) {
       const sheet = sheets[i];
       const pct = ((i + 1) / total * 100).toFixed(1);
       $barra.style.width = pct + '%';
-      $estado.textContent = `Descargando lámina ${i + 1}/${total}...`;
       try {
-        const imgUrl = sheet.imagen_path;
-        const respImg = await fetch(imgUrl, {
-          headers: { 'Authorization': 'Bearer ' + token }
-        });
-        if (!respImg.ok) throw new Error('HTTP ' + respImg.status);
-        const blob = await respImg.blob();
+        let blob = null;
+        let guardada = null;
+        try { guardada = await CpDB.obtenerLamina(sheet.id); } catch (_) {}
+        if (guardada && guardada.imagen_blob && guardada.imagen_path_original === sheet.imagen_path) {
+          blob = guardada.imagen_blob;      // ya la tenemos y es la misma imagen
+          reusadas++;
+          $estado.textContent = `Lámina ${i + 1}/${total} — ya guardada`;
+        } else {
+          $estado.textContent = `Descargando lámina ${i + 1}/${total}...`;
+          const respImg = await fetch(sheet.imagen_path, {
+            headers: { 'Authorization': 'Bearer ' + token }
+          });
+          if (!respImg.ok) throw new Error('HTTP ' + respImg.status);
+          blob = await respImg.blob();
+        }
         await CpDB.guardarLamina({
           id: sheet.id,
           catalog_id: catalog.id,
@@ -8098,6 +8158,7 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo) {
     $barra.style.width = '100%';
     $estado.innerHTML = `
       ✅ <b>${okCount}/${total}</b> láminas guardadas offline
+      ${reusadas > 0 ? `<br><span style="color:var(--gris-texto);font-size:12px">${reusadas} ya estaban en el aparato (no se han vuelto a bajar)</span>` : ''}
       ${errCount > 0 ? `<br><span style="color:#dc2626">⚠️ ${errCount} con error</span>` : ''}
       <br><span style="color:var(--gris-texto);font-size:11px">~${tamanoMB} MB en el dispositivo</span>
     `;
@@ -8623,8 +8684,8 @@ function _archivoCard(c) {
                 </span>
                 <span class="archivo-vacc">
                   <button class="btn-card-mini" onclick="archivoVerVersion(${v.id})" title="Ver las láminas de esta versión">👁 Ver</button>
-                  ${v.tiene_pdf ? `<button class="btn-card-mini" onclick="descargarVersionPDF(${v.id})">📕 PDF${pdfMB ? ' (' + pdfMB + ' MB)' : ''}</button>` : ''}
-                  ${v.tiene_zip ? `<button class="btn-card-mini" onclick="descargarVersionZIP(${v.id})">📦 ZIP${zipMB ? ' (' + zipMB + ' MB)' : ''}</button>` : ''}
+                  ${v.tiene_pdf ? `<button class="btn-card-mini" onclick="descargarVersionPDF(${v.id}, this)">📕 PDF${pdfMB ? ' (' + pdfMB + ' MB)' : ''}</button>` : ''}
+                  ${v.tiene_zip ? `<button class="btn-card-mini" onclick="descargarVersionZIP(${v.id}, this)">📦 ZIP${zipMB ? ' (' + zipMB + ' MB)' : ''}</button>` : ''}
                   ${c.tipo === 'express' ? `<button class="btn-card-mini btn-card-restaurar" onclick="archivoRestaurar(${c.id}, ${v.id}, ${v.version_number}, ${JSON.stringify(c.name).replace(/"/g, '&quot;')})" title="Dejar el Express como estaba en esta versión">♻️ Restaurar</button>` : ''}
                 </span>
               </div>`;
@@ -8802,8 +8863,8 @@ async function pintarPestanaHistorial(catalogId) {
                   ${v.notas_version ? `<div class="version-notas">"${escape(v.notas_version)}"</div>` : ''}
                 </div>
                 <div class="version-acciones">
-                  ${v.tiene_pdf ? `<button class="btn-card-mini" onclick="descargarVersionPDF(${v.id})" title="${pdfSizeMB ? pdfSizeMB + ' MB' : ''}">📕 PDF${pdfSizeMB ? ` <span style="color:var(--gris-texto);font-weight:normal">(${pdfSizeMB} MB)</span>` : ''}</button>` : ''}
-                  ${v.tiene_zip ? `<button class="btn-card-mini" onclick="descargarVersionZIP(${v.id})" title="${zipSizeMB ? zipSizeMB + ' MB' : ''}">📦 ZIP${zipSizeMB ? ` <span style="color:var(--gris-texto);font-weight:normal">(${zipSizeMB} MB)</span>` : ''}</button>` : ''}
+                  ${v.tiene_pdf ? `<button class="btn-card-mini" onclick="descargarVersionPDF(${v.id}, this)" title="${pdfSizeMB ? pdfSizeMB + ' MB' : ''}">📕 PDF${pdfSizeMB ? ` <span style="color:var(--gris-texto);font-weight:normal">(${pdfSizeMB} MB)</span>` : ''}</button>` : ''}
+                  ${v.tiene_zip ? `<button class="btn-card-mini" onclick="descargarVersionZIP(${v.id}, this)" title="${zipSizeMB ? zipSizeMB + ' MB' : ''}">📦 ZIP${zipSizeMB ? ` <span style="color:var(--gris-texto);font-weight:normal">(${zipSizeMB} MB)</span>` : ''}</button>` : ''}
                 </div>
               </div>
             `;
@@ -8891,43 +8952,14 @@ async function descargarPdfCalidad(catalogId, calidad, btnEl) {
   if (btnEl) btnEl.style.opacity = '0.6';
   $msg.innerHTML = `<div style="color:#6b7280;font-size:13px">⏳ Generando PDF (${calidad === 'pequena' ? 'calidad reducida, puede tardar 1-3 min según número de láminas' : 'alta calidad'})…</div>`;
 
-  try {
-    const token = localStorage.getItem('cpv2_token') || '';
-    const zonaSel = document.getElementById('dl-pdf-zona');
-    const zonaId = zonaSel ? zonaSel.value : '';
-    const url = `/api/catalogs/${catalogId}/download-pdf?calidad=${calidad}` + (zonaId ? '&zona_id=' + zonaId : '');
-    const resp = await fetch(url, {
-      headers: { Authorization: 'Bearer ' + token }
-    });
-    if (!resp.ok) {
-      try {
-        const json = await resp.json();
-        throw new Error(json.error || 'Error ' + resp.status);
-      } catch (_) {
-        throw new Error('Error ' + resp.status);
-      }
-    }
-    const blob = await resp.blob();
-    const tamMB = (blob.size / 1024 / 1024).toFixed(1);
-    // Forzar descarga
-    const urlBlob = URL.createObjectURL(blob);
-    // Sacar el nombre del header si existe, sino usar fallback
-    const disp = resp.headers.get('Content-Disposition') || '';
-    const m = disp.match(/filename="?([^"]+)"?/);
-    const filename = m ? m[1] : `catalogo${calidad === 'pequena' ? '_pequeno' : ''}.pdf`;
-    const a = document.createElement('a');
-    a.href = urlBlob;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(urlBlob), 5000);
-    $msg.innerHTML = `<div class="exito-msg">✅ PDF descargado (${tamMB} MB)</div>`;
-    $btns.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
-  } catch (err) {
-    $msg.innerHTML = `<div class="error-msg">Error: ${escape(err.message)}</div>`;
-    $btns.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
-  }
+  // El PDF de un catalogo entero son cientos de MB: lo baja el navegador, no JS.
+  // Ver lanzarDescargaNativa() (incidencias #11/#12).
+  const zonaSel = document.getElementById('dl-pdf-zona');
+  const zonaId = zonaSel ? zonaSel.value : '';
+  const url = `/api/catalogs/${catalogId}/download-pdf?calidad=${calidad}` + (zonaId ? '&zona_id=' + zonaId : '');
+  lanzarDescargaNativa(url, null);
+  $msg.innerHTML = `<div class="exito-msg">⬇️ Descarga lanzada. Aparecerá en las descargas del navegador con su barra de progreso; puedes cerrar esta ventana.</div>`;
+  setTimeout(() => { $btns.forEach(b => { b.disabled = false; b.style.opacity = '1'; }); }, 4000);
 }
 
 // ============================================================================
@@ -10005,38 +10037,91 @@ async function _cerrarVersionEsperando(catalogId, notas, onProgreso) {
 }
 
 // Descargar PDF de una versión cerrada
-async function descargarVersionPDF(versionId) {
-  await iniciarDescargaVersion(versionId, 'pdf');
+async function descargarVersionPDF(versionId, botonEl) {
+  await iniciarDescargaVersion(versionId, 'pdf', botonEl);
 }
-async function descargarVersionZIP(versionId) {
-  await iniciarDescargaVersion(versionId, 'zip');
+async function descargarVersionZIP(versionId, botonEl) {
+  await iniciarDescargaVersion(versionId, 'zip', botonEl);
 }
-async function iniciarDescargaVersion(versionId, formato) {
-  const url = '/api/catalog-versions/' + versionId + '/download-' + formato;
-  try {
-    const token = localStorage.getItem('cpv2_token');
-    const resp = await fetch(url, {
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-    if (!resp.ok) {
-      let errorMsg = 'Error ' + resp.status;
-      try { const j = await resp.json(); if (j.error) errorMsg = j.error; } catch (_) {}
-      throw new Error(errorMsg);
-    }
-    const blob = await resp.blob();
-    const cd = resp.headers.get('Content-Disposition') || '';
-    const m = cd.match(/filename="([^"]+)"/);
-    const filename = m ? m[1] : ('version.' + formato);
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(a.href);
-  } catch (err) {
-    alert('Error en la descarga: ' + err.message);
+async function iniciarDescargaVersion(versionId, formato, botonEl) {
+  lanzarDescargaNativa('/api/catalog-versions/' + versionId + '/download-' + formato, botonEl);
+}
+
+// ============================================================================
+// DESCARGA NATIVA DE FICHEROS GRANDES
+// ----------------------------------------------------------------------------
+// Antes se bajaba con fetch() + resp.blob(): eso mete el fichero ENTERO en la
+// memoria del navegador antes de guardarlo. Con un PDF historico de 535 MB el
+// navegador revienta y suelta "Failed to fetch", pero la peticion sigue viva por
+// detras -> "parece que no hace nada y al rato aparecen las descargas", y cada
+// clic extra lanzaba otro medio giga (incidencias #11 y #12).
+//
+// Ahora lo baja el propio navegador: un iframe oculto apunta a la URL y, como la
+// respuesta viene con Content-Disposition: attachment, el navegador la escribe
+// directamente a disco con su barra de progreso. Una navegacion no lleva cabecera
+// Authorization, por eso el token va en ?token= (el backend lo acepta SOLO en
+// estas rutas de descarga).
+//
+// Deteccion de errores: si el backend responde JSON de error en vez del fichero,
+// el iframe SI dispara 'load' (una descarga no lo dispara). Como es del mismo
+// origen podemos leer el JSON y ensenar el error de verdad.
+// ============================================================================
+function lanzarDescargaNativa(url, botonEl, textoBoton) {
+  const token = localStorage.getItem('cpv2_token');
+  const sep = url.includes('?') ? '&' : '?';
+  const full = url + sep + 'token=' + encodeURIComponent(token || '');
+
+  let restaurar = null;
+  if (botonEl) {
+    const $titulo = botonEl.querySelector('.descargar-opcion-titulo');
+    const original = $titulo ? $titulo.textContent : botonEl.textContent;
+    botonEl.disabled = true;
+    botonEl.style.opacity = '0.6';
+    if ($titulo) $titulo.textContent = (textoBoton || original) + ' — preparando…';
+    else botonEl.textContent = '⏳ Preparando…';
+    restaurar = () => {
+      botonEl.disabled = false;
+      botonEl.style.opacity = '1';
+      if ($titulo) $titulo.textContent = textoBoton || original;
+      else botonEl.textContent = original;
+    };
   }
+
+  const iframe = document.createElement('iframe');
+  iframe.style.display = 'none';
+  iframe.addEventListener('load', () => {
+    // Solo llega aqui si el servidor devolvio una PAGINA (= error), no un fichero
+    let msg = 'No se pudo preparar la descarga.';
+    try {
+      const txt = iframe.contentDocument && iframe.contentDocument.body
+        ? iframe.contentDocument.body.textContent.trim() : '';
+      if (txt) { try { const j = JSON.parse(txt); if (j.error) msg = j.error; } catch (_) { msg = txt.slice(0, 200); } }
+    } catch (_) { /* si no se puede leer, nos quedamos con el mensaje generico */ }
+    avisoDescarga('❌ ' + msg, true);
+    if (restaurar) restaurar();
+    iframe.remove();
+  });
+  iframe.src = full;
+  document.body.appendChild(iframe);
+
+  avisoDescarga('⬇️ Preparando la descarga. El navegador la guardará solo — puedes seguir trabajando.');
+  // No hay forma de saber desde JS cuando termina una descarga nativa, asi que el
+  // boton se libera a los pocos segundos (ya con el fichero en manos del navegador).
+  setTimeout(() => { if (restaurar) restaurar(); }, 6000);
+  setTimeout(() => { if (iframe.parentNode) iframe.remove(); }, 10 * 60 * 1000);
+}
+
+function avisoDescarga(texto, esError) {
+  const prev = document.getElementById('toast-descarga');
+  if (prev) prev.remove();
+  const t = document.createElement('div');
+  t.id = 'toast-descarga';
+  t.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);' +
+    'background:' + (esError ? '#991b1b' : '#111827') + ';color:#fff;padding:12px 18px;border-radius:10px;' +
+    'box-shadow:0 6px 20px rgba(0,0,0,0.35);z-index:99500;font-size:14px;max-width:92vw;text-align:center';
+  t.textContent = texto;
+  document.body.appendChild(t);
+  setTimeout(() => { if (t.parentNode) t.remove(); }, esError ? 9000 : 6000);
 }
 
 // ============================================================================
@@ -10074,7 +10159,8 @@ function abrirModalDescargarCatalogo(catalogId, nombreCatalogo) {
         </button>
       </div>
       <div style="font-size:11px;color:var(--gris-texto);margin-top:14px;font-style:italic">
-        💡 La descarga puede tardar unos segundos según el tamaño del catálogo. No cierres la ventana hasta que termine.
+        💡 La descarga la hace el navegador: aparece en su lista de descargas con su barra de progreso.
+        Puedes cerrar esta ventana y seguir trabajando; un catálogo grande puede tardar varios minutos.
       </div>
     </div>
   `;
@@ -10089,58 +10175,14 @@ async function descargarCatalogoZIP(catalogId, botonEl) {
   await iniciarDescargaCatalogo(catalogId, 'zip', botonEl);
 }
 
-// Helper que dispara la descarga real con manejo de loading y errores
+// Helper que dispara la descarga real. Ver lanzarDescargaNativa(): la baja el
+// navegador, no JavaScript, para que no reviente con catalogos de cientos de MB.
 async function iniciarDescargaCatalogo(catalogId, formato, botonEl) {
   const url = '/api/catalogs/' + catalogId + '/download-' + formato;
-  // Marcar botón como "descargando"
-  if (botonEl) {
-    botonEl.disabled = true;
-    botonEl.style.opacity = '0.6';
-    const $titulo = botonEl.querySelector('.descargar-opcion-titulo');
-    if ($titulo) $titulo.textContent = (formato === 'pdf' ? 'PDF' : 'ZIP con originales') + ' — preparando…';
-  }
-
-  try {
-    // Hacer petición con auth (porque api() pone el token automáticamente)
-    // Usamos fetch directo para poder manejar el blob
-    const token = localStorage.getItem('cpv2_token');
-    const resp = await fetch(url, {
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-    if (!resp.ok) {
-      let errorMsg = 'Error ' + resp.status;
-      try {
-        const j = await resp.json();
-        if (j.error) errorMsg = j.error;
-      } catch (_) {}
-      throw new Error(errorMsg);
-    }
-    const blob = await resp.blob();
-    // Obtener nombre del fichero del header Content-Disposition
-    const cd = resp.headers.get('Content-Disposition') || '';
-    const m = cd.match(/filename="([^"]+)"/);
-    const filename = m ? m[1] : ('catalogo.' + formato);
-    // Disparar descarga
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(a.href);
-
-    // Cerrar modal
-    const modal = botonEl ? botonEl.closest('.modal-bg') : null;
-    if (modal) modal.remove();
-  } catch (err) {
-    alert('Error en la descarga: ' + err.message);
-    if (botonEl) {
-      botonEl.disabled = false;
-      botonEl.style.opacity = '1';
-      const $titulo = botonEl.querySelector('.descargar-opcion-titulo');
-      if ($titulo) $titulo.textContent = formato === 'pdf' ? 'PDF' : 'ZIP con originales';
-    }
-  }
+  lanzarDescargaNativa(url, botonEl, formato === 'pdf' ? 'PDF' : 'ZIP con originales');
+  // Cerrar el modal: la descarga ya no depende de que esta ventana siga abierta.
+  const modal = botonEl ? botonEl.closest('.modal-bg') : null;
+  if (modal) setTimeout(() => modal.remove(), 400);
 }
 
 // ============================================================================

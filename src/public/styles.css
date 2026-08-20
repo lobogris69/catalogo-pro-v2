@@ -3996,7 +3996,7 @@ body.con-banner-update {
 }
 /* Al imprimir: solo el manual, sin índice ni botones (queda un PDF limpio) */
 @media print {
-  .topbar, .navtabs, .manual-acciones, .manual-buscador, .manual-indice, .btn-incidencia { display: none !important; }
+  .topbar, .navtabs, .manual-acciones, .manual-buscador, .manual-indice, .btn-incidencia, .btn-incidencia-bandeja { display: none !important; }
   .manual-apartado { break-inside: avoid; border: none; padding: 0 0 10px; }
 }
 
@@ -5017,6 +5017,33 @@ tr.rep-subtotal-impar th, tr.rep-subtotal-impar td { background: #fef2f2; }
 .btn-incidencia:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,0.34); }
 .btn-incidencia.con-pendientes { background: #b45309; }
 @media (max-width: 640px) { .btn-incidencia { right: 12px; bottom: 12px; } }
+
+/* Bandeja de avisos (solo admin): botón APARTE del 🛟, para que el de escribir un
+   aviso nunca deje de escribir. Va justo a su derecha y solo sale si hay pendientes. */
+.btn-incidencia-bandeja {
+  position: fixed;
+  left: 80px;
+  bottom: 18px;
+  z-index: 99500;
+  min-width: 52px;
+  height: 52px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 26px;
+  background: #b45309;
+  color: #fff;
+  font-size: 20px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.28);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+.btn-incidencia-bandeja:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,0.34); }
+@media (max-width: 640px) { .btn-incidencia-bandeja { left: 72px; bottom: 12px; } }
+body.modo-simple .btn-incidencia-bandeja { bottom: 96px; z-index: 99500; }
 
 /* Tipo de aviso: chips de una sola elección */
 .chip-tipo {

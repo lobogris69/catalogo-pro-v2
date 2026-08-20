@@ -364,6 +364,20 @@ function verifyToken(req: AuthRequest, res: Response, next: NextFunction): void 
   }
 }
 
+// verifyTokenDescarga: como verifyToken, pero acepta ademas el token por ?token=.
+// Necesario SOLO en las descargas de ficheros grandes (PDF/ZIP): para que las baje el
+// propio navegador (streaming a disco, con su barra de progreso y su reanudacion) hay
+// que navegar a la URL, y una navegacion no lleva cabecera Authorization. Antes se
+// bajaban con fetch()+blob(), o sea metiendo 500 MB en la memoria del navegador ->
+// "Failed to fetch" (incidencias #11 y #12). Se limita a estas 4 rutas para no
+// esparcir tokens por URLs (quedan en logs e historial) en el resto de la API.
+function verifyTokenDescarga(req: AuthRequest, res: Response, next: NextFunction): void {
+  if (!req.headers.authorization && typeof req.query.token === 'string' && req.query.token) {
+    req.headers.authorization = 'Bearer ' + req.query.token;
+  }
+  verifyToken(req, res, next);
+}
+
 // requireAdmin acepta admin REAL o admin impersonando (porque solo admin puede impersonar)
 function requireAdmin(req: AuthRequest, res: Response, next: NextFunction): void {
   const u = req.user as any;
@@ -1285,6 +1299,10 @@ async function initDB(): Promise<void> {
         created_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_incidencias_estado ON incidencias(estado, created_at DESC);
+      -- VARIAS capturas por aviso: un fallo suele necesitar dos fotos (la pantalla y
+      -- el mensaje de error) y antes solo cabia una. La columna captura_path se queda con la
+      -- primera para no romper lo ya guardado ni las vistas viejas.
+      ALTER TABLE incidencias ADD COLUMN IF NOT EXISTS capturas_paths JSONB;
 
       -- PAPELERA: borrar una tabla (o quitarla de una lamina) ya no destruye nada,
       -- solo marca la fecha. Asi se puede DESHACER, sobre todo un borrado en bloque.
@@ -2617,7 +2635,7 @@ Generado por CatalogPRO v2 — LOMHIFAR S.L.
 }
 
 // GET descargar catalogo como PDF (todas las laminas en orden)
-app.get('/api/catalogs/:id/download-pdf', verifyToken, async (req: AuthRequest, res: Response) => {
+app.get('/api/catalogs/:id/download-pdf', verifyTokenDescarga, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
     const acceso = await cargarCatalogoConAcceso(id, req);
@@ -2660,7 +2678,7 @@ app.get('/api/catalogs/:id/download-pdf', verifyToken, async (req: AuthRequest, 
 });
 
 // GET descargar catalogo como ZIP
-app.get('/api/catalogs/:id/download-zip', verifyToken, async (req: AuthRequest, res: Response) => {
+app.get('/api/catalogs/:id/download-zip', verifyTokenDescarga, async (req: AuthRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
     const acceso = await cargarCatalogoConAcceso(id, req);
@@ -3117,7 +3135,7 @@ app.get('/api/catalogs/:id/versions', verifyToken, async (req: AuthRequest, res:
 });
 
 // GET descargar PDF de una versión cerrada (admin + comerciales asignados al catálogo)
-app.get('/api/catalog-versions/:id/download-pdf', verifyToken, async (req: AuthRequest, res: Response) => {
+app.get('/api/catalog-versions/:id/download-pdf', verifyTokenDescarga, async (req: AuthRequest, res: Response) => {
   try {
     const versionId = Number(req.params.id);
     const r = await pool.query(
@@ -3149,6 +3167,9 @@ app.get('/api/catalog-versions/:id/download-pdf', verifyToken, async (req: AuthR
     const filename = `${nombreFicheroSeguro(v.catalog_name)}_v${v.version_number}_historico.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    // Content-Length: sin el, el navegador ensena "descargando..." sin decir cuanto
+    // falta. Con ficheros de 500 MB eso parece que se ha colgado.
+    res.setHeader('Content-Length', String(fs.statSync(v.pdf_path).size));
     fs.createReadStream(v.pdf_path).pipe(res);
   } catch (e) {
     if (!res.headersSent) res.status(500).json({ success: false, error: (e as Error).message });
@@ -3156,7 +3177,7 @@ app.get('/api/catalog-versions/:id/download-pdf', verifyToken, async (req: AuthR
 });
 
 // GET descargar ZIP de una versión cerrada
-app.get('/api/catalog-versions/:id/download-zip', verifyToken, async (req: AuthRequest, res: Response) => {
+app.get('/api/catalog-versions/:id/download-zip', verifyTokenDescarga, async (req: AuthRequest, res: Response) => {
   try {
     const versionId = Number(req.params.id);
     const r = await pool.query(
@@ -3187,6 +3208,7 @@ app.get('/api/catalog-versions/:id/download-zip', verifyToken, async (req: AuthR
     const filename = `${nombreFicheroSeguro(v.catalog_name)}_v${v.version_number}_historico.zip`;
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', String(fs.statSync(v.zip_path).size));
     fs.createReadStream(v.zip_path).pipe(res);
   } catch (e) {
     if (!res.headersSent) res.status(500).json({ success: false, error: (e as Error).message });
@@ -14767,17 +14789,21 @@ async function avisarIncidenciaTelegram(inc: any): Promise<void> {
 }
 
 // Reportar (cualquier usuario identificado). Captura opcional.
-app.post('/api/incidencias', verifyToken, upload.single('captura'), async (req: AuthRequest, res: Response) => {
+// upload.any(): admite VARIAS capturas en el campo `captura`, y ademas no revienta con
+// un "Unexpected field" si una tablet con la app cacheada manda otro nombre de campo.
+app.post('/api/incidencias', verifyToken, upload.any(), async (req: AuthRequest, res: Response) => {
   try {
     const texto = String(req.body?.texto || '').trim();
     if (!texto) { res.status(400).json({ success: false, error: 'Escribe qué ha pasado' }); return; }
     const tipo = ['incidencia', 'sugerencia', 'duda'].includes(req.body?.tipo) ? req.body.tipo : 'incidencia';
     const u = (await pool.query('SELECT name, email, role FROM users WHERE id=$1', [req.user?.id])).rows[0] || {};
+    const ficheros = (Array.isArray(req.files) ? req.files : []) as Express.Multer.File[];
+    const nombres = ficheros.slice(0, 6).map(f => f.filename);
     const r = await pool.query(
-      `INSERT INTO incidencias (user_id, autor, rol, tipo, texto, captura_path, version_app, pantalla, dispositivo)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      `INSERT INTO incidencias (user_id, autor, rol, tipo, texto, captura_path, capturas_paths, version_app, pantalla, dispositivo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [req.user?.id || null, (u.name || u.email || '').slice(0, 150), u.role || null, tipo,
-       texto.slice(0, 4000), req.file ? req.file.filename : null,
+       texto.slice(0, 4000), nombres[0] || null, nombres.length ? JSON.stringify(nombres) : null,
        String(req.body?.version || '').slice(0, 40), String(req.body?.pantalla || '').slice(0, 200),
        String(req.headers['user-agent'] || '').slice(0, 300)]);
     avisarIncidenciaTelegram(r.rows[0]).catch(() => {});   // best-effort: nunca puede tumbar el proceso
@@ -14834,10 +14860,17 @@ app.put('/api/admin/incidencias/:id', verifyToken, requireRealAdmin, async (req:
 // Captura de una incidencia (sirve la imagen solo a quien puede verla).
 app.get('/api/incidencias/:id/captura', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query('SELECT user_id, captura_path FROM incidencias WHERE id=$1', [Number(req.params.id)]);
-    if (!r.rows.length || !r.rows[0].captura_path) { res.status(404).json({ success: false, error: 'Sin captura' }); return; }
+    const r = await pool.query('SELECT user_id, captura_path, capturas_paths FROM incidencias WHERE id=$1', [Number(req.params.id)]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Sin captura' }); return; }
     if (req.user?.role !== 'admin' && r.rows[0].user_id !== req.user?.id) { res.status(403).json({ success: false, error: 'No autorizado' }); return; }
-    const abs = path.join(UPLOADS_DIR, path.basename(r.rows[0].captura_path));
+    // ?n=1,2,3... para las capturas siguientes; sin ?n devuelve la primera (compatible
+    // con los avisos antiguos, que solo tienen captura_path).
+    const lista: string[] = Array.isArray(r.rows[0].capturas_paths) && r.rows[0].capturas_paths.length
+      ? r.rows[0].capturas_paths
+      : (r.rows[0].captura_path ? [r.rows[0].captura_path] : []);
+    const n = Math.max(0, Number(req.query.n) || 0);
+    if (!lista[n]) { res.status(404).json({ success: false, error: 'Sin captura' }); return; }
+    const abs = path.join(UPLOADS_DIR, path.basename(lista[n]));
     if (!fs.existsSync(abs)) { res.status(404).json({ success: false, error: 'No encontrada' }); return; }
     res.sendFile(abs);
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
