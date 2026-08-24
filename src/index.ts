@@ -56,6 +56,14 @@ const execAsync = promisify(exec);
 
 dotenv.config();
 
+// MEMORIA: sharp retiene memoria NATIVA (caché de operaciones + un hilo por núcleo) que el
+// Linux del contenedor no devuelve al sistema, dejando el RSS clavado en varios GB tras
+// procesar imágenes grandes. Sin caché y con 1 hilo, el colchón baja mucho; el coste es
+// procesar un pelín más despacio, imperceptible aquí. (Complementa a MALLOC_ARENA_MAX=2 en
+// las variables de Railway.)
+sharp.cache(false);
+sharp.concurrency(1);
+
 // ============================================================================
 // CONFIGURACION
 // ============================================================================
@@ -1700,7 +1708,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v257-enlace-catalogo-solovisor-3ago',
+      build: 'v267-memoria-sharp-24ago',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
