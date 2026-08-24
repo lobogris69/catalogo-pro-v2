@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v267 · 24 ago 2026';
+const APP_VERSION = 'v268 · 24 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -3772,6 +3772,9 @@ function precargarVecinasVisor(sheets, idx) {
   });
 }
 
+// Última lámina/modo pintados, para saber si el repintado es un CAMBIO real de página
+// (y entonces subir el scroll arriba) o solo un refresco incidental (no tocar el scroll).
+let _ultimoRenderVisor = null;
 function pintarVisor() {
   const $v = document.getElementById('vista-contenido');
   const totalReal = _visorSheets.length;
@@ -3880,6 +3883,19 @@ function pintarVisor() {
   }
 
   $v.innerHTML = `<div class="visor-shell">${cabecera}${cuerpo}${carritoFab}</div>`;
+
+  // SUBIR EL SCROLL ARRIBA al cambiar de lámina/modo. La cabecera es position:sticky top:0,
+  // pero si vienes del MOSAICO scrolleado hacia abajo y abres una lámina MÁS ALTA que la
+  // pantalla, la página se queda scrolleada y la cabecera se corta por arriba (no se veía el
+  // título ni el menú; incidencias #14/#15 de eva). En láminas cortas no pasaba porque el
+  // scroll se ajustaba solo a 0 — por eso "no en todas las páginas". Solo se resetea cuando
+  // de verdad cambia la lámina o el modo, para no dar un tirón en un refresco incidental.
+  const _claveRender = appState.visorModo + ':' + appState.visorIndice;
+  if (_claveRender !== _ultimoRenderVisor) {
+    window.scrollTo(0, 0);
+    if (typeof $v.scrollTo === 'function') $v.scrollTo(0, 0);
+  }
+  _ultimoRenderVisor = _claveRender;
 
   // Si el carrito estaba abierto (p.ej. tras editar una línea), refrescar su contenido
   if (_carritoAbierto) renderCarritoContenido();
