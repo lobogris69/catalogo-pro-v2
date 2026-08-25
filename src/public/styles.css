@@ -2906,10 +2906,18 @@ body.solo-visor .visor-imagen-zoom {
 }
 body.solo-visor .visor-imagen {
   width: auto;
-  height: auto;
+  /* NORMALIZAR el tamaño: la lámina ocupa SIEMPRE todo el alto disponible, tenga la
+     resolución que tenga. Con height:auto + solo max-height, las láminas subidas a baja
+     resolución (p.ej. 600x960) se veían pequeñas porque no se ampliaban; ahora todas se
+     ven al mismo tamaño (incidencia #16). max-width evita que una lámina ancha se salga;
+     max-height queda de respaldo. Las de baja resolución se verán algo menos nítidas hasta
+     resubirlas a buena resolución. */
+  height: calc(100vh - 112px - var(--solovisor-extra, 0px));   /* respaldo Chrome <108 (sin dvh) */
+  height: calc(100dvh - 112px - var(--solovisor-extra, 0px));
   max-width: 100%;
-  max-height: calc(100vh - 112px - var(--solovisor-extra, 0px));   /* respaldo Chrome <108 (sin dvh) */
+  max-height: calc(100vh - 112px - var(--solovisor-extra, 0px));
   max-height: calc(100dvh - 112px - var(--solovisor-extra, 0px));
+  object-fit: contain;
   border-radius: 6px;
 }
 .solovisor-volver {
