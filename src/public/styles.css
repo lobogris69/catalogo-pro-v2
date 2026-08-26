@@ -2927,6 +2927,12 @@ body.solo-visor .visor-imagen {
   box-shadow: 0 8px 20px -8px rgba(124,58,237,.7);
 }
 .solovisor-volver:active { transform: scale(.97); }
+/* Cuando está el botón morado fijo "← Catálogos" (arriba-izquierda), la cabecera se indenta
+   para que NO se solape con el título ni el buscador (incidencia #19, se veía en PC). Solo en
+   pantallas anchas: en móvil el botón y la cabecera no chocan igual. */
+@media (min-width: 600px) {
+  body.solo-visor.solovisor-con-volver .visor-cabecera { padding-left: 168px; }
+}
 .solovisor-instalar {
   position: fixed; bottom: 14px; left: 14px; z-index: 9700;
   min-height: 46px; padding: 0 18px; border: none; border-radius: 14px;

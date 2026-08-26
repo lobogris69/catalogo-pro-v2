@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v269 · 25 ago 2026';
+const APP_VERSION = 'v270 · 26 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -3540,6 +3540,7 @@ async function renderVisorSoloLector() {
   const $v = document.getElementById('vista-contenido');
   if (!$v) return;
   document.querySelectorAll('.solovisor-volver').forEach(x => x.remove());
+  document.body.classList.remove('solovisor-con-volver');
   appState.visitaActiva = null; // por si acaso: en solo visor no hay visita
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogos…</div></div>`;
   let cats = [];
@@ -3625,12 +3626,16 @@ function _soloVisorAbrir(catalogId, unico) {
   renderVisorComercial(catalogId);
   // Si hay más de un catálogo, botón flotante para volver al listado.
   document.querySelectorAll('.solovisor-volver').forEach(x => x.remove());
+  document.body.classList.remove('solovisor-con-volver');
   if (!unico) {
     const b = document.createElement('button');
     b.className = 'solovisor-volver';
     b.innerHTML = '← Catálogos';
-    b.onclick = () => { b.remove(); renderVisorSoloLector(); };
+    b.onclick = () => { b.remove(); document.body.classList.remove('solovisor-con-volver'); renderVisorSoloLector(); };
     document.body.appendChild(b);
+    // El botón va position:fixed arriba-izquierda; esta clase indenta la cabecera para que
+    // no se solape con el título ni el buscador en tablet/PC (incidencia #19).
+    document.body.classList.add('solovisor-con-volver');
   }
 }
 
@@ -14423,8 +14428,7 @@ function abrirCuadroDevolucion(prefill) {
        </div>`
     : `<div class="form-group" style="margin:0 0 4px">
          <label>¿Qué producto devuelve?</label>
-         <input type="text" id="dev-prod-libre" placeholder="Escribe el nombre del producto" autocomplete="off"
-                style="width:100%;padding:11px;border:1.5px solid #d1d5db;border-radius:11px;font-size:15px;box-sizing:border-box">
+         <div id="dev-prod-ac"></div>
        </div>`;
   modal.innerHTML = `
     <div class="modal-card dev-card">
@@ -14481,8 +14485,22 @@ function abrirCuadroDevolucion(prefill) {
     </div>`;
   // Guardar el prefill para el guardado
   window._devPrefill = prefill;
+  window._devProdSel = null;
   document.body.appendChild(modal);
   hacerDialogoArrastrable(modal.querySelector('.modal-card'), modal.querySelector('.modal-header'), true);
+  // Buscador de producto con DESPLEGABLE para elegir el artículo a devolver (incidencia #21:
+  // antes era texto libre y no salía ninguna lista). Si el comercial escribe y no elige de la
+  // lista, se respeta el texto tal cual (productos que no están en Sage).
+  if (!prefill) {
+    const acCont = modal.querySelector('#dev-prod-ac');
+    if (acCont && typeof montarAutocompleteProducto === 'function') {
+      montarAutocompleteProducto(acCont, {
+        placeholder: 'Escribe y elige el producto (nombre, código o EAN)…',
+        onSelect: (p) => { window._devProdSel = p || null; }
+      });
+      setTimeout(() => { const inp = acCont.querySelector('.ac-producto-input'); if (inp) inp.focus(); }, 60);
+    }
+  }
 }
 function _devCant(d) {
   const c = document.getElementById('dev-cant');
@@ -14513,15 +14531,18 @@ async function _devGuardar(sheetId, tienePrefill) {
   const modal = document.querySelector('.dev-card')?.closest('.modal-bg');
   const cant = Number((document.getElementById('dev-cant') || {}).textContent) || 1;
   const pf = window._devPrefill;
+  // Producto elegido en el desplegable (si lo hay); si no, el texto tal cual escribió.
+  const sel = tienePrefill ? null : (window._devProdSel || null);
+  const inputLibre = tienePrefill ? '' : ((document.querySelector('#dev-prod-ac .ac-producto-input') || {}).value || '').trim();
   const nombre = tienePrefill ? (pf.nombre || pf.codigo || 'producto')
-                              : ((document.getElementById('dev-prod-libre') || {}).value || '').trim();
-  if (!tienePrefill && !nombre) { document.getElementById('dev-msg').innerHTML = '<div class="error-msg">Escribe qué producto se devuelve.</div>'; return; }
+                              : (sel ? (sel.nombre || sel.codigo || 'producto') : inputLibre);
+  if (!tienePrefill && !nombre) { document.getElementById('dev-msg').innerHTML = '<div class="error-msg">Escribe o elige qué producto se devuelve.</div>'; return; }
   if (!_devEstado || !_devResol) return;
   const motivo = ((document.getElementById('dev-motivo') || {}).value || '').trim();
   const retira = !!(document.getElementById('dev-retira') || {}).checked;
   const cambioProd = _devResol === 'otro' ? ((document.getElementById('dev-cambio-prod') || {}).value || '').trim() : '';
   const cambioMotivo = _devResol === 'otro' ? ((document.getElementById('dev-cambio-motivo') || {}).value || '').trim() : '';
-  const cod = tienePrefill ? (pf.codigo || '') : '';
+  const cod = tienePrefill ? (pf.codigo || '') : (sel ? (sel.codigo || '') : '');
   // Texto legible (se ve en el carrito y como copia). Los datos van también en columnas.
   const ESTADO = { bueno: 'buen estado', caducado: 'caducado', roto: 'roto/dañado' };
   let texto = '↩️ DEVOLUCIÓN · ' + cant + ' uds · ' + (cod ? cod + ' ' : '') + nombre + ' · ' + ESTADO[_devEstado];
@@ -14535,7 +14556,7 @@ async function _devGuardar(sheetId, tienePrefill) {
       sheet_id: sheetId || null,
       texto_libre: texto,
       tipo: 'devolucion',
-      product_id: tienePrefill ? (pf.product_id || null) : null,
+      product_id: tienePrefill ? (pf.product_id || null) : (sel ? (sel.id || sel.product_id || null) : null),
       cantidad: cant,
       zone_id: tienePrefill ? (pf.zone_id || null) : null,
       dev_estado: _devEstado,

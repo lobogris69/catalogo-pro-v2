@@ -325,7 +325,10 @@ function simpleModalProducto(zona, sheetId, anotExistente) {
       </div>
       <div class="simple-rapidos">
         ${[3, 6, 12, 24].map(x => `<button onclick="simpleCantFija(${x})">${x}</button>`).join('')}
+        <button type="button" class="cond-otra" onclick="simpleCantOtra()">✏️ Otra</button>
       </div>
+      <input type="number" id="simple-cant-otra" class="cond-otra-input" min="1" max="99999" step="1"
+             placeholder="Escribe la cantidad (ej: 50)" style="display:none" oninput="simpleCantDesdeInput(this.value)">
 
       <div class="simple-cond-titulo">🎁 ¿Lleva regalo?</div>
       <div class="cond-chips" id="simple-bonif">
@@ -404,6 +407,22 @@ function simpleCant(d) {
 function simpleCantFija(v) {
   const $c = document.getElementById('simple-cant');
   if ($c) $c.textContent = v;
+  const inp = document.getElementById('simple-cant-otra');
+  if (inp) { inp.style.display = 'none'; }   // al elegir un atajo, oculta el campo libre
+}
+// Cantidad LIBRE (incidencia #20): los atajos 3/6/12/24 no bastaban; ahora se puede teclear
+// cualquier cantidad (p.ej. 50). El número grande de arriba refleja lo que se escribe.
+function simpleCantOtra() {
+  const inp = document.getElementById('simple-cant-otra');
+  if (!inp) return;
+  inp.style.display = '';
+  inp.value = (document.getElementById('simple-cant') || {}).textContent || '';
+  inp.focus(); try { inp.select(); } catch (_) {}
+}
+function simpleCantDesdeInput(v) {
+  const n = Math.floor(Number(v) || 0);
+  const $c = document.getElementById('simple-cant');
+  if ($c && n >= 1) $c.textContent = n;   // vacío/0 no toca el número (para poder reescribir)
 }
 
 async function simpleGuardarProducto(sheetId) {
