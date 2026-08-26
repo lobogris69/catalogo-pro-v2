@@ -276,10 +276,38 @@ app.use(compression({
 // Última petición atendida. Solo sirve para que, si el proceso se cae, el log
 // diga QUÉ se estaba haciendo: sin esto un 502 es imposible de rastrear.
 let _ultimaPeticion = '(ninguna)';
+let _ultimaPeticionAt = Date.now();
 app.use((req, _res, next) => {
-  if (req.path !== '/api/health') _ultimaPeticion = `${req.method} ${req.path} @ ${new Date().toISOString()}`;
+  if (req.path !== '/api/health') {
+    _ultimaPeticion = `${req.method} ${req.path} @ ${new Date().toISOString()}`;
+    _ultimaPeticionAt = Date.now();
+  }
   next();
 });
+
+// RED DE SEGURIDAD DE MEMORIA. sharp/libvips + la generación de PDF dejan memoria NATIVA
+// retenida (RSS) que el SO no devuelve; con el tiempo subía a ~3 GB. sharp.cache(false) y
+// MALLOC_ARENA_MAX=2 lo FRENAN pero no lo topan. Aquí, si el RSS pasa del límite, se reinicia
+// el proceso de forma CONTROLADA (Railway lo relanza con restartPolicy ON_FAILURE), en vez de
+// arriesgar un OOM abrupto que corte peticiones. Se espera a un hueco SIN peticiones (o, como
+// mucho, 15 min) para no cortar a nadie; con la copia offline el reinicio (~10-20s) apenas se
+// nota. Ajustable con RSS_LIMIT_MB.
+const RSS_LIMIT_MB = Number(process.env.RSS_LIMIT_MB || 2000);
+let _reinicioPorMemoriaPedido = false;
+setInterval(() => {
+  const rss = Math.round(process.memoryUsage().rss / 1048576);
+  if (rss <= RSS_LIMIT_MB) return;
+  if (!_reinicioPorMemoriaPedido) {
+    _reinicioPorMemoriaPedido = true;
+    console.error(`[MEM] RSS ${rss}MB > ${RSS_LIMIT_MB}MB: reinicio controlado en cuanto haya un hueco sin peticiones.`);
+  }
+  const idleMs = Date.now() - _ultimaPeticionAt;
+  const forzarYa = idleMs > 15 * 60 * 1000;   // llevamos 15 min esperando hueco: salir igual
+  if (idleMs > 20 * 1000 || forzarYa) {
+    console.error(`[MEM] Saliendo (RSS ${rss}MB, inactivo ${Math.round(idleMs/1000)}s). Última petición: ${_ultimaPeticion}`);
+    setTimeout(() => process.exit(1), 300).unref();
+  }
+}, 60 * 1000).unref();
 
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
@@ -1708,7 +1736,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v270-devolucion-cantidad-espaciado-26ago',
+      build: 'v271-imprimir-laminas-guardia-memoria-26ago',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),

@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v270 · 26 ago 2026';
+const APP_VERSION = 'v271 · 26 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -4144,15 +4144,37 @@ function _mostrarBarraEnviar() {
   bar.innerHTML = `
     <button class="bel-cancel" onclick="salirEnvioLaminas()">✕</button>
     <div class="bel-info">Toca las láminas que te pide el cliente</div>
+    <button class="bel-enviar bel-imprimir" id="bel-imprimir" disabled onclick="imprimirLaminasSeleccionadas()">🖨️ Imprimir (0)</button>
     <button class="bel-enviar" id="bel-enviar" disabled onclick="abrirModalEnviarLaminas()">✉️ Enviar (0)</button>`;
   document.body.appendChild(bar);
 }
 function _actualizarBarraEnviar() {
-  const b = document.getElementById('bel-enviar');
-  if (!b) return;
   const n = _seleccionEnviar.size;
-  b.textContent = `✉️ Enviar (${n})`;
-  b.disabled = n === 0;
+  const b = document.getElementById('bel-enviar');
+  if (b) { b.textContent = `✉️ Enviar (${n})`; b.disabled = n === 0; }
+  const p = document.getElementById('bel-imprimir');
+  if (p) { p.textContent = `🖨️ Imprimir (${n})`; p.disabled = n === 0; }
+}
+// IMPRIMIR las láminas seleccionadas (incidencia #18): abre una ventana con las imágenes
+// (una por página) y lanza el diálogo de impresión del navegador. No pasa por el servidor;
+// funciona con las mismas imágenes que ya se ven en el visor.
+function imprimirLaminasSeleccionadas() {
+  if (!_seleccionEnviar || !_seleccionEnviar.size) return;
+  const sel = _seleccionEnviar;
+  const sheets = (_visorSheets || []).filter(s => sel.has(s.id) || sel.has(Number(s.id)));
+  if (!sheets.length) { alert('No encuentro las láminas seleccionadas.'); return; }
+  const urls = sheets.map(s => (typeof vurl === 'function' ? vurl(s.imagen_path, s) : s.imagen_path));
+  const w = window.open('', '_blank');
+  if (!w) { alert('El navegador ha bloqueado la ventana de impresión. Permite las ventanas emergentes, o usa "Enviar" por email.'); return; }
+  const imgsHtml = urls.map(u => `<img src="${String(u).replace(/"/g, '&quot;')}">`).join('');
+  const doc = '<!doctype html><html><head><meta charset="utf-8"><title>Imprimir láminas</title>' +
+    '<style>@page{size:A4;margin:8mm}html,body{margin:0;padding:0}' +
+    'img{display:block;width:100%;max-height:calc(100vh - 16mm);object-fit:contain;page-break-after:always;break-after:page}' +
+    'img:last-child{page-break-after:auto;break-after:auto}</style></head><body>' + imgsHtml +
+    '<scr' + 'ipt>(function(){var n=document.images.length,k=0;function go(){if(++k>=n){setTimeout(function(){window.focus();window.print();},350);}}' +
+    'if(!n){window.print();return;}for(var i=0;i<document.images.length;i++){var im=document.images[i];if(im.complete)go();else{im.onload=go;im.onerror=go;}}})();</scr' + 'ipt>' +
+    '</body></html>';
+  w.document.open(); w.document.write(doc); w.document.close();
 }
 function abrirModalEnviarLaminas() {
   const n = _seleccionEnviar.size;

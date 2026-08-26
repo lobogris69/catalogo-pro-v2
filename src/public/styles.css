@@ -2963,6 +2963,9 @@ body.solo-visor .btn-incidencia { left: auto; right: 18px; }
   background: #16a34a; color: #fff; font-size: 15px; font-weight: 800; cursor: pointer;
 }
 .barra-enviar-laminas .bel-enviar:disabled { background: var(--gris-borde); color: #888; cursor: not-allowed; }
+/* Botón imprimir: mismo tamaño que enviar, color distinto para diferenciarlos (incidencia #18). */
+.barra-enviar-laminas .bel-imprimir { background: #4f46e5; }
+.barra-enviar-laminas .bel-imprimir:disabled { background: var(--gris-borde); }
 /* la barra no debe tapar el final del mosaico */
 .visor-mosaico.mosaico-enviar { padding-bottom: 80px; }
 /* casilla de selección en cada celda */
