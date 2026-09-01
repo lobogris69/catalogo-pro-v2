@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v272 · 26 ago 2026';
+const APP_VERSION = 'v273 · 26 ago 2026';
 const API = '';
 
 // ============================================================================
@@ -3640,6 +3640,14 @@ function _soloVisorAbrir(catalogId, unico) {
 }
 
 async function renderVisorComercial(catalogId) {
+  // Al ENTRAR en un catálogo, empezar SIN búsqueda ni filtro. Si buscabas "tapones", salías
+  // (← Catálogos) y volvías a entrar, la búsqueda seguía puesta y solo veías tapones: había
+  // que borrar la palabra a mano. Ahora cada entrada muestra el catálogo completo (petición
+  // Fernando). La búsqueda sí se mantiene mientras estás DENTRO (navegar lámina↔mosaico no
+  // pasa por aquí, solo por pintarVisor).
+  appState.visorBusqueda = '';
+  appState.visorFiltroCat = null;
+  appState.visorIndice = 0;
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogo…</div></div>`;
   try {
