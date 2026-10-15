@@ -399,7 +399,48 @@ html {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
 }
+
+/* SELECTOR DE NIVEL DEL COMERCIAL: hasta dónde llega en la app (solo visor / visita sin
+   pedido / completo). Va como un mando de 3 posiciones y no como 3 interruptores sueltos,
+   para que no puedan quedar en un estado contradictorio. */
+.nivel-comercial {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--borde, #e5e7eb);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f9fafb;
+}
+.nivel-etiqueta {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9ca3af;
+  padding: 0 8px;
+}
+.nivel-btn {
+  border: 0;
+  border-left: 1px solid var(--borde, #e5e7eb);
+  background: transparent;
+  color: #6b7280;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nivel-btn:hover { background: #f3f4f6; color: #374151; }
+.nivel-btn.nivel-activo { color: #fff; font-weight: 800; }
+.nivel-btn.nivel-activo:hover { filter: brightness(1.06); }
+.nivel-btn.nivel-visor.nivel-activo { background: #7c3aed; }      /* morado: solo mirar */
+.nivel-btn.nivel-sinpedido.nivel-activo { background: #0d9488; }  /* verde azulado: fase intermedia */
+.nivel-btn.nivel-completo.nivel-activo { background: #16a34a; }   /* verde: flujo completo */
 
 .rol-badge {
   display: inline-block;
@@ -2570,6 +2611,18 @@ body.visor-fullscreen-activo .visor-imagen {
   object-fit: contain;
   display: block;
 }
+/* ...Y ENCAJADA A PANTALLA aunque el archivo sea pequeño (incidencia #30: una lámina de
+   600x960 salía a 600x960 en medio de la pantalla negra). Con width/height:auto y solo
+   max-*, el navegador nunca AMPLÍA. Aquí el ancho se calcula con la proporción real de la
+   lámina (--ar, la pone _proporcionLamina al cargar): el menor entre "todo el ancho" y
+   "todo el alto × proporción". Así la imagen mide exactamente lo que se ve, sin franjas
+   dentro de ella, y el wrapper (y las zonas, que van en %) coinciden con la lámina.
+   Va detrás de la regla de width:auto a propósito: misma especificidad, gana esta. */
+body.visor-fullscreen-activo .visor-imagen {
+  width: min(100vw, calc(100vh * var(--ar, 0.7))) !important;    /* respaldo sin dvh */
+  width: min(100vw, calc(100dvh * var(--ar, 0.7))) !important;
+  height: auto !important;
+}
 
 /* EL CARRITO TAMBIÉN EN PANTALLA COMPLETA. La regla de arriba oculta todo lo que no
    sea la lámina, y el carrito caía dentro: te quedabas sin ver el pedido justo en la
@@ -2584,6 +2637,28 @@ body.visor-fullscreen-activo .visor-shell > .carrito-fab {
   transition: opacity .3s;
 }
 body.visor-fullscreen-activo.visor-fullscreen-controles-visibles .visor-shell > .carrito-fab {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* EL 🛟 NO VA ENCIMA DE LA LÁMINA (10 sep 2026). Flotante abajo a la izquierda, tapaba
+   justo donde muchas láminas llevan el código y los precios. Dentro del visor tiene su
+   botón en la fila de ◀ Anterior / Siguiente ▶ (.visor-sos-btn), así que el flotante se
+   oculta mientras esa fila existe. Si un navegador viejo no entiende :has(), no pasa
+   nada: se ven los dos, como antes. Fuera del visor (inicio, listas) sigue flotando. */
+body:has(.visor-nav-superior) .btn-incidencia { display: none; }
+.visor-sos-btn { flex: 0 0 auto; min-width: 52px; padding-left: 12px; padding-right: 12px; font-size: 20px; }
+/* En pantalla completa la fila está oculta: el flotante vuelve, pero como el carrito,
+   solo al tocar la pantalla y se va a los pocos segundos, para no tapar la lámina. */
+body.visor-fullscreen-activo .btn-incidencia {
+  display: inline-flex !important;
+  align-items: center; justify-content: center;
+  bottom: 18px !important;   /* en modo sencillo iba a 96px por la franja, que aquí no está */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .3s;
+}
+body.visor-fullscreen-activo.visor-fullscreen-controles-visibles .btn-incidencia {
   opacity: 1;
   pointer-events: auto;
 }
@@ -2618,6 +2693,23 @@ body.visor-fullscreen-controles-visibles .fullscreen-controles {
 }
 .fs-btn:hover { background: rgba(0,0,0,0.85); }
 .fs-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+/* Botón "↩ Volver" del overlay de pantalla completa (cuando venimos de un enlace entre
+   catálogos): en ⛶ se ocultan la cabecera y la barra flotante, así que el retorno tiene
+   que estar aquí. Píldora con texto, no círculo. */
+.fs-btn-volver {
+  width: auto;
+  height: 48px;
+  border-radius: 24px;
+  padding: 0 18px;
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 800;
+  background: rgba(30,58,138,0.92);
+  white-space: nowrap;
+}
+.fs-btn-volver:hover { background: rgba(30,58,138,1); }
+/* Mismo motivo que .barra-enlace: con el banner de actualización visible, bajarlo. */
+body.con-banner-update .fs-btn-volver { top: 66px !important; }
 
 /* ============================================================================
    B7 - MODAL PRIVADO (cuando se anota en fullscreen)
@@ -3365,6 +3457,16 @@ body.solo-visor .btn-incidencia { left: auto; right: 18px; }
 body.con-banner-update {
   padding-top: 50px;
 }
+/* La barra de volver de un ENLACE entre catálogos va position:fixed a top:0, así que el
+   padding-top del body NO la mueve: el banner rosa (z-index 999999) se le ponía justo
+   ENCIMA y el comercial se quedaba sin botón para volver al catálogo de origen —
+   parecía que el enlace no tuviera vuelta. Con el banner visible, la barra baja debajo. */
+body.con-banner-update .barra-enlace {
+  top: 50px;
+}
+@media (max-width: 600px) {
+  body.con-banner-update .barra-enlace { top: 45px; }
+}
 
 @media (max-width: 600px) {
   .pwa-update-banner {
@@ -3946,6 +4048,27 @@ body.con-banner-update {
   padding: 1px 5px; border-radius: 4px; pointer-events: none; white-space: nowrap;
 }
 
+/* FASE "VISITA SIN PEDIDO": zonas que se marcan de un toque. La que el cliente ya se
+   lleva se ve EN VERDE. Verde = anotado, NO facturado (es la señal que pidió Fernando
+   para distinguirlo de un pedido de verdad). */
+.visor-zona-marcable {
+  outline: 2px dashed rgba(13,148,136,.55);
+  outline-offset: -2px;
+}
+.visor-zona-llevada {
+  background: rgba(16,185,129,.28);
+  outline: 3px solid rgba(5,150,105,.9);
+  outline-offset: -2px;
+}
+.visor-zona-llevada-txt {
+  position: absolute; top: 2px; left: 2px;
+  background: #059669; color: #fff; font-size: 10px; font-weight: 800;
+  padding: 1px 6px; border-radius: 4px; pointer-events: none; white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0,0,0,.25);
+}
+/* El contador flotante en esta fase no es un carrito: es "lo que se lleva". */
+.carrito-fab-sinpedido { background: #0d9488 !important; }
+
 /* Aviso en el visor de que hay láminas ocultas por la zona de la farmacia. */
 .visor-aviso-zona {
   background: #dbeafe; color: #1e40af; padding: 8px 14px; font-size: 13px;
@@ -4334,6 +4457,7 @@ body.con-banner-update {
   flex-shrink: 0;
 }
 .barra-enlace-btn:active { transform: scale(0.96); }
+
 
 /* Selector de familia (color x graduacion) en el modal de anotar */
 .zona-familia-selector {
@@ -5041,7 +5165,11 @@ tr.rep-subtotal-impar th, tr.rep-subtotal-impar td { background: #fef2f2; }
 }
 .btn-incidencia:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,0.34); }
 .btn-incidencia.con-pendientes { background: #b45309; }
-@media (max-width: 640px) { .btn-incidencia { right: 12px; bottom: 12px; } }
+/* En móvil: pegado abajo a la IZQUIERDA (su sitio, ver arriba). Ponía right:12px sin quitar
+   el left:18px de la regla base: con left y right a la vez, un botón fixed se ESTIRA de lado
+   a lado y el 🛟 salía como una barra rosa que tapaba las tarjetas (móvil de Fernando,
+   11 sep 2026, vista de admin). */
+@media (max-width: 640px) { .btn-incidencia { left: 12px; right: auto; bottom: 12px; } }
 
 /* Bandeja de avisos (solo admin): botón APARTE del 🛟, para que el de escribir un
    aviso nunca deje de escribir. Va justo a su derecha y solo sale si hay pendientes. */
@@ -6101,6 +6229,18 @@ body.modo-simple .btn-incidencia-bandeja { bottom: 96px; z-index: 99500; }
   background: var(--grad); color: #fff; font-size: 16px; font-weight: 800; font-family: inherit;
   box-shadow: 0 8px 20px -8px rgba(216,10,107,.7);
 }
+/* EL "← INICIO" NO PUEDE TAPAR NADA (10 sep 2026). Es position:fixed arriba-izquierda:
+   - Con el aviso rosa de actualización (fixed, top:0, ~50px) quedaba medio debajo: se baja
+     lo mismo que la barra de enlace (v277). El padding-top del body NO mueve un fixed.
+   - En el visor tapaba el principio del título: la cabecera le deja sitio (la clase la pone
+     _ponerVolverSimple), como el "← Catálogos" del solo visor (incidencia #19).
+   - En pantalla completa tapaba la esquina de la lámina: ahí no hace falta, se sale con ×. */
+body.con-banner-update .simple-volver-flotante { top: 62px; }
+@media (max-width: 600px) {
+  body.con-banner-update .simple-volver-flotante { top: 57px; }
+}
+body.modo-simple.simple-con-volver .visor-cabecera { padding-left: 138px; }
+body.visor-fullscreen-activo .simple-volver-flotante { display: none !important; }
 
 /* Cabecera de las pantallas de lista */
 .simple-cabecera {
@@ -6341,6 +6481,86 @@ body.modo-simple .visor-anotaciones-header { display: none !important; }
 /* ...pero SÍ dejamos el conmutador presentación/mosaico: el comercial en modo sencillo
    también quiere ver todas las láminas de golpe (mosaico). */
 body.modo-simple .visor-modo-btn.visor-modo-vista { display: inline-flex !important; }
+/* "ÚLTIMA VISITA": la regla de arriba escondía TODOS los botones de la cabecera del visor,
+   y este caía dentro — el comercial en modo sencillo no tenía forma de ver qué se llevó
+   el cliente la vez anterior (Fernando, 4 sep 2026). Se destapa y, además, se le pone
+   texto: un 📋 pequeño no lo encuentra quien viene del papel. */
+body.modo-simple .visor-modo-btn.btn-ultima-visita {
+  display: inline-flex !important;
+  width: auto;
+  background: #0d9488;
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+  padding: 0 14px;
+  min-height: 44px;
+  border-radius: 22px;
+  white-space: nowrap;
+}
+/* "ENVIAR LÁMINAS": la regla body.modo-simple .visor-modo-btn{display:none} también lo
+   escondía, así que el comercial en tablet (todos van en modo sencillo) no tenía el ✉️
+   para mandar láminas a un cliente que las pide (Fernando, 29 sep 2026: "en modo mosaico
+   ese botón no se ve por ningún lado"). Se destapa y, como con "Última visita", se le pone
+   TEXTO: un ✉️ suelto no lo encuentra quien viene del papel. */
+body.modo-simple .visor-modo-btn.btn-enviar-laminas {
+  display: inline-flex !important;
+  width: auto;
+  background: #d80a6b;
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+  padding: 0 14px;
+  min-height: 44px;
+  border-radius: 22px;
+  white-space: nowrap;
+}
+body.modo-simple .visor-modo-btn.btn-enviar-laminas::after { content: " Enviar láminas"; }
+/* ============================================================================
+   TAMAÑO UNIFORME DE LA LÁMINA EN MODO SENCILLO
+   El arreglo del tamaño (v269) se escribió SOLO para body.solo-visor. En modo sencillo
+   no existía, así que cada lámina salía del alto que le daba la proporción de su imagen
+   original: medido en la misma pantalla, las 5 primeras láminas daban 801, 947, 993, 986
+   y 994 px, mientras en solo visor todas daban 1168. De ahí "unas a página completa y
+   otras no" (Fernando, 7 sep 2026, avisos #26/#27/#28/#29). Y al no haber tope de alto,
+   una lámina alta se salía por abajo y la franja de "TERMINAR" le comía la última línea.
+   El hueco NO se fija a ojo: --simple-chrome lo mide _ajustarAltoLaminaSimple() sumando
+   lo que ocupan de verdad la cabecera, la barra de pasar láminas y la franja del pedido.
+   Poner un número fijo es lo que provocó en su día que la lámina se saliera al aparecer
+   una barra (incidencia #5). El valor de reserva solo actúa si aún no se ha medido.
+   ============================================================================ */
+body.modo-simple .visor-imagen-contenedor {
+  max-width: 100vw;
+  max-height: calc(100vh - var(--simple-chrome, 210px));    /* respaldo Chrome <108 (sin dvh) */
+  max-height: calc(100dvh - var(--simple-chrome, 210px));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+body.modo-simple .visor-imagen-zoom {
+  width: auto;
+  max-width: 100%;
+  max-height: 100%;
+}
+body.modo-simple .visor-imagen {
+  width: auto;
+  /* height (no solo max-height): con max-height, una lámina de baja resolución NO se
+     amplía y se queda pequeña — la misma lección de la incidencia #16. */
+  height: calc(100vh - var(--simple-chrome, 210px));
+  height: calc(100dvh - var(--simple-chrome, 210px));
+  max-width: 100%;
+  max-height: calc(100vh - var(--simple-chrome, 210px));
+  max-height: calc(100dvh - var(--simple-chrome, 210px));
+  object-fit: contain;
+}
+/* PANTALLA COMPLETA en modo sencillo: la franja del pedido NO puede quedarse encima de la
+   lámina tapándole la última línea. En ⛶ manda la lámina y los controles propios (× ◀ ▶);
+   para terminar la visita se sale de pantalla completa. */
+body.visor-fullscreen-activo .simple-barra { display: none !important; }
+body.visor-fullscreen-activo.modo-simple { padding-bottom: 0 !important; }
+
+/* El texto solo en modo sencillo: en el normal la cabecera va apretada y basta el icono. */
+.btn-ultima-visita-txt { display: none; }
+body.modo-simple .btn-ultima-visita-txt { display: inline; }
 /* El 🛟 de incidencias no debe quedar tapado por la barra negra del pedido (misma altura). */
 body.modo-simple .btn-incidencia { bottom: 96px; z-index: 99500; }
 
@@ -6349,9 +6569,113 @@ body.modo-simple .btn-incidencia { bottom: 96px; z-index: 99500; }
    quedaban cortados por el borde. Recuperamos los 50px y quitamos buscador/categorías del
    visor (el modo sencillo va guiado y despejado); arriba queda solo volver + título + 📺/▦. */
 body.modo-simple { padding-top: 0 !important; }
+/* ...SALVO con el aviso rosa de actualización (fixed, top:0): sin este hueco, el aviso
+   tapaba la cabecera del visor entera —título, 🔍, "Última visita"— mientras estaba en
+   pantalla, y el "← Inicio" (que sí baja, ver .simple-volver-flotante) quedaba sin
+   cabecera al lado y encima de "◀ Anterior". Mismo hueco que en el resto de la app. */
+body.modo-simple.con-banner-update { padding-top: 50px !important; }
+@media (max-width: 600px) {
+  body.modo-simple.con-banner-update { padding-top: 45px !important; }
+}
 body.modo-simple .visor-cabecera { padding: 6px 10px; gap: 4px; }
 body.modo-simple .visor-buscador-fila,
 body.modo-simple .visor-chips-cats { display: none !important; }
 /* ...pero se despliegan al pulsar el 🔍 (si no, no había forma de buscar una lámina). */
 body.modo-simple .visor-cabecera.solovisor-buscar-abierto .visor-buscador-fila { display: flex !important; }
 body.modo-simple .visor-cabecera.solovisor-buscar-abierto .visor-chips-cats { display: flex !important; flex-wrap: wrap; }
+
+/* ============================================================================
+   TODO LO FIJO ARRIBA SE BAJA CON EL AVISO ROSA — UNA SOLA REGLA (11 sep 2026)
+   El aviso "Hay una nueva versión" es fixed, top:0, z-index 999999: tapa lo que haya en
+   su franja. Se fue arreglando botón a botón con medidas fijas (50px, 45px en móvil):
+   barra de enlace (v277), «← Inicio» (v295)... y el «← Catálogos» del solo visor se quedó
+   fuera (incidencia #31: parecía que no se podía salir del catálogo). Además en móvil el
+   aviso ocupa dos líneas (53px) y 45px no bastaba. Ahora el alto REAL lo mide
+   _medirAvisoActualizacion() (app.js) en --aviso-alto y todo usa ese valor.
+   Va al FINAL del fichero a propósito: misma especificidad que las reglas antiguas, gana
+   la última. UN BOTÓN FIJO NUEVO ARRIBA = AÑADIRLO AQUÍ, no inventarle su propia medida.
+   ============================================================================ */
+body.con-banner-update { padding-top: var(--aviso-alto, 50px); }
+body.modo-simple.con-banner-update,
+body.solo-visor.con-banner-update { padding-top: var(--aviso-alto, 50px) !important; }
+body.con-banner-update .solovisor-volver { top: calc(10px + var(--aviso-alto, 50px)); }
+body.con-banner-update .simple-volver-flotante { top: calc(12px + var(--aviso-alto, 50px)); }
+body.con-banner-update .barra-enlace { top: var(--aviso-alto, 50px); }
+body.con-banner-update .fs-btn-volver { top: calc(16px + var(--aviso-alto, 50px)) !important; }
+/* En solo visor la lámina se mide contra el alto de la pantalla: con el hueco del aviso
+   tiene que descontarlo, o se sale por abajo esos mismos píxeles. */
+body.solo-visor.con-banner-update .visor-imagen {
+  height: calc(100vh - 112px - var(--solovisor-extra, 0px) - var(--aviso-alto, 50px));
+  height: calc(100dvh - 112px - var(--solovisor-extra, 0px) - var(--aviso-alto, 50px));
+  max-height: calc(100vh - 112px - var(--solovisor-extra, 0px) - var(--aviso-alto, 50px));
+  max-height: calc(100dvh - 112px - var(--solovisor-extra, 0px) - var(--aviso-alto, 50px));
+}
+
+/* ============================================================================
+   SOLO VISOR EN MÓVIL (11 sep 2026, incidencia #31 vista en el móvil de Fernando:
+   ~320px de ancho CSS). La cabecera solo estaba pensada para tablet: una fila con
+   ← + título + 6 iconos. En un móvil los iconos se comían el ancho y al título le
+   quedaban unos píxeles (la fecha salía en vertical, una palabra por renglón); el botón
+   morado fijo «← Catálogos» tapaba además el nombre (el hueco para él solo existía a
+   partir de 600px), y la flecha rosa ← hacía lo mismo que el botón morado.
+   Aquí: la cabecera empieza DEBAJO del botón morado, el nombre va en su fila entera y
+   los iconos en la de abajo; sin flecha rosa si está el botón morado. Y la lámina, que
+   se medía con los 112px de cabecera de la tablet y se salía por abajo, ocupa el ancho
+   con su proporción (en un móvil vertical manda el ancho). En tablet NO cambia nada.
+   Va al final para ganar a las reglas de arriba (misma especificidad).
+   ============================================================================ */
+@media (max-width: 599px) {
+  body.solo-visor.solovisor-con-volver .visor-cabecera { padding-top: 58px; }   /* 10 + 44 del botón + aire */
+  body.solo-visor.solovisor-con-volver .btn-icon-volver { display: none; }
+  body.solo-visor .visor-cabecera-fila { flex-wrap: wrap; row-gap: 6px; }
+  body.solo-visor .visor-titulo-bloque { flex: 1 1 100%; }
+  body.solo-visor .visor-titulo { white-space: normal; overflow: visible; }
+  body.solo-visor .visor-modo-switch { flex-wrap: wrap; }
+  /* MODO SENCILLO en móvil: mismo arreglo que solo-visor. Al añadir la pastilla ancha
+     "✉️ Enviar láminas" (v313), en el móvil de Fernando los botones se salían por la
+     derecha y el de MOSAICO quedaba fuera de pantalla (30-sep-2026). Bajamos el título a
+     su línea y los botones a la suya, donde caben 🔍 + Enviar láminas + 📺 + ▦. */
+  body.modo-simple .visor-cabecera-fila { flex-wrap: wrap; row-gap: 6px; }
+  body.modo-simple .visor-titulo-bloque { flex: 1 1 100%; }
+  body.modo-simple .visor-titulo { white-space: normal; overflow: visible; }
+  body.modo-simple .visor-modo-switch { flex-wrap: wrap; justify-content: flex-end; }
+  body.solo-visor .visor-imagen-contenedor,
+  body.solo-visor.con-banner-update .visor-imagen-contenedor { max-height: none; }
+  body.solo-visor .visor-imagen,
+  body.solo-visor.con-banner-update .visor-imagen { width: 100%; height: auto; max-height: none; }
+}
+
+/* "Salir / cambiar de usuario" en el pie: SOLO en solo visor, que es el único modo sin la
+   barra de arriba (y por tanto sin el "Salir" de siempre). Ver salirDeSoloVisor(). */
+.solovisor-salir-wrap { display: none; }
+/* margin-bottom: el 🛟 va fijo abajo a la derecha y tapaba el final del botón ("usuario")
+   en el móvil de Fernando. Con este hueco, al bajar del todo el botón queda por encima. */
+body.solo-visor .solovisor-salir-wrap { display: block; margin-top: 10px; margin-bottom: 84px; }
+.solovisor-salir {
+  background: #fff; color: #6b7280; border: 1px solid #d1d5db; border-radius: 10px;
+  padding: 10px 16px; font-size: 14px; font-weight: 600; font-family: inherit; cursor: pointer;
+}
+.solovisor-salir:active { transform: scale(.97); }
+
+/* Desplegable de VISITAS ANTERIORES (20 sep 2026): encima del panel de la visita, tanto en
+   el modal del visor como en la ficha del cliente. Solo sale si hay más de una visita. */
+.uv-selector {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 10px; font-size: 13px; color: var(--gris-texto);
+}
+.uv-selector select {
+  flex: 1 1 220px; max-width: 100%;
+  padding: 9px 10px; min-height: 42px;      /* dedo en tablet */
+  border: 1px solid var(--gris-borde); border-radius: 10px;
+  background: var(--surface); color: var(--texto);
+  font-family: inherit; font-size: 14px;
+}
+
+/* BARRA DE ARRIBA EN MÓVIL (11 sep 2026): era una sola fila sin poder partirse (título a la
+   izquierda; Online, Ver como…, tema y Salir a la derecha). En el móvil de Fernando no cabía
+   y "Salir" quedaba cortado fuera de la pantalla. En estrecho: dos filas, los botones debajo
+   del título y todos a la vista. En tablet/PC no cambia. */
+@media (max-width: 600px) {
+  .topbar { flex-wrap: wrap; row-gap: 10px; padding: 12px 16px; }
+  .topbar-acciones { width: 100%; flex-wrap: wrap; justify-content: flex-start; }
+}

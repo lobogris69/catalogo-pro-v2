@@ -33,8 +33,11 @@ function renderSimpleInicio() {
   const $v = document.getElementById('vista-contenido');
   if (!$v) return;
   // Al volver al inicio, retirar el botón flotante de "volver" si se quedó de planning/formación.
-  document.querySelectorAll('.simple-volver-flotante').forEach(x => x.remove());
+  _quitarVolverSimple();
   const va = appState.visitaActiva;
+  // Si enseña "Tienes una visita empezada", confirmar con el servidor que no se cerró ya
+  // desde otro dispositivo (si es así, la suelta y vuelve a pintar esta pantalla sin ella).
+  if (va && typeof comprobarVisitaSigueAbierta === 'function') comprobarVisitaSigueAbierta();
   $v.innerHTML = `
     <div class="simple-pantalla">
       <div class="simple-saludo">Hola, ${escape((nombreEfectivo() || '').split(' ')[0] || '')}</div>
@@ -46,12 +49,14 @@ function renderSimpleInicio() {
           <span class="simple-icono">🛒</span>
           SEGUIR CON LA VISITA
         </button>
+        <button class="simple-boton-secundario" onclick="simpleVerCatalogo()">📚 Ver el catálogo (sin tocar la visita)</button>
         <button class="simple-boton-secundario" onclick="simpleDescartarVisita()">Descartar esta visita</button>
       ` : `
         <button class="simple-boton-gigante" onclick="simpleElegirFarmacia()">
           <span class="simple-icono">🏥</span>
           EMPEZAR VISITA
         </button>
+        <button class="simple-boton-secundario" onclick="simpleVerCatalogo()">📚 Ver el catálogo (sin empezar visita)</button>
       `}
       <div class="simple-accesos">
         <button class="simple-boton-medio" onclick="simpleAbrirPlanning()">
@@ -86,14 +91,29 @@ function simpleAbrirFormacion() {
 // Muestra una pantalla normal (planning/aula) dentro del modo sencillo, con un botón
 // flotante "← Inicio" que sobrevive a los repintados de esa vista.
 function _simpleAbrirVistaConVuelta(vista, render) {
-  document.querySelectorAll('.simple-volver-flotante').forEach(x => x.remove());
+  _quitarVolverSimple();
   appState.vista = vista;
   render();
+  _ponerVolverSimple(() => { appState.vista = 'catalogos'; renderSimpleInicio(); });
+}
+
+// El botón flotante "← Inicio" se pone y se quita SOLO por aquí. Va fijo arriba a la
+// izquierda y tapaba cosas (10 sep 2026): el principio del título del catálogo, la esquina
+// de la lámina en pantalla completa, y él mismo quedaba medio escondido bajo el aviso rosa
+// de actualización. La clase `simple-con-volver` del body es la que le hace sitio (CSS):
+// por eso no puede quitarse el botón sin quitar también la clase.
+function _ponerVolverSimple(alPulsar) {
+  _quitarVolverSimple();
   const b = document.createElement('button');
   b.className = 'simple-volver-flotante';
   b.innerHTML = '← Inicio';
-  b.onclick = () => { b.remove(); appState.vista = 'catalogos'; renderSimpleInicio(); };
+  b.onclick = () => { _quitarVolverSimple(); alPulsar(); };
   document.body.appendChild(b);
+  document.body.classList.add('simple-con-volver');
+}
+function _quitarVolverSimple() {
+  document.querySelectorAll('.simple-volver-flotante').forEach(x => x.remove());
+  document.body.classList.remove('simple-con-volver');
 }
 
 // ===== 2. ELEGIR FARMACIA =====
@@ -177,7 +197,7 @@ async function simpleElegirCatalogo(clientId) {
       <div class="simple-lista">
         ${cats.map(c => `
           <button class="simple-item simple-item-catalogo" onclick="simpleEmpezarVisita(${clientId}, ${c.id})">
-            <span class="simple-item-nombre">📚 ${escape(c.name || '')}</span>
+            <span class="simple-item-nombre">📚 ${escape(nombreCatalogoVisible(c))}</span>
             <span class="simple-item-sub">${c.sheet_count || 0} láminas${c.tipo === 'express' ? ' · ofertas' : ''}</span>
           </button>`).join('')}
       </div>
@@ -186,6 +206,7 @@ async function simpleElegirCatalogo(clientId) {
 }
 
 async function simpleEmpezarVisita(clientId, catalogId) {
+  window._simpleSoloMirar = false;   // se acabó el "solo mirar": esto ya es una visita
   const $l = document.getElementById('simple-lista');
   if ($l) $l.innerHTML = `<div class="loading">Abriendo la visita…</div>`;
   try {
@@ -251,12 +272,61 @@ async function simpleCambiarCatalogo() {
       ${cats.map(c => `
         <button class="simple-item simple-item-catalogo${Number(c.id) === Number(appState.catalogoActual) ? ' simple-item-activo' : ''}"
                 onclick="simpleAbrirCatalogo(${c.id})">
-          <span class="simple-item-nombre">📚 ${escape(c.name || '')}</span>
+          <span class="simple-item-nombre">📚 ${escape(nombreCatalogoVisible(c))}</span>
           <span class="simple-item-sub">${c.sheet_count || 0} láminas${Number(c.id) === Number(appState.catalogoActual) ? ' · lo estás viendo' : ''}</span>
         </button>`).join('')}
       <button class="simple-cancelar" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
     </div>`;
   document.body.appendChild(m);
+}
+
+// ===== VER EL CATÁLOGO SIN EMPEZAR VISITA =====
+// El modo sencillo se diseñó como un único camino hacia el pedido, y para abrir el
+// catálogo OBLIGABA a empezar una visita. Pero el comercial muchas veces solo quiere
+// repasarlo o mirar una duda (lo pidió Fernando el 4 sep 2026). Aquí se abre el visor
+// tal cual, sin visita: sin poder anotar nada (las zonas solo se pintan en visita) y con
+// un botón flotante para volver al inicio.
+async function simpleVerCatalogo() {
+  const cats = await simpleCatalogosDelComercial();
+  if (!cats.length) { simpleAviso('No tienes ningún catálogo asignado'); return; }
+  if (cats.length === 1) { simpleAbrirCatalogoSoloMirar(cats[0].id); return; }
+  const m = document.createElement('div');
+  m.className = 'modal-bg simple-modal-bg';
+  m.innerHTML = `
+    <div class="simple-modal">
+      <div class="simple-modal-cab"><div class="simple-modal-nombre">¿Qué catálogo quieres ver?</div></div>
+      ${cats.map(c => `
+        <button class="simple-item simple-item-catalogo" onclick="simpleAbrirCatalogoSoloMirar(${c.id})">
+          <span class="simple-item-nombre">📚 ${escape(nombreCatalogoVisible(c))}</span>
+          <span class="simple-item-sub">${c.sheet_count || 0} láminas</span>
+        </button>`).join('')}
+      <button class="simple-cancelar" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+    </div>`;
+  document.body.appendChild(m);
+}
+
+// Bandera que le dice al enrutador que puede pintar el visor SIN visita. Va en window
+// porque la lee routerVista() (app.js), que es otro fichero.
+function simpleAbrirCatalogoSoloMirar(catalogId) {
+  document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+  // Si había una visita a medias, su barra de abajo se retira mientras solo se mira:
+  // aquí no se anota nada y esa barra invita a terminar la visita desde otra farmacia.
+  document.getElementById('simple-barra')?.remove();
+  window._simpleSoloMirar = true;
+  appState.vista = 'catalogos';
+  appState.catalogoActual = catalogId;
+  appState.visorIndice = 0;
+  render();
+  setTimeout(simpleBotonVolverInicio, 400);
+}
+
+// Botón flotante "← Inicio" mientras se mira el catálogo sin visita.
+function simpleBotonVolverInicio() {
+  _ponerVolverSimple(() => {
+    window._simpleSoloMirar = false;
+    appState.catalogoActual = null;
+    renderSimpleInicio();
+  });
 }
 
 function simpleAbrirCatalogo(catalogId) {
@@ -283,8 +353,14 @@ function simpleSeguirVisita() {
 // ===== 3. BARRA FIJA CON EL PEDIDO =====
 // Siempre visible mientras dura la visita: cuántos productos lleva y cómo terminar.
 function simpleBarraPedido() {
-  if (!esModoSimple() || !appState.visitaActiva) {
+  // Mientras solo se MIRA el catálogo no puede salir esta barra, aunque haya una visita
+  // abierta: enseña un contador y un "TERMINAR" que son de OTRA farmacia. La guarda va
+  // aquí dentro y no en quien llama, porque a esta función la invocan desde varios sitios
+  // y con setTimeout — quitando la barra fuera, un temporizador viejo la volvía a poner.
+  if (!esModoSimple() || !appState.visitaActiva || window._simpleSoloMirar) {
     document.getElementById('simple-barra')?.remove();
+    // La franja ocupaba alto: al quitarla, la lamina puede crecer.
+    if (typeof _ajustarAltoLaminaSimple === 'function') setTimeout(_ajustarAltoLaminaSimple, 0);
     return;
   }
   // La MISMA cuenta que el carrito del modo normal: si los dos números bailasen,
@@ -300,10 +376,17 @@ function simpleBarraPedido() {
   // La cuenta del pedido es un BOTÓN de verdad: al tocarla se abre el pedido. Antes era un
   // <div> de texto suelto: al pulsarlo no pasaba nada y, si el dedo se entretenía, Android
   // seleccionaba el texto y ofrecía "Buscar en Google" (parecía que la app fallaba).
+  // MODO SENCILLO + "VISITA SIN PEDIDO": aquí no se hace pedido, solo se anota lo que el
+  // cliente se lleva. La barra no puede seguir hablando de "productos" y de un carrito,
+  // o el comercial cree que está pidiendo. Los dos modos se combinan a propósito: el
+  // sencillo es para quien viene del papel, que es justo el público de esta fase.
+  const sinPedido = (typeof esVisitaSinPedido === 'function') && esVisitaSinPedido();
   b.innerHTML = `
-    <button class="simple-barra-cat" onclick="simpleCambiarCatalogo()" title="Ver otro catálogo sin perder el pedido">📚</button>
-    <button class="simple-barra-cuenta" onclick="abrirCarritoVisita()" title="Ver el pedido de esta visita">🛒 ${n} ${n === 1 ? 'producto' : 'productos'}</button>
+    <button class="simple-barra-cat" onclick="simpleCambiarCatalogo()" title="Ver otro catálogo sin perder lo anotado">📚</button>
+    <button class="simple-barra-cuenta" onclick="abrirCarritoVisita()" title="${sinPedido ? 'Ver lo que se lleva el cliente' : 'Ver el pedido de esta visita'}">${sinPedido ? `✔ ${n} ${n === 1 ? 'apuntado' : 'apuntados'}` : `🛒 ${n} ${n === 1 ? 'producto' : 'productos'}`}</button>
     <button class="simple-barra-btn" onclick="simpleTerminar()">TERMINAR ▸</button>`;
+  // Con la franja ya puesta, volver a medir: es lo que hay DEBAJO de la lamina.
+  if (typeof _ajustarAltoLaminaSimple === 'function') setTimeout(_ajustarAltoLaminaSimple, 0);
 }
 
 // ===== 4. AÑADIR UN PRODUCTO: teclado grande y un solo botón =====
@@ -499,12 +582,17 @@ async function simpleTerminar() {
     const r = visitaEsLocal()
       ? { annotations: await CpDB.listarAnotacionesDeVisitaOffline(appState.visitaActiva.local_id) }
       : await api('/api/visits/' + appState.visitaActiva.id);
-    const anots = (r.anotaciones || r.annotations || []).filter(a => a.tipo === 'pedido');
+    // En la fase "VISITA SIN PEDIDO" lo anotado son NOTAS, no líneas de pedido. Si se
+    // siguiera filtrando por 'pedido', el comercial marcaba cinco cosas y esta pantalla
+    // le decía "no te ha comprado nada": justo lo contrario de lo que acababa de hacer.
+    const sinPedidoModo = (typeof esVisitaSinPedido === 'function') && esVisitaSinPedido();
+    const todas = (r.anotaciones || r.annotations || []);
+    const anots = todas.filter(a => a.tipo === (sinPedidoModo ? 'nota' : 'pedido'));
     const filas = anots.map(a => `
       <div class="simple-repaso-linea">
         <div>
-          <div class="simple-repaso-nombre">${escape(a.producto_nombre || a.texto_libre || '')}</div>
-          <div class="simple-repaso-sub">${a.cantidad || 1} unidades${a.bonificacion ? ' · ' + escape(a.bonificacion) : ''}</div>
+          <div class="simple-repaso-nombre">${escape(sinPedidoModo ? (a.texto_libre || '') : (a.producto_nombre || a.texto_libre || ''))}</div>
+          ${sinPedidoModo ? '' : `<div class="simple-repaso-sub">${a.cantidad || 1} unidades${a.bonificacion ? ' · ' + escape(a.bonificacion) : ''}</div>`}
         </div>
         <button class="simple-repaso-quitar" onclick="simpleQuitarYRepasar(${a.id})">🗑</button>
       </div>`).join('');
@@ -516,17 +604,20 @@ async function simpleTerminar() {
       <div class="simple-pantalla simple-lista-pantalla">
         <div class="simple-cabecera">
           <button class="simple-atras" onclick="simpleSeguirVisita()">←</button>
-          <span>${vacio ? 'Terminar la visita' : 'Repasa el pedido'}</span>
+          <span>${sinPedidoModo ? (vacio ? 'Terminar la visita' : 'Repasa lo que se lleva') : (vacio ? 'Terminar la visita' : 'Repasa el pedido')}</span>
         </div>
         <div class="simple-lista">
-          ${filas || `<div class="simple-vacio">Esta vez no te ha comprado nada.<br><br>
-            Puedes <b>cerrar la visita igual</b>: queda apuntada como visita hecha sin pedido.</div>`}
+          ${filas || (sinPedidoModo
+            ? `<div class="simple-vacio">No has apuntado nada en esta visita.<br><br>
+               Puedes <b>cerrarla igual</b>: queda contada como visita hecha.</div>`
+            : `<div class="simple-vacio">Esta vez no te ha comprado nada.<br><br>
+               Puedes <b>cerrar la visita igual</b>: queda apuntada como visita hecha sin pedido.</div>`)}
         </div>
         <div class="simple-abajo">
-          ${vacio ? `
-            <button class="simple-boton-gigante" style="background:linear-gradient(135deg,#475569,#334155);box-shadow:0 12px 28px -10px rgba(51,65,85,.7)" onclick="simpleEnviar(this)">
+          ${(vacio || sinPedidoModo) ? `
+            <button class="simple-boton-gigante" style="background:linear-gradient(135deg,#0d9488,#0f766e);box-shadow:0 12px 28px -10px rgba(13,148,136,.7)" onclick="simpleEnviar(this)">
               <span class="simple-icono">✔</span>
-              CERRAR SIN PEDIDO
+              CERRAR VISITA
             </button>` : `
             <button class="simple-boton-gigante verde" onclick="simpleEnviar(this)">
               <span class="simple-icono">📨</span>
@@ -549,27 +640,52 @@ async function simpleQuitarYRepasar(anotId) {
 async function simpleEnviar(btn) {
   // Sin líneas se cierra la visita igual (queda contada como visita sin pedido), pero
   // el mensaje tiene que decir la verdad: aquí no se envía nada a nadie.
-  const sinPedido = (typeof carritoContarLineas === 'function') ? carritoContarLineas() === 0 : false;
-  if (!confirm(sinPedido
-    ? '¿Cerrar la visita sin pedido?\n\nQueda apuntada como visita hecha. No se envía nada a la oficina.'
-    : '¿Enviar el pedido a la oficina?')) return;
+  // En la fase "VISITA SIN PEDIDO" nunca hay pedido que enviar, HAYA MARCADO LO QUE HAYA
+  // MARCADO. Antes se miraba solo si había líneas: como las marcas cuentan como líneas,
+  // le preguntaba "¿Enviar el pedido a la oficina?" y, si decía que no, la visita NO se
+  // cerraba — le obligaba a mandar un email que en este modo no pinta nada (lo reportó
+  // Fernando el 4 sep 2026 probándolo). Lo anotado se queda guardado y se consulta en la
+  // siguiente visita; no hay nada que mandar.
+  const modoSinPedido = (typeof esVisitaSinPedido === 'function') && esVisitaSinPedido();
+  const hayMarcas = (typeof carritoContarLineas === 'function') ? carritoContarLineas() > 0 : false;
+  const sinPedido = modoSinPedido || !hayMarcas;
+  const preguntaCierre = modoSinPedido
+    ? (hayMarcas
+        ? '¿Cerrar la visita?\n\nQueda apuntado lo que se lleva el cliente, para verlo en la próxima visita. No se envía nada a la oficina.'
+        : '¿Cerrar la visita?\n\nQueda apuntada como visita hecha. No se envía nada a la oficina.')
+    : '¿Cerrar la visita sin pedido?\n\nQueda apuntada como visita hecha. No se envía nada a la oficina.';
+  if (!confirm(sinPedido ? preguntaCierre : '¿Enviar el pedido a la oficina?')) return;
   btn.disabled = true;
   btn.innerHTML = sinPedido ? 'Cerrando…' : 'Enviando…';
   try {
     const res = await vConfirmarVisita({});
     const sinLinea = !!(res && res.offline);
+    const yaCerrada = !!(res && res.yaCerrada);
     appState.visitaActiva = null;
     _anotacionesVisita = {};
+    window._simpleSoloMirar = false;   // la visita manda: no dejar colgada la bandera de "solo mirar"
     document.getElementById('simple-barra')?.remove();
     const $v = document.getElementById('vista-contenido');
     $v.innerHTML = `
       <div class="simple-pantalla">
-        <div class="simple-exito">${sinLinea ? '📴' : (sinPedido ? '✔' : '✅')}</div>
-        <div class="simple-exito-txt">${sinLinea
-          ? 'Pedido guardado<br><span>Sin cobertura. Se envía solo en cuanto tengas línea: no tienes que hacer nada.</span>'
-          : (sinPedido
-            ? 'Visita cerrada<br><span>Queda apuntada aunque esta vez no te haya comprado nada.</span>'
-            : 'Pedido enviado<br><span>Ya lo tienen en la oficina</span>')}</div>
+        <div class="simple-exito">${yaCerrada ? '✔' : (sinLinea ? '📴' : (sinPedido ? '✔' : '✅'))}</div>
+        <div class="simple-exito-txt">${
+          // El mensaje TIENE que decir la verdad. En la fase "visita sin pedido" no se
+          // envía nada a nadie: decir "Pedido enviado, ya lo tienen en la oficina" sería
+          // mentirle al comercial. Y si ha marcado cosas, tampoco vale el "no te ha
+          // comprado nada" de la visita vacía.
+          // Y si ya la había cerrado desde otro dispositivo, tampoco se ha enviado nada ahora.
+          yaCerrada
+            ? 'Esta visita ya estaba cerrada<br><span>La cerraste desde otro dispositivo (móvil o tablet). Está guardada; no se ha enviado nada de nuevo.</span>'
+            : modoSinPedido
+            ? (hayMarcas
+                ? 'Visita cerrada<br><span>Queda apuntado lo que se lleva. Lo verás en la próxima visita a este cliente.</span>'
+                : 'Visita cerrada<br><span>Queda apuntada como visita hecha.</span>')
+            : (sinLinea
+              ? 'Pedido guardado<br><span>Sin cobertura. Se envía solo en cuanto tengas línea: no tienes que hacer nada.</span>'
+              : (sinPedido
+                ? 'Visita cerrada<br><span>Queda apuntada aunque esta vez no te haya comprado nada.</span>'
+                : 'Pedido enviado<br><span>Ya lo tienen en la oficina</span>'))}</div>
         <button class="simple-boton-gigante" onclick="renderSimpleInicio()">
           <span class="simple-icono">🏥</span>
           OTRA VISITA

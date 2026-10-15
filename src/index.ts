@@ -231,6 +231,81 @@ async function generarMiniatura(rutaOriginalAbs: string, nombreOriginal: string)
   }
 }
 
+// TAMAÑO MÍNIMO DE LÁMINA — el arreglo EN ORIGEN de "unas láminas salen pequeñas"
+// (incidencias #16, #26-#30). Había láminas exportadas a 96 dpi (600x960) junto a las
+// normales (~1240x1754). Cada pantalla que pinta láminas (solo visor, modo sencillo,
+// pantalla completa…) necesitaba su propia regla CSS para estirar las pequeñas, y la que
+// no la tenía las dejaba pequeñas: se arreglaba un modo y aparecía en el siguiente.
+// Ahora el servidor las agranda al subirlas, así TODAS miden lo mismo y ninguna pantalla,
+// presente o futura, depende de acordarse de estirarlas. Agrandar no inventa detalle
+// (se ven algo blandas hasta resubirlas a 150 dpi), pero el tamaño queda igualado.
+// Zonas, recuadros de precio y tablas van en % de la lámina: no se descuadran.
+const LAMINA_ALTO_MINIMO = 1500;   // por debajo, en una tablet se queda corta
+const LAMINA_ALTO_OBJETIVO = 1754; // A4 a 150 dpi, el tamaño de la mayoría
+async function agrandarLaminaPequena(origenAbs: string, destinoAbs: string = origenAbs): Promise<{ antes: string; despues: string } | null> {
+  try {
+    if (!fs.existsSync(origenAbs)) return null;
+    const m = await sharp(origenAbs).metadata();
+    if (!m.width || !m.height || m.height >= LAMINA_ALTO_MINIMO) return null;
+    if (!['png', 'jpeg', 'webp'].includes(String(m.format))) return null;
+    let s = sharp(origenAbs).resize({ height: LAMINA_ALTO_OBJETIVO, kernel: 'lanczos3' });
+    if (m.format === 'jpeg') s = s.jpeg({ quality: 90, mozjpeg: true });
+    else if (m.format === 'webp') s = s.webp({ quality: 90 });
+    else s = s.png({ compressionLevel: 9, effort: 6 });
+    const buf = await s.toBuffer();
+    fs.writeFileSync(destinoAbs, buf);
+    const n = await sharp(buf).metadata();
+    return { antes: m.width + 'x' + m.height, despues: n.width + 'x' + n.height };
+  } catch (e: any) {
+    console.warn('[tamano-lamina] falla en ' + origenAbs + ':', e?.message || e);
+    return null;
+  }
+}
+
+// Todo lo que hay que hacerle a una imagen de lámina recién subida, en un solo sitio:
+// colores (perfil ICC) y tamaño mínimo. Cualquier camino de subida llama a ESTA.
+async function prepararImagenLamina(rutaAbs: string): Promise<void> {
+  await normalizarPngColor(rutaAbs);
+  await agrandarLaminaPequena(rutaAbs);
+  await generarVista(rutaAbs);
+}
+
+// VERSIÓN "PARA MIRAR" de cada lámina (10 sep 2026). Con poca cobertura las láminas
+// se dibujaban a trozos, de arriba abajo: el catálogo de un comercial pesa ~535 MB
+// (1,6 MB de media, alguna de 9 MB), porque son PNG a resolución de imprenta. Para
+// VERLAS en una tablet basta un WEBP de 2000 px de lado mayor, que pesa una fracción y
+// se ve igual. El original NO se toca: sigue sirviendo para PDF, precios, editor e
+// impresión. La vista vive en /uploads/vista/<nombre>.webp; si falta, la ruta de abajo
+// la genera la primera vez que alguien la pide (y la app, si falla, cae al original).
+const VISTAS_DIR = path.join(UPLOADS_DIR, 'vista');
+const VISTA_LADO_MAX = 2000;
+function nombreVista(nombreOriginal: string): string { return path.parse(nombreOriginal).name + '.webp'; }
+// De una en una: sharp con PNG grandes dispara la memoria (ver sharp.concurrency(1)), y
+// al abrir un catálogo sin vistas pueden llegar decenas de peticiones a la vez.
+let _colaVistas: Promise<any> = Promise.resolve();
+function generarVista(rutaOriginalAbs: string): Promise<string | null> {
+  const tarea = _colaVistas.then(async () => {
+    try {
+      if (!fs.existsSync(rutaOriginalAbs)) return null;
+      fs.mkdirSync(VISTAS_DIR, { recursive: true });
+      const destino = path.join(VISTAS_DIR, nombreVista(path.basename(rutaOriginalAbs)));
+      const tmp = destino + '.' + process.pid + '-' + Date.now() + '.tmp';
+      await sharp(rutaOriginalAbs)
+        .resize({ width: VISTA_LADO_MAX, height: VISTA_LADO_MAX, fit: 'inside', withoutEnlargement: true })
+        .flatten({ background: '#ffffff' })   // PNG con transparencia: fondo blanco, no negro
+        .webp({ quality: 85 })
+        .toFile(tmp);
+      fs.renameSync(tmp, destino);            // escribir y renombrar: nadie lee una a medias
+      return destino;
+    } catch (e: any) {
+      console.warn('[vista] falla en ' + rutaOriginalAbs + ':', e?.message || e);
+      return null;
+    }
+  });
+  _colaVistas = tarea.catch(() => null);
+  return tarea;
+}
+
 // ============================================================================
 // POSTGRES POOL (resiliente)
 // - max 10 conexiones simultaneas (suficiente para nuestro trafico)
@@ -316,6 +391,32 @@ app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 app.use(express.static(FRONTEND_DIR));
 // Servir uploads con cache agresivo (los nombres incluyen timestamp/hash, son immutable)
 // Una vez que el navegador descarga una lamina, no la vuelve a pedir durante 1 ano.
+// Versión ligera "para mirar" (ver generarVista). Va ANTES del estático de /uploads.
+// Si ya existe se sirve tal cual; si no, se genera ahora desde el original y se guarda.
+app.get('/uploads/vista/:file', async (req: Request, res: Response) => {
+  try {
+    const file = String(req.params.file || '');
+    if (path.basename(file) !== file || file.startsWith('.') || !file.toLowerCase().endsWith('.webp')) {
+      res.status(404).end(); return;
+    }
+    const destino = path.join(VISTAS_DIR, file);
+    if (!fs.existsSync(destino)) {
+      const base = file.slice(0, -5);
+      // '' y '.': hay originales sin extensión o acabados en punto ("…_2025.").
+      const orig = ['.png', '.jpg', '.jpeg', '.webp', '.PNG', '.JPG', '.JPEG', '.', '']
+        .map(ext => path.join(UPLOADS_DIR, base + ext))
+        .find(p => fs.existsSync(p));
+      if (!orig) { res.status(404).end(); return; }
+      const hecha = await generarVista(orig);
+      if (!hecha) { res.status(404).end(); return; }   // la app cae al original
+    }
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.type('image/webp');
+    res.sendFile(destino);
+  } catch (_) {
+    res.status(404).end();
+  }
+});
 app.use('/uploads', express.static(UPLOADS_DIR, {
   maxAge: '365d',
   immutable: true,
@@ -718,6 +819,17 @@ async function initDB(): Promise<void> {
       -- SOLO VISOR: el comercial ve la app SOLO como visor de catálogos (mosaico, abrir
       -- lámina, zoom, buscar). Nada de visitas, pedidos, clientes ni administración.
       ALTER TABLE users ADD COLUMN IF NOT EXISTS solo_visor BOOLEAN NOT NULL DEFAULT FALSE;
+      -- VISITA SIN PEDIDO (fase intermedia, 4 sep 2026). Escalon entre "solo visor" y el
+      -- pedido real: el comercial SI hace la visita y la agenda, y marca las ZONAS que el
+      -- cliente se lleva, pero sin cantidad, sin precio y sin generar pedido ni emails.
+      -- Existe porque el camino del pedido pasa por la ficha del producto (Sage, familias,
+      -- variantes color x graduacion) y ahi es donde saltan los errores; esta fase lo
+      -- esquiva entero escribiendo solo una anotacion contra la lamina/zona.
+      -- Los tres niveles del comercial se derivan de DOS booleanos, por precedencia:
+      --   solo_visor=true                        -> 👁 Solo visor
+      --   solo_visor=false, visita_sin_pedido=true -> 📋 Visita sin pedido
+      --   ambos false                            -> 🛒 Completo
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS visita_sin_pedido BOOLEAN NOT NULL DEFAULT FALSE;
       -- COPIA DE PEDIDOS: emails (separados por coma) que reciben COPIA de los pedidos de
       -- este comercial al cerrar la visita (p.ej. administracion). No es el email de login.
       ALTER TABLE users ADD COLUMN IF NOT EXISTS copia_pedidos_email VARCHAR(300);
@@ -742,6 +854,13 @@ async function initDB(): Promise<void> {
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS no_visitar BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS no_visitar_motivo VARCHAR(150);
       CREATE INDEX IF NOT EXISTS idx_clients_no_visitar ON clients(no_visitar) WHERE no_visitar = TRUE;
+
+      -- CLIENTE RESERVADO A UN COMERCIAL (28-sep-2026). Solo lo ve ese comercial (y el
+      -- admin), aunque el cliente caiga dentro de la zona 'todos' de otro. Caso real:
+      -- ALNARPA la lleva Fernando en persona y no debe salirle a Eva pese a estar en su
+      -- zona La Rioja. Es la excepcion fina que las zonas (por codigo) no cubren.
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS reservado_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_clients_reservado ON clients(reservado_user_id) WHERE reservado_user_id IS NOT NULL;
 
       -- VARIOS CODIGOS DE SAGE POR COMERCIAL. Un comercial puede llevar mas de una
       -- cartera (Eva lleva la suya y ademas la de otra persona en Navarra), y con un
@@ -1736,7 +1855,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v273-limpiar-busqueda-al-entrar-26ago',
+      build: 'v316-pdf-pequeno-en-streaming-15oct',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1778,12 +1897,12 @@ app.get('/api/auth/me', verifyToken, async (req: AuthRequest, res: Response) => 
     // perdiera su rol hasta volver a entrar.
     const idReal = (req.user as any)._realAdminId || req.user!.id;
     const r = await pool.query(
-      'SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, is_active FROM users WHERE id = $1',
+      'SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, visita_sin_pedido, is_active FROM users WHERE id = $1',
       [idReal]
     );
     if (r.rows.length === 0) { res.status(404).json({ success: false, error: 'Usuario no encontrado' }); return; }
     const u = r.rows[0];
-    res.json({ success: true, user: { ...u, modo_simple: !!u.modo_simple, solo_visor: !!u.solo_visor } });
+    res.json({ success: true, user: { ...u, modo_simple: !!u.modo_simple, solo_visor: !!u.solo_visor, visita_sin_pedido: !!u.visita_sin_pedido } });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
@@ -1812,7 +1931,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
       JWT_SECRET,
       { expiresIn: (await sesionHorasConfig()) * 3600 }   // en segundos: el tipo de jwt no admite "Nh" dinámico
     );
-    res.json({ success: true, token, user: { id: user.id, email: user.email, role: user.role, name: user.name, modo_simple: !!user.modo_simple, solo_visor: !!user.solo_visor } });
+    res.json({ success: true, token, user: { id: user.id, email: user.email, role: user.role, name: user.name, modo_simple: !!user.modo_simple, solo_visor: !!user.solo_visor, visita_sin_pedido: !!user.visita_sin_pedido } });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
@@ -1823,7 +1942,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
 // ============================================================================
 app.get('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, copia_pedidos_email, is_active, created_at FROM users ORDER BY role, name');
+    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, visita_sin_pedido, copia_pedidos_email, is_active, created_at FROM users ORDER BY role, name');
     res.json({ success: true, users: r.rows });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -1866,21 +1985,36 @@ app.post('/api/uso', verifyToken, async (req: AuthRequest, res: Response) => {
     if (u.role !== 'sales' || (u as any)._realAdminId) { res.json({ success: true, skip: true }); return; }
     const evento = String(req.body?.evento || '').slice(0, 40);
     const detalle = String(req.body?.detalle || '').slice(0, 120);
-    // Throttle: conexion 1/60min; actividad 1/15min; la descarga lista siempre avisa.
-    const key = `${u.id}:${evento}`;
-    const ahora = Date.now();
-    if (evento !== 'offline_listo') {
-      const minMs = evento === 'conexion' ? 60 * 60 * 1000 : 15 * 60 * 1000;
-      if (_usoUltimoAviso[key] && (ahora - _usoUltimoAviso[key]) < minMs) { res.json({ success: true, throttled: true }); return; }
-    }
-    _usoUltimoAviso[key] = ahora;
     const nombre = u.name || ('usuario ' + u.id);
-    let msg: string;
-    if (evento === 'conexion') msg = `🔌 *${nombre}* ha abierto la app${detalle ? ` _(${detalle})_` : ''}`;
-    else if (evento === 'abrir_catalogo') msg = `📖 *${nombre}* está mirando un catálogo${detalle ? `: ${detalle}` : ''}`;
-    else if (evento === 'offline_listo') msg = `📲 *${nombre}* ya tiene el catálogo descargado en la tablet (uso sin datos)${detalle ? `: ${detalle}` : ''}`;
-    else msg = `ℹ️ *${nombre}*: ${evento}${detalle ? ` — ${detalle}` : ''}`;
-    await enviarTelegramUso(msg);
+
+    // UN SOLO AVISO POR COMERCIAL Y DÍA.
+    // Antes: 'conexion' cada 60 min y 'abrir_catalogo' cada 15 min, cada evento con su
+    // propio contador. Con 6 comerciales eso son decenas de mensajes al día ("está
+    // mirando un catálogo" una y otra vez). Fernando (4 sep 2026): "con que me digas una
+    // vez que el comercial ha arrancado el catálogo, ya no necesito que me informes
+    // continuamente cuando entra, cuando sale". Así que TODOS los eventos de uso normal
+    // comparten un único aviso diario: el primero de la jornada de ese comercial.
+    // La marca va en app_config y no en memoria PORQUE EL SERVIDOR SE REINICIA (guardia
+    // de memoria, despliegues): con un contador en RAM, cada reinicio volvía a avisar.
+    if (evento === 'offline_listo') {
+      // Este sí avisa siempre: es raro y es el que de verdad quiere saber (la tablet ya
+      // puede trabajar sin datos).
+      await enviarTelegramUso(`📲 *${nombre}* ya tiene el catálogo descargado en la tablet (uso sin datos)${detalle ? `: ${detalle}` : ''}`);
+      res.json({ success: true });
+      return;
+    }
+    const hoy = new Date().toISOString().slice(0, 10);
+    const claveDia = `uso_aviso_dia_${u.id}`;
+    const yaHoy = await pool.query('SELECT valor FROM app_config WHERE clave = $1', [claveDia]);
+    if (yaHoy.rows.length && String(yaHoy.rows[0].valor) === hoy) {
+      res.json({ success: true, throttled: true });
+      return;
+    }
+    await pool.query(
+      `INSERT INTO app_config (clave, valor) VALUES ($1, $2)
+       ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, updated_at = NOW()`,
+      [claveDia, hoy]);
+    await enviarTelegramUso(`🔌 *${nombre}* ha empezado a usar la app${detalle ? ` _(${detalle})_` : ''}`);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -1965,12 +2099,14 @@ app.put('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequest
       `UPDATE users SET name=$1, email=$2, role=$3, sage_commercial_code=$4, is_active=$5,
               modo_simple = COALESCE($7, modo_simple),
               solo_visor = COALESCE($8, solo_visor),
+              visita_sin_pedido = COALESCE($10, visita_sin_pedido),
               copia_pedidos_email = COALESCE($9, copia_pedidos_email)
-       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, modo_simple, solo_visor, is_active, copia_pedidos_email`,
+       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, modo_simple, solo_visor, visita_sin_pedido, is_active, copia_pedidos_email`,
       [name.trim(), email.trim().toLowerCase(), role, sage_commercial_code ? String(sage_commercial_code).trim() : null, is_active !== false, id,
        req.body.modo_simple === undefined ? null : !!req.body.modo_simple,
        req.body.solo_visor === undefined ? null : !!req.body.solo_visor,
-       req.body.copia_pedidos_email === undefined ? null : String(req.body.copia_pedidos_email || '').trim()]
+       req.body.copia_pedidos_email === undefined ? null : String(req.body.copia_pedidos_email || '').trim(),
+       req.body.visita_sin_pedido === undefined ? null : !!req.body.visita_sin_pedido]
     );
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Usuario no encontrado' });
@@ -2104,6 +2240,28 @@ app.delete('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequ
 // ============================================================================
 // CATALOGOS
 // ============================================================================
+// "ACTUALIZADO EL..." (11 sep 2026). El comercial veía siempre "CATALOGO LOMHIFAR 27 JULIO
+// 2026" —el nombre FIJO de su Express— aunque el maestro cambia casi a diario: parecía que
+// siempre usaba el mismo catálogo. Sin renombrar ni tocar ningún Express, se muestra la fecha
+// del ÚLTIMO CAMBIO REAL (no la de la última versión cerrada: Fernando cambia más de lo que
+// cierra). Un Express no tiene cambios propios: se mira su maestro (COALESCE(parent_id, id)).
+const SQL_ACTUALIZADO_AT = `(SELECT MAX(a.created_at) FROM sheet_audit_log a WHERE a.catalog_id = COALESCE(c.parent_id, c.id)) AS actualizado_at`;
+async function fechaActualizadoCatalogo(catalogId: number): Promise<Date | null> {
+  const r = await pool.query(
+    `SELECT MAX(a.created_at) AS f FROM sheet_audit_log a
+      WHERE a.catalog_id = (SELECT COALESCE(parent_id, id) FROM catalogs WHERE id = $1)`, [catalogId]);
+  return r.rows[0]?.f || null;
+}
+// Quita la fecha fija del final del nombre ("… 27 JULIO 2026", "… JULIO 2026") y pone la real.
+// Misma regla que nombreCatalogoVisible() en app.js.
+const RX_FECHA_FINAL_NOMBRE = /\s+(\d{1,2}\s+(de\s+)?)?(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(\s+de)?\s+\d{4}\s*$/i;
+function nombreConFechaActualizado(nombre: string, fecha: Date | null): string {
+  if (!fecha) return nombre;
+  const base = String(nombre || '').replace(RX_FECHA_FINAL_NOMBRE, '').trim() || nombre;
+  const dia = new Date(fecha).toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' }); // AAAA-MM-DD
+  return base + ' actualizado ' + dia;
+}
+
 // Listar catalogos visibles por el usuario
 app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
@@ -2125,6 +2283,7 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
           (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
           (SELECT COUNT(*)::int FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS num_versiones,
           (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at,
+          ${SQL_ACTUALIZADO_AT},
           (SELECT COUNT(*)::int FROM catalogs h WHERE h.parent_id = c.id) AS num_hijos
         FROM catalogs c
         WHERE ${filtroArchivado} AND c.especial IS NULL
@@ -2139,7 +2298,8 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
           END AS sheet_count,
           (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
           (SELECT COUNT(*)::int FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS num_versiones,
-          (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at
+          (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at,
+          ${SQL_ACTUALIZADO_AT}
         FROM catalogs c
         JOIN catalog_assignments ca ON ca.catalog_id = c.id
         WHERE ca.user_id = $1 AND c.estado != 'archivado'
@@ -2157,7 +2317,8 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
           END AS sheet_count,
           (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
           (SELECT COUNT(*)::int FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS num_versiones,
-          (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at
+          (SELECT MAX(published_at) FROM catalog_versions cv WHERE cv.catalog_id = c.id) AS ultima_version_at,
+          ${SQL_ACTUALIZADO_AT}
         FROM catalogs c
         WHERE c.estado != 'archivado' AND (c.especial IS NULL OR c.especial = 'fondo')
         ORDER BY c.updated_at DESC
@@ -2405,6 +2566,8 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
         s.num_zonas = zBySheet[s.id] || 0;
       }
     }
+    // Fecha del último cambio real (del maestro, si es Express): el título que ve el comercial.
+    try { cat.actualizado_at = await fechaActualizadoCatalogo(id); } catch (_) { /* sin fecha: nombre tal cual */ }
     res.json({ success: true, catalog: cat, sheets: sheetsRows });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
@@ -2508,42 +2671,32 @@ async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream:
   const fs = require('fs');
   const sharp = require('sharp');
   const path = require('path');
-  // Si es pequeña, pre-procesar imágenes a un directorio temporal
-  let imagenesProcesadas: { [key: number]: string } = {};
+  // LÁMINA A LÁMINA, ENVIANDO DESDE EL PRIMER SEGUNDO. Antes, en calidad pequeña, se
+  // reducían y medían TODAS las imágenes y solo después salía el primer byte: con el
+  // catálogo maestro (342 láminas) eran 50,6 s en silencio, rozando el corte de ~60 s del
+  // proxy de Railway, y la descarga moría sin aviso ("no veo esa descarga"; con Essity, 15
+  // láminas, 2 s, sí funcionaba — Fernando, 15-oct-2026, aviso #33). Ahora cada lámina se
+  // reduce, se mide y se pinta en su página, y el PDF va saliendo mientras se hace.
   let tempDir = '';
   if (calidad === 'pequena') {
     const os = require('os');
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-low-'));
-    for (const sheet of sheets) {
-      const imgPath = getSheetImagePath(sheet);
-      if (!fs.existsSync(imgPath)) continue;
-      try {
-        const outPath = path.join(tempDir, `s${sheet.id}.jpg`);
-        await sharp(imgPath)
-          .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: 80, mozjpeg: true })
-          .toFile(outPath);
-        imagenesProcesadas[sheet.id] = outPath;
-      } catch (e: any) {
-        console.warn('[PDF-pequena] Fallo redimensionando lámina ' + sheet.id + ':', e.message);
-      }
-    }
   }
+  const limpiarTemp = () => {
+    if (tempDir) { try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {} }
+  };
 
-  return new Promise((resolve, reject) => {
-    const PDFDocumentLib = require('pdfkit');
-    const doc = new PDFDocumentLib({ size: 'A4', margin: 0, autoFirstPage: false });
-    doc.pipe(destStream);
-    destStream.on('finish', () => {
-      // Limpiar temporales
-      if (tempDir) {
-        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
-      }
-      resolve();
-    });
+  const PDFDocumentLib = require('pdfkit');
+  const doc = new PDFDocumentLib({ size: 'A4', margin: 0, autoFirstPage: false });
+  const terminado = new Promise<void>((resolve, reject) => {
+    destStream.on('finish', () => resolve());
+    // 'close' sin 'finish' = el usuario canceló o cerró la app: no esperar para siempre.
+    destStream.on('close', () => resolve());
     destStream.on('error', (e: any) => reject(e));
     doc.on('error', (e: any) => reject(e));
-
+  });
+  doc.pipe(destStream);
+  try {
     // Página de portada
     doc.addPage({ size: 'A4', margin: 50 });
     doc.fontSize(22).fillColor('#cc007a').text('LOMHIFAR', { align: 'center' });
@@ -2567,34 +2720,68 @@ async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream:
     // Cada lámina en una página, ajustada al tamaño
     let _pdfHechas = 0;
     for (const sheet of sheets) {
-      // Usar imagen procesada si es pequeña y existe, sino la original
-      const imgPath = (calidad === 'pequena' && imagenesProcesadas[sheet.id])
-        ? imagenesProcesadas[sheet.id]
-        : getSheetImagePath(sheet);
+      if (destStream.destroyed) break;   // descarga cancelada: no seguir reduciendo imágenes para nadie
       if (onProgress) { try { onProgress(++_pdfHechas); } catch (_) {} }
-      if (!fs.existsSync(imgPath)) {
-        console.warn('[PDF] Imagen no encontrada: ' + imgPath);
+      const original = getSheetImagePath(sheet);
+      if (!fs.existsSync(original)) {
+        console.warn('[PDF] Imagen no encontrada: ' + original);
         continue;
       }
+      let imgPath = original;
+      if (calidad === 'pequena') {
+        try {
+          const outPath = path.join(tempDir, `s${sheet.id}.jpg`);
+          // flatten ANTES de pasar a JPEG: el JPEG no tiene transparencia y los PNG con zonas
+          // transparentes salían con esas zonas NEGRAS en el PDF pequeño (Fernando, 11 sep 2026,
+          // "se siguen creando PDF con fondos negros").
+          await sharp(original)
+            .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+            .flatten({ background: '#ffffff' })
+            .jpeg({ quality: 80, mozjpeg: true })
+            .toFile(outPath);
+          imgPath = outPath;
+        } catch (e: any) {
+          console.warn('[PDF-pequena] Fallo redimensionando lámina ' + sheet.id + ':', e.message);
+        }
+      }
+      // MEDIDAS REALES DE LA LÁMINA: la HOJA toma su forma y la lámina ocupa la página
+      // entera (antes, A4 apaisado fijo con media hoja en blanco — Fernando, 2 sep 2026).
+      let md: { w: number; h: number } | null = null;
       try {
-        doc.addPage({ size: 'A4', layout: 'landscape', margin: 20 });
-        // Cabecera de la página: nombre del catálogo + lámina + título (todo en una línea)
-        doc.fontSize(8).fillColor('#666').text(
-          `${catalog.name} · Lám. ${sheet.orden || '?'}${sheet.titulo ? ' · ' + sheet.titulo : ''}`,
-          20, 10, { width: 800, align: 'left' }
-        );
-        // Imagen ocupando casi toda la página (sin texto "Página X" abajo que forzaba salto)
-        doc.image(imgPath, 20, 25, {
-          fit: [800, 555],
-          align: 'center',
-          valign: 'center'
-        });
+        const m = await sharp(imgPath).metadata();
+        if (m.width && m.height) md = { w: m.width, h: m.height };
+      } catch (e: any) {
+        console.warn('[PDF] No se pudo medir la lámina ' + sheet.id + ':', e.message);
+      }
+      try {
+        // UNA LAMINA = UNA HOJA ENTERA. La pagina se crea con la MISMA proporcion que la
+        // lamina y la imagen se pinta de borde a borde (0,0), asi no sobra ni un milimetro.
+        // El lado LARGO se fija en 842 pt (el alto de un A4), de modo que al imprimir sale
+        // del mismo tamano que un A4 normal. Es el mismo criterio que ya usaba el PDF del
+        // visor (_escribirPdfHoy). Sin cabecera: no cabe si la lamina ocupa toda la hoja.
+        const LARGO = 842;                       // lado mayor de la hoja, en puntos (alto A4)
+        let pageW = 595, pageH = LARGO;          // por defecto A4 vertical si no pudimos medir
+        if (md && md.w > 0 && md.h > 0) {
+          if (md.h >= md.w) { pageH = LARGO; pageW = LARGO * md.w / md.h; }  // lamina vertical
+          else { pageW = LARGO; pageH = LARGO * md.h / md.w; }               // lamina apaisada
+        }
+        doc.addPage({ size: [pageW, pageH], margin: 0 });
+        doc.image(imgPath, 0, 0, { width: pageW, height: pageH });
       } catch (err) {
         console.error('[PDF] Error añadiendo lámina ' + sheet.id + ':', (err as Error).message);
       }
+      // pdfkit ya ha leído la imagen al pintarla: el temporal sobra (el disco no acumula 342).
+      if (imgPath !== original) { try { fs.unlinkSync(imgPath); } catch (_) {} }
     }
     doc.end();
-  });
+  } catch (e) {
+    terminado.catch(() => {});
+    try { doc.end(); } catch (_) {}
+    limpiarTemp();
+    throw e;
+  }
+  await terminado;
+  limpiarTemp();
 }
 
 // J/E: Generar ZIP del catálogo a un stream cualquiera (res HTTP o fichero).
@@ -2702,9 +2889,18 @@ app.get('/api/catalogs/:id/download-pdf', verifyTokenDescarga, async (req: AuthR
       }
     }
     if (!laminas.length) { res.status(400).json({ success: false, error: 'No queda ninguna lámina para esa zona' }); return; }
-    const filename = `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}${sufZona}${sufijo}.pdf`;
+    // Al comercial, el fichero con la fecha del último cambio ("…_actualizado_2026-09-11"),
+    // no "_v1": su Express nunca sube de versión y parecía siempre el mismo PDF. El admin,
+    // como siempre (con la versión, que es con lo que él trabaja).
+    const nombrePdf = req.user?.role === 'admin'
+      ? `${nombreFicheroSeguro(catalog.name)}_v${catalog.version || 1}`
+      : nombreFicheroSeguro(nombreConFechaActualizado(catalog.name, await fechaActualizadoCatalogo(catalog.id)));
+    const filename = `${nombrePdf}${sufZona}${sufijo}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    // Cabeceras YA: el navegador abre la descarga al instante (y el proxy ve respuesta),
+    // aunque el PDF de un catálogo grande tarde casi un minuto en completarse.
+    res.flushHeaders();
     await generarPdfCatalogoStream(catalog, laminas, res, calidad);
   } catch (e) {
     if (!res.headersSent) {
@@ -3024,7 +3220,7 @@ app.post('/api/catalog-versions/:vid/recuperar-lamina', verifyToken, requireReal
     const absPath = path.join(UPLOADS_DIR, filename);
     fs.writeFileSync(absPath, buf);
     const imagenPath = '/uploads/' + filename;
-    await normalizarPngColor(absPath);
+    await prepararImagenLamina(absPath);
     const miniaturaPath = await generarMiniatura(absPath, filename);
     // Se añade al final del maestro (orden max+1) para no pisar lo que haya ahora.
     const maxR = await pool.query('SELECT COALESCE(MAX(orden),0) AS m FROM sheets WHERE catalog_id=$1', [targetCatalog]);
@@ -3036,6 +3232,7 @@ app.post('/api/catalog-versions/:vid/recuperar-lamina', verifyToken, requireReal
     await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id=$1', [targetCatalog]);
     await logSheetChange('created', ins.rows[0].id, targetCatalog, ins.rows[0].titulo,
       { recuperada_de_version: vid, orden_original: orden }, { id: req.user?.id, name: req.user?.name });
+    await repartirLaminaNueva(ins.rows[0].id);   // vuelve también a los comerciales
     res.json({ success: true, sheet: ins.rows[0], target_catalog_id: targetCatalog });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -3272,7 +3469,7 @@ app.post('/api/catalogs/:id/sheets', verifyToken, requireAdmin, upload.single('i
     const tags = (req.body.tags || '').trim();
 
     // Corregir colores oscuros por perfil ICC embebido (solo PNG con perfil)
-    await normalizarPngColor(req.file.path);
+    await prepararImagenLamina(req.file.path);
     // Generar miniatura WebP ~400px (no bloquea si falla)
     const miniaturaPath = await generarMiniatura(req.file.path, req.file.filename);
 
@@ -3285,6 +3482,7 @@ app.post('/api/catalogs/:id/sheets', verifyToken, requireAdmin, upload.single('i
     await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
       { orden: r.rows[0].orden, imagen_path: r.rows[0].imagen_path },
       { id: req.user?.id, name: req.user?.name });
+    await repartirLaminaNueva(r.rows[0].id);
     // Generar tags con IA en background (no bloquea la respuesta)
     if (!tags) generarTagsBackground(r.rows[0].id, req.file.path, r.rows[0].titulo);
     res.status(201).json({ success: true, sheet: r.rows[0] });
@@ -3331,6 +3529,9 @@ app.post('/api/catalogs/:id/sheets/insert-blank', verifyToken, requireRealAdmin,
     await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
       { orden: r.rows[0].orden, blank: true }, { id: req.user?.id, name: req.user?.name });
     // Insertar en medio desplaza el orden del resto -> propagar a los Express.
+    // OJO: esto NO mete la hoja en los Express (solo recoloca las que ya tienen). A
+    // propósito no se reparte aquí: el comercial vería una página en blanco. Se reparte
+    // al ponerle la imagen (PUT /api/sheets/:id/image, si la anterior era la blanca).
     await propagarOrdenAExpress(catalogId);
     res.status(201).json({ success: true, sheet: r.rows[0] });
   } catch (e) {
@@ -3396,7 +3597,7 @@ app.post('/api/catalogs/:id/sheets/bulk', verifyToken, requireAdmin,
         // Título: el nombre del archivo sin extensión (limpio)
         const tituloAuto = f.originalname.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() || `Lámina ${ordenSiguiente}`;
         // Corregir colores oscuros por perfil ICC embebido (solo PNG con perfil)
-        await normalizarPngColor(f.path);
+        await prepararImagenLamina(f.path);
         // Generar miniatura WebP (si falla queda null y se usa imagen_path)
         const miniaturaPath = await generarMiniatura(f.path, f.filename);
         const r = await pool.query(
@@ -3408,6 +3609,7 @@ app.post('/api/catalogs/:id/sheets/bulk', verifyToken, requireAdmin,
         await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
           { orden: r.rows[0].orden, imagen_path: r.rows[0].imagen_path, origen: 'bulk' },
           { id: req.user?.id, name: req.user?.name });
+        await repartirLaminaNueva(r.rows[0].id);
         // Generar tags con IA en background (no bloquea la respuesta)
         generarTagsBackground(r.rows[0].id, f.path, r.rows[0].titulo);
         ordenSiguiente++;
@@ -3754,20 +3956,41 @@ app.post('/api/clients/nuevo-desde-visita', verifyToken, async (req: AuthRequest
     const cif = String(b.cif || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || null;
     const tel = String(b.telefono || '').replace(/\D/g, '') || null;
 
-    // Antes de crear nada: ¿ya existe? Evita duplicar una ficha que ya esta en Sage.
-    const dup = await pool.query(
-      `SELECT id, razon_social, sage_code, commercial_code, pendiente_alta FROM clients
-        WHERE is_active = TRUE AND (
-          ($1::text IS NOT NULL AND REGEXP_REPLACE(UPPER(COALESCE(cif,'')), '[^A-Z0-9]', '', 'g') = $1)
-          OR ($2::text IS NOT NULL AND REGEXP_REPLACE(COALESCE(telefono,''), '[^0-9]', '', 'g') = $2)
-        ) LIMIT 1`, [cif, tel]);
-    if (dup.rows.length && !b.forzar) {
-      res.status(409).json({
-        success: false,
-        error: 'Ese ' + (cif && dup.rows[0] ? 'CIF' : 'teléfono') + ' ya está dado de alta: ' + dup.rows[0].razon_social,
-        cliente: dup.rows[0]
-      });
-      return;
+    // AVISO DE DUPLICADOS (29-sep-2026). Antes de crear: ¿ya existe? No solo por CIF/teléfono
+    // exactos, también por NOMBRE PARECIDO con las mismas reglas vascas que la búsqueda
+    // (iñaki/ignacio, k/c, tx/ch, orden, erratas). Así Eva ve "ya existe FARMACIA IGNACIO
+    // OLARREAGA" al escribir "iñaki olarreaga" y no la duplica. Devuelve la lista de candidatos.
+    if (!b.forzar) {
+      const activos = await pool.query(
+        `SELECT id, razon_social, sage_code, commercial_code, municipio, provincia, cif, telefono, whatsapp FROM clients WHERE is_active = TRUE`);
+      const qTok = _tokensCli(razon);
+      const candis: any[] = [];
+      for (const cl of activos.rows) {
+        if (_esBajaNombre(cl.razon_social)) continue;   // no ofrecer fichas de baja/anuladas
+        let motivo = '', score = 0;
+        const cifC = String(cl.cif || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (cif && cifC && cifC === cif) { motivo = 'mismo CIF'; score = 100; }
+        else if (tel && (_digitos(cl.telefono) === tel || _digitos(cl.whatsapp) === tel)) { motivo = 'mismo teléfono'; score = 90; }
+        else if (qTok.length) {
+          const s = _scoreCliente(cl, qTok, '', '');
+          if (s >= 10) { motivo = 'nombre parecido'; score = s; }
+        }
+        if (motivo) candis.push({ id: cl.id, razon_social: cl.razon_social, sage_code: cl.sage_code, municipio: cl.municipio, provincia: cl.provincia, commercial_code: cl.commercial_code, motivo, _s: score });
+      }
+      if (candis.length) {
+        candis.sort((a, b2) => b2._s - a._s);
+        const top = candis.slice(0, 8);
+        // ¿cuáles ve el comercial? (para poder abrirlos directamente)
+        const ids = top.map(c => c.id);
+        const visParams: any[] = [ids];
+        let visSQL = '';
+        if (isEffectiveSales(req)) visSQL = await filtroClientesVisibles(effectiveUserId(req), visParams, 'c');
+        const visRows = await pool.query(`SELECT id FROM clients c WHERE c.id = ANY($1::int[]) ${visSQL}`, visParams);
+        const mios = new Set(visRows.rows.map((r: any) => r.id));
+        top.forEach(c => { c.mio = mios.has(c.id); delete c._s; });
+        res.status(409).json({ success: false, error: 'Puede que este cliente ya exista.', duplicados: top });
+        return;
+      }
     }
 
     // El comercial que lo crea: se le asigna a el (es quien lo va a visitar).
@@ -3828,6 +4051,24 @@ app.delete('/api/clients/:id/nuevo-desde-visita', verifyToken, async (req: AuthR
     }
     await pool.query(`DELETE FROM clients WHERE id = $1`, [id]);
     res.json({ success: true, borrado: c.rows[0].razon_social });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// RESERVAR un cliente a un comercial (solo admin). user_id=null lo libera.
+// Un cliente reservado solo lo ve ese comercial (ver filtroClientesVisibles).
+app.put('/api/clients/:id/reservado', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const uid = req.body?.user_id ? Number(req.body.user_id) : null;
+    if (uid) {
+      const u = await pool.query(`SELECT 1 FROM users WHERE id=$1 AND role='sales'`, [uid]);
+      if (!u.rows.length) { res.status(400).json({ success: false, error: 'Ese usuario no es un comercial' }); return; }
+    }
+    const r = await pool.query(
+      `UPDATE clients SET reservado_user_id=$1, updated_at=NOW() WHERE id=$2 RETURNING id, razon_social, reservado_user_id`,
+      [uid, id]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Cliente no encontrado' }); return; }
+    res.json({ success: true, client: r.rows[0] });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
@@ -4218,6 +4459,9 @@ app.post('/api/sheets/:id/reparto/excepcion', verifyToken, requireRealAdmin, asy
       // "excluir" tiene efecto inmediato: si ya estaba dentro, se saca.
       if (modo === 'excluir') {
         await pool.query(`DELETE FROM express_sheets WHERE express_catalog_id=$1 AND sheet_id=$2`, [expId, sheetId]);
+        // Marcar el Express como cambiado (igual que al añadir): si no, la tablet se queda
+        // con la copia offline vieja y el comercial sigue viendo la lámina retirada.
+        await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [expId]);
       } else {
         await insertarEnExpressPorPosicion(expId, sheetId, false);
       }
@@ -4278,13 +4522,27 @@ async function destinosDeLamina(sheetId: number): Promise<{ destinos: number[]; 
        JOIN catalogs c ON c.id = r.express_catalog_id AND c.tipo = 'express'
       WHERE sc.sheet_id = $1`, [sheetId]);
   const porRegla = porReglaR.rows.map((x: any) => Number(x.id));
+  // BASE = TODOS los Express que cuelgan del maestro de esta lamina.
+  // El reparto era "opt-in": solo llegaba a quien casara por REGLA de categoria. Como no
+  // habia NI UNA regla creada (0 en todo el sistema) y las laminas nuevas se suben sin
+  // categoria, una lamina nueva no llegaba a NINGUN comercial y se quedaba muda en la
+  // bandeja de "sin repartir" (Fernando, 2 sep 2026: subio 3 laminas al maestro y ningun
+  // comercial las vio). El modelo correcto es el inverso, y es el que estaba documentado:
+  // TODO lo del maestro llega a TODOS los Express, SALVO lo que se excluya a proposito
+  // (express_excluidas por comercial, o una excepcion 'excluir' de esta lamina).
+  const todosR = await pool.query(
+    `SELECT c.id FROM catalogs c
+      WHERE c.tipo = 'express'
+        AND c.parent_id = (SELECT catalog_id FROM sheets WHERE id = $1)`, [sheetId]);
+  const base = todosR.rows.map((x: any) => Number(x.id));
   const excR = await pool.query(
     `SELECT e.express_catalog_id AS id, e.modo FROM reparto_excepciones e
        JOIN catalogs c ON c.id = e.express_catalog_id AND c.tipo = 'express'
       WHERE e.sheet_id = $1`, [sheetId]);
   const excluidos = excR.rows.filter((x: any) => x.modo === 'excluir').map((x: any) => Number(x.id));
   const incluidos = excR.rows.filter((x: any) => x.modo === 'incluir').map((x: any) => Number(x.id));
-  const destinos = Array.from(new Set([...porRegla, ...incluidos])).filter(id => !excluidos.includes(id));
+  // (insertarEnExpressPorPosicion filtra ademas las de express_excluidas de cada comercial)
+  const destinos = Array.from(new Set([...base, ...porRegla, ...incluidos])).filter(id => !excluidos.includes(id));
   return { destinos, porRegla, excluidos, incluidos };
 }
 
@@ -4312,6 +4570,10 @@ async function insertarEnExpressPorPosicion(expressId: number, sheetId: number, 
   await pool.query(
     `INSERT INTO express_sheets (express_catalog_id, sheet_id, orden, auto_reparto)
      VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [expressId, sheetId, ordenDestino, auto]);
+  // El Express ha CAMBIADO: hay que marcarlo. Las tablets deciden si vuelven a descargar la
+  // copia offline comparando este updated_at; sin tocarlo, el comercial se queda con la copia
+  // vieja y la lamina nueva no le aparece nunca (aunque en el servidor ya este repartida).
+  await pool.query('UPDATE catalogs SET updated_at = NOW() WHERE id = $1', [expressId]);
   return true;
 }
 
@@ -4328,6 +4590,17 @@ async function repartirLamina(sheetId: number): Promise<{ anadida_en: any[]; des
     } catch (e) { console.warn('[reparto] express ' + expressId + ':', (e as Error).message); }
   }
   return { anadida_en: anadida, destinos };
+}
+
+// TODA LÁMINA NUEVA DEL MAESTRO LLEGA A LOS COMERCIALES (11 sep 2026). Hasta ahora ningún
+// camino de CREACIÓN repartía: solo asignar categorías, "repartir" a mano o el reparto por
+// regla. Una lámina subida sin categoría (lo normal) se quedaba en el maestro y ningún
+// comercial la veía (caso real: la 784, "genuine compresas", que Fernando no encontraba
+// en su catálogo). Se llama en cada creación; la hoja en blanco, al ponerle la imagen.
+// Best-effort: si falla, la lámina se crea igual y queda en la bandeja "sin repartir".
+async function repartirLaminaNueva(sheetId: number): Promise<void> {
+  try { await repartirLamina(sheetId); }
+  catch (e) { console.warn('[reparto] lámina nueva ' + sheetId + ':', (e as Error).message); }
 }
 
 // LISTA de laminas que este comercial NO quiere llevar (con quien y cuando lo decidio).
@@ -4647,7 +4920,7 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
 
     const nuevoPath = '/uploads/' + req.file.filename;
     // Corregir colores oscuros por perfil ICC embebido
-    await normalizarPngColor(req.file.path);
+    await prepararImagenLamina(req.file.path);
     // Regenerar miniatura tras sustituir imagen
     const nuevaMini = await generarMiniatura(req.file.path, req.file.filename);
 
@@ -4679,6 +4952,9 @@ app.put('/api/sheets/:id/image', verifyToken, requireAdmin, upload.single('image
     await logSheetChange('updated_image', id, r.rows[0].catalog_id, r.rows[0].titulo,
       { imagen_path_nueva: nuevoPath, imagen_path_anterior: oldImagen },
       { id: req.user?.id, name: req.user?.name });
+    // Era una HOJA EN BLANCO que acaba de recibir su imagen: ahora sí es una lámina
+    // nueva de verdad y tiene que llegar a los comerciales (ver insert-blank).
+    if (String(oldImagen || '').startsWith('/uploads/blank-')) await repartirLaminaNueva(id);
     // Sin tags no se encuentra por palabras (toallitas, aqua…): se generan con IA en
     // segundo plano, igual que en una subida normal. No bloquea la respuesta.
     if (!String(metaR.rows[0]?.tags || '').trim()) {
@@ -5743,7 +6019,7 @@ app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadP
       const titulo = `Lamina ${ordenSiguiente}`;
       const rutaAbs = path.join(UPLOADS_DIR, archivo);
       // Corregir colores oscuros por perfil ICC embebido
-      await normalizarPngColor(rutaAbs);
+      await prepararImagenLamina(rutaAbs);
       const miniaturaPath = await generarMiniatura(rutaAbs, archivo);
       const r = await pool.query(
         `INSERT INTO sheets (catalog_id, orden, titulo, imagen_path, miniatura_path)
@@ -5754,6 +6030,7 @@ app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadP
       await logSheetChange('created', r.rows[0].id, catalogId, r.rows[0].titulo,
         { orden: r.rows[0].orden, imagen_path: r.rows[0].imagen_path, origen: 'from-pdf' },
         { id: req.user?.id, name: req.user?.name });
+      await repartirLaminaNueva(r.rows[0].id);
       // Generar tags con IA en background
       generarTagsBackground(r.rows[0].id, rutaAbs, r.rows[0].titulo);
       ordenSiguiente++;
@@ -5788,6 +6065,80 @@ app.post('/api/catalogs/:id/sheets/from-pdf', verifyToken, requireAdmin, uploadP
 // CLIENTES
 // ============================================================================
 import * as XLSX from 'xlsx';
+
+// BÚSQUEDA TOLERANTE DE CLIENTES (29-sep-2026). Somos vascos: el mismo cliente se escribe
+// con k o c (Kaja/Caja), tz/tx/ts en vez de ch (Etxeberria/Echeverria), gue→ge (Aguirre/
+// Agirre), con o sin acentos y ñ, y en cualquier orden de palabras. El LIKE de antes buscaba
+// la FRASE entera como subcadena, así que "iñaki olarreaga" no encontraba "IGNACIO OLARREAGA
+// ARANBURU" y Eva lo duplicaba (caso real 29-sep). Ahora se casa por PALABRAS con una clave
+// fonética + se toleran erratas (Levenshtein). Ver [[catalogpro-busqueda-clientes-vasco]].
+function foneticaCliente(s: string): string {
+  let t = (s || '').toLowerCase();
+  t = t.normalize('NFD').replace(/[̀-ͯ]/g, '');       // fuera acentos
+  t = t.replace(/ñ/g, 'n').replace(/ç/g, 'c').replace(/[^a-z0-9\s]/g, ' ');
+  t = t.replace(/tx|tz|ts|ch/g, '1');                            // Etxe/Etche/Etze -> igual
+  t = t.replace(/qu/g, 'k').replace(/q/g, 'k');
+  t = t.replace(/gue/g, 'ge').replace(/gui/g, 'gi');             // Aguirre = Agirre
+  t = t.replace(/ge/g, 'je').replace(/gi/g, 'ji');
+  t = t.replace(/ce/g, 'se').replace(/ci/g, 'si');
+  t = t.replace(/c/g, 'k').replace(/z/g, 's').replace(/v/g, 'b').replace(/y/g, 'i').replace(/h/g, '').replace(/w/g, 'u');
+  t = t.replace(/1/g, 'x').replace(/(.)\1+/g, '$1');             // dobles colapsadas
+  return t.replace(/\s+/g, ' ').trim();
+}
+const _STOP_CLI = new Set(['farmacia', 'farmasia', 'de', 'del', 'la', 'el', 'los', 'las', 'y', 'e', 'cb', 'sl', 'slu', 'sa', 'sau', 'scp', 'sll', 'ortopedia', 'ortopedya', 'parafarmacia', 'baja', 'anulado', 'anulada', 'farm']);
+function _tokensCli(s: string): string[] {
+  return Array.from(new Set(foneticaCliente(s).split(' ').filter(t => t.length >= 2 && !_STOP_CLI.has(t))));
+}
+function _lev(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (Math.abs(m - n) > 2) return 99;
+  const dp = Array.from({ length: m + 1 }, (_, i) => i);
+  for (let j = 1; j <= n; j++) {
+    let prev = dp[0]; dp[0] = j;
+    for (let i = 1; i <= m; i++) {
+      const tmp = dp[i];
+      dp[i] = Math.min(dp[i] + 1, dp[i - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return dp[m];
+}
+// Nivel de coincidencia entre dos claves: 3 exacto, 2 uno contiene al otro, 1 por errata
+// (Levenshtein), 0 nada. Que el exacto pese más evita que "olareaga" case con "larea" igual
+// que con "olareaga" (apellido real) y ordena mejor.
+function _nivelTok(qt: string, ct: string): number {
+  if (qt === ct) return 3;
+  if (ct.includes(qt) || qt.includes(ct)) return 2;
+  const min = Math.min(qt.length, ct.length);
+  return _lev(qt, ct) <= (min <= 4 ? 1 : 2) ? 1 : 0;
+}
+function _casaTokCli(qt: string, ct: string): boolean { return _nivelTok(qt, ct) > 0; }
+const _digitos = (s: any): string => String(s || '').replace(/\D/g, '');
+const _esBajaNombre = (n: string): boolean => /^[\s]*-?[\s]*(baja|anulad)/i.test(n || '');
+// Puntúa cuánto casa un cliente con la búsqueda. 0 = no sale.
+function _scoreCliente(cli: any, qTok: string[], qDig: string, qLow: string): number {
+  let score = 0;
+  if (qTok.length) {
+    const cTok = _tokensCli(cli.razon_social);
+    let casados = 0, sig = false, suma = 0;
+    for (const qt of qTok) {
+      let best = 0;
+      for (const ct of cTok) { const nv = _nivelTok(qt, ct); if (nv > best) best = nv; }
+      if (best > 0) { casados++; suma += best; if (qt.length >= 4) sig = true; }
+    }
+    // Sale si casa algún token significativo (>=4 letras) o TODOS los que escribió.
+    // La suma de niveles premia el apellido exacto sobre el parecido.
+    if (casados && (sig || casados === qTok.length)) {
+      score = suma * 4 + (casados === qTok.length ? 5 : 0);
+    }
+  }
+  if (qDig.length >= 6) {
+    if (_digitos(cli.cif).includes(qDig)) score = Math.max(score, 60);
+    if (_digitos(cli.telefono).includes(qDig) || _digitos(cli.whatsapp).includes(qDig)) score = Math.max(score, 45);
+  }
+  if (qLow && String(cli.sage_code || '').toLowerCase().includes(qLow)) score = Math.max(score, 70);
+  return score;
+}
 
 // Listar clientes (paginado + busqueda + filtro por comercial)
 app.get('/api/clients', verifyToken, async (req: AuthRequest, res: Response) => {
@@ -5826,16 +6177,36 @@ app.get('/api/clients', verifyToken, async (req: AuthRequest, res: Response) => 
       whereParts.push('is_active = TRUE');
     }
 
-    if (search) {
-      whereParts.push(`(razon_social ILIKE $${params.length + 1} OR sage_code ILIKE $${params.length + 1} OR cif ILIKE $${params.length + 1} OR municipio ILIKE $${params.length + 1})`);
-      params.push('%' + search + '%');
-    }
-
     // El filtro de visibilidad viene ya como " AND (...)", asi que si no hay nada mas
     // arrancamos de WHERE TRUE en vez de encadenar a pelo.
     const whereSQL = whereParts.length > 0
       ? 'WHERE ' + whereParts.join(' AND ') + filtroVisibles
       : (filtroVisibles ? 'WHERE TRUE' + filtroVisibles : '');
+
+    // BÚSQUEDA TOLERANTE: cuando hay texto, NO usamos LIKE (no perdona grafías vascas ni
+    // orden ni erratas). La base es pequeña (el comercial ve cientos; el admin ~3k), así que
+    // traemos los visibles y casamos en memoria por clave fonética + Levenshtein. Un municipio
+    // que se escriba igual también casa (va como token del nombre no; se busca aparte abajo).
+    if (search) {
+      const todos = await pool.query(`SELECT c.* FROM clients c ${whereSQL}`, params);
+      const qTok = _tokensCli(search);
+      const qDig = _digitos(search);
+      const qLow = search.toLowerCase();
+      const qFonMuni = foneticaCliente(search);
+      const scored: { c: any; s: number }[] = [];
+      for (const cli of todos.rows) {
+        let s = _scoreCliente(cli, qTok, qDig, qLow);
+        // Municipio: si lo que buscó casa foneticamente con el municipio, tambien vale.
+        if (!s && qTok.length && cli.municipio && foneticaCliente(cli.municipio).includes(qFonMuni) && qFonMuni.length >= 3) s = 5;
+        if (s > 0) scored.push({ c: cli, s });
+      }
+      scored.sort((a, b) => b.s - a.s || String(a.c.razon_social || '').localeCompare(String(b.c.razon_social || '')));
+      const total = scored.length;
+      const pageItems = scored.slice(offset, offset + limit).map(x => x.c);
+      res.json({ success: true, clients: pageItems, total, page, limit, pages: Math.ceil(total / limit) });
+      return;
+    }
+
     const countR = await pool.query(`SELECT COUNT(*)::int AS total FROM clients c ${whereSQL}`, params);
     const total = countR.rows[0].total;
 
@@ -6470,11 +6841,15 @@ async function filtroClientesVisibles(userId: number, params: any[], alias = 'c'
       }
     }
   }
-  // Sin codigos ni zonas no ve ningun cliente (mejor eso que verlos todos).
-  if (!ors.length) return ' AND FALSE';
+  // CLIENTE RESERVADO: si esta reservado A OTRO comercial, no lo ve aunque sea de su
+  // zona/codigo; si esta reservado A EL, lo ve SIEMPRE (aunque no sea de su codigo ni
+  // zona). Sin reservar -> lo de siempre (codigos/zonas).
+  params.push(userId);
+  const pMe = params.length;
+  const base = ors.length ? `(${ors.join(' OR ')})` : 'FALSE';
   // Los marcados "no lo visito" nunca salen: son clientes que Sage le asigna pero que
   // no son de su ruta (clubs, tiendas...).
-  return ` AND (${ors.join(' OR ')}) AND ${alias}.no_visitar = FALSE`;
+  return ` AND (${alias}.reservado_user_id = $${pMe} OR (${alias}.reservado_user_id IS NULL AND ${base})) AND ${alias}.no_visitar = FALSE`;
 }
 
 function isEffectiveSales(req: AuthRequest): boolean {
@@ -6810,6 +7185,38 @@ app.get('/api/clients/:id/last-visit-summary', verifyToken, async (req: AuthRequ
       WHERE a.visit_id = $1
       ORDER BY a.orden_en_visita, a.id`, [visit.id]);
     res.json({ success: true, visit, annotations: anots.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// VISITAS ANTERIORES DE UN CLIENTE (20 sep 2026, petición de Fernando: "solo veo la
+// última visita; quiero desplegar las del año y elegir cuál ver"). Los datos YA estaban
+// guardados (visits + annotations): esto solo los lista para el desplegable.
+// Mismos permisos que last-visit-summary: el comercial ve SOLO las suyas con ese cliente;
+// el admin, las de todos (por eso va el nombre del comercial). ?meses=12 por defecto.
+app.get('/api/clients/:id/visits', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    const clientId = Number(req.params.id);
+    const meses = Math.max(1, Math.min(60, Number(req.query.meses) || 12));
+    const params: any[] = [clientId, String(meses)];
+    let filtroUser = '';
+    if (isEffectiveSales(req)) { params.push(effectiveUserId(req)); filtroUser = 'AND v.user_id = $3'; }
+    const r = await pool.query(`
+      SELECT v.id, COALESCE(v.confirmed_at, v.created_at) AS fecha, v.hubo_pedido,
+             u.name AS comercial_nombre,
+             (SELECT COUNT(*)::int FROM annotations a WHERE a.visit_id = v.id AND a.tipo = 'pedido') AS n_pedido,
+             (SELECT COUNT(*)::int FROM annotations a WHERE a.visit_id = v.id) AS n_lineas
+        FROM visits v
+        LEFT JOIN users u ON u.id = v.user_id
+       WHERE v.client_id = $1
+         AND v.status IN ('confirmed', 'sent')
+         AND COALESCE(v.confirmed_at, v.created_at) >= NOW() - ($2 || ' months')::interval
+         ${filtroUser}
+       ORDER BY COALESCE(v.confirmed_at, v.created_at) DESC
+       LIMIT 60`, params);
+    res.json({ success: true, visits: r.rows });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
   }
@@ -7409,6 +7816,7 @@ app.post('/api/admin/backfill-color-profile', verifyToken, requireRealAdmin, asy
         const modificado = await normalizarPngColor(abs);
         if (modificado) {
           corregidas++;
+          await generarVista(abs);   // la vista ligera sale del original: rehacerla también
           // Regenerar miniatura tambien para que las miniaturas usen la misma correccion
           const nuevaMini = await generarMiniatura(abs, path.basename(abs));
           if (nuevaMini) {
@@ -7427,6 +7835,91 @@ app.post('/api/admin/backfill-color-profile', verifyToken, requireRealAdmin, asy
        WHERE imagen_path IS NOT NULL AND imagen_path ILIKE '%.png'`
     );
     res.json({ success: true, procesadas, corregidas, sin_perfil, errores, total: restR.rows[0].n, fallos: fallos.slice(0, 10) });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Agranda las láminas YA SUBIDAS que se quedaron pequeñas (ver agrandarLaminaPequena).
+// ?simular=1 solo lista cuáles y cuánto miden. ?limit=N procesa por tandas (timeout HTTP).
+// NO sobrescribe: escribe un fichero nuevo "<nombre>-hd.<ext>" y apunta la lámina a él.
+// Así (1) el original se queda en disco como copia de seguridad, y (2) la URL cambia, que
+// es lo que obliga a las tablets a bajar la versión nueva: la caché de imágenes del
+// service worker y la copia sin conexión van por URL/ruta y seguirían sirviendo la vieja.
+// Se sube updated_at del catálogo (y de los Express que la llevan) para que la
+// preparación sin conexión se entere del cambio; baja SOLO esas láminas, no todas.
+app.post('/api/admin/agrandar-laminas-pequenas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const simular = req.query.simular === '1';
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
+    const rows = (await pool.query(
+      `SELECT DISTINCT imagen_path FROM sheets WHERE imagen_path LIKE '/uploads/%' ORDER BY imagen_path`)).rows;
+    const lista: any[] = [];
+    const fallos: any[] = [];
+    let pequenas = 0;
+    for (const row of rows) {
+      if (!simular && lista.length >= limit) break;
+      const rel = String(row.imagen_path).substring('/uploads/'.length);
+      const abs = path.join(UPLOADS_DIR, rel);
+      if (!abs.startsWith(UPLOADS_DIR) || !fs.existsSync(abs)) continue;
+      let m: sharp.Metadata;
+      try { m = await sharp(abs).metadata(); } catch (_) { continue; }
+      if (!m.width || !m.height || m.height >= LAMINA_ALTO_MINIMO) continue;
+      pequenas++;
+      if (simular) { lista.push({ imagen_path: row.imagen_path, medida: m.width + 'x' + m.height }); continue; }
+      const ext = path.extname(abs);
+      const nuevoAbs = abs.slice(0, abs.length - ext.length) + '-hd' + ext;
+      const r = await agrandarLaminaPequena(abs, nuevoAbs);
+      if (!r) { fallos.push({ imagen_path: row.imagen_path, motivo: 'no se pudo agrandar' }); continue; }
+      const nuevoPath = '/uploads/' + path.relative(UPLOADS_DIR, nuevoAbs).split(path.sep).join('/');
+      const up = await pool.query(
+        `UPDATE sheets SET imagen_path=$1, updated_at=NOW() WHERE imagen_path=$2 RETURNING id, catalog_id, titulo`,
+        [nuevoPath, row.imagen_path]);
+      const ids = up.rows.map((x: any) => x.id);
+      const cats = Array.from(new Set(up.rows.map((x: any) => x.catalog_id)));
+      await pool.query(
+        `UPDATE catalogs SET updated_at=NOW()
+          WHERE id = ANY($1::int[])
+             OR id IN (SELECT express_catalog_id FROM express_sheets WHERE sheet_id = ANY($2::int[]))`,
+        [cats, ids]);
+      for (const s of up.rows) {
+        await logSheetChange('updated_image', s.id, s.catalog_id, s.titulo,
+          { imagen_path_nueva: nuevoPath, imagen_path_anterior: row.imagen_path, motivo: 'agrandada ' + r.antes + ' -> ' + r.despues },
+          { id: req.user?.id, name: req.user?.name });
+      }
+      lista.push({ antes: row.imagen_path, despues: nuevoPath, medida: r.antes + ' -> ' + r.despues, laminas: ids });
+    }
+    res.json({ success: true, simular, pequenas_encontradas: pequenas, procesadas: lista.length, lista, fallos });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Genera por tandas las vistas ligeras que falten (ver generarVista). Idempotente.
+// ?limit=N (por defecto 40). Devuelve cuántas quedan para saber cuándo parar.
+app.post('/api/admin/generar-vistas', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 40));
+    const rows = (await pool.query(
+      `SELECT DISTINCT imagen_path FROM sheets WHERE imagen_path LIKE '/uploads/%' ORDER BY imagen_path`)).rows;
+    let hechas = 0, yaEstaban = 0, sinOriginal = 0, fallos = 0, pendientes = 0;
+    let bytesOrig = 0, bytesVista = 0;
+    for (const row of rows) {
+      const rel = String(row.imagen_path).substring('/uploads/'.length);
+      if (rel.includes('/')) continue;
+      const abs = path.join(UPLOADS_DIR, rel);
+      if (!fs.existsSync(abs)) { sinOriginal++; continue; }
+      const vista = path.join(VISTAS_DIR, nombreVista(rel));
+      if (fs.existsSync(vista)) { yaEstaban++; continue; }
+      if (hechas >= limit) { pendientes++; continue; }
+      const r = await generarVista(abs);
+      if (r) {
+        hechas++;
+        try { bytesOrig += fs.statSync(abs).size; bytesVista += fs.statSync(r).size; } catch (_) {}
+      } else fallos++;
+    }
+    res.json({ success: true, total: rows.length, hechas, ya_estaban: yaEstaban, pendientes, sin_original: sinOriginal, fallos,
+      mb_originales_tanda: Math.round(bytesOrig / 1048576), mb_vistas_tanda: Math.round(bytesVista / 1048576) });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -9922,7 +10415,12 @@ app.post('/api/catalogs/:id/pdf-hoy-job', verifyToken, async (req: AuthRequest, 
     const fs = require('fs'); const path = require('path');
     const jobId = `ph_${catId}_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
     const file = path.join(getVersionsDir(), jobId + '.pdf');
-    const nombreFichero = sel.nombre.replace(/[^a-z0-9._-]+/gi, '_') + '_precios_hoy.pdf';
+    // Al comercial, con la fecha del último cambio en vez de la fija del nombre (ver
+    // nombreConFechaActualizado); al admin, el nombre real.
+    const nombreBase = req.user?.role === 'admin'
+      ? sel.nombre
+      : nombreConFechaActualizado(sel.nombre, await fechaActualizadoCatalogo(catId));
+    const nombreFichero = nombreBase.replace(/[^a-z0-9._-]+/gi, '_') + '_precios_hoy.pdf';
     const job: PdfHoyJob = { hechas: 0, total: sel.laminas.length, done: false, error: null, file, nombre: nombreFichero, t: Date.now() };
     pdfHoyJobs.set(jobId, job);
     res.json({ success: true, jobId, total: sel.laminas.length });
@@ -10007,11 +10505,14 @@ app.post('/api/catalogs/:id/enviar-laminas', verifyToken, async (req: AuthReques
     const r = await enviarEmailConRedireccion({
       rol: 'cliente', destinatarioReal: email,
       asunto: `Láminas de ${nombreCat} — LOMHIFAR`,
-      html, attachments: [{ filename: fname, path: file }]
+      html, attachments: [{ filename: fname, path: file }],
+      // El cliente PIDE estas láminas: van a su email de verdad aunque el sistema
+      // esté en pruebas. La copia del pedido al cerrar visita NO usa esto.
+      forzarReal: true
     });
     try { fs.unlinkSync(file); } catch (_) { /* nada */ }
     if (!r.ok) { res.status(500).json({ success: false, error: r.error || 'No se pudo enviar el email' }); return; }
-    res.json({ success: true, destinatario: r.destinatarioFinal, modo: r.modo, laminas: laminas.length });
+    res.json({ success: true, destinatario: r.destinatarioFinal, modo: r.real ? 'produccion' : r.modo, laminas: laminas.length });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
@@ -10889,7 +11390,10 @@ app.post('/api/visits/:id/annotations', verifyToken, async (req: AuthRequest, re
     let bonificacion = req.body.bonificacion ? String(req.body.bonificacion).trim().substring(0, 60) : null;
     let ofertaTexto = req.body.oferta_texto ? String(req.body.oferta_texto).trim().substring(0, 120) : null;
     let dtoFinal = descuento;
-    if (productId && !bonificacion && !ofertaTexto) {
+    // Las NOTAS no son líneas de pedido: no se les cuelga oferta ni bonificación aunque
+    // lleven producto. En la fase "visita sin pedido" cada marca guarda su product_id para
+    // el histórico futuro, pero no debe arrastrar nada del mundo de facturar.
+    if (productId && tipoFinal !== 'nota' && !bonificacion && !ofertaTexto) {
       try {
         const of = (await ofertasVigentesLote([productId]))[productId];
         if (of) {
@@ -11028,7 +11532,10 @@ app.post('/api/visits/:id/confirm', verifyToken, async (req: AuthRequest, res: R
       return;
     }
     if (v.rows[0].status !== 'draft') {
-      res.status(400).json({ success: false, error: 'La visita ya estaba confirmada' });
+      // Ya cerrada (normalmente desde OTRO dispositivo: la cerró en el móvil y la tablet
+      // seguía con la foto vieja). No es un error del comercial: el código YA_CERRADA le
+      // dice a la app que la dé por cerrada y siga, sin reenviar nada (Fernando, 7-oct-2026).
+      res.status(409).json({ success: false, codigo: 'YA_CERRADA', error: 'Esta visita ya estaba cerrada', status: v.rows[0].status, confirmed_at: v.rows[0].confirmed_at });
       return;
     }
     const huboPedido = await pool.query(
@@ -11687,22 +12194,31 @@ async function enviarEmailConRedireccion(opts: {
   html: string;
   attachments?: any[];
   visitId?: number;
-}): Promise<{ok: boolean; destinatarioFinal: string; messageId?: string; error?: string; modo: string;}> {
+  // forzarReal: enviar SIEMPRE al destinatario real aunque el sistema esté en
+  // modo pruebas. Solo para correos que el CLIENTE pide explícitamente (p.ej. el
+  // PDF de láminas). NO se usa en la copia del pedido al cerrar visita: esa debe
+  // seguir respetando el modo pruebas para no molestar a clientes reales.
+  forzarReal?: boolean;
+}): Promise<{ok: boolean; destinatarioFinal: string; messageId?: string; error?: string; modo: string; real: boolean;}> {
   const cfg = await leerEmailConfig();
   const modo = cfg.modo === 'produccion' ? 'produccion' : 'pruebas';
   const from = process.env.SMTP_FROM || cfg.remitente_from || '"CatalogPRO" <noreply@example.com>';
+
+  // ¿Va al destinatario real? Sí si estamos en producción, o si este envío
+  // concreto lo fuerza (forzarReal) aunque el sistema esté en pruebas.
+  const enviarReal = modo === 'produccion' || opts.forzarReal === true;
 
   // Decidir destinatario final segun modo
   let destinatarioFinal = '';
   let asuntoFinal = opts.asunto;
   let htmlFinal = opts.html;
-  if (modo === 'pruebas') {
+  if (!enviarReal) {
     // Redirigir al email de prueba correspondiente al rol
     if (opts.rol === 'oficina')   destinatarioFinal = cfg.pruebas_email_oficina   || '';
     if (opts.rol === 'cliente')   destinatarioFinal = cfg.pruebas_email_cliente   || '';
     if (opts.rol === 'comercial') destinatarioFinal = cfg.pruebas_email_comercial || '';
     if (!destinatarioFinal) {
-      return { ok: false, destinatarioFinal: '', error: `Modo pruebas pero no hay email de pruebas configurado para rol "${opts.rol}". Ve a Configuración.`, modo };
+      return { ok: false, destinatarioFinal: '', error: `Modo pruebas pero no hay email de pruebas configurado para rol "${opts.rol}". Ve a Configuración.`, modo, real: false };
     }
     // Marcar claramente el email
     asuntoFinal = `[PRUEBA → ${opts.destinatarioReal || '(sin destinatario real)'}] ${opts.asunto}`;
@@ -11717,10 +12233,10 @@ async function enviarEmailConRedireccion(opts: {
       ${opts.html}
     `;
   } else {
-    // Modo produccion: usar destinatario real
+    // Va al destinatario REAL (producción, o forzado para este envío)
     destinatarioFinal = opts.destinatarioReal;
     if (!destinatarioFinal) {
-      return { ok: false, destinatarioFinal: '', error: `Modo producción pero no hay destinatario real para rol "${opts.rol}".`, modo };
+      return { ok: false, destinatarioFinal: '', error: `No hay destinatario real para rol "${opts.rol}".`, modo, real: true };
     }
   }
 
@@ -11734,9 +12250,9 @@ async function enviarEmailConRedireccion(opts: {
       html: htmlFinal,
       attachments: opts.attachments || []
     });
-    return { ok: true, destinatarioFinal, messageId: info.messageId, modo };
+    return { ok: true, destinatarioFinal, messageId: info.messageId, modo, real: enviarReal };
   } catch (e) {
-    return { ok: false, destinatarioFinal, error: (e as Error).message, modo };
+    return { ok: false, destinatarioFinal, error: (e as Error).message, modo, real: enviarReal };
   }
 }
 
@@ -12155,7 +12671,12 @@ async function enviarEmailsVisita(visitId: number, opciones?: { emailClienteOver
     // 2) Email al cliente (sin PDF para que sea ligero - confirmacion simple)
     // Resumen pre-envío: el comercial puede haber pedido NO enviar al cliente,
     // o haber especificado un email distinto al del cliente (override).
-    const noEnviarCliente = opciones?.noEnviarCliente === true;
+    // Interruptor global: mientras "copia_cliente_cierre" NO sea "si", no se envía la
+    // confirmación automática al CLIENTE al cerrar visita (Fernando: aún no queremos que
+    // el cliente reciba la copia de lo anotado). La OFICINA y el COMERCIAL sí la reciben,
+    // y el PDF de láminas a petición es otro flujo aparte (ese va real siempre).
+    const copiaClientePermitida = String(cfg.copia_cliente_cierre || 'no').toLowerCase() === 'si';
+    const noEnviarCliente = opciones?.noEnviarCliente === true || !copiaClientePermitida;
     const clienteReal = noEnviarCliente
       ? ''
       : (opciones?.emailClienteOverride || visit.cliente_email || '');
@@ -12971,6 +13492,80 @@ async function recordatorioCoordinacion(forzado: boolean): Promise<any> {
 // Cada 6 h se mira si hay algo atascado; el propio recordatorio no se repite antes de
 // 20 h, asi que en la practica sale como mucho uno al dia.
 setInterval(() => { recordatorioCoordinacion(false).catch(() => {}); }, 6 * 3600 * 1000).unref();
+
+// ============================================================================
+// VISITAS QUE SE QUEDAN A MEDIAS
+// Una visita en borrador es un pedido a medio hacer que NO ha llegado a la oficina.
+// Al comercial la app se lo recuerda cada vez que abre ("Visita en curso: X"), pero
+// hasta ahora eso no lo veia NADIE mas: todas las consultas de borradores filtran por
+// user_id. Fernando se encontro 3 suyas de julio, dos con pedido dentro, calladas dos
+// meses (4 sep 2026). Esto le manda UN aviso al dia con las que se han pasado de dias.
+// Si no hay ninguna NO se manda nada: el silencio significa que esta todo cerrado.
+// ============================================================================
+const DIAS_VISITA_ABIERTA_DEFECTO = 3;
+
+// soloProbar = calcula y devuelve el mensaje SIN mandarlo (para verificar sin dar la lata).
+async function avisarVisitasAMedias(soloProbar = false): Promise<{ enviado: boolean; visitas: number; mensaje?: string; dias?: number }> {
+  // Umbral configurable sin tocar codigo (app_config.dias_aviso_visita_abierta).
+  let dias = DIAS_VISITA_ABIERTA_DEFECTO;
+  try {
+    const c = await pool.query(`SELECT valor FROM app_config WHERE clave = 'dias_aviso_visita_abierta'`);
+    const n = Number(c.rows[0]?.valor);
+    if (Number.isFinite(n) && n >= 1 && n <= 60) dias = n;
+  } catch (_) { /* si falla, el valor por defecto */ }
+
+  const r = await pool.query(`
+    SELECT v.id, v.created_at, u.name AS comercial, cl.razon_social,
+           EXTRACT(DAY FROM now() - v.created_at)::int AS dias_abierta,
+           (SELECT count(*)::int FROM annotations a WHERE a.visit_id = v.id) AS lineas
+      FROM visits v
+      LEFT JOIN users u ON u.id = v.user_id
+      LEFT JOIN clients cl ON cl.id = v.client_id
+     WHERE v.status = 'draft'
+       AND v.created_at < now() - ($1 || ' days')::interval
+     ORDER BY v.created_at`, [String(dias)]);
+
+  if (r.rows.length === 0) return { enviado: false, visitas: 0, dias };
+
+  // Como mucho UN aviso al dia. La marca solo se pone si se llega a enviar: asi, si por
+  // la manana no habia ninguna y por la tarde una cruza el umbral, ese dia si avisa.
+  const hoy = new Date().toISOString().slice(0, 10);
+  const yaHoy = await pool.query(`SELECT valor FROM app_config WHERE clave = 'aviso_visitas_medias_dia'`);
+  if (!soloProbar && yaHoy.rows.length && String(yaHoy.rows[0].valor) === hoy) return { enviado: false, visitas: r.rows.length, dias };
+
+  const lineas = r.rows.slice(0, 15).map((x: any) => {
+    const conPedido = x.lineas > 0 ? ` · *${x.lineas} línea${x.lineas === 1 ? '' : 's'} sin enviar*` : ' · vacía';
+    return `• ${x.comercial || 'comercial'} — ${String(x.razon_social || 'cliente').slice(0, 34)} · ${x.dias_abierta} días${conPedido}`;
+  }).join('\n');
+  const masCola = r.rows.length > 15 ? `\n… y ${r.rows.length - 15} más` : '';
+  const conLineas = r.rows.filter((x: any) => x.lineas > 0).length;
+
+  const mensaje =
+    `⏳ *${r.rows.length} visita${r.rows.length === 1 ? '' : 's'} sin cerrar* (más de ${dias} días)\n${lineas}${masCola}` +
+    (conLineas > 0
+      ? `\n\n⚠️ ${conLineas === 1 ? '1 lleva' : conLineas + ' llevan'} pedido dentro que NO ha llegado a la oficina.`
+      : '');
+
+  if (soloProbar) return { enviado: false, visitas: r.rows.length, mensaje, dias };
+
+  await enviarTelegramUso(mensaje);
+  await pool.query(
+    `INSERT INTO app_config (clave, valor) VALUES ('aviso_visitas_medias_dia', $1)
+     ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, updated_at = NOW()`, [hoy]);
+  return { enviado: true, visitas: r.rows.length, mensaje, dias };
+}
+
+// Dispararlo a mano. Con ?probar=1 calcula y devuelve el mensaje SIN enviarlo.
+app.post('/api/admin/visitas-a-medias', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await avisarVisitasAMedias(String(req.query.probar || '') === '1');
+    res.json({ success: true, ...r });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+
+// Se mira cada 6 h; el propio aviso no se repite el mismo dia, asi que sale uno al dia
+// como mucho, y solo si hay algo que contar.
+setInterval(() => { avisarVisitasAMedias().catch(() => {}); }, 6 * 3600 * 1000).unref();
 
 // Y a mano, desde la pantalla de coordinacion.
 app.post('/api/coordinacion/recordatorio', verifyToken, requireRealAdmin, async (_req: AuthRequest, res: Response) => {

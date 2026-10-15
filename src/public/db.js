@@ -408,6 +408,27 @@ window.CpDB = {
     });
   },
 
+  // Varias láminas de una vez, POR ID (no por catálogo): una lámina que está en dos
+  // catálogos se guarda una sola vez con el catalog_id del último que la bajó, así que
+  // buscar por catálogo se la saltaría. Devuelve un array alineado con `ids` (null si falta).
+  async obtenerLaminasPorIds(ids) {
+    const db = await abrirDB();
+    return new Promise((resolve) => {
+      try {
+        const lista = ids || [];
+        const out = new Array(lista.length).fill(null);
+        let pend = lista.length;
+        if (!pend) { resolve(out); return; }
+        const store = db.transaction('sheets').objectStore('sheets');
+        lista.forEach((id, i) => {
+          const r = store.get(Number(id));
+          r.onsuccess = () => { out[i] = r.result || null; if (--pend === 0) resolve(out); };
+          r.onerror = () => { if (--pend === 0) resolve(out); };
+        });
+      } catch (_) { resolve([]); }
+    });
+  },
+
   // Una lámina descargada, con sus zonas (para poder anotar sin cobertura).
   async obtenerLamina(sheetId) {
     const db = await abrirDB();

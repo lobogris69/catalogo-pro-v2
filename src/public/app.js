@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v273 · 26 ago 2026';
+const APP_VERSION = 'v316 · 15 oct 2026';
 const API = '';
 
 // ============================================================================
@@ -113,7 +113,12 @@ function _esCorteDeServicio(status) {
 // estadística de su cliente); a oficina y cliente no se envían nunca. El admin puede
 // apagarlo desde Configuración.
 let _cfgImportes = null;
-function _verImportes() { return _cfgImportes !== '0'; }
+// En la fase "visita sin pedido" NUNCA se ven importes, mande lo que mande la config:
+// el sentido de esa fase es que no se valora nada. En el resto, manda el ajuste global.
+function _verImportes() {
+  if (typeof esVisitaSinPedido === 'function' && esVisitaSinPedido()) return false;
+  return _cfgImportes !== '0';
+}
 async function _cargarCfgImportes() {
   if (_cfgImportes !== null) return;
   try {
@@ -226,12 +231,95 @@ function vurl(pathImg, sheet) {
   return pathImg + (pathImg.indexOf('?') >= 0 ? '&' : '?') + 'v=' + v;
 }
 
+// LÁMINAS QUE SE DIBUJABAN A TROZOS (10 sep 2026). Con cobertura justa, el visor pedía
+// SIEMPRE la lámina a internet —el PNG de imprenta, 1,6 MB de media y alguna de 9 MB— y
+// se veía bajar de arriba abajo, aunque la tablet la tuviera guardada. Ahora, para MIRAR:
+//   1º la copia guardada en la tablet (si es la misma imagen), sin tocar la red;
+//   2º si no, la versión ligera del servidor (/uploads/vista/<nombre>.webp);
+//   3º si esa falla, el original (onerror → _laminaSinVista).
+// El original se sigue usando para imprimir, editar zonas, PDF y precios.
+function rutaVista(p) {
+  const limpia = String(p || '').split('?')[0];
+  if (!/^\/uploads\/[^/]+$/.test(limpia)) return null;   // thumbs/, vista/, blob:… no
+  const nombre = limpia.slice('/uploads/'.length);
+  // Quitar la extensión IGUAL que path.parse en el servidor: también un punto final suelto.
+  // Hay originales llamados "…_2025." (sin extensión): con /\.[^.]+$/ pedíamos "…_2025..webp",
+  // que no existe, y esas láminas caían siempre al original pesado.
+  return '/uploads/vista/' + encodeURIComponent(nombre.replace(/\.[^.]*$/, '')) + '.webp';
+}
+function srcLaminaVisor(s) {
+  if (!s) return '';
+  if (s._src_local) return s._src_local;
+  const p = s.imagen_path || '';
+  if (p.startsWith('blob:') || p.startsWith('data:')) return p;
+  const v = rutaVista(p);
+  return vurl(v || p, s);
+}
+function _laminaSinVista(img) {
+  const o = img && img.dataset ? img.dataset.original : '';
+  if (!o || img._cayoAlOriginal) return;
+  img._cayoAlOriginal = true;   // una sola vez: si el original también falla, no hay bucle
+  img.src = o;
+}
+// Enlaza a cada lámina su copia de la tablet, si la hay y es la misma imagen (misma ruta).
+// Las URLs de la vez anterior se liberan: si no, cada catálogo abierto retiene sus blobs.
+let _urlsCopiaLocal = [];
+async function _enlazarCopiaLocal(sheets) {
+  _urlsCopiaLocal.forEach(u => { try { URL.revokeObjectURL(u); } catch (_) {} });
+  _urlsCopiaLocal = [];
+  if (!window.CpDB || !CpDB.obtenerLaminasPorIds || !Array.isArray(sheets) || !sheets.length) return;
+  try {
+    const guardadas = await CpDB.obtenerLaminasPorIds(sheets.map(s => s.id));
+    sheets.forEach((s, i) => {
+      const g = guardadas[i];
+      if (g && g.imagen_blob && g.imagen_path_original === s.imagen_path) {
+        s._src_local = URL.createObjectURL(g.imagen_blob);
+        _urlsCopiaLocal.push(s._src_local);
+      }
+    });
+  } catch (_) { /* sin copia local: se tira de la red como siempre */ }
+}
+
+// TÍTULO DEL CATÁLOGO QUE VE EL COMERCIAL (11 sep 2026). Su Express se llama siempre
+// "CATALOGO LOMHIFAR 27 JULIO 2026" aunque el maestro cambia casi a diario: parecía que
+// siempre usaba el mismo catálogo. Sin renombrar nada: se quita la fecha fija del final del
+// nombre y se pone la del ÚLTIMO CAMBIO REAL (actualizado_at, lo calcula el servidor).
+// El admin ve el nombre real, que es el que edita. Misma regla que el servidor (PDF).
+const _MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const _RX_FECHA_FINAL_NOMBRE = /\s+(\d{1,2}\s+(de\s+)?)?(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(\s+de)?\s+\d{4}\s*$/i;
+// Las dos partes por separado: la cabecera del visor pone la fecha en su segunda línea
+// (el título recorta con "…" y se comía justo la fecha: en móvil, y en la tablet con el
+// nombre más largo del catálogo de eva). En las listas va todo junto (nombreCatalogoVisible).
+function partesNombreCatalogo(c) {
+  const nombre = String((c && c.name) || '');
+  try { if (typeof rolEfectivo === 'function' && rolEfectivo() === 'admin') return { base: nombre, fecha: '' }; } catch (_) {}
+  const f = c && c.actualizado_at ? new Date(c.actualizado_at) : null;
+  if (!f || isNaN(f)) return { base: nombre, fecha: '' };
+  const base = nombre.replace(_RX_FECHA_FINAL_NOMBRE, '').trim() || nombre;
+  return { base, fecha: 'actualizado el ' + f.getDate() + ' ' + _MESES_CORTOS[f.getMonth()] + ' ' + f.getFullYear() };
+}
+function nombreCatalogoVisible(c) {
+  const p = partesNombreCatalogo(c);
+  return p.fecha ? p.base + ' · ' + p.fecha : p.base;
+}
+
 // Helper: genera tooltip contextual (?). Posición opcional: '', 'abajo', 'izq'
 function ayuda(texto, posicion) {
   const clase = posicion === 'abajo' ? 'ayuda-tip tip-abajo'
               : posicion === 'izq' ? 'ayuda-tip tip-izq'
               : 'ayuda-tip';
   return `<span class="${clase}" tabindex="0" data-tip="${escape(texto)}">?</span>`;
+}
+
+// SALIR DEL SOLO VISOR (11 sep 2026, incidencia #31). El solo visor esconde la barra de
+// arriba entera, y con ella el botón "Salir": quien entraba con una cuenta solo visor
+// (Fernando probando en su móvil con la de susana) no tenía NINGUNA forma de cerrar la
+// sesión para entrar con otra cuenta. Ahora el pie de la app lo lleva (solo en solo
+// visor, ver .solovisor-salir-wrap), con confirmación porque luego hace falta contraseña.
+function salirDeSoloVisor() {
+  const quien = (user && user.name) ? user.name : 'esta cuenta';
+  if (!confirm('¿Cerrar la sesión de ' + quien + '?\n\nPara volver a entrar hará falta el usuario y la contraseña.')) return;
+  logout();
 }
 
 function logout() {
@@ -399,6 +487,9 @@ async function renderApp() {
         registrarUso('conexion', (typeof APP_VERSION !== 'undefined' ? APP_VERSION : ''));
       }
     } catch (_) {}
+    // Guardar en la tablet los catálogos que falten o hayan cambiado, en segundo plano.
+    // Con retraso para no competir con la primera pantalla.
+    setTimeout(_prepararOfflineComercial, 15000);
   }
 
   const esAdmin = rolEfectivo() === 'admin';
@@ -444,7 +535,7 @@ async function renderApp() {
             ${impersonando ? ` <span style="opacity:0.7">(real: ${escape(user.name)})</span>` : ''}
           </div>
         </div>
-        <div style="display:flex; gap:8px; align-items:center;">
+        <div class="topbar-acciones" style="display:flex; gap:8px; align-items:center;">
           <div id="indicador-online" class="indicador-online" title="Estado de conexión"></div>
           ${adminReal && !impersonando ? `<button class="topbar-action" onclick="abrirSelectorImpersonacion()" title="Ver como un comercial">👁 Ver como…</button>` : ''}
           <button class="topbar-action" id="btn-tema" onclick="alternarTema()" title="Cambiar tema claro / oscuro">${document.documentElement.dataset.theme === 'dark' ? '☀️' : '🌙'}</button>
@@ -453,7 +544,7 @@ async function renderApp() {
       </div>
       ${pintarNavAgrupada(esAdmin, esOficina)}
       <div id="vista-contenido"></div>
-      <div style="text-align:center;font-size:11px;color:#9ca3af;padding:14px 0 8px">CatalogPRO ${APP_VERSION}</div>
+      <div style="text-align:center;font-size:11px;color:#9ca3af;padding:14px 0 8px">CatalogPRO ${APP_VERSION}${!impersonating ? `<div class="solovisor-salir-wrap"><button class="solovisor-salir" onclick="salirDeSoloVisor()">🚪 Salir / cambiar de usuario</button></div>` : ''}</div>
     </div>
     <!-- Canal de incidencias: siempre a mano, también en la visita.
          El 🛟 SIEMPRE sirve para ESCRIBIR un aviso, en cualquier pantalla y también
@@ -495,6 +586,24 @@ function esSoloVisor() {
   return !!(efectivo && efectivo.solo_visor && rolEfectivo() === 'sales');
 }
 
+// VISITA SIN PEDIDO (fase intermedia): el comercial SÍ hace la visita y la agenda, y marca
+// las zonas que el cliente se lleva, pero sin cantidad, sin precio y sin pedido real.
+// "Solo visor" MANDA sobre esto: quien solo mira, no hace visitas. Por eso se comprueba
+// primero (los tres niveles salen de dos booleanos, ver la migración en index.ts).
+function esVisitaSinPedido() {
+  if (esSoloVisor()) return false;
+  const efectivo = (typeof impersonating !== 'undefined' && impersonating) ? impersonating : user;
+  return !!(efectivo && efectivo.visita_sin_pedido && rolEfectivo() === 'sales');
+}
+
+// Nivel del comercial EFECTIVO, en una sola palabra. Para pintar avisos y decidir caminos
+// sin repetir la precedencia por ahí suelta.
+function nivelComercial() {
+  if (esSoloVisor()) return 'visor';
+  if (esVisitaSinPedido()) return 'sin_pedido';
+  return 'completo';
+}
+
 function routerVista() {
   // SOLO VISOR: nada de visitas/pedidos/clientes/admin. Solo el visor de catálogos.
   if (esSoloVisor()) {
@@ -510,8 +619,21 @@ function routerVista() {
   // la visita, que es la única pantalla que se reutiliza tal cual.
   if (esModoSimple()) {
     document.body.classList.add('modo-simple');
-    // Si veníamos de planning/formación en sencillo, quitar el botón flotante de volver.
-    document.querySelectorAll('.simple-volver-flotante').forEach(x => x.remove());
+    // Si veníamos de planning/formación en sencillo, quitar el botón flotante de volver
+    // (con su clase del body: ver _ponerVolverSimple en simple.js).
+    if (typeof _quitarVolverSimple === 'function') _quitarVolverSimple();
+    else document.querySelectorAll('.simple-volver-flotante').forEach(x => x.remove());
+    // VER EL CATÁLOGO A SECAS. Antes esta pantalla obligaba a empezar una visita para
+    // poder abrir el catálogo: si no había visita, siempre se volvía al inicio. El
+    // comercial muchas veces solo quiere repasarlo o resolver una duda (Fernando, 4 sep
+    // 2026). La bandera la pone simpleAbrirCatalogoSoloMirar().
+    // VA ANTES que la visita a propósito: se puede mirar el catálogo TENIENDO una visita
+    // abierta sin tocarla (si fuese después, la visita se lo comería y volvería a su visor).
+    if (window._simpleSoloMirar && appState.catalogoActual) {
+      renderVisorComercial(appState.catalogoActual);
+      setTimeout(simpleBotonVolverInicio, 400);
+      return;
+    }
     if (appState.visitaActiva && appState.catalogoActual) {
       renderVisorComercial(appState.catalogoActual);
       setTimeout(simpleBarraPedido, 300);
@@ -744,9 +866,9 @@ async function renderListaCatalogos() {
               <span class="catalogo-card-estado ${estadoClase}">${c.estado}</span>
               ${esOfflineDescargado ? `<span class="catalogo-card-offline" title="Disponible offline">📲</span>` : ''}
             </div>
-            <div class="catalogo-card-nombre">${escape(c.name)}</div>
+            <div class="catalogo-card-nombre">${escape(nombreCatalogoVisible(c))}</div>
             ${parentLine}
-            <div class="catalogo-card-info">${c.sheet_count || 0} láminas · V${c.version}</div>
+            <div class="catalogo-card-info">${c.sheet_count || 0} láminas${rolEfectivo() === 'admin' ? ' · V' + c.version : ''}</div>
             ${Number(c.num_versiones) > 0 ? `<div class="catalogo-card-versiones">📚 ${c.num_versiones} ${c.num_versiones === 1 ? 'versión guardada' : 'versiones guardadas'}${c.ultima_version_at ? ' · última ' + new Date(c.ultima_version_at).toLocaleDateString('es-ES') : ''}</div>` : ''}
             <div class="catalogo-card-acciones">
               ${_verArchivados ? `
@@ -918,6 +1040,7 @@ function _restaurarScrollLamina() {
 
 // ===== EDITOR DE CATALOGO =====
 async function renderEditorCatalogo(id) {
+  _indiceDeseadoVisor = null; // el editor no usa el índice del visor; no dejar un valor de enlace colgado
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogo…</div></div>`;
   try {
@@ -3089,6 +3212,9 @@ async function renderListaComerciales() {
     usuarios.forEach(u => {
       const esYo = u.id === user.id;
       const inactiveCls = !u.is_active ? ' comercial-inactivo' : '';
+      // NIVEL del comercial: hasta dónde llega en la app. Sale de dos booleanos por
+      // precedencia (solo_visor manda) para no tener interruptores que se contradigan.
+      const nivelU = u.solo_visor ? 'visor' : (u.visita_sin_pedido ? 'sin_pedido' : 'completo');
       const rolBadge = u.role === 'admin'
         ? '<span class="rol-badge rol-admin">ADMIN</span>'
         : '<span class="rol-badge rol-sales">COMERCIAL</span>';
@@ -3111,7 +3237,16 @@ async function renderListaComerciales() {
             <button class="btn btn-pequeno btn-secondary" onclick="cambiarContraseñaUsuario(${u.id}, '${escape(u.name)}')" title="Cambiar contraseña">🔑 Contraseña</button>
             ${u.role === 'sales' ? `<button class="btn btn-pequeno" style="background:#eff6ff;color:#1d4ed8" onclick="abrirCarterasComercial(${u.id}, '${escape(u.name).replace(/'/g, "\'")}')" title="Códigos de Sage que lleva y zonas que ve">🗂️ Carteras y zonas</button>` : ''}
             ${u.role === 'sales' ? `<button class="btn btn-pequeno" style="background:${u.modo_simple ? '#16a34a' : '#f3f4f6'};color:${u.modo_simple ? '#fff' : '#374151'};font-weight:700" onclick="toggleModoSimple(${u.id}, ${!u.modo_simple})" title="Modo sencillo: la app se reduce a un solo camino guiado (empezar visita → catálogo → añadir → enviar). Para quien viene del papel.">${u.modo_simple ? '👶 Modo sencillo: SÍ' : '👶 Modo sencillo: no'}</button>` : ''}
-            ${u.role === 'sales' ? `<button class="btn btn-pequeno" style="background:${u.solo_visor ? '#7c3aed' : '#f3f4f6'};color:${u.solo_visor ? '#fff' : '#374151'};font-weight:700" onclick="toggleSoloVisor(${u.id}, ${!u.solo_visor})" title="Solo visor: la app se reduce a MIRAR los catálogos (mosaico, abrir lámina, zoom, buscar). Sin visitas, pedidos, clientes ni administración.">${u.solo_visor ? '👁 Solo visor: SÍ' : '👁 Solo visor: no'}</button>` : ''}
+            ${u.role === 'sales' ? `
+              <div class="nivel-comercial" title="Hasta dónde llega este comercial dentro de la app. Se cambia de un clic y es reversible.">
+                <span class="nivel-etiqueta">Nivel</span>
+                <button class="nivel-btn ${nivelU === 'visor' ? 'nivel-activo nivel-visor' : ''}" onclick="fijarNivelComercial(${u.id}, 'visor')"
+                        title="Solo mirar los catálogos (mosaico, abrir lámina, zoom, buscar). Sin visitas, pedidos, clientes ni administración.">👁 Solo visor</button>
+                <button class="nivel-btn ${nivelU === 'sin_pedido' ? 'nivel-activo nivel-sinpedido' : ''}" onclick="fijarNivelComercial(${u.id}, 'sin_pedido')"
+                        title="Hace la visita y usa la agenda, y marca sobre la lámina lo que se lleva el cliente. Sin cantidades, sin precios y sin generar pedido ni emails.">📋 Visita sin pedido</button>
+                <button class="nivel-btn ${nivelU === 'completo' ? 'nivel-activo nivel-completo' : ''}" onclick="fijarNivelComercial(${u.id}, 'completo')"
+                        title="Flujo completo: visita con pedido real, cantidades, importes y envío.">🛒 Completo</button>
+              </div>` : ''}
             ${!esYo ? `<button class="btn btn-pequeno btn-danger" onclick="desactivarUsuario(${u.id}, '${escape(u.name)}')" title="${u.is_active ? 'Desactivar' : 'Ya inactivo'}" ${!u.is_active ? 'disabled' : ''}>🗑️</button>` : ''}
           </div>
         </div>
@@ -3568,7 +3703,7 @@ async function renderVisorSoloLector() {
       <div class="catalogos-grid" style="margin-top:14px">
         ${cats.map(c => `
           <div class="catalogo-card ${c.tipo === 'maestro' ? 'catalogo-card-maestro' : ''}" onclick="_soloVisorAbrir(${c.id}, false)">
-            <div class="catalogo-card-nombre">${escape(c.name)}</div>
+            <div class="catalogo-card-nombre">${escape(nombreCatalogoVisible(c))}</div>
             <div class="catalogo-card-info">${c.sheet_count || 0} láminas</div>
           </div>`).join('')}
       </div>
@@ -3590,7 +3725,24 @@ function _mostrarBotonInstalarSoloVisor() {
 // Descarga solo lo que falte o lo que haya cambiado (compara updated_at). Reutiliza la misma
 // barra de progreso que la descarga manual. Se llama al entrar, con conexión.
 let _offlineAutoHecho = false;   // una sola pasada por sesión de la app
-async function _soloVisorPrepararOffline(cats) {
+
+// AUTOMÁTICO PARA TODOS LOS COMERCIALES (v293). Antes solo el "solo visor" guardaba el
+// catálogo en la tablet; en modo sencillo o completo nadie lo hacía, así que con poca
+// cobertura cada lámina bajaba de internet. Se lanza en segundo plano al abrir la app,
+// SOLO con WiFi (con datos móviles no: son decenas de MB) y sin ventanas.
+async function _prepararOfflineComercial() {
+  try {
+    if (!user || user.role !== 'sales' || impersonating) return;
+    if (typeof esSoloVisor === 'function' && esSoloVisor()) return;   // ya lo hace su pantalla
+    if (!navigator.onLine || !window.CpDB) return;
+    const c = navigator.connection;
+    if (c && (c.saveData || c.type === 'cellular')) return;
+    const r = await api('/api/catalogs');
+    await _soloVisorPrepararOffline(r.catalogs || [], { silencioso: true });
+  } catch (_) {}
+}
+
+async function _soloVisorPrepararOffline(cats, opts) {
   if (!window.CpDB || !navigator.onLine || !cats || !cats.length) return;
   // Volver a la lista de catálogos dentro de la misma sesión no vuelve a lanzar la
   // preparación: si algo cambia mientras tanto, se recoge en la siguiente entrada.
@@ -3608,7 +3760,7 @@ async function _soloVisorPrepararOffline(cats) {
   }
   if (!pendientes.length) return; // ya está todo en la tablet y al día
   for (const c of pendientes) {
-    try { await descargarCatalogoOffline(c.id, c.name || 'Catálogo'); } catch (_) {}
+    try { await descargarCatalogoOffline(c.id, c.name || 'Catálogo', opts); } catch (_) {}
   }
 }
 
@@ -3647,7 +3799,13 @@ async function renderVisorComercial(catalogId) {
   // pasa por aquí, solo por pintarVisor).
   appState.visorBusqueda = '';
   appState.visorFiltroCat = null;
-  appState.visorIndice = 0;
+  // Página de entrada: por defecto la 1ª. PERO si venimos de un ENLACE entre catálogos
+  // (navegarAEnlaceCatalogo / volverDeEnlaceCatalogo dejan una página concreta en
+  // _indiceDeseadoVisor), hay que respetarla. Si no, el salto al catálogo enlazado y la
+  // "página de regreso" configurada se perdían y SIEMPRE caía en la lámina 1 (regresión v273:
+  // este reset a 0 pisaba la página que fijaba el enlace). Ver navegarAEnlaceCatalogo.
+  if (_indiceDeseadoVisor != null) { appState.visorIndice = _indiceDeseadoVisor; _indiceDeseadoVisor = null; }
+  else { appState.visorIndice = 0; }
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogo…</div></div>`;
   try {
@@ -3671,6 +3829,8 @@ async function renderVisorComercial(catalogId) {
         const r = await api('/api/catalogs/' + catalogId);
         catalog = r.catalog;
         sheets = (r.sheets || []).filter(s => !s.oculta);
+        // Con cobertura también: la lámina que ya está en la tablet sale de la tablet.
+        await _enlazarCopiaLocal(sheets);
       } catch (err) {
         // Si la API falla pero navegador dice online, intentar IndexedDB
         console.warn('[I.2] API falló en visor, probando IndexedDB:', err.message);
@@ -3779,7 +3939,7 @@ function precargarVecinasVisor(sheets, idx) {
       try {
         const img = new Image();
         img.decoding = 'async';
-        img.src = vurl(sheets[i].imagen_path, sheets[i]);
+        img.src = srcLaminaVisor(sheets[i]);   // la misma que pintará el visor
       } catch (_) {}
     }
   });
@@ -3832,15 +3992,15 @@ function pintarVisor() {
       <div class="visor-cabecera-fila">
         <button class="btn-icon-volver" onclick="volverACatalogos()" title="Volver a catálogos">←</button>
         <div class="visor-titulo-bloque">
-          <div class="visor-titulo">${escape(_visorCatalog.name)}</div>
-          <div class="visor-subtitulo">${totalReal} láminas${busca ? ` · ${visibles.length} resultados` : ''}</div>
+          <div class="visor-titulo">${escape(partesNombreCatalogo(_visorCatalog).base)}</div>
+          <div class="visor-subtitulo">${totalReal} láminas${partesNombreCatalogo(_visorCatalog).fecha ? ' · ' + escape(partesNombreCatalogo(_visorCatalog).fecha) : ''}${busca ? ` · ${visibles.length} resultados` : ''}</div>
         </div>
         ${appState.visitaActiva ? `<div style="display:flex;align-items:center">${ayuda('Estás en visita. Toca las zonas marcadas sobre las láminas para añadir productos al pedido (aparecen al pasar el dedo o ratón). También puedes anotar manualmente con el icono ✏️. Al terminar, pulsa "Cerrar visita" para enviar el pedido.', 'abajo')}</div>` : ''}
         <div class="visor-modo-switch">
           <button class="visor-modo-btn btn-buscar-lamina" onclick="toggleVisorBuscadorSolo(this)" title="Buscar una lámina (nombre, número, categoría…)">🔍</button>
           <button class="visor-modo-btn solovisor-solo" onclick="descargarPdfCatalogoHoy(${_visorCatalog.id}, this)" title="Descargar este catálogo en PDF">📄</button>
-          <button class="visor-modo-btn solovisor-solo" onclick="activarEnvioLaminas()" title="Enviar láminas por email a un cliente">✉️</button>
-          ${appState.visitaActiva ? `<button class="visor-modo-btn" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Última visita con este cliente">📋</button>` : ''}
+          <button class="visor-modo-btn btn-enviar-laminas" onclick="activarEnvioLaminas()" title="Enviar láminas por email a un cliente">✉️</button>
+          ${appState.visitaActiva ? `<button class="visor-modo-btn btn-ultima-visita" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Ver qué se llevó este cliente la vez anterior">📋<span class="btn-ultima-visita-txt"> Última visita</span></button>` : ''}
           <button class="visor-modo-btn" onclick="abrirModalDescargarCatalogo(${_visorCatalog.id}, '${escape((_visorCatalog.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">📥</button>
           <button class="visor-modo-btn visor-modo-vista ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
             📺
@@ -3888,14 +4048,22 @@ function pintarVisor() {
     cuerpo = pintarPresentacion(visibles);
   }
 
-  // Botón flotante del CARRITO de la visita (acceso rápido al pedido en curso)
+  // Botón flotante del CARRITO de la visita (acceso rápido al pedido en curso).
+  // En la fase "visita sin pedido" NO hay carrito: no existe el concepto de pedido. En su
+  // lugar sale un contador de lo que el cliente se lleva, que abre la misma lista.
   let carritoFab = '';
   if (appState.visitaActiva) {
     const n = carritoContarLineas();
-    carritoFab = `<button class="carrito-fab" onclick="abrirCarritoVisita()" title="Ver el pedido de esta visita">🛒 Pedido${n > 0 ? ` <span class="carrito-fab-badge">${n}</span>` : ''}</button>`;
+    if (esVisitaSinPedido()) {
+      carritoFab = `<button class="carrito-fab carrito-fab-sinpedido" onclick="abrirCarritoVisita()" title="Ver lo que se lleva el cliente en esta visita">✔ Se lleva${n > 0 ? ` <span class="carrito-fab-badge">${n}</span>` : ''}</button>`;
+    } else {
+      carritoFab = `<button class="carrito-fab" onclick="abrirCarritoVisita()" title="Ver el pedido de esta visita">🛒 Pedido${n > 0 ? ` <span class="carrito-fab-badge">${n}</span>` : ''}</button>`;
+    }
   }
 
   $v.innerHTML = `<div class="visor-shell">${cabecera}${cuerpo}${carritoFab}</div>`;
+  // Modo sencillo: medir el hueco de la lamina con el DOM ya pintado (ver _ajustarAltoLaminaSimple).
+  setTimeout(_ajustarAltoLaminaSimple, 0);
 
   // COLOCAR EL SCROLL al cambiar de lámina/modo (solo en cambio real, no en refresco
   // incidental, para no dar tirones):
@@ -4012,6 +4180,10 @@ function pintarPresentacion(visibles) {
   return `
     <div class="visor-presentacion">
       <div class="visor-nav-superior">
+        <!-- 🛟 DENTRO del visor va aquí, en la fila, y no flotando: el flotante (abajo a la
+             izquierda) caía encima de la lámina, justo donde muchas llevan código y precios
+             (Fernando, 10 sep 2026). Mientras esta fila existe, el flotante se oculta (CSS). -->
+        <button class="visor-nav-btn visor-sos-btn" onclick="abrirIncidencia()" title="Avisar de un problema, una duda o una idea (con captura de pantalla)">🛟</button>
         <button class="visor-nav-btn" ${prevDisabled} onclick="visorAnterior()">◀ Anterior</button>
         <div class="visor-contador">
           <span class="visor-contador-num">${numeroOriginal}</span>
@@ -4024,7 +4196,7 @@ function pintarPresentacion(visibles) {
       <div class="visor-imagen-contenedor" id="visor-img-contenedor">
         <div class="visor-imagen-zoom" id="visor-img-zoom" style="transform: translate(${appState.visorPanX||0}px, ${appState.visorPanY||0}px) scale(${appState.visorZoom})">
           <div class="visor-imagen-wrapper" id="visor-imagen-wrapper" data-sheet-id="${sheet.id}">
-            <img src="${escape(vurl(sheet.imagen_path, sheet))}" class="visor-imagen" id="visor-imagen" alt="${escape(sheet.titulo || '')}" draggable="false" onload="pintarRecuadrosPrecio()">
+            <img src="${escape(srcLaminaVisor(sheet))}" data-original="${escape(vurl(sheet.imagen_path, sheet))}" class="visor-imagen" id="visor-imagen" alt="${escape(sheet.titulo || '')}" draggable="false" onload="_proporcionLamina(this);pintarRecuadrosPrecio()" onerror="_laminaSinVista(this)">
             ${pins}
             <div class="visor-recuadros-capa" id="visor-recuadros-capa"></div>
             <div class="visor-zonas-capa" id="visor-zonas-capa"></div>
@@ -4831,6 +5003,42 @@ async function cargarPreciosVigentesLamina() {
   } catch (e) { /* si falla, el visor sigue funcionando sin la etiqueta */ }
 }
 
+// MODO SENCILLO: mide el hueco REAL que le queda a la lámina y lo publica en
+// --simple-chrome, que es lo que usa el CSS para que TODAS las láminas salgan al mismo
+// alto (ver el bloque "TAMAÑO UNIFORME DE LA LÁMINA EN MODO SENCILLO" en styles.css).
+// Se mide en vez de fijarlo porque la cabecera cambia de alto: puede llevar el aviso de
+// zona, el banner de "estás viendo como…", el botón de última visita… Un número fijo es
+// lo que hizo que la lámina se saliera por abajo en su día (incidencia #5).
+// Proporción real de la lámina (ancho/alto) en --ar: la usa la pantalla completa para
+// ENCAJARLA en la pantalla sea cual sea el tamaño del archivo. Con width/height:auto y
+// solo max-*, una lámina pequeña se quedaba a su tamaño (incidencia #30). Con la
+// proporción, el ancho se calcula exacto y el wrapper sigue midiendo lo mismo que la
+// imagen (las zonas van en % sobre él y no se tuercen).
+function _proporcionLamina(img) {
+  if (img && img.naturalWidth && img.naturalHeight) img.style.setProperty('--ar', img.naturalWidth / img.naturalHeight);
+}
+
+function _ajustarAltoLaminaSimple() {
+  if (typeof esModoSimple !== 'function' || !esModoSimple()) return;
+  // En pantalla completa manda su propio CSS (con !important): aquí no tocamos nada.
+  if (document.body.classList.contains('visor-fullscreen-activo')) return;
+  const cont = document.querySelector('.visor-imagen-contenedor');
+  if (!cont) return;
+  // Lo que hay POR ENCIMA de la lámina. Es estable: si la lámina encoge, lo de arriba no
+  // se mueve, así que medirlo aquí no se realimenta.
+  const arriba = Math.max(0, Math.round(cont.getBoundingClientRect().top));
+  // Y lo que hay por DEBAJO: la franja del pedido, si está puesta.
+  const barra = document.getElementById('simple-barra');
+  const abajo = barra ? Math.round(barra.getBoundingClientRect().height) : 0;
+  const chrome = arriba + abajo + 10;   // 10px de respiro para que no roce
+  document.documentElement.style.setProperty('--simple-chrome', chrome + 'px');
+}
+// Al girar la tablet o cambiar el tamaño hay que volver a medir.
+window.addEventListener('resize', () => {
+  clearTimeout(window._simpleAltoT);
+  window._simpleAltoT = setTimeout(_ajustarAltoLaminaSimple, 120);
+});
+
 // F4 (ofertas/campañas): trae la oferta vigente HOY de los productos de la lámina.
 let _ofertasVigentes = {};
 async function cargarOfertasLamina() {
@@ -4847,7 +5055,15 @@ function pintarZonasComercial() {
   const capa = document.getElementById('visor-zonas-capa');
   if (!capa) return;
   capa.innerHTML = '';
-  const enVisita = !!appState.visitaActiva;
+  // "Solo mirar" es SOLO MIRAR: aunque haya una visita abierta, las zonas no se pintan ni
+  // se pueden tocar. Si no, el comercial que entra a repasar el catálogo anotaría sin
+  // querer en la visita que tiene a medias en otra farmacia.
+  const enVisita = !!appState.visitaActiva && !window._simpleSoloMirar;
+  // FASE INTERMEDIA: para pintar en verde lo que el cliente ya se ha llevado hace falta
+  // saber en qué lámina estamos. El wrapper lo lleva en su dataset.
+  const sinPedidoModo = (typeof esVisitaSinPedido === 'function') && esVisitaSinPedido();
+  const $wrap = document.getElementById('visor-imagen-wrapper');
+  const sidActual = $wrap ? Number($wrap.dataset.sheetId) : null;
   _zonasComercial.forEach((z) => {
     // Fuera de una visita solo mostramos los ENLACES (el resto requiere visita para anotar)
     if (!enVisita && !z.link_catalog_id) return;
@@ -4867,6 +5083,21 @@ function pintarZonasComercial() {
       marca.className = 'visor-zona-veto-txt';
       marca.textContent = '🚫 aquí no';
       div.appendChild(marca);
+    }
+    // FASE INTERMEDIA "visita sin pedido": la zona se puede marcar de un toque. Si el
+    // cliente ya se lo lleva, se ve EN VERDE con un ✔. Verde = anotado, NO facturado.
+    if (sinPedidoModo && !z.link_catalog_id) {
+      div.classList.add('visor-zona-marcable');
+      if (sidActual && _marcaDeZona(sidActual, z.id)) {
+        div.classList.add('visor-zona-llevada');
+        const tick = document.createElement('span');
+        tick.className = 'visor-zona-llevada-txt';
+        tick.textContent = '✔ se lo lleva';
+        div.appendChild(tick);
+        div.title = 'Tócalo otra vez para quitar la marca';
+      } else {
+        div.title = 'Tocar para anotar que el cliente se lo lleva';
+      }
     }
     if (z.link_catalog_id) {
       // Zona-ENLACE: se pinta como BOTON visible con texto (deliberado, no se toca sin querer)
@@ -4929,6 +5160,52 @@ function iluminarZonas() {
 // Recuerda el ultimo almacen + nº socio tecleados (el pedido de comision va a un mismo almacen)
 let _comisionUltimo = { almacen: '', num_socio: '' };
 
+// Nombre legible de una zona SIN resolver nada: se usa lo que ya viene en la propia zona.
+// 704 de las 873 zonas del maestro tienen etiqueta puesta a mano ("Botón p. blanca"),
+// que suele ser más clara que el nombre largo de Sage. Orden: etiqueta > nombre del
+// producto > familia > modelo > la lámina entera.
+function _nombreDeZona(zona) {
+  const n = (zona.etiqueta || zona.producto_nombre || zona.familia_ref || zona.ref_modelo || '').toString().trim();
+  return n || 'Esta lámina';
+}
+
+// FASE INTERMEDIA: marcar / desmarcar que el cliente SE LLEVA lo de esta zona.
+// Guarda una anotación de tipo 'nota' (por eso la visita se cierra sin enviar ningún
+// email) con el zone_id y, si la zona lo tiene, el product_id — que es copiar un número
+// que ya existe, no resolver el producto. Sin cantidad y sin precio, a propósito.
+// Segundo toque sobre la misma zona = quitar la marca.
+async function marcarZonaSeLoLleva(zona) {
+  const $wrapper = document.getElementById('visor-imagen-wrapper');
+  const sheetId = $wrapper ? Number($wrapper.dataset.sheetId) : null;
+  if (!sheetId) return;
+  const nombre = _nombreDeZona(zona);
+  const yaMarcada = _marcaDeZona(sheetId, zona.id);
+  try {
+    if (yaMarcada) {
+      await vBorrarAnotacion(yaMarcada.id);
+      mostrarNotificacionOnline('Quitado: ' + nombre, '#6b7280');
+    } else {
+      await vAnotar({
+        sheet_id: sheetId,
+        texto_libre: 'Se lo lleva: ' + nombre,
+        tipo: 'nota',
+        zone_id: zona.id,
+        product_id: zona.product_id || null
+      });
+      mostrarNotificacionOnline('✔ Anotado: ' + nombre, '#0d9488');
+    }
+    await refrescarAnotacionesVisor();
+  } catch (e) {
+    alert('No se ha podido anotar: ' + e.message);
+  }
+}
+
+// ¿Esta zona ya está marcada como "se lo lleva" en la visita en curso?
+function _marcaDeZona(sheetId, zoneId) {
+  const anots = (typeof _anotacionesVisita !== 'undefined' && _anotacionesVisita[sheetId]) || [];
+  return anots.find(a => a.tipo === 'nota' && a.zone_id != null && Number(a.zone_id) === Number(zoneId)) || null;
+}
+
 async function pulsarZonaComercial(zona) {
   // Zona-ENLACE: saltar a otro catálogo (funciona con o sin visita activa)
   if (zona.link_catalog_id) { return navegarAEnlaceCatalogo(zona); }
@@ -4941,6 +5218,11 @@ async function pulsarZonaComercial(zona) {
     return;
   }
   if (!appState.visitaActiva) return;
+  // FASE INTERMEDIA "visita sin pedido": tocar una zona SOLO marca que el cliente se lo
+  // lleva. Se corta aquí, ANTES de sueltas/comisión/familia/producto, porque todo eso es
+  // justo el camino que pide cantidades y resuelve variantes — el que da errores y el que
+  // Fernando no quiere darle todavía al comercial.
+  if (esVisitaSinPedido()) { return marcarZonaSeLoLleva(zona); }
   // Zona con REFERENCIAS SUELTAS (expositor de gafas): gestor propio de líneas a mano.
   // Gana sobre el resto de tipos; desde su modal se puede pedir el expositor completo.
   if (zona.permite_sueltas && !zona.__forzarNormal) { return pulsarZonaSueltas(zona); }
@@ -5366,6 +5648,10 @@ async function borrarAnotacionZona(anotId, sheetId) {
 
 // ----- ENLACES ENTRE CATALOGOS (pila de navegación ir/volver) -----
 let _navStack = [];
+// Página a la que debe abrir el PRÓXIMO renderVisorComercial cuando venimos de un enlace
+// (destino del salto o página de regreso). Sin esto, el reset de índice de renderVisorComercial
+// (limpiar búsqueda al entrar, v273) pisaba la página y siempre caía en la lámina 1.
+let _indiceDeseadoVisor = null;
 async function navegarAEnlaceCatalogo(zona) {
   // Guardar de dónde venimos (para la barra "volver a X pág. N")
   // backSheetId: si el enlace define una página de regreso, al volver iremos ahí
@@ -5374,6 +5660,10 @@ async function navegarAEnlaceCatalogo(zona) {
     catalogoActual: appState.catalogoActual,
     visorIndice: appState.visorIndice || 0,
     nombreOrigen: _enlaceCatalogoNombre || null,
+    // Nombre real del catálogo del que salimos (para el botón "↩ Volver a X" de la cabecera).
+    // nombreOrigen es null cuando salimos del catálogo raíz (no enlazado); por eso guardamos aparte
+    // el nombre del catálogo cargado ahora mismo.
+    nombreCatalogoOrigen: (_visorCatalog && _visorCatalog.name) ? _visorCatalog.name : (_enlaceCatalogoNombre || null),
     backSheetId: zona.link_back_sheet_id || null
   });
   appState.vista = 'catalogos';
@@ -5389,6 +5679,7 @@ async function navegarAEnlaceCatalogo(zona) {
     } catch (_) { /* si falla, abre por la 1 */ }
   }
   appState.visorIndice = indice;
+  _indiceDeseadoVisor = indice; // que renderVisorComercial (que resetea el índice) NO lo pise a 0
   // SOLO VISOR: render()/routerVista pinta el SELECTOR de catálogos e ignora catalogoActual,
   // así que el salto entre catálogos nunca abría el destino (incidencia #9: enlace EVA→ESSITY
   // "no entra"). Abrimos el catálogo enlazado igual que las tarjetas del selector.
@@ -5413,6 +5704,7 @@ async function volverDeEnlaceCatalogo() {
       } catch (_) { /* si falla, vuelve a donde estaba */ }
     }
     appState.visorIndice = indice;
+    _indiceDeseadoVisor = indice; // respetar la página de regreso pese al reset de renderVisorComercial
     // Igual que al ir (ver navegarAEnlaceCatalogo): en solo visor abrimos el catálogo de
     // origen directamente; render() nos devolvería al selector.
     if (esSoloVisor()) renderVisorComercial(appState.catalogoActual);
@@ -5422,6 +5714,12 @@ async function volverDeEnlaceCatalogo() {
 }
 // Nombre del catálogo enlazado en el que estamos ahora (para la barra)
 let _enlaceCatalogoNombre = null;
+// Los catálogos tienen nombres largos ("CATALOGO LOMHIFAR 27 JULIO 2026"): en el botón de
+// volver se recortan para que quepan en la tablet sin empujar nada fuera de la pantalla.
+function _acortarNombreCat(s, max) {
+  s = String(s || '').trim();
+  return s.length > max ? (s.slice(0, max - 1).trim() + '…') : s;
+}
 // Barra FIJA arriba mientras estás en un catálogo enlazado: "🔗 Estás en X · ← Volver"
 function actualizarBarraEnlace() {
   let bar = document.getElementById('barra-enlace');
@@ -5433,7 +5731,11 @@ function actualizarBarraEnlace() {
       document.body.appendChild(bar);
     }
     const prev = _navStack[_navStack.length - 1];
-    const volverA = prev && prev.nombreOrigen ? ('a ' + prev.nombreOrigen) : 'atrás';
+    // El botón tiene que DECIR a dónde lleva. Antes ponía solo "← Volver atrás" y no se
+    // entendía: parecía que te sacaba del catálogo (Fernando, 2 sep 2026: "lo lógico sería
+    // volver al catálogo general"). Ahora nombra el catálogo de origen.
+    const nombreVuelta = prev ? (prev.nombreCatalogoOrigen || prev.nombreOrigen || null) : null;
+    const volverA = nombreVuelta ? ('a ' + _acortarNombreCat(nombreVuelta, 34)) : 'atrás';
     // Solo mostramos el nº de página si volvemos a donde estábamos; si el enlace tiene
     // página de regreso propia, se resuelve al pulsar (no mostramos un número engañoso).
     const pag = (prev && !prev.backSheetId) ? (' (pág. ' + ((prev.visorIndice || 0) + 1) + ')') : '';
@@ -5449,6 +5751,31 @@ function actualizarBarraEnlace() {
     bar.appendChild(btn);
   } else if (bar) {
     bar.remove();
+  }
+  // En PANTALLA COMPLETA (⛶) la cabecera y esta barra flotante se ocultan (solo se ve la
+  // lámina). Allí el único retorno posible es un botón en el overlay de controles.
+  _actualizarBotonVolverFullscreen();
+}
+// Botón "↩ Volver" dentro del overlay de pantalla completa (#fullscreen-controles). Se
+// mantiene en sincronía con _navStack. Al pulsarlo, salir de pantalla completa y volver
+// (como cambiarVisorModo/abrirLaminaDesdeMosaico, que salen de fullscreen antes de navegar).
+function _actualizarBotonVolverFullscreen() {
+  const ctrl = document.getElementById('fullscreen-controles');
+  if (!ctrl) return;
+  let b = ctrl.querySelector('.fs-btn-volver');
+  if (_navStack.length > 0) {
+    if (!b) {
+      b = document.createElement('button');
+      b.className = 'fs-btn fs-btn-volver';
+      b.style.cssText = 'position:fixed;top:16px;left:16px';
+      b.onclick = () => { salirPantallaCompleta(); volverDeEnlaceCatalogo(); };
+      ctrl.appendChild(b);
+    }
+    const prev = _navStack[_navStack.length - 1];
+    const nom = prev ? (prev.nombreCatalogoOrigen || prev.nombreOrigen || null) : null;
+    b.textContent = '↩ Volver' + (nom ? ' a ' + _acortarNombreCat(nom, 30) : ' atrás');
+  } else if (b) {
+    b.remove();
   }
 }
 // Alias por compatibilidad (se llamaba así en volverACatalogos)
@@ -5864,6 +6191,9 @@ function entrarPantallaCompleta() {
     <button class="fs-btn fs-btn-anterior" onclick="visorAnterior()" title="Anterior" style="position:fixed;top:50%;left:16px;transform:translateY(-50%)">◀</button>
     <button class="fs-btn fs-btn-siguiente" onclick="visorSiguiente()" title="Siguiente" style="position:fixed;top:50%;right:16px;transform:translateY(-50%)">▶</button>
   `;
+  // Si estamos dentro de un enlace entre catálogos, añadir el botón "↩ Volver" al overlay
+  // (en ⛶ la cabecera y la barra flotante no se ven).
+  _actualizarBotonVolverFullscreen();
   mostrarControlesFullscreen();
   // Re-enganchar long-press en la nueva imagen (porque el wrapper se redibuja)
   // No es necesario porque pintarVisor reengancha, pero por seguridad:
@@ -5941,7 +6271,7 @@ async function abrirSelectorImpersonacion() {
         ` : `
           <div class="comerciales-lista" style="gap:6px">
             ${comerciales.map(c => `
-              <button class="comercial-impersonar" onclick="impersonar(${c.id}, '${escape(c.name)}', '${escape(c.sage_commercial_code || '')}', ${!!c.modo_simple}, ${!!c.solo_visor})">
+              <button class="comercial-impersonar" onclick="impersonar(${c.id}, '${escape(c.name)}', '${escape(c.sage_commercial_code || '')}', ${!!c.modo_simple}, ${!!c.solo_visor}, ${!!c.visita_sin_pedido})">
                 <div>
                   <div style="font-size:13px;font-weight:500;color:var(--texto)">${escape(c.name)}</div>
                   <div style="font-size:11px;color:var(--gris-texto)">
@@ -5962,7 +6292,7 @@ async function abrirSelectorImpersonacion() {
   }
 }
 
-function impersonar(userId, userName, sageCode, modoSimple, soloVisor) {
+function impersonar(userId, userName, sageCode, modoSimple, soloVisor, visitaSinPedido) {
   impersonating = {
     id: userId,
     name: userName,
@@ -5970,7 +6300,10 @@ function impersonar(userId, userName, sageCode, modoSimple, soloVisor) {
     // Para ver la app TAL CUAL la ve él: si tiene el modo sencillo o solo visor, el
     // admin lo ve igual al impersonarle. Si no, no habría forma de comprobar cómo le queda.
     modo_simple: !!modoSimple,
-    solo_visor: !!soloVisor
+    solo_visor: !!soloVisor,
+    // Igual con el nivel "visita sin pedido": si no viaja aquí, al hacer "Ver como" el
+    // admin vería el flujo completo y no podría comprobar cómo le queda al comercial.
+    visita_sin_pedido: !!visitaSinPedido
   };
   localStorage.setItem('cpv2_impersonate', JSON.stringify(impersonating));
   // Cerrar modal
@@ -7139,7 +7472,7 @@ async function capturarPantallaActual(cuadroAOcultar) {
       backgroundColor: getComputedStyle(document.body).backgroundColor || '#ffffff',
       width: document.documentElement.clientWidth,
       height: document.documentElement.clientHeight,
-      filter: (n) => !(n.classList && (n.classList.contains('btn-incidencia') || n.classList.contains('btn-incidencia-bandeja') || n.id === 'toast-deshacer'))
+      filter: (n) => !(n.classList && (n.classList.contains('btn-incidencia') || n.classList.contains('visor-sos-btn') || n.classList.contains('btn-incidencia-bandeja') || n.id === 'toast-deshacer'))
     });
     if (!blob || !blob.size) throw new Error('la imagen salió vacía');
     return new File([blob], 'pantalla.jpg', { type: 'image/jpeg' });
@@ -8010,13 +8343,34 @@ function mostrarBannerActualizacion() {
   $banner.classList.add('pwa-update-banner-visible');
   // También añadimos padding al body para que el banner no tape contenido
   document.body.classList.add('con-banner-update');
+  _medirAvisoActualizacion();
+  // En modo sencillo el alto de la lámina se calcula midiendo lo que tiene encima: el
+  // hueco del aviso cambia esa medida, así que se recalcula (si no, se salía por abajo).
+  if (typeof _ajustarAltoLaminaSimple === 'function') setTimeout(_ajustarAltoLaminaSimple, 0);
 }
+
+// ALTO REAL DEL AVISO ROSA en --aviso-alto (11 sep 2026). Todo lo que va fijo arriba
+// («← Catálogos», «← Inicio», barra de enlace, volver de pantalla completa) y el hueco de la
+// página se bajan con ESTE valor (CSS, al final de styles.css). Antes cada botón tenía su
+// propia medida fija (50px, 45px en móvil) y se arreglaban de uno en uno: el que faltaba
+// quedaba tapado (incidencia #31: «← Catálogos» del solo visor), y en móvil el aviso ocupa
+// dos líneas (53px), así que 45px tampoco bastaba. offsetHeight no depende de la animación
+// de entrada (transform), así que se puede medir en cuanto se muestra.
+function _medirAvisoActualizacion() {
+  const $b = document.getElementById('pwa-update-banner');
+  const visible = $b && document.body.classList.contains('con-banner-update');
+  document.documentElement.style.setProperty('--aviso-alto', visible ? ($b.offsetHeight || 50) + 'px' : '0px');
+}
+window.addEventListener('resize', () => { if (document.body.classList.contains('con-banner-update')) _medirAvisoActualizacion(); });
 
 function cerrarBannerActualizacion() {
   const $banner = document.getElementById('pwa-update-banner');
   if ($banner) $banner.classList.remove('pwa-update-banner-visible');
   document.body.classList.remove('con-banner-update');
+  _medirAvisoActualizacion();
   _bannerActualizacionVisible = false;
+  // Al quitar el hueco del aviso, la lámina del modo sencillo recupera esos 50px.
+  if (typeof _ajustarAltoLaminaSimple === 'function') setTimeout(_ajustarAltoLaminaSimple, 0);
   // No tocamos el SW — sigue esperando. Si el usuario refresca o vuelve mañana,
   // volverá a salir el banner. La detección de updatefound se re-disparará al
   // próximo control de updates (cada 10 min) y volverá a llamar mostrarBannerActualizacion.
@@ -8108,13 +8462,16 @@ function mostrarNotificacionOnline(texto, color) {
 }
 
 // Descargar un catálogo completo (con imágenes) a IndexedDB para uso offline
-async function descargarCatalogoOffline(catalogId, nombreCatalogo) {
+// opts.silencioso: descarga en segundo plano (la automática), sin ventana ni avisos que
+// interrumpan al comercial en mitad de una visita. Solo el aviso breve al terminar.
+async function descargarCatalogoOffline(catalogId, nombreCatalogo, opts) {
+  const silencioso = !!(opts && opts.silencioso);
   if (!window.CpDB) {
-    alert('IndexedDB no disponible en este navegador.');
+    if (!silencioso) alert('IndexedDB no disponible en este navegador.');
     return;
   }
   if (!navigator.onLine) {
-    alert('Necesitas conexión a internet para descargar el catálogo para uso offline.');
+    if (!silencioso) alert('Necesitas conexión a internet para descargar el catálogo para uso offline.');
     return;
   }
 
@@ -8138,6 +8495,7 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo) {
     </div>
   `;
   document.body.appendChild(modal);
+  if (silencioso) modal.style.display = 'none';   // existe (la barra y el estado se usan) pero no se ve
 
   const $barra = document.getElementById('offline-dl-barra');
   const $estado = document.getElementById('offline-dl-estado');
@@ -8202,9 +8560,16 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo) {
           $estado.textContent = `Lámina ${i + 1}/${total} — ya guardada`;
         } else {
           $estado.textContent = `Descargando lámina ${i + 1}/${total}...`;
-          const respImg = await fetch(sheet.imagen_path, {
-            headers: { 'Authorization': 'Bearer ' + token }
-          });
+          // Se guarda la versión LIGERA (la que se usa para mirar): el catálogo entero
+          // pasa de ~535 MB a una fracción. Si no está, el original, como antes.
+          let respImg = null;
+          const urlVista = rutaVista(sheet.imagen_path);
+          if (urlVista) { try { respImg = await fetch(urlVista); } catch (_) { respImg = null; } }
+          if (!respImg || !respImg.ok) {
+            respImg = await fetch(sheet.imagen_path, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+          }
           if (!respImg.ok) throw new Error('HTTP ' + respImg.status);
           blob = await respImg.blob();
         }
@@ -10217,13 +10582,21 @@ function abrirModalDescargarCatalogo(catalogId, nombreCatalogo) {
         Elige el formato de descarga:
       </p>
       <div class="descargar-opciones">
-        <button class="descargar-opcion" onclick="descargarCatalogoPDF(${catalogId}, this)">
+        <button class="descargar-opcion" onclick="descargarCatalogoPDF(${catalogId}, this, 'pequena')">
           <div class="descargar-opcion-icono">📕</div>
           <div class="descargar-opcion-info">
-            <div class="descargar-opcion-titulo">PDF</div>
-            <div class="descargar-opcion-desc">Un archivo PDF con todas las láminas en orden. Ideal para imprimir o enviar.</div>
+            <div class="descargar-opcion-titulo">PDF para enviar o imprimir</div>
+            <div class="descargar-opcion-desc">Todas las láminas, cada una a página completa. Ligero: se puede mandar por email o WhatsApp.</div>
           </div>
         </button>
+        ${esAdminReal() ? `
+        <button class="descargar-opcion" onclick="descargarCatalogoPDF(${catalogId}, this, 'alta')">
+          <div class="descargar-opcion-icono">🖨️</div>
+          <div class="descargar-opcion-info">
+            <div class="descargar-opcion-titulo">PDF en máxima calidad</div>
+            <div class="descargar-opcion-desc">Las imágenes originales, sin comprimir. Para imprenta. <b>Pesa muchísimo</b> (cientos de MB en un catálogo grande): solo con WiFi.</div>
+          </div>
+        </button>` : ''}
         <button class="descargar-opcion" onclick="descargarCatalogoZIP(${catalogId}, this)">
           <div class="descargar-opcion-icono">📦</div>
           <div class="descargar-opcion-info">
@@ -10241,8 +10614,14 @@ function abrirModalDescargarCatalogo(catalogId, nombreCatalogo) {
   document.body.appendChild(modal);
 }
 
-async function descargarCatalogoPDF(catalogId, botonEl) {
-  await iniciarDescargaCatalogo(catalogId, 'pdf', botonEl);
+// El PDF del comercial va SIEMPRE en calidad reducida. En alta se meten las imágenes
+// originales: medido, 2,75 MB por lámina — un catálogo de 335 láminas son casi 900 MB,
+// que en una tablet con datos móviles no se descarga y encima se come la tarifa. En
+// reducida son 0,13 MB por lámina (21 veces menos) con la misma hoja completa, y se ve
+// igual en pantalla y al imprimir. La máxima calidad se la dejamos solo al admin.
+async function descargarCatalogoPDF(catalogId, botonEl, calidad) {
+  const q = (calidad === 'alta') ? '?calidad=alta' : '?calidad=pequena';
+  await iniciarDescargaCatalogo(catalogId, 'pdf', botonEl, q);
 }
 
 async function descargarCatalogoZIP(catalogId, botonEl) {
@@ -10251,8 +10630,8 @@ async function descargarCatalogoZIP(catalogId, botonEl) {
 
 // Helper que dispara la descarga real. Ver lanzarDescargaNativa(): la baja el
 // navegador, no JavaScript, para que no reviente con catalogos de cientos de MB.
-async function iniciarDescargaCatalogo(catalogId, formato, botonEl) {
-  const url = '/api/catalogs/' + catalogId + '/download-' + formato;
+async function iniciarDescargaCatalogo(catalogId, formato, botonEl, query) {
+  const url = '/api/catalogs/' + catalogId + '/download-' + formato + (query || '');
   lanzarDescargaNativa(url, botonEl, formato === 'pdf' ? 'PDF' : 'ZIP con originales');
   // Cerrar el modal: la descarga ya no depende de que esta ventana siga abierta.
   const modal = botonEl ? botonEl.closest('.modal-bg') : null;
@@ -11453,14 +11832,14 @@ function renderPanelUltimaVisita(data, modo) {
     // que puedan generar desconfianza si el cliente ve la pantalla por accidente
     cabecera = `
       <div class="uv-cabecera-modal">
-        <div class="uv-titulo">🕐 Última visita con este cliente</div>
+        <div class="uv-titulo">🕐 ${data.esUltima === false ? 'Visita anterior' : 'Última visita'} con este cliente</div>
         <div style="font-size:12px;color:var(--gris-texto)">${escape(fecha)} · <b>${escape(chipDias)}</b></div>
       </div>
     `;
   } else if (modo === 'modal') {
     cabecera = `
       <div class="uv-cabecera-modal">
-        <div class="uv-titulo">🕐 Última visita con este cliente</div>
+        <div class="uv-titulo">🕐 ${data.esUltima === false ? 'Visita anterior' : 'Última visita'} con este cliente</div>
         <div style="font-size:12px;color:var(--gris-texto)">${escape(fecha)} · <b>${escape(chipDias)}</b></div>
       </div>
     `;
@@ -11468,7 +11847,7 @@ function renderPanelUltimaVisita(data, modo) {
     cabecera = `
       <div class="uv-cabecera">
         <div>
-          <div class="uv-titulo">🕐 Última visita</div>
+          <div class="uv-titulo">🕐 ${data.esUltima === false ? 'Visita anterior' : 'Última visita'}</div>
           <div style="font-size:12px;color:var(--gris-texto)">${escape(fecha)} · <b>${escape(chipDias)}</b> · ${escape(v.comercial_nombre || '?')} · ${escape(v.catalog_nombre || '—')}</div>
         </div>
         <button class="btn btn-secondary btn-pequeno" onclick="abrirDetalleVisita(${v.id})">Ver visita completa →</button>
@@ -11497,6 +11876,52 @@ function renderPanelUltimaVisita(data, modo) {
   `;
 }
 
+// VISITAS ANTERIORES (20 sep 2026). Las visitas de un cliente SIEMPRE se han guardado;
+// lo que faltaba era poder elegir cuál mirar. Estas tres funciones montan el desplegable:
+// la lista del último año, el <select>, y la carga de la visita elegida en su panel.
+let _visitasClienteFicha = [];   // lista para el panel de la ficha del cliente
+async function cargarVisitasCliente(clientId) {
+  try {
+    const r = await api('/api/clients/' + clientId + '/visits?meses=12');
+    return r.visits || [];
+  } catch (_) { return []; }
+}
+function _textoVisitaOpcion(v) {
+  const f = new Date(v.fecha).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' });
+  // En la fase "visita sin pedido" las líneas son notas ("Se lo lleva: …"), no pedido:
+  // decir "solo notas" despistaba, son productos apuntados.
+  const q = Number(v.n_pedido) > 0
+    ? Number(v.n_pedido) + (Number(v.n_pedido) === 1 ? ' producto' : ' productos')
+    : (Number(v.n_lineas) > 0 ? Number(v.n_lineas) + (Number(v.n_lineas) === 1 ? ' apuntado' : ' apuntados') : 'sin pedido');
+  // El nombre del comercial solo le hace falta al admin, que ve las de todos.
+  const quien = (typeof rolEfectivo === 'function' && rolEfectivo() === 'admin' && v.comercial_nombre)
+    ? ' · ' + v.comercial_nombre : '';
+  return f + ' · ' + q + quien;
+}
+function selectorVisitas(visitas, visitIdActual, destinoId) {
+  if (!visitas || visitas.length < 2) return '';   // con una sola visita no hay nada que elegir
+  return `
+    <div class="uv-selector">
+      <label for="sel-${destinoId}">Ver la visita del:</label>
+      <select id="sel-${destinoId}" onchange="_verVisitaDe(this, '${destinoId}')">
+        ${visitas.map(v => `<option value="${v.id}" ${Number(v.id) === Number(visitIdActual) ? 'selected' : ''}>${escape(_textoVisitaOpcion(v))}</option>`).join('')}
+      </select>
+    </div>`;
+}
+async function _verVisitaDe(sel, destinoId) {
+  const $d = document.getElementById(destinoId);
+  if (!$d) return;
+  const modo = $d.dataset.modo || 'visor';
+  const esUltima = sel.selectedIndex === 0;   // la primera opción es la más reciente
+  $d.innerHTML = '<div class="loading">Cargando…</div>';
+  try {
+    const r = await api('/api/visits/' + Number(sel.value));
+    $d.innerHTML = renderPanelUltimaVisita({ visit: r.visit, annotations: r.annotations || [], esUltima }, modo);
+  } catch (e) {
+    $d.innerHTML = `<div class="error-msg">No se pudo cargar esa visita${navigator.onLine ? '' : ' (necesita conexión)'}.</div>`;
+  }
+}
+
 async function cargarResumenUltimaVisita(clientId) {
   try {
     const r = await api('/api/clients/' + clientId + '/last-visit-summary');
@@ -11513,15 +11938,18 @@ async function abrirModalUltimaVisita(clientId) {
   modal.innerHTML = `
     <div class="modal-card modal-card-ancho">
       <div class="modal-header">
-        <h3>🕐 Última visita</h3>
+        <h3>🕐 Visitas anteriores</h3>
         <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
       </div>
       <div id="uv-modal-contenido" class="loading">Cargando…</div>
     </div>
   `;
   document.body.appendChild(modal);
-  // Cargar y pintar
-  const resumen = await cargarResumenUltimaVisita(clientId);
+  // Cargar y pintar (la última visita y, a la vez, la lista para el desplegable)
+  const [resumen, visitas] = await Promise.all([
+    cargarResumenUltimaVisita(clientId),
+    cargarVisitasCliente(clientId)
+  ]);
   const $c = document.getElementById('uv-modal-contenido');
   if (!$c) return;
   if (!resumen) {
@@ -11536,7 +11964,8 @@ async function abrirModalUltimaVisita(clientId) {
     return;
   }
   $c.innerHTML = `
-    ${renderPanelUltimaVisita(resumen, 'visor')}
+    ${selectorVisitas(visitas, resumen.visit.id, 'uv-panel-modal')}
+    <div id="uv-panel-modal" data-modo="visor">${renderPanelUltimaVisita(resumen, 'visor')}</div>
     <div class="modal-acciones">
       <button class="btn btn-primary" onclick="this.closest('.modal-bg').remove()">Cerrar</button>
     </div>
@@ -11558,6 +11987,43 @@ function volverAClientes() {
 }
 
 // ----- RENDER DETALLE CLIENTE -----
+// CLIENTE RESERVADO A UN COMERCIAL (28-sep-2026). Solo admin. Selector en la ficha:
+// un cliente reservado solo lo ve ese comercial (aunque caiga en la zona 'todos' de otro).
+let _comercialesParaReserva = null;
+async function _cargarComercialesParaReserva() {
+  if (_comercialesParaReserva) return _comercialesParaReserva;
+  try {
+    const r = await api('/api/users');
+    _comercialesParaReserva = (r.users || []).filter(u => u.role === 'sales' && u.is_active !== false);
+  } catch (_) { _comercialesParaReserva = []; }
+  return _comercialesParaReserva;
+}
+async function _pintarReservadoCliente(clientId, reservadoActual) {
+  const box = document.getElementById('reservado-cliente-box');
+  if (!box) return;
+  const coms = await _cargarComercialesParaReserva();
+  const actual = reservadoActual ? Number(reservadoActual) : '';
+  box.innerHTML = `
+    <span style="color:var(--gris-texto)">🔒 Reservado a:</span>
+    <select id="reservado-sel" onchange="reservarCliente(${clientId}, this.value)"
+            style="margin-left:6px;padding:5px 8px;border:1px solid var(--gris-borde);border-radius:8px;font-family:inherit;font-size:12px">
+      <option value="">Nadie (lo ven según su zona)</option>
+      ${coms.map(u => `<option value="${u.id}" ${Number(u.id) === actual ? 'selected' : ''}>${escape(u.name)}</option>`).join('')}
+    </select>
+    <span id="reservado-msg" style="margin-left:6px"></span>`;
+}
+async function reservarCliente(clientId, userId) {
+  const msg = document.getElementById('reservado-msg');
+  if (msg) msg.textContent = '…';
+  try {
+    await api('/api/clients/' + clientId + '/reservado', { method: 'PUT', body: { user_id: userId ? Number(userId) : null } });
+    if (msg) { msg.textContent = '✓ guardado'; msg.style.color = '#16a34a'; }
+    if (typeof mostrarNotificacionOnline === 'function') mostrarNotificacionOnline(userId ? '🔒 Cliente reservado' : '🔓 Cliente liberado', '#16a34a');
+  } catch (e) {
+    if (msg) { msg.textContent = '✗ ' + e.message; msg.style.color = '#dc2626'; }
+  }
+}
+
 async function renderDetalleCliente(id) {
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando cliente…</div></div>`;
@@ -11572,6 +12038,8 @@ async function renderDetalleCliente(id) {
       const rl = await api('/api/clients/' + id + '/last-visit-summary');
       if (rl.visit) ultimaVisitaResumen = { visit: rl.visit, annotations: rl.annotations || [] };
     } catch (_) {}
+    // Lista para el desplegable de visitas anteriores (vacía si falla: el panel sigue igual)
+    _visitasClienteFicha = await cargarVisitasCliente(id);
 
     // Fila auxiliar para imprimir un campo si existe
     const campo = (label, val) => val
@@ -11590,6 +12058,7 @@ async function renderDetalleCliente(id) {
               ${c.commercial_code ? ` · Comercial asignado: ${escape(c.commercial_code)}` : ''}
               ${c.categoria ? ` · Categoría ${escape(c.categoria)}` : ''}
             </div>
+            ${esAdminReal() && !impersonating ? `<div id="reservado-cliente-box" style="margin-top:6px;font-size:12px">⏳</div>` : ''}
           </div>
           <div style="display:flex; gap:6px; align-self:flex-start; flex-wrap:wrap; align-items:center">
             ${esAdminReal() && !impersonating
@@ -11599,7 +12068,10 @@ async function renderDetalleCliente(id) {
           </div>
         </div>
 
-        ${ultimaVisitaResumen ? renderPanelUltimaVisita(ultimaVisitaResumen, 'ficha') : ''}
+        ${ultimaVisitaResumen ? `
+          ${selectorVisitas(_visitasClienteFicha, ultimaVisitaResumen.visit.id, 'uv-panel-ficha')}
+          <div id="uv-panel-ficha" data-modo="ficha">${renderPanelUltimaVisita(ultimaVisitaResumen, 'ficha')}</div>
+        ` : ''}
 
         <div class="cliente-detalle-grid">
           <!-- Ficha de datos -->
@@ -11672,6 +12144,8 @@ async function renderDetalleCliente(id) {
     $v.innerHTML = html;
     // Cargar estadísticas en paralelo (no bloquea el render principal)
     cargarStatsCliente(id);
+    // Control "cliente reservado" (solo admin real): selector de comercial.
+    if (esAdminReal() && !impersonating) _pintarReservadoCliente(id, c.reservado_user_id);
   } catch (err) {
     $v.innerHTML = `<div class="contenedor"><div class="error-msg">${escape(err.message)}</div></div>`;
   }
@@ -13275,8 +13749,12 @@ function renderResumenPreEnvio() {
   // sueltas entre el resto del pedido (mismo criterio que el PDF y el email).
   const esRepo = (a) => a.rep_celda && (Number(a.cantidad) || 0) > 0;
   const reposicion = anotaciones.filter(a => esRepo(a) && a.tipo !== 'devolucion');
-  const conProducto = anotaciones.filter(a => a.product_id && !a.es_comision && !esRepo(a) && a.tipo !== 'devolucion');
-  const sinProducto = anotaciones.filter(a => !a.product_id && !a.es_comision && !a.referencia && a.tipo !== 'devolucion');
+  // Una NOTA no es una línea de pedido AUNQUE lleve producto. En la fase "visita sin
+  // pedido" cada marca guarda su product_id (para el histórico futuro por referencia), y
+  // sin este filtro esas marcas aparecían aquí bajo "🛒 Productos pedidos", que es
+  // justo la sensación de "estoy haciendo un pedido" que esa fase quiere evitar.
+  const conProducto = anotaciones.filter(a => a.tipo !== 'nota' && a.product_id && !a.es_comision && !esRepo(a) && a.tipo !== 'devolucion');
+  const sinProducto = anotaciones.filter(a => a.tipo !== 'devolucion' && !a.es_comision && !a.referencia && (a.tipo === 'nota' || !a.product_id));
   let totalPVF = 0;
   conProducto.forEach(a => {
     const cant = Number(a.cantidad) || 0;
@@ -13596,6 +14074,16 @@ async function confirmarEnvioVisita() {
       appState.catalogoActual = null;
       render();
       alert('📴 Sin cobertura.\n\nEl pedido ha quedado guardado en la tablet y se enviará solo en cuanto tengas línea.\n\nLo tienes en "📁 Mis pedidos".');
+      return;
+    }
+    if (res && res.yaCerrada) {
+      // La cerró desde otro dispositivo: ya está guardada; aquí no se manda nada de nuevo.
+      cerrarResumenPreEnvio();
+      appState.visitaActiva = null;
+      appState.vista = 'clientes';
+      appState.catalogoActual = null;
+      render();
+      alert('Esta visita ya estaba cerrada desde otro dispositivo (móvil o tablet).\n\nEstá guardada correctamente. No se ha enviado nada de nuevo.');
       return;
     }
     // Backup local del PDF en la tablet (async, no bloquea la UI)
@@ -14108,8 +14596,8 @@ async function abrirModalAnotar(sheetId, sheetTitulo, sheetNumero) {
         <div class="form-group">
           <label>Tipo</label>
           <select id="anot-tipo">
-            <option value="pedido">🛒 Pedido</option>
-            <option value="devolucion">↩️ Devolución</option>
+            ${esVisitaSinPedido() ? '' : `<option value="pedido">🛒 Pedido</option>
+            <option value="devolucion">↩️ Devolución</option>`}
             <option value="nota">📝 Nota</option>
           </select>
         </div>
@@ -14301,7 +14789,17 @@ async function vBorrarAnotacion(id) {
 // Cerrar la visita. Sin cobertura queda en cola: se envía sola al volver la línea.
 async function vConfirmarVisita(body) {
   if (!visitaEsLocal()) {
-    return await api('/api/visits/' + appState.visitaActiva.id + '/confirm', { method: 'POST', body: body || {} });
+    try {
+      return await api('/api/visits/' + appState.visitaActiva.id + '/confirm', { method: 'POST', body: body || {} });
+    } catch (e) {
+      // Ya la cerró desde OTRO dispositivo (la cerró en el móvil y esta tablet seguía con
+      // la foto vieja). Antes salía "No se ha podido enviar: la visita ya estaba
+      // confirmada" y la visita se quedaba atascada para siempre, también con "cerrar sin
+      // pedido" (Fernando, 7-oct-2026). Está guardada en el servidor: se da por cerrada y
+      // se sigue, sin reenviar nada. El llamante avisa con `yaCerrada`.
+      if (e && e.datos && e.datos.codigo === 'YA_CERRADA') return { success: true, yaCerrada: true };
+      throw e;
+    }
   }
   await CpDB.actualizarVisitaOffline(appState.visitaActiva.local_id, {
     status: 'confirmed',
@@ -14312,6 +14810,45 @@ async function vConfirmarVisita(body) {
   await refrescarContadorPendientes();
   return { success: true, offline: true };
 }
+
+// ¿SIGUE ABIERTA LA VISITA? La visita en curso se carga UNA vez al arrancar la app, y la
+// tablet se queda abierta horas en segundo plano. Si el comercial la cierra desde el MÓVIL,
+// la tablet seguía enseñándola abierta ("Tienes una visita empezada en…") y al cerrarla
+// chocaba con el servidor (Fernando, 7-oct-2026). Ahora, cada vez que la app vuelve a
+// primer plano, se pregunta al servidor; si ya está cerrada (o descartada), se suelta.
+// Sin línea o con el servidor reiniciando NO se toca nada: ante la duda, se conserva.
+let _ultimaComprobacionVisita = 0;
+async function comprobarVisitaSigueAbierta() {
+  const va = appState.visitaActiva;
+  if (!va || !token || !navigator.onLine || visitaEsLocal()) return;
+  if (Date.now() - _ultimaComprobacionVisita < 15000) return;
+  _ultimaComprobacionVisita = Date.now();
+  let cerrada = false;
+  try {
+    const r = await api('/api/visits/' + va.id);
+    cerrada = !!(r.visit && r.visit.status !== 'draft');
+  } catch (e) {
+    if (e && e.status === 404) cerrada = true;   // la descartaron desde otro sitio
+    else return;
+  }
+  if (!cerrada || appState.visitaActiva !== va) return;
+  appState.visitaActiva = null;
+  _anotacionesVisita = {};
+  window._simpleSoloMirar = false;
+  document.getElementById('simple-barra')?.remove();
+  if (typeof cerrarResumenPreEnvio === 'function') cerrarResumenPreEnvio();
+  if (document.body.classList.contains('modo-simple') && typeof renderSimpleInicio === 'function') {
+    renderSimpleInicio();
+  } else {
+    appState.vista = 'clientes';
+    appState.catalogoActual = null;
+    render();
+  }
+  mostrarNotificacionOnline('✔ La visita a ' + (va.cliente_nombre || 'este cliente') + ' ya la cerraste desde otro dispositivo. Está guardada.', '#16a34a');
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') comprobarVisitaSigueAbierta();
+});
 
 async function vDescartarVisita() {
   if (!visitaEsLocal()) return await api('/api/visits/' + appState.visitaActiva.id + '/discard', { method: 'POST' });
@@ -14411,7 +14948,7 @@ function renderCarritoContenido() {
   const lineas = _carritoLineasOrdenadas();
   const cliente = (appState.visitaActiva && appState.visitaActiva.cliente_nombre) ? appState.visitaActiva.cliente_nombre : 'cliente';
   const filas = lineas.length === 0
-    ? `<div class="carrito-vacio">Todavía no has añadido nada al pedido.<br>Toca las zonas de las láminas o anota manualmente con ✏️.</div>`
+    ? `<div class="carrito-vacio">${esVisitaSinPedido() ? 'Todavía no has anotado nada.<br>Toca sobre la lámina lo que se lleve el cliente.' : 'Todavía no has añadido nada al pedido.<br>Toca las zonas de las láminas o anota manualmente con ✏️.'}</div>`
     : lineas.map(a => {
         const icon = a.tipo === 'pedido' ? '🛒' : a.tipo === 'devolucion' ? '↩️' : '📝';
         const num = _carritoNumLamina(a.sheet_id);
@@ -14432,17 +14969,17 @@ function renderCarritoContenido() {
   ov.innerHTML = `
     <div class="carrito-panel" onclick="event.stopPropagation()">
       <div class="carrito-header">
-        <div class="carrito-titulo">🛒 Pedido de <b>${escape(cliente)}</b></div>
+        <div class="carrito-titulo">${esVisitaSinPedido() ? '✔ Se lleva' : '🛒 Pedido'} de <b>${escape(cliente)}</b></div>
         <button class="carrito-cerrar" onclick="cerrarCarritoVisita()" title="Cerrar">✕</button>
       </div>
       <div class="carrito-sub">${lineas.length} línea${lineas.length === 1 ? '' : 's'}${lineas.length ? ' · pulsa una lámina para ir a ella' : ''}</div>
       <div class="carrito-lista">${filas}</div>
       <div class="carrito-footer">
-        <button class="btn btn-reposicion-lanzar" style="margin-bottom:8px" onclick="cerrarCarritoVisita(); abrirRejillaReposicion()">👓 Reposición de gafas (rejilla)</button>
-        <button class="btn btn-devolver-lanzar" style="margin-bottom:8px" onclick="cerrarCarritoVisita(); abrirCuadroDevolucion(null)">↩️ Devolver un producto</button>
+        ${esVisitaSinPedido() ? '' : `<button class="btn btn-reposicion-lanzar" style="margin-bottom:8px" onclick="cerrarCarritoVisita(); abrirRejillaReposicion()">👓 Reposición de gafas (rejilla)</button>
+        <button class="btn btn-devolver-lanzar" style="margin-bottom:8px" onclick="cerrarCarritoVisita(); abrirCuadroDevolucion(null)">↩️ Devolver un producto</button>`}
         <div style="display:flex;gap:8px">
           <button class="btn btn-secondary carrito-seguir" onclick="cerrarCarritoVisita()">← Seguir en el catálogo</button>
-          <button class="btn btn-primary" onclick="cerrarCarritoVisita(); cerrarVisitaActiva()">Cerrar visita y enviar →</button>
+          <button class="btn btn-primary" onclick="cerrarCarritoVisita(); cerrarVisitaActiva()">${esVisitaSinPedido() ? 'Cerrar visita →' : 'Cerrar visita y enviar →'}</button>
         </div>
       </div>
     </div>`;
@@ -18263,7 +18800,32 @@ async function guardarClienteNuevo(forzar) {
     if (typeof iniciarVisitaParaCliente === 'function') iniciarVisitaParaCliente(r.cliente.id);
     else irA('clientes');
   } catch (e) {
-    // Duplicado: la app avisa en vez de crear dos fichas de la misma farmacia.
+    // AVISO DE DUPLICADOS: el backend devuelve la lista de clientes parecidos (mismo CIF/
+    // teléfono o nombre parecido con grafías vascas). Se muestran para no duplicar una ficha
+    // que ya existe. "Es este →" abre la ficha (si es de su cartera); "crearlo igualmente"
+    // fuerza el alta si de verdad es otro.
+    const dups = e.datos && e.datos.duplicados;
+    if (Array.isArray(dups) && dups.length) {
+      $msg.innerHTML = `
+        <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px">
+          <div style="font-weight:700;color:#9a3412;margin-bottom:6px">⚠️ ¿No será uno de estos, que ya existe?</div>
+          ${dups.map(d => `
+            <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 0;border-top:1px solid #fde4c8">
+              <div style="font-size:13px;min-width:0">
+                <b>${escape(d.razon_social)}</b>
+                <div style="font-size:11px;color:#6b7280">${escape(d.municipio || '')}${d.provincia ? ' · ' + escape(d.provincia) : ''} · ${escape(d.motivo)}${d.sage_code && !/^PENDCLI/.test(d.sage_code) ? ' · Sage ' + escape(d.sage_code) : ''}</div>
+              </div>
+              ${d.mio
+                ? `<button class="btn btn-pequeno btn-primary" style="flex-shrink:0" onclick="_abrirClienteExistente(${d.id})">Es este →</button>`
+                : `<span style="font-size:11px;color:#9a3412;flex-shrink:0">no es de tu cartera</span>`}
+            </div>`).join('')}
+          <div style="margin-top:10px;text-align:right">
+            <button class="btn btn-pequeno btn-secondary" onclick="guardarClienteNuevo(true)">No, es otro · crearlo igualmente</button>
+          </div>
+        </div>`;
+      return;
+    }
+    // Compatibilidad con el aviso antiguo por si el backend devuelve solo texto.
     if (/ya está dado de alta/i.test(e.message)) {
       $msg.innerHTML = `<div class="error-msg">${escape(e.message)}<br>
         <button class="btn btn-pequeno btn-secondary" style="margin-top:6px" onclick="guardarClienteNuevo(true)">Aun así, crearlo</button></div>`;
@@ -18271,6 +18833,11 @@ async function guardarClienteNuevo(forzar) {
       $msg.innerHTML = `<div class="error-msg">${escape(e.message)}</div>`;
     }
   }
+}
+// Abre la ficha de un cliente que ya existía (desde el aviso de duplicados) y cierra el modal.
+function _abrirClienteExistente(id) {
+  document.querySelectorAll('.modal-bg').forEach(x => x.remove());
+  abrirDetalleCliente(id);
 }
 
 // ===== CLIENTES QUE NO SE VISITAN =====
@@ -18359,6 +18926,41 @@ async function toggleSoloVisor(userId, activar) {
               is_active: u.is_active, solo_visor: activar }
     });
     mostrarNotificacionOnline(activar ? '👁 ' + u.name + ' verá la app SOLO como visor' : u.name + ' vuelve al modo normal', '#16a34a');
+    renderListaComerciales();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// NIVEL DEL COMERCIAL (selector de 3 posiciones en su ficha). Manda SIEMPRE los dos
+// booleanos a la vez para que no puedan quedar en un estado contradictorio (p.ej. alguien
+// marcado como "solo visor" y "visita sin pedido" al mismo tiempo).
+//   visor      -> solo_visor=true,  visita_sin_pedido=false
+//   sin_pedido -> solo_visor=false, visita_sin_pedido=true
+//   completo   -> ambos false
+async function fijarNivelComercial(userId, nivel) {
+  const NIVELES = {
+    visor:      { solo_visor: true,  visita_sin_pedido: false, aviso: '👁 %s solo podrá MIRAR los catálogos', color: '#7c3aed' },
+    sin_pedido: { solo_visor: false, visita_sin_pedido: true,  aviso: '📋 %s hará visitas y marcará lo que se lleva el cliente, sin pedido', color: '#0d9488' },
+    completo:   { solo_visor: false, visita_sin_pedido: false, aviso: '🛒 %s tendrá el flujo completo, con pedido real', color: '#16a34a' }
+  };
+  const cfg = NIVELES[nivel];
+  if (!cfg) return;
+  try {
+    const us = await api('/api/users');
+    const u = (us.users || []).find(x => x.id === userId);
+    if (!u) return;
+    // Ya estaba en ese nivel: no molestamos al servidor ni repintamos.
+    const actual = u.solo_visor ? 'visor' : (u.visita_sin_pedido ? 'sin_pedido' : 'completo');
+    if (actual === nivel) return;
+    await api('/api/users/' + userId, {
+      method: 'PUT',
+      body: {
+        name: u.name, email: u.email, role: u.role, sage_commercial_code: u.sage_commercial_code,
+        is_active: u.is_active,
+        solo_visor: cfg.solo_visor,
+        visita_sin_pedido: cfg.visita_sin_pedido
+      }
+    });
+    mostrarNotificacionOnline(cfg.aviso.replace('%s', u.name), cfg.color);
     renderListaComerciales();
   } catch (e) { alert('Error: ' + e.message); }
 }
