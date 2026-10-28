@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v316 · 15 oct 2026';
+const APP_VERSION = 'v319 · 28 oct 2026';
 const API = '';
 
 // ============================================================================
@@ -3367,6 +3367,11 @@ async function editarUsuario(id) {
             <div style="font-size:11px;color:var(--gris-texto);margin-top:3px">Estos correos reciben una <b>copia de los pedidos</b> de este comercial al cerrar la visita. Separa varios con comas. No es el email de acceso.</div>
           </div>
           <div class="form-group">
+            <label>Móvil de WhatsApp <span style="font-weight:400;color:var(--gris-texto)">(opcional)</span></label>
+            <input type="tel" id="eu-whatsapp" placeholder="619 28 63 25" value="${escape(u.whatsapp || '')}">
+            <div style="font-size:11px;color:var(--gris-texto);margin-top:3px">Aquí le llega el <b>catálogo en PDF</b> cuando pulsa «📲 Enviar catálogo a mi WhatsApp» dentro de un catálogo, para que él lo reenvíe a sus clientes.</div>
+          </div>
+          <div class="form-group">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
               <input type="checkbox" id="eu-active" ${u.is_active ? 'checked' : ''} style="width:auto">
               <span>Usuario activo</span>
@@ -3389,6 +3394,7 @@ async function editarUsuario(id) {
           role: document.getElementById('eu-role').value,
           sage_commercial_code: document.getElementById('eu-sage').value.trim(),
           copia_pedidos_email: document.getElementById('eu-copia').value.trim(),
+          whatsapp: document.getElementById('eu-whatsapp').value.trim(),
           is_active: document.getElementById('eu-active').checked
         };
         await api('/api/users/' + id, { method: 'PUT', body: data });
@@ -4000,6 +4006,7 @@ function pintarVisor() {
           <button class="visor-modo-btn btn-buscar-lamina" onclick="toggleVisorBuscadorSolo(this)" title="Buscar una lámina (nombre, número, categoría…)">🔍</button>
           <button class="visor-modo-btn solovisor-solo" onclick="descargarPdfCatalogoHoy(${_visorCatalog.id}, this)" title="Descargar este catálogo en PDF">📄</button>
           <button class="visor-modo-btn btn-enviar-laminas" onclick="activarEnvioLaminas()" title="Enviar láminas por email a un cliente">✉️</button>
+          <button class="visor-modo-btn btn-mi-whatsapp" onclick="enviarCatalogoMiWhatsapp(${_visorCatalog.id}, this)" title="Enviarme este catálogo en PDF a mi WhatsApp para reenviarlo a mis clientes">📲</button>
           ${appState.visitaActiva ? `<button class="visor-modo-btn btn-ultima-visita" onclick="abrirModalUltimaVisita(${appState.visitaActiva.client_id})" title="Ver qué se llevó este cliente la vez anterior">📋<span class="btn-ultima-visita-txt"> Última visita</span></button>` : ''}
           <button class="visor-modo-btn" onclick="abrirModalDescargarCatalogo(${_visorCatalog.id}, '${escape((_visorCatalog.name || '').replace(/'/g, "\\'"))}')" title="Descargar catálogo">📥</button>
           <button class="visor-modo-btn visor-modo-vista ${appState.visorModo === 'presentacion' ? 'activo' : ''}" onclick="cambiarVisorModo('presentacion')" title="Modo presentación">
@@ -4295,6 +4302,35 @@ function pintarMosaico(visibles) {
       }).join('')}
     </div>
   `;
+}
+
+// ===== ENVIAR EL CATÁLOGO A MI WHATSAPP (28-oct-2026, Fernando) =====
+// CatalogPro va en la tablet y WhatsApp en el móvil del comercial: el catálogo entero en PDF (calidad WhatsApp, < 20 MB)
+// le llega a SU WhatsApp desde el número de Lomhifar y desde allí lo reenvía a los clientes que quiera.
+async function enviarCatalogoMiWhatsapp(catalogId, btn) {
+  if (!navigator.onLine) { alert('📴 Sin cobertura: pídelo cuando tengas línea.'); return; }
+  const nombre = _visorCatalog ? partesNombreCatalogo(_visorCatalog).base : 'este catálogo';
+  if (!confirm(`¿Te mando «${nombre}» en PDF a tu WhatsApp?\n\nTe llegará en uno o dos minutos y desde allí lo reenvías a tus clientes.`)) return;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/catalogs/' + catalogId + '/enviar-whatsapp', { method: 'POST' });
+    avisoDescarga('📲 Preparando el catálogo: te llegará a tu WhatsApp (…' + String(r.movil || '').slice(-3) + ') en uno o dos minutos.');
+    seguirEnvioWhatsapp(r.id, 0);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    setTimeout(() => { if (btn) btn.disabled = false; }, 4000);
+  }
+}
+// Pregunta cada 8 s cómo va (hasta ~6 min) y avisa al terminar, para que no se quede esperando a ciegas.
+async function seguirEnvioWhatsapp(id, intento) {
+  if (intento > 45) return;
+  try {
+    const e = (await api('/api/envios-whatsapp/' + id)).envio;
+    if (e.estado === 'enviado') { avisoDescarga('✅ Catálogo enviado a tu WhatsApp. Ábrelo allí y reenvíalo a tus clientes.'); return; }
+    if (e.estado === 'error') { avisoDescarga('❌ No se ha podido enviar el catálogo: ' + (e.error || 'error desconocido'), true); return; }
+  } catch (_) { /* sin red un momento: se reintenta */ }
+  setTimeout(() => seguirEnvioWhatsapp(id, intento + 1), 8000);
 }
 
 // ===== ENVIAR LÁMINAS SELECCIONADAS A UN CLIENTE (por email, PDF adjunto) =====

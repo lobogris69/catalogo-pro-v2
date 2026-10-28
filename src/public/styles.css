@@ -6515,6 +6515,30 @@ body.modo-simple .visor-modo-btn.btn-enviar-laminas {
   white-space: nowrap;
 }
 body.modo-simple .visor-modo-btn.btn-enviar-laminas::after { content: " Enviar láminas"; }
+/* "A MI WHATSAPP" (28-oct-2026): el catálogo entero en PDF al WhatsApp del comercial para reenviarlo. Verde WhatsApp
+   y con texto, por lo mismo que "Enviar láminas". En móvil baja de línea con el resto (regla de max-width:599px). */
+body.modo-simple .visor-modo-btn.btn-mi-whatsapp {
+  display: inline-flex !important;
+  width: auto;
+  background: #16a34a;
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+  padding: 0 14px;
+  min-height: 44px;
+  border-radius: 22px;
+  white-space: nowrap;
+}
+body.modo-simple .visor-modo-btn.btn-mi-whatsapp::after { content: " Enviar catálogo a mi WhatsApp"; }
+/* Con tres pastillas (Enviar láminas, A mi WhatsApp y, con visita, Última visita) en una TABLET de 768 px el 📺 y el ▦
+   mosaico se iban fuera de la pantalla (medido 28-oct: ▦ en x 798-836 con 768 de ancho; scrollWidth no lo ve por el
+   recorte). En modo sencillo los botones bajan de línea antes que salirse, a cualquier ancho; y hasta tablet, el título
+   va en su línea y los botones en la suya. */
+body.modo-simple .visor-modo-switch { flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 1024px) {
+  body.modo-simple .visor-cabecera-fila { flex-wrap: wrap; row-gap: 6px; }
+  body.modo-simple .visor-titulo-bloque { flex: 1 1 100%; }
+}
 /* ============================================================================
    TAMAÑO UNIFORME DE LA LÁMINA EN MODO SENCILLO
    El arreglo del tamaño (v269) se escribió SOLO para body.solo-visor. En modo sencillo

@@ -833,6 +833,35 @@ async function initDB(): Promise<void> {
       -- COPIA DE PEDIDOS: emails (separados por coma) que reciben COPIA de los pedidos de
       -- este comercial al cerrar la visita (p.ej. administracion). No es el email de login.
       ALTER TABLE users ADD COLUMN IF NOT EXISTS copia_pedidos_email VARCHAR(300);
+      -- WHATSAPP DEL COMERCIAL (28-oct-2026): móvil al que le llega el catálogo en PDF para que él lo reenvíe a
+      -- sus clientes (CatalogPro va en la tablet; WhatsApp lo tienen en el móvil).
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS whatsapp VARCHAR(20);
+      -- ENVÍOS DEL CATÁLOGO AL WHATSAPP DEL COMERCIAL. CatalogPro genera el PDF (calidad 'whatsapp', < 20 MB) y
+      -- deja la fila 'listo'; el Vendedor IA (que tiene el canal oficial de WhatsApp) la recoge, lo manda y la
+      -- marca 'enviado'. Así no hacen falta claves nuevas entre los dos servicios: el Vendedor IA entra con su
+      -- usuario de solo lectura y solo puede actualizar el ESTADO de esta tabla.
+      CREATE TABLE IF NOT EXISTS envios_whatsapp (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        comercial VARCHAR(150),
+        movil VARCHAR(20) NOT NULL,
+        catalog_id INTEGER,
+        catalogo VARCHAR(300),
+        ruta VARCHAR(300),
+        bytes INTEGER,
+        estado VARCHAR(20) NOT NULL DEFAULT 'preparando',
+        error TEXT,
+        twilio_sid VARCHAR(64),
+        created_at TIMESTAMP DEFAULT NOW(),
+        listo_at TIMESTAMP,
+        enviado_at TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_envios_wa_estado ON envios_whatsapp(estado);
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vendedor_ia') THEN
+          GRANT SELECT, UPDATE (estado, error, twilio_sid, enviado_at) ON envios_whatsapp TO vendedor_ia;
+        END IF;
+      END $$;
 
       -- CLIENTE PENDIENTE DE ALTA. Una apertura nueva o una farmacia que aun no es
       -- cliente: el comercial la da de alta ALLI MISMO con todos los datos que necesita
@@ -1855,7 +1884,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v316-pdf-pequeno-en-streaming-15oct',
+      build: 'v319-boton-enviar-catalogo-whatsapp-28oct',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -1942,7 +1971,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
 // ============================================================================
 app.get('/api/users', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, visita_sin_pedido, copia_pedidos_email, is_active, created_at FROM users ORDER BY role, name');
+    const r = await pool.query('SELECT id, email, name, role, sage_commercial_code, modo_simple, solo_visor, visita_sin_pedido, copia_pedidos_email, whatsapp, is_active, created_at FROM users ORDER BY role, name');
     res.json({ success: true, users: r.rows });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
@@ -2100,13 +2129,16 @@ app.put('/api/users/:id', verifyToken, requireRealAdmin, async (req: AuthRequest
               modo_simple = COALESCE($7, modo_simple),
               solo_visor = COALESCE($8, solo_visor),
               visita_sin_pedido = COALESCE($10, visita_sin_pedido),
-              copia_pedidos_email = COALESCE($9, copia_pedidos_email)
-       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, modo_simple, solo_visor, visita_sin_pedido, is_active, copia_pedidos_email`,
+              copia_pedidos_email = COALESCE($9, copia_pedidos_email),
+              whatsapp = COALESCE($11, whatsapp)
+       WHERE id=$6 RETURNING id, email, name, role, sage_commercial_code, modo_simple, solo_visor, visita_sin_pedido, is_active, copia_pedidos_email, whatsapp`,
       [name.trim(), email.trim().toLowerCase(), role, sage_commercial_code ? String(sage_commercial_code).trim() : null, is_active !== false, id,
        req.body.modo_simple === undefined ? null : !!req.body.modo_simple,
        req.body.solo_visor === undefined ? null : !!req.body.solo_visor,
        req.body.copia_pedidos_email === undefined ? null : String(req.body.copia_pedidos_email || '').trim(),
-       req.body.visita_sin_pedido === undefined ? null : !!req.body.visita_sin_pedido]
+       req.body.visita_sin_pedido === undefined ? null : !!req.body.visita_sin_pedido,
+       // Móvil de WhatsApp: se guardan solo los 9 dígitos (vacío = quitarlo).
+       req.body.whatsapp === undefined ? null : String(req.body.whatsapp || '').replace(/\D/g, '').replace(/^34(?=\d{9}$)/, '')]
     );
     if (r.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Usuario no encontrado' });
@@ -2667,7 +2699,10 @@ function nombreFicheroSeguro(s: string): string {
 // J/E: Generar PDF del catálogo a un stream cualquiera (res HTTP o fichero).
 // Devuelve una promesa que resuelve cuando el PDF está completo.
 // calidad: 'alta' = original sin compresión; 'pequena' = redimensionado a 1200px lado largo y JPEG 80% (apto WhatsApp/email)
-async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream: any, calidad: 'alta' | 'pequena' = 'alta', onProgress?: (hechas: number) => void): Promise<void> {
+// 'whatsapp' = más ligera aún (900 px, JPEG 60): el canal oficial de WhatsApp (Twilio) admite 20 MB por archivo y el
+// maestro en 'pequena' pesa 37 MB. Medido 28-oct sobre 24 láminas reales: ~49 KB/lámina → maestro ≈ 16 MB, y los
+// textos pequeños (CN, EAN, P.V.L.) se siguen leyendo.
+async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream: any, calidad: 'alta' | 'pequena' | 'whatsapp' = 'alta', onProgress?: (hechas: number) => void): Promise<void> {
   const fs = require('fs');
   const sharp = require('sharp');
   const path = require('path');
@@ -2678,7 +2713,9 @@ async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream:
   // láminas, 2 s, sí funcionaba — Fernando, 15-oct-2026, aviso #33). Ahora cada lámina se
   // reduce, se mide y se pinta en su página, y el PDF va saliendo mientras se hace.
   let tempDir = '';
-  if (calidad === 'pequena') {
+  const reducida = calidad !== 'alta';
+  const [ladoPx, jpegQ] = calidad === 'whatsapp' ? [900, 60] : [1200, 80];
+  if (reducida) {
     const os = require('os');
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-low-'));
   }
@@ -2713,7 +2750,7 @@ async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream:
       { align: 'center' }
     );
     doc.fontSize(9).fillColor('#999').text(
-      `Generado: ${new Date().toLocaleString('es-ES')}${calidad === 'pequena' ? ' · Calidad reducida' : ''}`,
+      `Generado: ${new Date().toLocaleString('es-ES')}${reducida ? ' · Calidad reducida' : ''}`,
       { align: 'center' }
     );
 
@@ -2728,16 +2765,16 @@ async function generarPdfCatalogoStream(catalog: any, sheets: any[], destStream:
         continue;
       }
       let imgPath = original;
-      if (calidad === 'pequena') {
+      if (reducida) {
         try {
           const outPath = path.join(tempDir, `s${sheet.id}.jpg`);
           // flatten ANTES de pasar a JPEG: el JPEG no tiene transparencia y los PNG con zonas
           // transparentes salían con esas zonas NEGRAS en el PDF pequeño (Fernando, 11 sep 2026,
           // "se siguen creando PDF con fondos negros").
           await sharp(original)
-            .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+            .resize(ladoPx, ladoPx, { fit: 'inside', withoutEnlargement: true })
             .flatten({ background: '#ffffff' })
-            .jpeg({ quality: 80, mozjpeg: true })
+            .jpeg({ quality: jpegQ, mozjpeg: true })
             .toFile(outPath);
           imgPath = outPath;
         } catch (e: any) {
@@ -2872,8 +2909,8 @@ app.get('/api/catalogs/:id/download-pdf', verifyTokenDescarga, async (req: AuthR
       res.status(400).json({ success: false, error: 'Este catálogo no tiene láminas' });
       return;
     }
-    const calidad = (req.query.calidad === 'pequena') ? 'pequena' : 'alta';
-    const sufijo = calidad === 'pequena' ? '_pequeno' : '';
+    const calidad = (req.query.calidad === 'pequena' || req.query.calidad === 'whatsapp') ? req.query.calidad : 'alta';
+    const sufijo = calidad === 'pequena' ? '_pequeno' : calidad === 'whatsapp' ? '_whatsapp' : '';
     // PDF POR ZONA: el respaldo en papel no filtra solo. Si el comercial lleva dos
     // zonas y le damos el catalogo entero, el PDF se convierte justo en el agujero
     // por el que puede ofrecer en Aragon algo que solo se vende en Navarra.
@@ -2908,6 +2945,81 @@ app.get('/api/catalogs/:id/download-pdf', verifyTokenDescarga, async (req: AuthR
     }
   }
 });
+
+// ENVIAR EL CATÁLOGO AL WHATSAPP DEL COMERCIAL (28-oct-2026, Fernando: "que le llegue a su WhatsApp y él lo
+// reenvíe a los clientes; no liarla"). CatalogPro va en la tablet y WhatsApp en el móvil, así que el PDF (calidad
+// 'whatsapp', < 20 MB: el límite del canal oficial) se le manda a SU WhatsApp y desde ahí lo reenvía. Aquí se genera
+// y se deja 'listo'; el envío lo hace el Vendedor IA, que tiene el canal oficial (ver tabla envios_whatsapp).
+app.post('/api/catalogs/:id/enviar-whatsapp', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const uid = effectiveUserId(req);
+    const u = (await pool.query('SELECT id, name, whatsapp FROM users WHERE id=$1', [uid])).rows[0];
+    const movil = String(u?.whatsapp || '').replace(/\D/g, '').replace(/^34(?=\d{9}$)/, '');
+    if (!/^[67]\d{8}$/.test(movil)) {
+      res.status(400).json({ success: false, error: 'No tengo tu móvil de WhatsApp. Pídele a Fernando que lo ponga en tu ficha de usuario y vuelve a probar.' });
+      return;
+    }
+    const acceso = await cargarCatalogoConAcceso(id, req);
+    if (!acceso || 'error' in acceso) {
+      const a = acceso as any;
+      res.status(a?.status || 500).json({ success: false, error: a?.error || 'Error' });
+      return;
+    }
+    const { catalog, sheets } = acceso;
+    if (!sheets.length) { res.status(400).json({ success: false, error: 'Este catálogo no tiene láminas' }); return; }
+    // Doble toque (o impaciencia): si ya hay uno de este catálogo en marcha, no se genera otro.
+    const ya = await pool.query(
+      `SELECT id, estado FROM envios_whatsapp WHERE user_id=$1 AND catalog_id=$2 AND estado IN ('preparando','listo','enviando')
+         AND created_at > NOW() - INTERVAL '15 minutes' ORDER BY id DESC LIMIT 1`, [uid, id]);
+    if (ya.rows.length) { res.json({ success: true, id: ya.rows[0].id, estado: ya.rows[0].estado, movil, repetido: true }); return; }
+    const nombreCat = nombreConFechaActualizado(catalog.name, await fechaActualizadoCatalogo(catalog.id));
+    const envioId = (await pool.query(
+      `INSERT INTO envios_whatsapp (user_id, comercial, movil, catalog_id, catalogo) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [uid, u.name, movil, id, nombreCat])).rows[0].id;
+    res.json({ success: true, id: envioId, estado: 'preparando', movil });
+    // En segundo plano (el maestro tarda ~40 s). Ruta con carpeta aleatoria: el enlace no se puede adivinar, y el
+    // nombre del fichero es el que verá el cliente en WhatsApp.
+    (async () => {
+      try {
+        const dirRel = 'envios/' + require('crypto').randomBytes(16).toString('hex');
+        fs.mkdirSync(path.join(UPLOADS_DIR, dirRel), { recursive: true });
+        const fname = nombreFicheroSeguro(nombreCat) + '.pdf';
+        const abs = path.join(UPLOADS_DIR, dirRel, fname);
+        await generarPdfCatalogoStream(catalog, sheets, fs.createWriteStream(abs), 'whatsapp');
+        const bytes = fs.statSync(abs).size;
+        if (bytes > 19.5 * 1048576) throw new Error(`El PDF pesa ${(bytes / 1048576).toFixed(1)} MB y por WhatsApp solo caben 20 MB`);
+        await pool.query(`UPDATE envios_whatsapp SET estado='listo', ruta=$2, bytes=$3, listo_at=NOW() WHERE id=$1`, [envioId, dirRel + '/' + fname, bytes]);
+      } catch (e) {
+        console.error('[enviar-whatsapp] envío ' + envioId + ':', (e as Error).message);
+        await pool.query(`UPDATE envios_whatsapp SET estado='error', error=$2 WHERE id=$1`, [envioId, (e as Error).message]).catch(() => { /* nada */ });
+      }
+    })();
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+// Estado de un envío (la tablet pregunta hasta que pasa a 'enviado' o 'error').
+app.get('/api/envios-whatsapp/:id', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query('SELECT id, user_id, estado, error, catalogo, movil, bytes FROM envios_whatsapp WHERE id=$1', [Number(req.params.id)]);
+    const e = r.rows[0];
+    if (!e || (e.user_id !== effectiveUserId(req) && req.user?.role !== 'admin')) { res.status(404).json({ success: false, error: 'No existe' }); return; }
+    res.json({ success: true, envio: e });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
+});
+// Limpieza: los PDF enviados se borran a los 3 días (cada uno pesa ~16 MB en el volumen).
+setInterval(() => {
+  try {
+    const base = path.join(UPLOADS_DIR, 'envios');
+    if (!fs.existsSync(base)) return;
+    const limite = Date.now() - 3 * 24 * 3600 * 1000;
+    for (const d of fs.readdirSync(base)) {
+      const abs = path.join(base, d);
+      if (fs.statSync(abs).mtimeMs < limite) fs.rmSync(abs, { recursive: true, force: true });
+    }
+  } catch (e) { console.warn('[envios-whatsapp] limpieza:', (e as Error).message); }
+}, 6 * 3600 * 1000);
 
 // GET descargar catalogo como ZIP
 app.get('/api/catalogs/:id/download-zip', verifyTokenDescarga, async (req: AuthRequest, res: Response) => {
