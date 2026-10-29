@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v319 · 28 oct 2026';
+const APP_VERSION = 'v320 · 29 oct 2026';
 const API = '';
 
 // ============================================================================
@@ -1041,6 +1041,7 @@ function _restaurarScrollLamina() {
 // ===== EDITOR DE CATALOGO =====
 async function renderEditorCatalogo(id) {
   _indiceDeseadoVisor = null; // el editor no usa el índice del visor; no dejar un valor de enlace colgado
+  _hojasDeseadasVisor = [];
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogo…</div></div>`;
   try {
@@ -3877,6 +3878,15 @@ async function renderVisorComercial(catalogId) {
 
     _visorCatalog = catalog;
     _visorSheets = sheets;
+    // Venimos de un enlace: abrir por la LÁMINA pedida, buscándola en esta lista (ver _hojasDeseadasVisor).
+    if (_hojasDeseadasVisor.length) {
+      for (const hid of _hojasDeseadasVisor) {
+        const idx = sheets.findIndex(s => Number(s.id) === Number(hid));
+        if (idx >= 0) { appState.visorIndice = idx; break; }
+      }
+      _hojasDeseadasVisor = [];
+    }
+    if (appState.visorIndice >= sheets.length) appState.visorIndice = Math.max(0, sheets.length - 1);
     // I.2: guardar flag de offline para mostrar aviso en cabecera
     _visorModoOffline = modoOffline;
 
@@ -5688,6 +5698,11 @@ let _navStack = [];
 // (destino del salto o página de regreso). Sin esto, el reset de índice de renderVisorComercial
 // (limpiar búsqueda al entrar, v273) pisaba la página y siempre caía en la lámina 1.
 let _indiceDeseadoVisor = null;
+// LÁMINA (por id, en orden de preferencia) a la que debe abrir el próximo renderVisorComercial. Se busca en la lista
+// que DE VERDAD se enseña (sin ocultas y, en visita, sin las vetadas por la zona del cliente). Antes la página se
+// calculaba como POSICIÓN sobre la lista completa del servidor y se aplicaba a la lista recortada: por cada lámina
+// quitada antes del regreso se aterrizaba una página más allá (Fernando, 29-oct-2026: "al volver me salta una página").
+let _hojasDeseadasVisor = [];
 async function navegarAEnlaceCatalogo(zona) {
   // Guardar de dónde venimos (para la barra "volver a X pág. N")
   // backSheetId: si el enlace define una página de regreso, al volver iremos ahí
@@ -5700,22 +5715,17 @@ async function navegarAEnlaceCatalogo(zona) {
     // nombreOrigen es null cuando salimos del catálogo raíz (no enlazado); por eso guardamos aparte
     // el nombre del catálogo cargado ahora mismo.
     nombreCatalogoOrigen: (_visorCatalog && _visorCatalog.name) ? _visorCatalog.name : (_enlaceCatalogoNombre || null),
-    backSheetId: zona.link_back_sheet_id || null
+    backSheetId: zona.link_back_sheet_id || null,
+    // La lámina donde estaba el botón (por id): si no hay página de regreso, se vuelve a ESTA lámina, no a su número.
+    sheetIdOrigen: (_visorSheets[appState.visorIndice || 0] || {}).id || null
   });
   appState.vista = 'catalogos';
   appState.catalogoActual = zona.link_catalog_id;
   _enlaceCatalogoNombre = zona.link_catalog_nombre || 'Catálogo enlazado';
-  // Página destino: si el enlace apunta a una lámina concreta, abrir por ahí
-  let indice = 0;
-  if (zona.link_sheet_id) {
-    try {
-      const r = await api('/api/catalogs/' + zona.link_catalog_id);
-      const idx = (r.sheets || []).findIndex(s => Number(s.id) === Number(zona.link_sheet_id));
-      if (idx >= 0) indice = idx;
-    } catch (_) { /* si falla, abre por la 1 */ }
-  }
-  appState.visorIndice = indice;
-  _indiceDeseadoVisor = indice; // que renderVisorComercial (que resetea el índice) NO lo pise a 0
+  // Página destino: la lámina concreta del enlace (si la hay); se localiza al pintar, en la lista que se enseña.
+  appState.visorIndice = 0;
+  _indiceDeseadoVisor = 0; // que renderVisorComercial (que resetea el índice) NO lo pise
+  _hojasDeseadasVisor = zona.link_sheet_id ? [zona.link_sheet_id] : [];
   // SOLO VISOR: render()/routerVista pinta el SELECTOR de catálogos e ignora catalogoActual,
   // así que el salto entre catálogos nunca abría el destino (incidencia #9: enlace EVA→ESSITY
   // "no entra"). Abrimos el catálogo enlazado igual que las tarjetas del selector.
@@ -5729,18 +5739,13 @@ async function volverDeEnlaceCatalogo() {
     appState.vista = 'catalogos';
     appState.catalogoActual = prev.catalogoActual;
     _enlaceCatalogoNombre = prev.nombreOrigen || null;
-    // Si el enlace definió una página de regreso, aterrizar ahí (saltando las hojas
-    // restantes del laboratorio). Si no, volver a la página del botón.
-    let indice = prev.visorIndice || 0;
-    if (prev.backSheetId) {
-      try {
-        const r = await api('/api/catalogs/' + prev.catalogoActual);
-        const idx = (r.sheets || []).findIndex(s => Number(s.id) === Number(prev.backSheetId));
-        if (idx >= 0) indice = idx;
-      } catch (_) { /* si falla, vuelve a donde estaba */ }
-    }
+    // Si el enlace definió una página de regreso, aterrizar en ESA LÁMINA (saltando las hojas restantes del
+    // laboratorio); si ya no se enseña (oculta o vetada en esta zona), en la lámina del botón; y, en último caso,
+    // en la misma posición. Se busca por id al pintar, no por número de página.
+    const indice = prev.visorIndice || 0;
     appState.visorIndice = indice;
     _indiceDeseadoVisor = indice; // respetar la página de regreso pese al reset de renderVisorComercial
+    _hojasDeseadasVisor = [prev.backSheetId, prev.sheetIdOrigen].filter(Boolean);
     // Igual que al ir (ver navegarAEnlaceCatalogo): en solo visor abrimos el catálogo de
     // origen directamente; render() nos devolvería al selector.
     if (esSoloVisor()) renderVisorComercial(appState.catalogoActual);
