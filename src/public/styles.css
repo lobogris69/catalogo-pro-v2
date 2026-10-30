@@ -6530,11 +6530,44 @@ body.modo-simple .visor-modo-btn.btn-mi-whatsapp {
   white-space: nowrap;
 }
 body.modo-simple .visor-modo-btn.btn-mi-whatsapp::after { content: " Enviar catálogo a mi WhatsApp"; }
+/* Las tres pastillas, con el icono y el texto centrados en altura (Fernando, 30-oct-2026: "están en la parte de arriba
+   del botón"): inline-flex sin align-items los deja arriba. El gap sustituye al espacio del ::after, que flex se come. */
+body.modo-simple .visor-modo-btn.btn-ultima-visita,
+body.modo-simple .visor-modo-btn.btn-enviar-laminas,
+body.modo-simple .visor-modo-btn.btn-mi-whatsapp {
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: auto;
+  min-height: 48px;
+  line-height: 1.1;
+}
 /* Con tres pastillas (Enviar láminas, A mi WhatsApp y, con visita, Última visita) en una TABLET de 768 px el 📺 y el ▦
    mosaico se iban fuera de la pantalla (medido 28-oct: ▦ en x 798-836 con 768 de ancho; scrollWidth no lo ve por el
    recorte). En modo sencillo los botones bajan de línea antes que salirse, a cualquier ancho; y hasta tablet, el título
    va en su línea y los botones en la suya. */
 body.modo-simple .visor-modo-switch { flex-wrap: wrap; justify-content: flex-end; }
+/* 📺 ▦ y 🔍 a tamaño de DEDO (Fernando, 30-oct-2026: "muy pequeños, muy incómodos"). Medían 38×32 px, por debajo de los
+   44-48 recomendados para tocar en tablet o móvil. Fondo y borde para que se vean como botones, no como iconos sueltos.
+   En solo visor son todos iconos, así que van todos a la misma medida. */
+body.modo-simple .visor-modo-btn.visor-modo-vista,
+body.modo-simple .visor-modo-btn.btn-buscar-lamina,
+body.solo-visor .visor-modo-btn {
+  width: 52px;
+  height: 48px;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  line-height: 1;
+  background: var(--surface);
+  border: 1px solid var(--gris-borde);
+  border-radius: 10px;
+}
+body.modo-simple .visor-modo-btn.visor-modo-vista.activo,
+body.solo-visor .visor-modo-btn.visor-modo-vista.activo {
+  border: 2px solid var(--rosa);
+  background: var(--rosa-claro);
+}
 @media (max-width: 1024px) {
   body.modo-simple .visor-cabecera-fila { flex-wrap: wrap; row-gap: 6px; }
   body.modo-simple .visor-titulo-bloque { flex: 1 1 100%; }
