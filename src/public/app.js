@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v323 · 30 oct 2026';
+const APP_VERSION = 'v324 · 30 oct 2026';
 const API = '';
 
 // ============================================================================
@@ -3771,13 +3771,29 @@ async function _soloVisorPrepararOffline(cats, opts) {
   }
 }
 
-// Abre/cierra el buscador + categorías en modo solo-visor (plegados para dejar la lámina grande).
-function toggleVisorBuscadorSolo(btn) {
-  const cab = document.querySelector('.visor-cabecera');
-  if (!cab) return;
-  const abierto = cab.classList.toggle('solovisor-buscar-abierto');
-  if (btn) btn.classList.toggle('activo', abierto);
-  if (abierto) { const inp = document.getElementById('visor-buscar'); if (inp) setTimeout(() => inp.focus(), 50); }
+// Abre/cierra el buscador + categorías en modo solo-visor y sencillo (plegados para dejar la lámina grande).
+// El estado va aquí y no solo en la clase de la cabecera: pintarVisor rehace la cabecera y, sin esto, a la 3ª letra el
+// buscador se plegaba solo, perdía el foco y lo demás que tecleabas no entraba (Fernando, 30-oct-2026: "se va parando").
+// Regla: filtro puesto = buscador abierto. CERRARLO quita el filtro; si no, se quedaba activo sin caja ni ✕ a la vista.
+let _buscadorVisorAbierto = false;
+let _visorBuscarTimer = null;
+function toggleVisorBuscadorSolo() {
+  clearTimeout(_visorBuscarTimer);
+  _buscadorVisorAbierto = !_buscadorVisorAbierto;
+  if (!_buscadorVisorAbierto) _quitarFiltrosVisor(true);
+  pintarVisor();
+  if (_buscadorVisorAbierto) { const inp = document.getElementById('visor-buscar'); if (inp) setTimeout(() => inp.focus(), 50); }
+}
+
+// Quita la búsqueda (y la categoría si se pide) sin perder la lámina que se está viendo: visorIndice cuenta sobre la
+// lista VISIBLE, así que hay que volver a situarla en la lista completa.
+function _quitarFiltrosVisor(tambienCategoria) {
+  clearTimeout(_visorBuscarTimer);
+  const actual = appState.visorModo === 'presentacion' ? _visorVisibles()[appState.visorIndice] : null;
+  appState.visorBusqueda = '';
+  if (tambienCategoria) appState.visorFiltroCat = null;
+  const i = actual ? _visorVisibles().indexOf(actual) : -1;
+  appState.visorIndice = i >= 0 ? i : 0;
 }
 
 function _soloVisorAbrir(catalogId, unico) {
@@ -3806,6 +3822,8 @@ async function renderVisorComercial(catalogId) {
   // pasa por aquí, solo por pintarVisor).
   appState.visorBusqueda = '';
   appState.visorFiltroCat = null;
+  _buscadorVisorAbierto = false;
+  clearTimeout(_visorBuscarTimer);
   // Página de entrada: por defecto la 1ª. PERO si venimos de un ENLACE entre catálogos
   // (navegarAEnlaceCatalogo / volverDeEnlaceCatalogo dejan una página concreta en
   // _indiceDeseadoVisor), hay que respetarla. Si no, el salto al catálogo enlazado y la
@@ -3964,13 +3982,11 @@ function precargarVecinasVisor(sheets, idx) {
 // Última lámina/modo pintados, para saber si el repintado es un CAMBIO real de página
 // (y entonces subir el scroll arriba) o solo un refresco incidental (no tocar el scroll).
 let _ultimoRenderVisor = null;
-function pintarVisor() {
-  const $v = document.getElementById('vista-contenido');
-  const totalReal = _visorSheets.length;
+
+// Las láminas que enseña el visor: búsqueda Y/O filtro de categoría. visorIndice cuenta sobre ESTA lista.
+function _visorVisibles() {
   const busca = appState.visorBusqueda.trim().toLowerCase();
   const filtroCatId = appState.visorFiltroCat || null;
-
-  // Filtrar por búsqueda Y/O filtro de categoría
   let visibles = _visorSheets;
   if (filtroCatId) {
     visibles = visibles.filter(s => (s.categorias || []).some(c => c.id === filtroCatId));
@@ -3985,10 +4001,21 @@ function pintarVisor() {
       return blob.includes(busca);
     });
   }
+  return visibles;
+}
+
+// soloResultados: al teclear en el buscador se cambian las láminas y el contador, pero NO la cabecera. Rehacerla destruía
+// la caja de texto en cada pausa al escribir, y en la tablet eso cierra el teclado.
+function pintarVisor(soloResultados) {
+  const $v = document.getElementById('vista-contenido');
+  const totalReal = _visorSheets.length;
+  const busca = appState.visorBusqueda.trim().toLowerCase();
+  const visibles = _visorVisibles();
+  const subtitulo = `${totalReal} láminas${partesNombreCatalogo(_visorCatalog).fecha ? ' · ' + escape(partesNombreCatalogo(_visorCatalog).fecha) : ''}${busca ? ` · ${visibles.length} resultados` : ''}`;
 
   // Cabecera (común a los dos modos)
   const cabecera = `
-    <div class="visor-cabecera">
+    <div class="visor-cabecera ${_buscadorVisorAbierto ? 'solovisor-buscar-abierto' : ''}">
       ${_visorModoOffline ? `
         <div class="visor-aviso-offline">
           📲 Estás viendo este catálogo <b>desde la copia descargada en este dispositivo</b> (modo offline)
@@ -4009,11 +4036,11 @@ function pintarVisor() {
         <button class="btn-icon-volver" onclick="volverACatalogos()" title="Volver a catálogos">←</button>
         <div class="visor-titulo-bloque">
           <div class="visor-titulo">${escape(partesNombreCatalogo(_visorCatalog).base)}</div>
-          <div class="visor-subtitulo">${totalReal} láminas${partesNombreCatalogo(_visorCatalog).fecha ? ' · ' + escape(partesNombreCatalogo(_visorCatalog).fecha) : ''}${busca ? ` · ${visibles.length} resultados` : ''}</div>
+          <div class="visor-subtitulo">${subtitulo}</div>
         </div>
         ${appState.visitaActiva ? `<div style="display:flex;align-items:center">${ayuda('Estás en visita. Toca las zonas marcadas sobre las láminas para añadir productos al pedido (aparecen al pasar el dedo o ratón). También puedes anotar manualmente con el icono ✏️. Al terminar, pulsa "Cerrar visita" para enviar el pedido.', 'abajo')}</div>` : ''}
         <div class="visor-modo-switch">
-          <button class="visor-modo-btn btn-buscar-lamina" onclick="toggleVisorBuscadorSolo(this)" title="Buscar una lámina (nombre, número, categoría…)">🔍</button>
+          <button class="visor-modo-btn btn-buscar-lamina ${_buscadorVisorAbierto ? 'activo' : ''}" onclick="toggleVisorBuscadorSolo()" title="Buscar una lámina (nombre, número, categoría…)">🔍</button>
           <button class="visor-modo-btn solovisor-solo" onclick="descargarPdfCatalogoHoy(${_visorCatalog.id}, this)" title="Descargar este catálogo en PDF">📄</button>
           <button class="visor-modo-btn btn-enviar-laminas" onclick="activarEnvioLaminas()" title="Enviar láminas por email a un cliente">✉️</button>
           <button class="visor-modo-btn btn-mi-whatsapp" onclick="enviarCatalogoMiWhatsapp(${_visorCatalog.id}, this)" title="Enviarme este catálogo en PDF a mi WhatsApp para reenviarlo a mis clientes">📲</button>
@@ -4031,7 +4058,7 @@ function pintarVisor() {
         <input type="text" id="visor-buscar" placeholder="🔍 Buscar (nombre, oferta, número de lámina, categoría…)"
                value="${escape(appState.visorBusqueda)}"
                class="visor-buscador">
-        ${appState.visorBusqueda ? '<button class="visor-buscador-clear" onclick="limpiarVisorBusqueda()">✕</button>' : ''}
+        <button class="visor-buscador-clear" onclick="limpiarVisorBusqueda()" ${appState.visorBusqueda ? '' : 'hidden'}>✕</button>
         <div class="visor-buscador-pista" id="visor-buscar-pista" hidden>Escribe al menos 3 letras (o pulsa Enter para buscar ya)</div>
       </div>
       ${(() => {
@@ -4078,7 +4105,16 @@ function pintarVisor() {
     }
   }
 
-  $v.innerHTML = `<div class="visor-shell">${cabecera}${cuerpo}${carritoFab}</div>`;
+  // Sin envoltorio para el cuerpo: la pantalla completa depende de los hijos directos de .visor-shell.
+  const $cab = soloResultados ? $v.querySelector('.visor-shell > .visor-cabecera') : null;
+  if ($cab) {
+    while ($cab.nextElementSibling && !$cab.nextElementSibling.classList.contains('carrito-fab')) $cab.nextElementSibling.remove();
+    $cab.insertAdjacentHTML('afterend', cuerpo);
+    $cab.querySelector('.visor-subtitulo').innerHTML = subtitulo;
+    $cab.querySelector('.visor-buscador-clear').hidden = !appState.visorBusqueda;
+  } else {
+    $v.innerHTML = `<div class="visor-shell">${cabecera}${cuerpo}${carritoFab}</div>`;
+  }
   // Modo sencillo: medir el hueco de la lamina con el DOM ya pintado (ver _ajustarAltoLaminaSimple).
   setTimeout(_ajustarAltoLaminaSimple, 0);
 
@@ -4093,7 +4129,7 @@ function pintarVisor() {
   const _claveRender = appState.visorModo + ':' + appState.visorIndice;
   if (_claveRender !== _ultimoRenderVisor) {
     if (appState.visorModo === 'mosaico') {
-      const _sa = _visorSheets[appState.visorIndice];
+      const _sa = visibles[appState.visorIndice];
       const _sid = _sa ? _sa.id : null;
       setTimeout(() => {
         const cell = _sid != null ? $v.querySelector('.visor-mosaico-celda[data-sid="' + _sid + '"]') : null;
@@ -4115,37 +4151,27 @@ function pintarVisor() {
   // buscar era incomodísimo (incidencia #8, jul 2026). Con 1-2 caracteres solo se avisa y
   // NO se repinta nada. Para lo corto (el número de una lámina), Enter fuerza la búsqueda.
   const $busca = document.getElementById('visor-buscar');
-  if ($busca) {
+  if ($busca && !soloResultados) {
     const MIN_LETRAS = 3;
-    let timer;
     const aplicar = (texto) => {
       if (texto === appState.visorBusqueda) return; // nada nuevo: no repintamos
       appState.visorBusqueda = texto;
       if (appState.visorModo === 'presentacion') {
         appState.visorIndice = 0;
       }
-      pintarVisor();
-      // Mantener foco (pintarVisor rehace el input)
-      setTimeout(() => {
-        const $b = document.getElementById('visor-buscar');
-        if ($b) {
-          $b.focus();
-          const len = $b.value.length;
-          $b.setSelectionRange(len, len);
-        }
-      }, 0);
+      pintarVisor(true); // la caja no se toca: conserva el foco y lo que se está escribiendo
     };
     $busca.addEventListener('input', () => {
       const q = $busca.value.trim();
       const $pista = document.getElementById('visor-buscar-pista');
       if ($pista) $pista.hidden = !(q.length > 0 && q.length < MIN_LETRAS);
-      clearTimeout(timer);
-      timer = setTimeout(() => aplicar(q.length >= MIN_LETRAS ? $busca.value : ''), 300);
+      clearTimeout(_visorBuscarTimer);
+      _visorBuscarTimer = setTimeout(() => aplicar(q.length >= MIN_LETRAS ? $busca.value : ''), 300);
     });
     $busca.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;
       e.preventDefault();
-      clearTimeout(timer);
+      clearTimeout(_visorBuscarTimer);
       aplicar($busca.value);
     });
   }
@@ -4496,15 +4522,7 @@ function visorAnterior() {
 }
 
 function visorSiguiente() {
-  const busca = appState.visorBusqueda.trim().toLowerCase();
-  const visibles = busca ? _visorSheets.filter((s, i) => {
-    const numero = parseInt(busca);
-    if (!isNaN(numero) && (i + 1) === numero) return true;
-    const blob = [s.titulo, s.notas, s.tags].filter(Boolean).join(' ').toLowerCase();
-    return blob.includes(busca);
-  }) : _visorSheets;
-
-  if (appState.visorIndice < visibles.length - 1) {
+  if (appState.visorIndice < _visorVisibles().length - 1) {
     appState.visorIndice++;
     appState.visorZoom = 1;
     appState.visorPanX = 0;
@@ -4526,7 +4544,10 @@ function abrirLaminaDesdeMosaico(idx) {
   if (_fullscreenActivo || document.body.classList.contains('visor-fullscreen-activo')) {
     salirPantallaCompleta();
   }
-  appState.visorIndice = idx;
+  // idx es la posición en el catálogo COMPLETO y visorIndice cuenta sobre la lista visible: con una búsqueda puesta,
+  // tocar la lámina 71 abría la primera de los resultados.
+  const i = _visorVisibles().indexOf(_visorSheets[idx]);
+  appState.visorIndice = i >= 0 ? i : 0;
   appState.visorModo = 'presentacion';
   appState.visorZoom = 1;
   appState.visorPanX = 0;
@@ -4535,9 +4556,10 @@ function abrirLaminaDesdeMosaico(idx) {
 }
 
 function limpiarVisorBusqueda() {
-  appState.visorBusqueda = '';
-  appState.visorIndice = 0;
+  _quitarFiltrosVisor(false);
   pintarVisor();
+  const inp = document.getElementById('visor-buscar');
+  if (inp) inp.focus();
 }
 
 function filtrarVisorPorCategoria(catId) {
@@ -5717,7 +5739,7 @@ async function navegarAEnlaceCatalogo(zona) {
     nombreCatalogoOrigen: (_visorCatalog && _visorCatalog.name) ? _visorCatalog.name : (_enlaceCatalogoNombre || null),
     backSheetId: zona.link_back_sheet_id || null,
     // La lámina donde estaba el botón (por id): si no hay página de regreso, se vuelve a ESTA lámina, no a su número.
-    sheetIdOrigen: (_visorSheets[appState.visorIndice || 0] || {}).id || null
+    sheetIdOrigen: (_visorVisibles()[appState.visorIndice || 0] || {}).id || null
   });
   appState.vista = 'catalogos';
   appState.catalogoActual = zona.link_catalog_id;
