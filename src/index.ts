@@ -112,7 +112,7 @@ function borrarUploadSeguro(rutaWeb: string | null | undefined): void {
 // tipo_cambio: 'created' | 'updated_image' | 'updated_meta' | 'deleted'
 // ============================================================================
 type TipoCambioSheet = 'created' | 'updated_image' | 'updated_meta' | 'deleted'
-  | 'updated_zonas' | 'updated_precios' | 'updated_tablas';
+  | 'updated_zonas' | 'updated_precios' | 'updated_tablas' | 'updated_oculta';
 
 async function logSheetChange(
   tipoCambio: TipoCambioSheet,
@@ -1683,7 +1683,7 @@ async function initDB(): Promise<void> {
       ALTER TABLE sheet_audit_log DROP CONSTRAINT IF EXISTS sheet_audit_log_tipo_cambio_check;
       ALTER TABLE sheet_audit_log ADD CONSTRAINT sheet_audit_log_tipo_cambio_check
         CHECK (tipo_cambio IN ('created','updated_image','updated_meta','deleted',
-                               'updated_zonas','updated_precios','updated_tablas'));
+                               'updated_zonas','updated_precios','updated_tablas','updated_oculta'));
       CREATE INDEX IF NOT EXISTS idx_sheet_audit_catalog ON sheet_audit_log(catalog_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_sheet_audit_sheet ON sheet_audit_log(sheet_id);
       CREATE INDEX IF NOT EXISTS idx_sheet_audit_created ON sheet_audit_log(created_at DESC);
@@ -1884,7 +1884,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v324-buscador-visor-30oct',
+      build: 'v325-ocultar-laminas-30oct',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2309,7 +2309,7 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
       r = await pool.query(`
         SELECT c.*,
           CASE
-            WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
+            WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es JOIN sheets s ON s.id = es.sheet_id WHERE es.express_catalog_id = c.id AND s.oculta = FALSE)
             ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
           END AS sheet_count,
           (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
@@ -2325,7 +2325,7 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
       r = await pool.query(`
         SELECT c.*,
           CASE
-            WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
+            WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es JOIN sheets s ON s.id = es.sheet_id WHERE es.express_catalog_id = c.id AND s.oculta = FALSE)
             ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
           END AS sheet_count,
           (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
@@ -2344,7 +2344,7 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
       r = await pool.query(`
         SELECT c.*,
           CASE
-            WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
+            WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es JOIN sheets s ON s.id = es.sheet_id WHERE es.express_catalog_id = c.id AND s.oculta = FALSE)
             ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
           END AS sheet_count,
           (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
@@ -2528,7 +2528,7 @@ app.get('/api/catalogs/:id', verifyToken, async (req: AuthRequest, res: Response
           `SELECT sheet_id, MAX(created_at) AS ultimo_cambio,
                   (ARRAY_AGG(tipo_cambio ORDER BY created_at DESC))[1] AS ultimo_tipo
              FROM sheet_audit_log
-            WHERE sheet_id = ANY($1::int[]) AND tipo_cambio <> 'deleted'
+            WHERE sheet_id = ANY($1::int[]) AND tipo_cambio NOT IN ('deleted','updated_oculta')
             GROUP BY sheet_id`, [sheetIds]);
         const mapaCam: any = {};
         camR.rows.forEach((x: any) => { mapaCam[x.sheet_id] = x; });
@@ -2640,7 +2640,7 @@ async function cargarCatalogoConAcceso(catalogId: number, req: AuthRequest):
         SELECT s.*, es.orden AS orden, es.id AS express_sheet_id
         FROM express_sheets es
         JOIN sheets s ON s.id = es.sheet_id
-        WHERE es.express_catalog_id = $1
+        WHERE es.express_catalog_id = $1 AND s.oculta = FALSE
         ORDER BY es.orden, es.id
       `, [catalogId]);
       sheetsRows = r.rows;
@@ -3248,7 +3248,7 @@ app.get('/api/archivo', verifyToken, requireRealAdmin, async (_req: AuthRequest,
       SELECT c.id, c.name, c.tipo, c.version, c.estado, c.parent_id, c.created_at, c.updated_at,
         (SELECT name FROM catalogs cp WHERE cp.id = c.parent_id) AS parent_name,
         CASE
-          WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es WHERE es.express_catalog_id = c.id)
+          WHEN c.tipo = 'express' THEN (SELECT COUNT(*)::int FROM express_sheets es JOIN sheets s ON s.id = es.sheet_id WHERE es.express_catalog_id = c.id AND s.oculta = FALSE)
           ELSE (SELECT COUNT(*)::int FROM sheets WHERE catalog_id = c.id AND oculta = FALSE)
         END AS sheet_count
       FROM catalogs c
@@ -5171,6 +5171,33 @@ app.post('/api/sheets/:id/restaurar', verifyToken, requireAdmin, async (req: Aut
       { restaurada: true, express: vueltos }, { id: req.user?.id, name: req.user?.name });
     res.json({ success: true, catalog_id: destinoId, express_devueltos: vueltos });
   } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// OCULTAR / MOSTRAR una lámina (Fernando, 30-oct-2026: pulseras sin grabadora láser). A diferencia del Fondo, se queda en su
+// sitio, con su número y en sus Express: al mostrarla vuelve tal cual. Se toca el updated_at de los CATÁLOGOS (para que las
+// tablets actualicen su copia), no el de la lámina: vurl lo usa para la caché de la imagen, y la imagen no ha cambiado.
+app.put('/api/sheets/:id/oculta', verifyToken, requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const oculta = req.body?.oculta === true;
+    const r = await pool.query('UPDATE sheets SET oculta=$1 WHERE id=$2 RETURNING catalog_id, titulo', [oculta, id]);
+    if (!r.rows.length) { res.status(404).json({ success: false, error: 'Lamina no encontrada' }); return; }
+    await pool.query(
+      `UPDATE catalogs SET updated_at=NOW()
+        WHERE id=$1 OR id IN (SELECT express_catalog_id FROM express_sheets WHERE sheet_id=$2)`,
+      [r.rows[0].catalog_id, id]);
+    await logSheetChange('updated_oculta', id, r.rows[0].catalog_id, r.rows[0].titulo, { oculta },
+      { id: req.user?.id, name: req.user?.name });
+    res.json({ success: true, oculta });
+  } catch (e) { res.status(400).json({ success: false, error: (e as Error).message }); }
+});
+
+// Ids de las láminas ocultas: las tablets marcan con esto su copia descargada, que sin cobertura no puede preguntar.
+app.get('/api/sheets-ocultas', verifyToken, async (_req: AuthRequest, res: Response) => {
+  try {
+    const r = await pool.query('SELECT id FROM sheets WHERE oculta = TRUE');
+    res.json({ success: true, ids: r.rows.map((x: any) => Number(x.id)) });
+  } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 
 // ELIMINAR DEFINITIVAMENTE (solo desde la papelera). Esto SI destruye: fila + ficheros.

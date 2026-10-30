@@ -137,6 +137,20 @@ window.CpDB = {
       store.put(sheet);
     });
   },
+  // Marca en la copia local qué láminas están ocultas. Solo reescribe las que cambian.
+  async marcarLaminasOcultas(ids) {
+    const ocultas = new Set(ids.map(Number));
+    return tx('sheets', 'readwrite', (store) => {
+      store.openCursor().onsuccess = (e) => {
+        const cur = e.target.result;
+        if (!cur) return;
+        const oculta = ocultas.has(Number(cur.value.id));
+        if (!!cur.value.oculta !== oculta) cur.update({ ...cur.value, oculta });
+        cur.continue();
+      };
+    });
+  },
+
   async obtenerLaminasDeCatalogo(catalogId) {
     const db = await abrirDB();
     return new Promise((resolve, reject) => {

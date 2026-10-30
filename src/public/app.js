@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v324 · 30 oct 2026';
+const APP_VERSION = 'v325 · 30 oct 2026';
 const API = '';
 
 // ============================================================================
@@ -1148,6 +1148,7 @@ async function renderEditorCatalogo(id) {
                        style="flex:1; min-width:200px; padding:8px 12px; border:1px solid var(--gris-borde); border-radius:8px; font-size:13px; font-family:inherit; outline:none;">
                 <button class="btn btn-pequeno btn-secondary" id="btn-filtro-semana" onclick="filtrarPorCambios('semana', this)" title="Solo las láminas tocadas en los últimos 7 días">🔄 Cambiadas esta semana</button>
                 <button class="btn btn-pequeno btn-secondary" id="btn-filtro-pend" onclick="filtrarPorCambios('pendientes', this)" title="Las que se han tocado DESPUÉS de darlas por revisadas: hay que volver a mirarlas">⚠️ Pendientes de repasar</button>
+                <button class="btn btn-pequeno btn-secondary" id="btn-filtro-ocultas" onclick="filtrarPorCambios('ocultas', this)" title="Las láminas que has ocultado: los comerciales no las ven">🙈 Ocultas (<span id="cuenta-ocultas">${sheets.filter(s => s.oculta).length}</span>)</button>
                 <button class="btn btn-pequeno" style="background:#ede9fe;color:#6d28d9" onclick="abrirParteDeCambios(${id})" title="Parte de todo lo modificado en los últimos días, imprimible">🗓️ Parte de cambios</button>
               ` : ''}
             </div>
@@ -1159,7 +1160,7 @@ async function renderEditorCatalogo(id) {
                   `<span class="lamina-cat-chip" style="background:${escape(c.color || '#cc007a')}20;color:${escape(c.color || '#cc007a')};border:1px solid ${escape(c.color || '#cc007a')}40">${escape(c.nombre)}</span>`
                 ).join('');
                 return `
-                <div class="lamina-fila" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${s.numero_fijo != null ? s.numero_fijo : ''}" data-pos="${idx + 1}" data-cambio="${s.ultimo_cambio || ''}" data-pendiente="${_pendienteRepaso(s) ? '1' : '0'}" ${esAdmin ? 'draggable="true"' : ''}>
+                <div class="lamina-fila ${s.oculta ? 'lamina-oculta' : ''}" data-id="${s.id}" data-titulo="${escape((s.titulo || '').toLowerCase())}" data-tags="${escape((s.tags || '').toLowerCase())}" data-cats="${catsIds}" data-numero="${s.numero_fijo != null ? s.numero_fijo : ''}" data-pos="${idx + 1}" data-cambio="${s.ultimo_cambio || ''}" data-pendiente="${_pendienteRepaso(s) ? '1' : '0'}" data-oculta="${s.oculta ? '1' : '0'}" ${esAdmin ? 'draggable="true"' : ''}>
                   ${esAdmin ? `<div class="drag-handle" title="Arrastra para reordenar">⋮⋮</div>` : ''}
                   <div class="lamina-numero${(s.numero_fijo != null && s.numero_fijo !== idx + 1) ? ' desfasado' : ''}"${
                     s.numero_fijo == null ? ' title="Lámina nueva: aún no tiene número. Pulsa Renumerar cuando termines de ordenar."'
@@ -1170,6 +1171,7 @@ async function renderEditorCatalogo(id) {
                   <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="lamina-mini" alt="" loading="lazy" decoding="async" draggable="false" onerror="this.style.background='#f3f4f6';this.style.objectFit='contain'" onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina ' + (idx + 1)).replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
+                    ${esAdmin ? `<span class="lamina-estado-oculta" ${s.oculta ? '' : 'hidden'}>🙈 Oculta: los comerciales no la ven</span>` : ''}
                     ${esAdmin ? (
                       s.zonas_aprobadas_at
                         ? `<span class="lamina-estado-zonas ok">✅ Revisada (${s.num_zonas || 0} zonas)</span>`
@@ -1204,6 +1206,7 @@ async function renderEditorCatalogo(id) {
                     <button onclick="regenerarTagsIA(${s.id}, this)" title="Generar tags con IA (GPT-4 Vision)">🤖</button>
                     <button onclick="sustituirImagenLamina(${s.id})" title="Sustituir imagen">🔄</button>
                     <button onclick="editarLamina(${s.id})" title="Editar todo">✏️</button>
+                    ${c.especial ? '' : `<button onclick="toggleOcultarLamina(${s.id}, this)" title="${_tituloBotonOcultar(s.oculta)}">${s.oculta ? '👁️' : '🙈'}</button>`}
                     ${c.especial
                       ? `<button onclick="restaurarLamina(${s.id}, ${id})" title="Devolver esta lámina a su catálogo">↩️</button>
                          ${c.especial === 'papelera' ? `<button class="btn-borrar" onclick="eliminarLaminaDefinitivo(${s.id}, ${id})" title="Eliminar DEFINITIVAMENTE (no se puede deshacer)">🗑️</button>` : ''}`
@@ -1533,6 +1536,7 @@ function pintarEditorExpress() {
                        onclick="abrirLightbox('${escape(vurl(s.imagen_path, s))}', '${escape((s.titulo || 'Lámina').replace(/'/g, '\\\''))}', ${idx + 1})">
                   <div class="lamina-info">
                     <div class="lamina-titulo">${escape(s.titulo || 'Sin título')}</div>
+                    ${s.oculta ? '<span class="lamina-estado-oculta">🙈 Oculta en el maestro: los comerciales no la ven</span>' : ''}
                     <div class="lamina-notas" style="font-size:11px">${escape(s.tags || '—')}</div>
                   </div>
                   <div class="lamina-acciones">
@@ -2325,6 +2329,7 @@ const _TIPOS_CAMBIO = {
   updated_zonas: '🎯 zonas de producto',
   updated_precios: '💶 cuadros de precio',
   updated_tablas: '📊 tabla de expositor',
+  updated_oculta: '🙈 ocultada o mostrada',
   deleted: '🗑️ borrada'
 };
 
@@ -2378,11 +2383,12 @@ async function abrirHistorialLamina(sheetId) {
 let _filtroCambios = '';
 function filtrarPorCambios(cual, btn) {
   _filtroCambios = (_filtroCambios === cual) ? '' : cual;
-  ['btn-filtro-semana', 'btn-filtro-pend'].forEach(id => {
+  ['btn-filtro-semana', 'btn-filtro-pend', 'btn-filtro-ocultas'].forEach(id => {
     const b = document.getElementById(id);
     if (!b) return;
     const activo = (id === 'btn-filtro-semana' && _filtroCambios === 'semana') ||
-                   (id === 'btn-filtro-pend' && _filtroCambios === 'pendientes');
+                   (id === 'btn-filtro-pend' && _filtroCambios === 'pendientes') ||
+                   (id === 'btn-filtro-ocultas' && _filtroCambios === 'ocultas');
     b.style.background = activo ? '#6d28d9' : '';
     b.style.color = activo ? '#fff' : '';
   });
@@ -2395,11 +2401,42 @@ function filtrarPorCambios(cual, btn) {
       ok = !!c && new Date(c).getTime() > hace7;
     } else if (_filtroCambios === 'pendientes') {
       ok = fila.dataset.pendiente === '1';
+    } else if (_filtroCambios === 'ocultas') {
+      ok = fila.dataset.oculta === '1';
     }
     fila.style.display = ok ? '' : 'none';
     if (ok) n++;
   });
   if (_filtroCambios) mostrarNotificacionOnline(n + (n === 1 ? ' lámina' : ' láminas'), '#6d28d9');
+}
+
+// OCULTAR / MOSTRAR una lámina sin sacarla del catálogo: se queda en su sitio, con su número y en sus Express, y un clic la
+// devuelve. Es para lo temporal (pulseras sin grabadora, 30-oct-2026); lo que se retira de verdad va al Fondo.
+function _tituloBotonOcultar(oculta) {
+  return oculta ? 'Mostrar: los comerciales vuelven a verla' : 'Ocultar: los comerciales dejan de verla (sigue aquí y se recupera con un clic)';
+}
+async function toggleOcultarLamina(sheetId, btn) {
+  const fila = btn.closest('.lamina-fila');
+  const ocultar = fila.dataset.oculta !== '1';
+  btn.disabled = true;
+  try {
+    await api('/api/sheets/' + sheetId + '/oculta', {
+      method: 'PUT',
+      body: { oculta: ocultar }
+    });
+    fila.dataset.oculta = ocultar ? '1' : '0';
+    fila.classList.toggle('lamina-oculta', ocultar);
+    fila.querySelector('.lamina-estado-oculta').hidden = !ocultar;
+    btn.textContent = ocultar ? '👁️' : '🙈';
+    btn.title = _tituloBotonOcultar(ocultar);
+    const $cuenta = document.getElementById('cuenta-ocultas');
+    if ($cuenta) $cuenta.textContent = document.querySelectorAll('#laminas-lista .lamina-fila[data-oculta="1"]').length;
+    mostrarNotificacionOnline(ocultar ? '🙈 Lámina oculta: los comerciales ya no la ven' : '👁️ Lámina visible otra vez', '#6b7280');
+  } catch (e) {
+    alert('Error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // Parte de cambios: lo tocado en los últimos días, para el repaso semanal. Imprimible.
@@ -3844,7 +3881,7 @@ async function renderVisorComercial(catalogId) {
       if (!catalog) throw new Error('Este catálogo no está descargado offline. Vuelve a conectarte para usarlo.');
       const laminasDB = await CpDB.obtenerLaminasDeCatalogo(catalogId);
       // Convertir Blobs a URLs object para que las <img> los muestren
-      sheets = laminasDB.map(s => ({
+      sheets = laminasDB.filter(s => !s.oculta).map(s => ({
         ...s,
         imagen_path: s.imagen_blob ? URL.createObjectURL(s.imagen_blob) : s.imagen_path_original,
         _es_blob_url: !!s.imagen_blob
@@ -3863,7 +3900,7 @@ async function renderVisorComercial(catalogId) {
         if (!catalog) throw err; // sin copia offline, devuelve el error original
         modoOffline = true;
         const laminasDB = await CpDB.obtenerLaminasDeCatalogo(catalogId);
-        sheets = laminasDB.map(s => ({
+        sheets = laminasDB.filter(s => !s.oculta).map(s => ({
           ...s,
           imagen_path: s.imagen_blob ? URL.createObjectURL(s.imagen_blob) : s.imagen_path_original,
           _es_blob_url: !!s.imagen_blob
@@ -8643,6 +8680,7 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo, opts) {
           titulo: sheet.titulo,
           notas: sheet.notas,
           tags: sheet.tags,
+          oculta: !!sheet.oculta,   // se guarda igual: al mostrarla otra vez, la tablet ya la tiene
           imagen_path_original: sheet.imagen_path,
           imagen_blob: blob,
           imagen_size: blob.size,
@@ -8696,7 +8734,19 @@ async function borrarCatalogoOffline(catalogId, nombreCatalogo) {
 
 // Cache global con IDs de catálogos descargados (para badges en lista)
 let _catalogosDescargadosCache = new Set();
+// Sin cobertura la tablet no puede preguntar qué está oculto, así que con línea se marca en su copia. Como mucho cada 5 min.
+let _ocultasSincronizadas = 0;
+async function _sincronizarOcultasLocal() {
+  if (!window.CpDB || !navigator.onLine || !token || Date.now() - _ocultasSincronizadas < 300000) return;
+  try {
+    const r = await api('/api/sheets-ocultas');
+    await CpDB.marcarLaminasOcultas(r.ids || []);
+    _ocultasSincronizadas = Date.now();
+  } catch (_) { /* se reintenta en la siguiente */ }
+}
+
 async function refrescarCacheCatalogosDescargados() {
+  _sincronizarOcultasLocal();
   try {
     const lista = await CpDB.listarCatalogosDescargados();
     _catalogosDescargadosCache = new Set(lista.map(c => c.id));
@@ -9057,6 +9107,7 @@ async function abrirModalPendientes() {
 window.addEventListener('online', async () => {
   // Esperar 2 segundos por estabilidad de red antes de intentar
   setTimeout(async () => {
+    _sincronizarOcultasLocal();
     const pendientes = await CpDB.contarVisitasPendientes();
     if (pendientes > 0) {
       console.log('[I.3] Sincronización automática: ' + pendientes + ' pendientes');
@@ -20535,7 +20586,7 @@ function pintarMosaicoReorden() {
   grid.innerHTML = '';
   _mosaicoSheets.forEach((s, idx) => {
     const card = document.createElement('div');
-    card.className = 'mosaico-card' + (_mosaicoSel.has(s.id) ? ' mosaico-sel' : '');
+    card.className = 'mosaico-card' + (_mosaicoSel.has(s.id) ? ' mosaico-sel' : '') + (s.oculta ? ' mosaico-card-oculta' : '');
     card.draggable = true;
     card.dataset.id = s.id;
     card.dataset.idx = idx;
@@ -20545,7 +20596,7 @@ function pintarMosaicoReorden() {
       <div class="mosaico-marca" title="Marcar esta lámina">${_mosaicoSel.has(s.id) ? '✓' : ''}</div>
       <img src="${escape(vurl(s.miniatura_path || s.imagen_path, s))}" class="mosaico-img" alt="" loading="lazy" decoding="async"
            draggable="false" onerror="this.style.background='#374151'">
-      <div class="mosaico-titulo">${escape(s.titulo || 'Sin título')}</div>
+      <div class="mosaico-titulo">${s.oculta ? '🙈 ' : ''}${escape(s.titulo || 'Sin título')}</div>
     `;
     grid.appendChild(card);
   });
