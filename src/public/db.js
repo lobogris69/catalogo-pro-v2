@@ -13,7 +13,15 @@
 const DB_NAME = 'catalogpro_v2';
 // v3: store `reposicion` — las gafas graduadas descargadas para poder montar la rejilla
 // de reposición en una farmacia sin cobertura.
-const DB_VERSION = 3;
+// v4 (5-nov-2026): una lámina puede estar en VARIOS catálogos (maestro y sus Express). Antes cada lámina guardaba un
+// solo `catalog_id` y se la quedaba el último catálogo descargado: el otro, sin cobertura, se quedaba sin ella.
+// Ahora `catalog_ids` (índice multiEntry) y `orden_por_catalogo` {catId: orden}. La imagen se guarda UNA vez.
+const DB_VERSION = 4;
+// Catálogos a los que pertenece una lámina guardada (también las guardadas antes de la v4, con un solo catalog_id).
+function _catsDeLamina(v) {
+  if (v && Array.isArray(v.catalog_ids)) return v.catalog_ids.map(Number);
+  return v && v.catalog_id != null ? [Number(v.catalog_id)] : [];
+}
 
 let _db = null;
 
@@ -64,6 +72,34 @@ function abrirDB() {
       if (!db.objectStoreNames.contains('reposicion')) {
         db.createObjectStore('reposicion', { keyPath: 'modelo' });
       }
+      // v4: láminas en varios catálogos. Solo se toca el store `sheets` (nada de la cola, visitas ni anotaciones
+      // pendientes de subir): a cada lámina guardada se le pasa su catalog_id a la lista y su orden al mapa.
+      const sheetsStore = e.target.transaction.objectStore('sheets');
+      if (!sheetsStore.indexNames.contains('catalog_ids')) {
+        sheetsStore.createIndex('catalog_ids', 'catalog_ids', { multiEntry: true });
+      }
+      if (oldVersion > 0 && oldVersion < 4) {
+        sheetsStore.openCursor().onsuccess = (ev) => {
+          const cur = ev.target.result;
+          if (!cur) return;
+          const v = cur.value;
+          if (!Array.isArray(v.catalog_ids)) {
+            const cats = _catsDeLamina(v);
+            const orden_por_catalogo = {};
+            cats.forEach(c => { orden_por_catalogo[c] = v.orden; });
+            cur.update({ ...v, catalog_ids: cats, orden_por_catalogo });
+          }
+          cur.continue();
+        };
+        // La copia vieja no sabe a qué OTROS catálogos pertenecía cada lámina (se pisaban): se marcan los catálogos
+        // como cambiados para que la próxima preparación los vuelva a bajar. Las imágenes que ya están se reutilizan.
+        e.target.transaction.objectStore('catalogs').openCursor().onsuccess = (ev) => {
+          const cur = ev.target.result;
+          if (!cur) return;
+          cur.update({ ...cur.value, updated_at: 'repasar-v4' });
+          cur.continue();
+        };
+      }
     };
     req.onsuccess = () => { _db = req.result; resolve(_db); };
     req.onerror = () => reject(req.error);
@@ -110,31 +146,54 @@ window.CpDB = {
     });
   },
   async borrarCatalogoOffline(id) {
-    // Borra catálogo + sus láminas
+    // Borra el catálogo y lo saca de sus láminas. Una lámina que también está en otro catálogo descargado se queda
+    // (con su imagen) para ese otro; solo se borra la que se queda sin ninguno.
     await tx('catalogs', 'readwrite', (store) => store.delete(Number(id)));
-    // Las láminas del catálogo
-    const db = await abrirDB();
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction('sheets', 'readwrite');
-      const store = transaction.objectStore('sheets');
-      const idx = store.index('catalog_id');
-      const req = idx.openCursor(IDBKeyRange.only(Number(id)));
-      req.onsuccess = (e) => {
-        const cursor = e.target.result;
-        if (cursor) {
-          store.delete(cursor.primaryKey);
-          cursor.continue();
+    return this._quitarCatalogoDeLaminas(id, null);
+  },
+  // Quita `catalogId` de las láminas guardadas que lo tienen, salvo las de `idsQueSeQuedan` (null = todas fuera).
+  // Las que se quedan sin ningún catálogo se borran. Devuelve cuántas se borraron del todo.
+  async _quitarCatalogoDeLaminas(catalogId, idsQueSeQuedan) {
+    const cid = Number(catalogId);
+    const quedan = idsQueSeQuedan ? new Set(idsQueSeQuedan.map(Number)) : null;
+    let borradas = 0;
+    await tx('sheets', 'readwrite', (store) => {
+      store.openCursor().onsuccess = (e) => {
+        const cur = e.target.result;
+        if (!cur) return;
+        const v = cur.value;
+        const cats = _catsDeLamina(v);
+        if (cats.includes(cid) && !(quedan && quedan.has(Number(v.id)))) {
+          const resto = cats.filter(c => c !== cid);
+          if (!resto.length) { cur.delete(); borradas++; }
+          else {
+            const orden_por_catalogo = { ...(v.orden_por_catalogo || {}) };
+            delete orden_por_catalogo[cid];
+            cur.update({ ...v, catalog_ids: resto, catalog_id: resto[0], orden_por_catalogo });
+          }
         }
+        cur.continue();
       };
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
     });
+    return borradas;
   },
 
   // --- Láminas ---
+  // Guarda una lámina AÑADIENDO su catálogo a los que ya tenía (no lo pisa): la misma lámina del maestro y de un
+  // Express es un solo registro con una sola imagen, y cada catálogo con su orden.
   async guardarLamina(sheet) {
     return tx('sheets', 'readwrite', (store) => {
-      store.put(sheet);
+      const r = store.get(Number(sheet.id));
+      r.onsuccess = () => {
+        const prev = r.result || null;
+        const cid = sheet.catalog_id != null ? Number(sheet.catalog_id) : null;
+        const cats = _catsDeLamina(prev);
+        if (cid != null && !cats.includes(cid)) cats.push(cid);
+        const orden_por_catalogo = { ...((prev && prev.orden_por_catalogo) || {}) };
+        if (prev && !prev.orden_por_catalogo && prev.catalog_id != null) orden_por_catalogo[Number(prev.catalog_id)] = prev.orden;
+        if (cid != null) orden_por_catalogo[cid] = sheet.orden;
+        store.put({ ...(prev || {}), ...sheet, catalog_ids: cats, orden_por_catalogo });
+      };
     });
   },
   // Marca en la copia local qué láminas están ocultas. Solo reescribe las que cambian.
@@ -153,27 +212,23 @@ window.CpDB = {
 
   // Quita de la copia local las láminas de este catálogo que el servidor ya no trae (Fondo, Papelera, quitadas de un
   // Express). Antes se quedaban para siempre: sin cobertura el visor las enseñaba y el total salía inflado (v326).
+  // Con varios catálogos (v327): solo se le quita ESTE catálogo; si sigue en otro (el maestro), se queda para él.
   async borrarLaminasQueYaNoEstan(catalogId, idsVigentes) {
-    const vigentes = new Set((idsVigentes || []).map(Number));
-    let borradas = 0;
-    await tx('sheets', 'readwrite', (store) => {
-      store.index('catalog_id').openCursor(IDBKeyRange.only(Number(catalogId))).onsuccess = (e) => {
-        const cur = e.target.result;
-        if (!cur) return;
-        if (!vigentes.has(Number(cur.value.id))) { cur.delete(); borradas++; }
-        cur.continue();
-      };
-    });
-    return borradas;
+    return this._quitarCatalogoDeLaminas(catalogId, idsVigentes || []);
   },
 
   async obtenerLaminasDeCatalogo(catalogId) {
+    const cid = Number(catalogId);
     const db = await abrirDB();
     return new Promise((resolve, reject) => {
-      const req = db.transaction('sheets').objectStore('sheets').index('catalog_id').getAll(IDBKeyRange.only(Number(catalogId)));
+      const req = db.transaction('sheets').objectStore('sheets').index('catalog_ids').getAll(IDBKeyRange.only(cid));
       req.onsuccess = () => {
-        const arr = req.result || [];
-        arr.sort((a, b) => (a.orden || 0) - (b.orden || 0));
+        // Cada catálogo con SU orden (el de un Express no es el del maestro).
+        const arr = (req.result || []).map(v => {
+          const o = v.orden_por_catalogo && v.orden_por_catalogo[cid] != null ? v.orden_por_catalogo[cid] : v.orden;
+          return { ...v, catalog_id: cid, orden: o };
+        });
+        arr.sort((a, b) => ((a.orden || 0) - (b.orden || 0)) || (a.id - b.id));
         resolve(arr);
       };
       req.onerror = () => reject(req.error);

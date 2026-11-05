@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v326 · 5 nov 2026';
+const APP_VERSION = 'v327 · 5 nov 2026';
 const API = '';
 
 // ============================================================================
@@ -4085,9 +4085,11 @@ function _visorVisibles() {
   }
   if (busca) {
     // Búsqueda por número de lámina o por texto (incluye nombres de categorías)
-    const numero = parseInt(busca);
-    visibles = visibles.filter((s, i) => {
-      if (!isNaN(numero) && (i + 1) === numero) return true;
+    // El número que se escribe puede ser el del contador (posición en el catálogo que se ve) o el nº fijo de la lámina
+    // (el del mosaico y las listas). Antes era la posición DENTRO de la categoría filtrada, que no se ve en ningún sitio.
+    const numero = /^\d+$/.test(busca) ? parseInt(busca, 10) : NaN;
+    visibles = visibles.filter((s) => {
+      if (!isNaN(numero) && (_visorSheets.indexOf(s) + 1 === numero || Number(s.numero_fijo) === numero)) return true;
       const catsNombres = (s.categorias || []).map(c => c.nombre).join(' ');
       const blob = [s.titulo, s.notas, s.tags, catsNombres].filter(Boolean).join(' ').toLowerCase();
       return blob.includes(busca);
@@ -8739,6 +8741,9 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo, opts) {
           titulo: sheet.titulo,
           notas: sheet.notas,
           tags: sheet.tags,
+          // Sin esto, sin cobertura el mosaico numeraba por posición y el filtro de categorías salía vacío (v327).
+          numero_fijo: sheet.numero_fijo != null ? sheet.numero_fijo : null,
+          categorias: sheet.categorias || [],
           oculta: !!sheet.oculta,   // se guarda igual: al mostrarla otra vez, la tablet ya la tiene
           imagen_path_original: sheet.imagen_path,
           imagen_blob: blob,
