@@ -151,6 +151,22 @@ window.CpDB = {
     });
   },
 
+  // Quita de la copia local las láminas de este catálogo que el servidor ya no trae (Fondo, Papelera, quitadas de un
+  // Express). Antes se quedaban para siempre: sin cobertura el visor las enseñaba y el total salía inflado (v326).
+  async borrarLaminasQueYaNoEstan(catalogId, idsVigentes) {
+    const vigentes = new Set((idsVigentes || []).map(Number));
+    let borradas = 0;
+    await tx('sheets', 'readwrite', (store) => {
+      store.index('catalog_id').openCursor(IDBKeyRange.only(Number(catalogId))).onsuccess = (e) => {
+        const cur = e.target.result;
+        if (!cur) return;
+        if (!vigentes.has(Number(cur.value.id))) { cur.delete(); borradas++; }
+        cur.continue();
+      };
+    });
+    return borradas;
+  },
+
   async obtenerLaminasDeCatalogo(catalogId) {
     const db = await abrirDB();
     return new Promise((resolve, reject) => {

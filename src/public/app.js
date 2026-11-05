@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v325 · 30 oct 2026';
+const APP_VERSION = 'v326 · 5 nov 2026';
 const API = '';
 
 // ============================================================================
@@ -3861,6 +3861,8 @@ async function renderVisorComercial(catalogId) {
   appState.visorFiltroCat = null;
   _buscadorVisorAbierto = false;
   clearTimeout(_visorBuscarTimer);
+  // Un enlace entre catálogos manda sobre la lámina guardada de la visita (ver _indiceLaminaVisita).
+  const _vieneDeEnlace = _indiceDeseadoVisor != null || _hojasDeseadasVisor.length > 0;
   // Página de entrada: por defecto la 1ª. PERO si venimos de un ENLACE entre catálogos
   // (navegarAEnlaceCatalogo / volverDeEnlaceCatalogo dejan una página concreta en
   // _indiceDeseadoVisor), hay que respetarla. Si no, el salto al catálogo enlazado y la
@@ -3940,6 +3942,11 @@ async function renderVisorComercial(catalogId) {
         if (idx >= 0) { appState.visorIndice = idx; break; }
       }
       _hojasDeseadasVisor = [];
+    } else if (!_vieneDeEnlace) {
+      // VISITA EN CURSO: abrir en la lámina donde se quedó (se cerró la app, se recargó, se cortó…). Antes siempre
+      // volvía a la 1 y el comercial tenía que buscar otra vez la 25 delante del cliente (Fernando, 5-nov-2026).
+      const idxVisita = _indiceLaminaVisita(sheets, catalogId);
+      if (idxVisita >= 0) { appState.visorIndice = idxVisita; appState.visorModo = 'presentacion'; }
     }
     if (appState.visorIndice >= sheets.length) appState.visorIndice = Math.max(0, sheets.length - 1);
     // I.2: guardar flag de offline para mostrar aviso en cabecera
@@ -4000,6 +4007,54 @@ async function renderVisorComercial(catalogId) {
 
 // I.2: flag global del visor offline
 let _visorModoOffline = false;
+
+// ===== LÁMINA EN LA QUE SE QUEDÓ CADA VISITA (v326, 5-nov-2026) =====
+// Se guarda en localStorage (sobrevive a cerrar la PWA, recargar o quedarse sin batería) por visita Y catálogo, y por
+// ID de lámina, nunca por posición: la posición cambia al ocultar, borrar, repaginar o filtrar por la zona del cliente
+// (ver navegarAEnlaceCatalogo). Con el orden de la lámina, si esa ya no se enseña se va a la más cercana.
+const _CLAVE_LAMINA_VISITA = 'cpv2_lamina_visita';
+function _claveLaminaVisita(catalogId) {
+  const v = appState.visitaActiva;
+  if (!v || esSoloVisor() || window._simpleSoloMirar) return null;   // mirar el catálogo sin la visita no cuenta
+  const idv = v.id ? String(v.id) : (v.local_id ? 'local' + v.local_id : null);
+  return idv && catalogId ? idv + ':' + Number(catalogId) : null;
+}
+function _leerLaminasVisita() {
+  try { const m = JSON.parse(localStorage.getItem(_CLAVE_LAMINA_VISITA) || '{}'); return (m && typeof m === 'object') ? m : {}; }
+  catch (_) { return {}; }
+}
+function _guardarLaminaVisita(sheet) {
+  if (!sheet || !_visorCatalog) return;
+  const k = _claveLaminaVisita(_visorCatalog.id);
+  if (!k) return;
+  const m = _leerLaminasVisita();
+  if (m[k] && Number(m[k].s) === Number(sheet.id)) return;   // la misma: no escribir en cada repintado
+  m[k] = { s: Number(sheet.id), o: sheet.orden != null ? Number(sheet.orden) : null, p: _visorSheets.indexOf(sheet), t: Date.now() };
+  // Solo las 30 más recientes: las visitas cerradas no se quedan para siempre.
+  const claves = Object.keys(m).sort((a, b) => (m[b].t || 0) - (m[a].t || 0));
+  claves.slice(30).forEach(x => delete m[x]);
+  try { localStorage.setItem(_CLAVE_LAMINA_VISITA, JSON.stringify(m)); } catch (_) {}
+}
+// Posición en `sheets` (la lista que enseña el visor) de la lámina guardada para la visita, o -1 si no hay.
+function _indiceLaminaVisita(sheets, catalogId) {
+  const k = _claveLaminaVisita(catalogId);
+  if (!k || !sheets.length) return -1;
+  const g = _leerLaminasVisita()[k];
+  if (!g) return -1;
+  const i = sheets.findIndex(s => Number(s.id) === Number(g.s));
+  if (i >= 0) return i;
+  // Ya no se enseña (oculta, al Fondo, vetada en esta zona): la de orden más cercano; a igualdad, la siguiente.
+  if (g.o != null) {
+    let mejor = -1, dist = Infinity;
+    sheets.forEach((s, j) => {
+      if (s.orden == null) return;
+      const d = Math.abs(Number(s.orden) - g.o) + (Number(s.orden) < g.o ? 0.5 : 0);
+      if (d < dist) { dist = d; mejor = j; }
+    });
+    if (mejor >= 0) return mejor;
+  }
+  return Math.min(Math.max(0, Number(g.p) || 0), sheets.length - 1);
+}
 
 // I.3: precarga de laminas vecinas (anterior, siguiente, +2) para navegacion instantanea
 // Solo crea Image() en memoria; el navegador la descarga en background y la cachea.
@@ -4233,6 +4288,7 @@ function pintarPresentacion(visibles) {
   if (appState.visorIndice >= visibles.length) appState.visorIndice = 0;
   const sheet = visibles[appState.visorIndice];
   const numeroOriginal = (sheet && sheet.numero_fijo != null) ? sheet.numero_fijo : (_visorSheets.indexOf(sheet) + 1);
+  _guardarLaminaVisita(sheet);
   const prevDisabled = appState.visorIndice === 0 ? 'disabled' : '';
   const nextDisabled = appState.visorIndice === visibles.length - 1 ? 'disabled' : '';
 
@@ -4265,9 +4321,12 @@ function pintarPresentacion(visibles) {
              (Fernando, 10 sep 2026). Mientras esta fila existe, el flotante se oculta (CSS). -->
         <button class="visor-nav-btn visor-sos-btn" onclick="abrirIncidencia()" title="Avisar de un problema, una duda o una idea (con captura de pantalla)">🛟</button>
         <button class="visor-nav-btn" ${prevDisabled} onclick="visorAnterior()">◀ Anterior</button>
-        <div class="visor-contador">
-          <span class="visor-contador-num">${numeroOriginal}</span>
-          <span class="visor-contador-total">/ ${_visorSheets.length}</span>
+        <!-- CONTADOR = posición en la lista que SE VE / cuántas se ven (v326). Antes ponía el número FIJO de la lámina
+             sobre el total: el número fijo tiene huecos (Fondo, Papelera, ocultas, vetadas por zona, Express), así que
+             la última no daba «N / N». El número fijo sigue en el mosaico, en las anotaciones y aquí en el title. -->
+        <div class="visor-contador" title="Lámina nº ${numeroOriginal}">
+          <span class="visor-contador-num">${appState.visorIndice + 1}</span>
+          <span class="visor-contador-total">/ ${visibles.length}</span>
         </div>
         <button class="visor-nav-btn" ${nextDisabled} onclick="visorSiguiente()">Siguiente ▶</button>
         <button class="visor-fullscreen-btn" onclick="entrarPantallaCompleta()" title="Modo pantalla completa">⛶<span class="visor-fullscreen-btn-texto"> Pantalla completa</span></button>
@@ -8692,6 +8751,11 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo, opts) {
         errCount++;
       }
     }
+
+    // 3b. Fuera de la copia las láminas que ya no están en el catálogo (al Fondo, a la Papelera…): si no, sin
+    // cobertura el visor las seguía enseñando y contando.
+    try { if (CpDB.borrarLaminasQueYaNoEstan) await CpDB.borrarLaminasQueYaNoEstan(catalog.id, sheets.map(s => s.id)); }
+    catch (e) { console.warn('[offline] no se pudieron limpiar las láminas viejas:', e.message); }
 
     // 4. Resumen final
     const tamanoMB = ((await CpDB.tamanoAproximado()) / 1024 / 1024).toFixed(1);
