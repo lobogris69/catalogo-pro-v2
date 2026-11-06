@@ -6881,6 +6881,8 @@ body:has(#inc-texto) .btn-incidencia { display: none; }
    ~30 px; y la fila «Seguir en el catálogo / Cerrar visita» no se estiraba (el div no crecía) y
    «Seguir…» salía en tres renglones con medio panel vacío al lado. */
 .carrito-btn { min-width: 44px; min-height: 44px; font-size: 18px; }
+/* Lo mismo en la lista de lo apuntado bajo la lámina: ✏️ y 🗑 medían 28 × 25. */
+.anot-chip-btn { min-width: 40px; min-height: 40px; font-size: 17px; }
 .carrito-footer { flex-wrap: wrap; }
 .carrito-footer > div { flex: 1 1 100%; }
 .carrito-footer .carrito-seguir { flex: 1 1 0; }

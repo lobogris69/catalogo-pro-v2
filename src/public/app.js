@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v333 · 6 nov 2026';
+const APP_VERSION = 'v335 · 6 nov 2026';
 const API = '';
 
 // ============================================================================
@@ -8776,8 +8776,12 @@ async function descargarCatalogoOffline(catalogId, nombreCatalogo, opts) {
     setTimeout(() => {
       modal.remove();
       mostrarNotificacionOnline(`📲 "${nombreCatalogo}" disponible offline`, '#16a34a');
-      // Refrescar lista si estamos en catálogos para mostrar el nuevo badge
-      if (appState.vista === 'catalogos' && !appState.catalogoActual) {
+      // Refrescar lista si estamos en catálogos para mostrar el nuevo badge. NUNCA tras una descarga automática
+      // (silenciosa) ni en modo sencillo: allí «catálogos» es también el inicio y la elección de farmacia, y la
+      // tablet del comercial saltaba sola a la lista del modo normal (con PDF/ZIP y Offline) a mitad de elegir
+      // farmacia (visto en la Tab S10 FE+, 6-nov-2026).
+      const sencillo = typeof esModoSimple === 'function' && esModoSimple();
+      if (!silencioso && !sencillo && appState.vista === 'catalogos' && !appState.catalogoActual) {
         renderListaCatalogos();
       }
     }, 2500);
