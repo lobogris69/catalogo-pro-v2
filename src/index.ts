@@ -722,6 +722,9 @@ async function initDB(): Promise<void> {
       -- Se implementan como CATALOGOS NORMALES para reutilizar visor/zonas/precios/pedidos
       -- sin inventar nada; 'especial' los marca para excluirlos de los listados normales.
       ALTER TABLE catalogs ADD COLUMN IF NOT EXISTS especial VARCHAR(10);
+      -- Orden en que el admin quiere ver los catalogos (de arriba abajo). NULL = sin colocar:
+      -- van detras, por el orden de siempre. Lo pidio Fernando el 6-nov-2026.
+      ALTER TABLE catalogs ADD COLUMN IF NOT EXISTS posicion INTEGER;
       -- De donde salio la lamina, para poder devolverla a su sitio al restaurar.
       ALTER TABLE sheets ADD COLUMN IF NOT EXISTS origen_catalog_id INTEGER;
       ALTER TABLE sheets ADD COLUMN IF NOT EXISTS retirada_at TIMESTAMP;
@@ -1884,7 +1887,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v335-tablet-6nov',
+      build: 'v336-orden-catalogos-6nov',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2319,7 +2322,7 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
           (SELECT COUNT(*)::int FROM catalogs h WHERE h.parent_id = c.id) AS num_hijos
         FROM catalogs c
         WHERE ${filtroArchivado} AND c.especial IS NULL
-        ORDER BY (CASE c.tipo WHEN 'maestro' THEN 0 WHEN 'clon' THEN 1 ELSE 2 END), c.updated_at DESC
+        ORDER BY c.posicion ASC NULLS LAST, (CASE c.tipo WHEN 'maestro' THEN 0 WHEN 'clon' THEN 1 ELSE 2 END), c.updated_at DESC
       `);
     } else {
       r = await pool.query(`
@@ -2335,7 +2338,7 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
         FROM catalogs c
         JOIN catalog_assignments ca ON ca.catalog_id = c.id
         WHERE ca.user_id = $1 AND c.estado != 'archivado'
-        ORDER BY c.updated_at DESC
+        ORDER BY c.posicion ASC NULLS LAST, c.updated_at DESC
       `, [req.user.id]);
     }
     // Administracion (rol 'oficina') consulta TODOS los catalogos vivos: no se les
@@ -2353,12 +2356,35 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
           ${SQL_ACTUALIZADO_AT}
         FROM catalogs c
         WHERE c.estado != 'archivado' AND (c.especial IS NULL OR c.especial = 'fondo')
-        ORDER BY c.updated_at DESC
+        ORDER BY c.posicion ASC NULLS LAST, c.updated_at DESC
       `);
     }
     res.json({ success: true, catalogs: r.rows });
   } catch (e) {
     res.status(500).json({ success: false, error: (e as Error).message });
+  }
+});
+
+// ORDEN DE LOS CATÁLOGOS: el admin decide cuál sale arriba (prioridad) y cuál abajo.
+// Recibe los ids en el orden deseado. NO toca updated_at: cambiar el orden no es cambiar
+// el catálogo, y así las tablets no lo vuelven a descargar.
+app.put('/api/catalogos-orden', verifyToken, requireRealAdmin, async (req: AuthRequest, res: Response) => {
+  const ids: number[] = Array.isArray(req.body?.ids) ? req.body.ids.map((x: any) => Number(x)).filter((n: number) => Number.isInteger(n) && n > 0) : [];
+  if (!ids.length) { res.status(400).json({ success: false, error: 'Falta la lista de catálogos' }); return; }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE catalogs c SET posicion = o.pos
+         FROM unnest($1::int[]) WITH ORDINALITY AS o(id, pos)
+        WHERE c.id = o.id`, [ids]);
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ success: false, error: (e as Error).message });
+  } finally {
+    client.release();
   }
 });
 

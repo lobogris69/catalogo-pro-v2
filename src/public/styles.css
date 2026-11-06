@@ -6887,3 +6887,14 @@ body:has(#inc-texto) .btn-incidencia { display: none; }
 .carrito-footer > div { flex: 1 1 100%; }
 .carrito-footer .carrito-seguir { flex: 1 1 0; }
 .carrito-footer > div > .btn-primary { flex: 2 1 0; }
+
+/* ===== ORDENAR CATÁLOGOS (admin, v336 · 6-nov-2026) ===== */
+.ordenar-cats-card{max-width:520px}
+.ordenar-cats-ayuda{font-size:13px;color:var(--gris-texto);margin:0 0 10px}
+.ordenar-cats-lista{display:flex;flex-direction:column;gap:6px;max-height:60vh;overflow-y:auto}
+.ordenar-cats-fila{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid #e5e7eb;border-radius:10px;background:#fff}
+.ordenar-cats-num{flex:0 0 26px;height:26px;border-radius:50%;background:#f1f5f9;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center}
+.ordenar-cats-nombre{flex:1 1 0;min-width:0;font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.ordenar-cats-btn{flex:0 0 44px;width:44px;height:44px;border:1px solid #cbd5e1;border-radius:10px;background:#f8fafc;font-size:16px;cursor:pointer}
+.ordenar-cats-btn:active{background:#e2e8f0}
+.ordenar-cats-btn:disabled{opacity:.3;cursor:default}

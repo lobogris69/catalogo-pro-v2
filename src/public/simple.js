@@ -246,10 +246,11 @@ async function simpleCatalogosDelComercial() {
   try {
     if (!navigator.onLine) {
       // Sin cobertura solo valen los descargados: son los únicos que puede enseñar.
-      const descargados = await CpDB.listarCatalogosDescargados();
+      const descargados = ordenarCatalogosOffline(await CpDB.listarCatalogosDescargados());
       return (descargados || []).map(c => ({ ...c, sheet_count: c.sheet_count || c.num_laminas || 0 }));
     }
     const r = await api('/api/catalogs');
+    recordarOrdenCatalogos(r.catalogs || []);
     return (r.catalogs || []).filter(c => c.estado !== 'archivado' && (c.sheet_count || 0) > 0);
   } catch (_) { return []; }
 }

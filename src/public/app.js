@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v335 · 6 nov 2026';
+const APP_VERSION = 'v336 · 6 nov 2026';
 const API = '';
 
 // ============================================================================
@@ -791,6 +791,77 @@ async function borrarCatalogoDefinitivo(id, nombre, numHijos) {
   } catch (e) { alert('No se pudo borrar: ' + e.message); }
 }
 
+// ===== ORDEN DE LOS CATÁLOGOS (lo decide el admin, 6-nov-2026) =====
+// El servidor ya los manda ordenados. Guardamos ese orden en el dispositivo para que, SIN
+// CONEXIÓN, los catálogos descargados salgan en el mismo orden y no en el de la base local.
+function recordarOrdenCatalogos(lista) {
+  try { localStorage.setItem('cp_orden_catalogos', JSON.stringify((lista || []).map(c => Number(c.id)))); } catch (_) {}
+  return lista;
+}
+function ordenarCatalogosOffline(lista) {
+  let orden = [];
+  try { orden = JSON.parse(localStorage.getItem('cp_orden_catalogos') || '[]'); } catch (_) {}
+  const pos = id => { const i = orden.indexOf(Number(id)); return i < 0 ? 1e9 : i; };
+  return (lista || []).slice().sort((a, b) => pos(a.id) - pos(b.id));
+}
+
+// Ventana para colocar los catálogos de arriba abajo con ▲ ▼ (solo admin).
+async function abrirOrdenarCatalogos() {
+  let cats = [];
+  try { cats = ((await api('/api/catalogs')).catalogs || []); }
+  catch (err) { alert('No se pudieron cargar los catálogos: ' + err.message); return; }
+  if (cats.length < 2) { alert('Solo hay un catálogo: no hay nada que ordenar.'); return; }
+  const m = document.createElement('div');
+  m.className = 'modal-bg';
+  m.innerHTML = `
+    <div class="modal-card ordenar-cats-card">
+      <div class="modal-header">
+        <h3>Orden de los catálogos</h3>
+        <button class="modal-cerrar" onclick="this.closest('.modal-bg').remove()">×</button>
+      </div>
+      <p class="ordenar-cats-ayuda">El de <b>arriba</b> es el que sale primero a los comerciales y en tu lista. Súbelo o bájalo con las flechas y pulsa <b>Guardar</b>.</p>
+      <div id="ordenar-cats-lista" class="ordenar-cats-lista"></div>
+      <div id="ordenar-cats-error"></div>
+      <div class="modal-acciones">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-bg').remove()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="ordenar-cats-guardar">Guardar orden</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  const $l = m.querySelector('#ordenar-cats-lista');
+  const pintar = (foco) => {
+    $l.innerHTML = cats.map((c, i) => `
+      <div class="ordenar-cats-fila">
+        <span class="ordenar-cats-num">${i + 1}</span>
+        <span class="ordenar-cats-nombre">${c.tipo === 'express' ? '📗' : c.tipo === 'maestro' ? '📕' : '📘'} ${escape(nombreCatalogoVisible(c))}</span>
+        <button type="button" class="ordenar-cats-btn" data-i="${i}" data-d="-1" ${i === 0 ? 'disabled' : ''} aria-label="Subir">▲</button>
+        <button type="button" class="ordenar-cats-btn" data-i="${i}" data-d="1" ${i === cats.length - 1 ? 'disabled' : ''} aria-label="Bajar">▼</button>
+      </div>`).join('');
+    if (foco) { const b = $l.querySelector(`[data-i="${foco.i}"][data-d="${foco.d}"]`) || $l.querySelector(`[data-i="${foco.i}"]:not([disabled])`); if (b) b.focus(); }
+  };
+  $l.addEventListener('click', e => {
+    const b = e.target.closest('.ordenar-cats-btn'); if (!b) return;
+    const i = Number(b.dataset.i), d = Number(b.dataset.d), j = i + d;
+    if (j < 0 || j >= cats.length) return;
+    [cats[i], cats[j]] = [cats[j], cats[i]];
+    pintar({ i: j, d });
+  });
+  pintar();
+  m.querySelector('#ordenar-cats-guardar').addEventListener('click', async (e) => {
+    const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Guardando…';
+    try {
+      await api('/api/catalogos-orden', { method: 'PUT', body: { ids: cats.map(c => c.id) } });
+      m.remove();
+      recordarOrdenCatalogos(cats);
+      if (typeof mostrarNotificacionOnline === 'function') mostrarNotificacionOnline('✅ Orden de los catálogos guardado', '#16a34a');
+      renderListaCatalogos();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Guardar orden';
+      m.querySelector('#ordenar-cats-error').innerHTML = `<div class="error-msg">${escape(err.message)}</div>`;
+    }
+  });
+}
+
 async function renderListaCatalogos() {
   const $v = document.getElementById('vista-contenido');
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogos…</div></div>`;
@@ -802,17 +873,18 @@ async function renderListaCatalogos() {
     let modoOffline = false;
     if (!navigator.onLine) {
       modoOffline = true;
-      const descargados = await CpDB.listarCatalogosDescargados();
+      const descargados = ordenarCatalogosOffline(await CpDB.listarCatalogosDescargados());
       catalogos = descargados.map(c => ({ ...c, _offline: true }));
     } else {
       try {
         const r = await api('/api/catalogs' + (_verArchivados ? '?archivados=1' : ''));
         catalogos = r.catalogs || [];
+        if (!_verArchivados) recordarOrdenCatalogos(catalogos);
       } catch (err) {
         // Si falla la API pero el navegador dice online, intentar IndexedDB como fallback
         console.warn('[I.2] API falló, usando IndexedDB:', err.message);
         modoOffline = true;
-        const descargados = await CpDB.listarCatalogosDescargados();
+        const descargados = ordenarCatalogosOffline(await CpDB.listarCatalogosDescargados());
         catalogos = descargados.map(c => ({ ...c, _offline: true }));
       }
     }
@@ -824,6 +896,7 @@ async function renderListaCatalogos() {
           <h2>Catálogos${modoOffline ? ' <span style="font-size:13px;color:var(--gris-texto);font-weight:normal">(modo offline)</span>' : ''}${_verArchivados ? ' <span style="font-size:13px;color:#b45309;font-weight:normal">· archivados</span>' : ''}</h2>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             ${esAdmin && !modoOffline && !_verArchivados ? `<button class="btn btn-primary btn-pequeno" onclick="abrirModalNuevoCatalogo()">+ Nuevo catálogo</button>${ayuda('Crea un catálogo nuevo. Tipo "Maestro" = catálogo principal con todas las láminas. Tipo "Express" = subcatálogo de ofertas que selecciona algunas láminas del maestro (ej: ofertas verano).', 'izq')}` : ''}
+            ${esAdmin && !modoOffline && !_verArchivados && catalogos.length > 1 ? `<button class="btn btn-secondary btn-pequeno" onclick="abrirOrdenarCatalogos()" title="Decide qué catálogo sale arriba y cuál abajo">↕️ Ordenar</button>${ayuda('Decide el orden en que salen los catálogos, de arriba abajo. El de arriba es el que ven primero los comerciales al elegir catálogo. Se sube o se baja con las flechas ▲ ▼ y se guarda.', 'izq')}` : ''}
             ${esAdmin && !modoOffline ? `<button class="btn btn-secondary btn-pequeno" onclick="toggleVerArchivados()">${_verArchivados ? '← Volver a los activos' : '🗄️ Ver archivados'}</button>` : ''}
             ${esAdmin && !modoOffline && !_verArchivados ? `<button class="btn btn-secondary btn-pequeno" id="btn-fondo-papelera" onclick="abrirFondoYPapelera()" title="Láminas retiradas del catálogo (Fondo) y láminas quitadas por error (Papelera)">📦 Fondo y papelera</button>` : ''}
             ${!modoOffline && !_verArchivados ? `<button class="btn btn-secondary btn-pequeno" onclick="descargarMisClientes()" title="Descargar tu lista de clientes a este dispositivo para uso offline">👥 Descargar clientes</button>` : ''}
@@ -3724,11 +3797,11 @@ async function renderVisorSoloLector() {
   $v.innerHTML = `<div class="contenedor"><div class="loading">Cargando catálogos…</div></div>`;
   let cats = [];
   let online = navigator.onLine;
-  try { const r = await api('/api/catalogs'); cats = r.catalogs || []; }
+  try { const r = await api('/api/catalogs'); cats = recordarOrdenCatalogos(r.catalogs || []); }
   catch (e) {
     // offline: catálogos descargados
     online = false;
-    try { cats = (await CpDB.listarCatalogosDescargados()).map(c => ({ ...c, _offline: true })); } catch (_) {}
+    try { cats = ordenarCatalogosOffline(await CpDB.listarCatalogosDescargados()).map(c => ({ ...c, _offline: true })); } catch (_) {}
   }
   if (!cats.length) {
     $v.innerHTML = `<div class="contenedor"><div class="empty-state"><div class="empty-state-icono">📚</div>
