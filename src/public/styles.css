@@ -6741,3 +6741,128 @@ body.solo-visor .solovisor-salir-wrap { display: block; margin-top: 10px; margin
   .topbar { flex-wrap: wrap; row-gap: 10px; padding: 12px 16px; }
   .topbar-acciones { width: 100%; flex-wrap: wrap; justify-content: flex-start; }
 }
+
+/* ============================================================================
+   MODO SENCILLO EN EL MÓVIL (6-nov-2026, revisión en el Samsung de pruebas a 320 px CSS,
+   el mismo ancho que el móvil de Fernando). Medido elemento a elemento, se salía:
+   - la fila 🔍 ✉️ 📲 📺 ▦ del visor, 72 px por la derecha: la cabecera se metía 138 px hacia
+     dentro para el «← Inicio» flotante y las pastillas con texto no podían partirse;
+   - «TERMINAR ▸» de la barra del pedido (llegaba a 358 px);
+   - «✉️ Enviar (n)» de la barra de enviar láminas, y su texto salía una palabra por línea;
+   - las ventanas que suben desde abajo, por ARRIBA: más altas que la pantalla y pegadas al
+     fondo con flex-end, lo que sobraba quedaba encima del borde, sin forma de verlo.
+   Además «Anterior / Siguiente» ocupaban dos filas y la lámina se quedaba en una tira.
+   Va al final para ganar a las reglas anteriores. En tablet y PC no cambia nada.
+   ============================================================================ */
+/* Ventana que sube desde abajo: pegada abajo si cabe, y si no cabe empieza arriba y se desplaza.
+   (margin-top:auto en vez de align-items:flex-end, que en un contenedor con scroll corta por arriba). */
+.simple-modal-bg { align-items: flex-start; }
+.simple-modal-bg > .simple-modal { margin-top: auto; }
+/* El 🛟 flotante: a 96 px solo si está la barra negra del pedido; si no, abajo del todo.
+   Y fuera mientras se escribe el aviso: tapaba su propia ventana. */
+body.modo-simple:not(:has(#simple-barra)) .btn-incidencia { bottom: 18px; }
+body:has(#inc-texto) .btn-incidencia { display: none; }
+/* La × de cerrar ventanas medía 12 × 22: imposible de acertar con el dedo. */
+.modal-cerrar { min-width: 40px; min-height: 40px; display: inline-flex; align-items: center; justify-content: center; }
+
+@media (max-width: 599px) {
+  body.modo-simple:not(:has(#simple-barra)) .btn-incidencia { bottom: 12px; }
+  /* Lo que va al fondo de una lista no puede quedar debajo del 🛟: hueco para bajarlo de él. */
+  body.modo-simple:not(:has(#simple-barra)) { padding-bottom: 76px; }
+  /* Las ventanas que suben desde abajo (pedido, apuntar un producto) llevan sus botones justo
+     donde va el 🛟 y los tapaba («Seguir en el catálogo»): mientras están abiertas, fuera. */
+  body:has(#carrito-overlay) .btn-incidencia,
+  body:has(.simple-modal-bg) .btn-incidencia { display: none; }
+  /* Pie del pedido (modo normal): Reposición, Devolver y Seguir/Cerrar en fila no cabían. */
+  .carrito-footer { flex-wrap: wrap; }
+  .carrito-footer > .btn { flex: 1 1 calc(50% - 4px); min-width: 0; margin-bottom: 0 !important; }
+  .carrito-footer > div { flex: 1 1 100%; }
+
+  /* CABECERA DEL VISOR: el título en la fila del «← Inicio» (sin meter toda la cabecera hacia
+     dentro), en una línea; debajo las dos pastillas a medias y luego los iconos. */
+  body.modo-simple.simple-con-volver .visor-cabecera { padding-left: 10px; }
+  body.modo-simple.simple-con-volver .btn-icon-volver { display: none; }
+  body.modo-simple .visor-titulo-bloque { flex: 1 1 0; min-height: 46px; display: flex; flex-direction: column; justify-content: center; }
+  body.modo-simple.simple-con-volver .visor-titulo-bloque { margin-left: 112px; }
+  body.modo-simple .visor-titulo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
+  body.modo-simple .visor-subtitulo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  body.modo-simple .visor-modo-switch { flex: 1 1 100%; gap: 6px; padding: 4px; }
+  body.modo-simple .visor-modo-btn.btn-enviar-laminas,
+  body.modo-simple .visor-modo-btn.btn-mi-whatsapp {
+    order: -1; flex: 1 1 calc(50% - 3px); min-width: 0; white-space: normal;
+    font-size: 13px; padding: 4px 8px; min-height: 46px; text-align: center;
+  }
+  body.modo-simple .visor-modo-btn.btn-ultima-visita { flex: 1 1 auto; min-width: 0; white-space: normal; font-size: 13px; padding: 4px 8px; min-height: 46px; }
+  body.modo-simple .visor-modo-btn.visor-modo-vista,
+  body.modo-simple .visor-modo-btn.btn-buscar-lamina { width: 48px; height: 46px; font-size: 22px; }
+
+  /* LA LÁMINA, A TODO EL ANCHO. En la tablet se encaja al alto de la pantalla (todas iguales y
+     enteras, 7-sep); en un móvil en vertical eso la dejaba en una tira de 90 px bajo la cabecera.
+     Aquí manda el ancho, como en el solo visor (11-sep): todas igual de anchas y se baja para
+     ver el final. El hueco de abajo (padding del body) deja asomarla por encima del pedido. */
+  body.modo-simple .visor-imagen-contenedor { max-height: none; }
+  body.modo-simple .visor-imagen { width: 100%; height: auto; max-height: none; }
+
+  /* ANTERIOR / SIGUIENTE en una sola fila: en el móvil bastan las flechas. */
+  .visor-nav-txt { display: none; }
+  .visor-nav-superior { flex-wrap: nowrap; gap: 6px; padding: 6px; }
+  .visor-nav-superior .visor-nav-btn { min-width: 0; padding: 0 8px; }
+  .visor-nav-superior .visor-nav-btn:not(.visor-sos-btn) { flex: 1 1 0; font-size: 20px; }
+  .visor-nav-superior .visor-sos-btn { flex: 0 0 48px; min-width: 48px; }
+  .visor-nav-superior .visor-contador { flex: 0 0 auto; }
+  .visor-nav-superior .visor-fullscreen-btn { flex: 0 0 48px; min-width: 48px; padding: 0; }
+  body.modo-simple .visor-nav-btn,
+  body.modo-simple .visor-fullscreen-btn { min-height: 50px; }
+
+  /* BARRA DEL PEDIDO: los tres botones dentro de la pantalla. */
+  .simple-barra { padding: 8px 10px; gap: 8px; }
+  .simple-barra-cuenta { flex: 1 1 auto; min-width: 0; font-size: 16px; padding: 8px 6px; }
+  .simple-barra-btn { flex: 0 0 auto; padding: 0 14px; font-size: 16px; }
+  .simple-barra-cat { min-width: 50px; min-height: 50px; }
+
+  /* BARRA DE ENVIAR LÁMINAS: el texto en su línea y los botones debajo, a partes iguales. */
+  .barra-enviar-laminas { flex-wrap: wrap; gap: 8px; padding: 8px 10px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
+  .barra-enviar-laminas .bel-info { flex: 1 1 100%; order: -1; text-align: center; font-size: 13px; }
+  .barra-enviar-laminas .bel-enviar { flex: 1 1 0; min-width: 0; padding: 0 8px; font-size: 14px; }
+  .visor-mosaico.mosaico-enviar { padding-bottom: 130px; }
+
+  /* PLANNING: filtros y botones de visita a tamaño de dedo (medían 29 px de alto). */
+  .planning-chip { min-height: 38px; }
+  .plan-visita { min-height: 38px; min-width: 44px; }
+  /* APUNTAR UN PRODUCTO: la fila 3 · 6 · 12 · 24 · Otra no cabía y, centrada, se salía por los dos
+     lados (el «3» quedaba a la izquierda de la pantalla, sin forma de llegar). Cuatro en fila y
+     «Otra» debajo. Y el − / + (84 px) se estrujaba en óvalos: más pequeños para que quepan. */
+  .simple-rapidos { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .simple-rapidos button { min-width: 0; }
+  .simple-rapidos .cond-otra { grid-column: 1 / -1; }
+  .simple-contador { gap: 12px; }
+  .simple-mas-menos { width: 68px; height: 68px; flex: 0 0 68px; font-size: 38px; }
+  .simple-cantidad { font-size: 52px; min-width: 80px; text-align: center; }
+
+  /* BUSCADOR DEL VISOR: categorías (26 px) y la ✕ de borrar (28 px), a tamaño de dedo. */
+  .visor-chip-cat { min-height: 38px; }
+  .visor-buscador-clear { min-width: 40px; min-height: 40px; }
+
+  /* El 🛟 tapaba la ✕ y «Imprimir» de la barra de enviar láminas: va por encima de ella.
+     (Con :not(:has(#simple-barra)) delante, que lleva un id, porque si no pierde contra la regla
+     de «sin barra del pedido → abajo del todo», más específica.) */
+  body:has(.barra-enviar-laminas) .btn-incidencia,
+  body.modo-simple:not(:has(#simple-barra)):has(.barra-enviar-laminas) .btn-incidencia { bottom: 118px; }
+  /* La ✕ del pedido (33 px) y «Ver mis avisos anteriores» (15 px de alto), a tamaño de dedo. */
+  .carrito-cerrar { min-width: 44px; min-height: 44px; }
+  .btn-enlace { padding-top: 10px; padding-bottom: 10px; }
+
+  /* AYUDAS «?»: el globo mide hasta 280 px y se centraba en el icono; junto al borde se cortaba.
+     En el móvil sale como un aviso a lo ancho, ARRIBA (abajo quedaba debajo de la barra del pedido:
+     la cabecera fija del visor encierra al globo en su capa), sin depender de dónde esté el «?». */
+  .ayuda-tip { width: 26px; height: 26px; font-size: 13px; }
+  .ayuda-tip::after,
+  .ayuda-tip.tip-abajo::after,
+  .ayuda-tip.tip-izq::after {
+    position: fixed; left: 12px; right: 12px; bottom: auto; top: calc(12px + var(--aviso-alto, 0px));
+    width: auto; max-width: none; transform: none; z-index: 100000; font-size: 14px; padding: 12px 14px;
+  }
+  .ayuda-tip::before { display: none; }
+}
+/* En tablet la barra de enviar láminas mide ~64 px: el 🛟 también por encima. */
+@media (min-width: 600px) { body:has(.barra-enviar-laminas) .btn-incidencia { bottom: 84px; } }

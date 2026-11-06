@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v327 · 5 nov 2026';
+const APP_VERSION = 'v330 · 6 nov 2026';
 const API = '';
 
 // ============================================================================
@@ -4322,7 +4322,7 @@ function pintarPresentacion(visibles) {
              izquierda) caía encima de la lámina, justo donde muchas llevan código y precios
              (Fernando, 10 sep 2026). Mientras esta fila existe, el flotante se oculta (CSS). -->
         <button class="visor-nav-btn visor-sos-btn" onclick="abrirIncidencia()" title="Avisar de un problema, una duda o una idea (con captura de pantalla)">🛟</button>
-        <button class="visor-nav-btn" ${prevDisabled} onclick="visorAnterior()">◀ Anterior</button>
+        <button class="visor-nav-btn" ${prevDisabled} onclick="visorAnterior()" aria-label="Anterior">◀<span class="visor-nav-txt"> Anterior</span></button>
         <!-- CONTADOR = posición en la lista que SE VE / cuántas se ven (v326). Antes ponía el número FIJO de la lámina
              sobre el total: el número fijo tiene huecos (Fondo, Papelera, ocultas, vetadas por zona, Express), así que
              la última no daba «N / N». El número fijo sigue en el mosaico, en las anotaciones y aquí en el title. -->
@@ -4330,7 +4330,7 @@ function pintarPresentacion(visibles) {
           <span class="visor-contador-num">${appState.visorIndice + 1}</span>
           <span class="visor-contador-total">/ ${visibles.length}</span>
         </div>
-        <button class="visor-nav-btn" ${nextDisabled} onclick="visorSiguiente()">Siguiente ▶</button>
+        <button class="visor-nav-btn" ${nextDisabled} onclick="visorSiguiente()" aria-label="Siguiente"><span class="visor-nav-txt">Siguiente </span>▶</button>
         <button class="visor-fullscreen-btn" onclick="entrarPantallaCompleta()" title="Modo pantalla completa">⛶<span class="visor-fullscreen-btn-texto"> Pantalla completa</span></button>
       </div>
 
