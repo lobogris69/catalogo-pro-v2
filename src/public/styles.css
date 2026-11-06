@@ -6877,3 +6877,11 @@ body:has(#inc-texto) .btn-incidencia { display: none; }
 .visor-chip-cat { min-height: 38px; }
 .visor-buscador-clear { min-width: 40px; min-height: 40px; }
 .carrito-cerrar { min-width: 44px; min-height: 44px; }
+/* Lo apuntado en la visita, probado con el dedo en la Tab S10 FE+ (6-nov): ✏️ y 🗑 de cada línea medían
+   ~30 px; y la fila «Seguir en el catálogo / Cerrar visita» no se estiraba (el div no crecía) y
+   «Seguir…» salía en tres renglones con medio panel vacío al lado. */
+.carrito-btn { min-width: 44px; min-height: 44px; font-size: 18px; }
+.carrito-footer { flex-wrap: wrap; }
+.carrito-footer > div { flex: 1 1 100%; }
+.carrito-footer .carrito-seguir { flex: 1 1 0; }
+.carrito-footer > div > .btn-primary { flex: 2 1 0; }
