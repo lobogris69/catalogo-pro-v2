@@ -6864,5 +6864,16 @@ body:has(#inc-texto) .btn-incidencia { display: none; }
   }
   .ayuda-tip::before { display: none; }
 }
-/* En tablet la barra de enviar láminas mide ~64 px: el 🛟 también por encima. */
-@media (min-width: 600px) { body:has(.barra-enviar-laminas) .btn-incidencia { bottom: 84px; } }
+/* En tablet la barra de enviar láminas mide ~64 px: el 🛟 también por encima (mismo refuerzo de
+   especificidad que en el móvil; sin él la tapaba igual, medido en la Tab S10 FE+ el 6-nov). */
+@media (min-width: 600px) {
+  body:has(.barra-enviar-laminas) .btn-incidencia,
+  body.modo-simple:not(:has(#simple-barra)):has(.barra-enviar-laminas) .btn-incidencia { bottom: 84px; }
+}
+/* A tamaño de dedo también en la TABLET, que es donde más se usan (medidos en la Tab S10 FE+):
+   filtros del planning y categorías del buscador (26-29 px de alto), ✕ del buscador y del pedido. */
+.planning-chip { min-height: 38px; }
+.plan-visita { min-height: 38px; min-width: 44px; }
+.visor-chip-cat { min-height: 38px; }
+.visor-buscador-clear { min-width: 40px; min-height: 40px; }
+.carrito-cerrar { min-width: 44px; min-height: 44px; }
