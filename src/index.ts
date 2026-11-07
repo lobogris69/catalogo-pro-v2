@@ -1949,7 +1949,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v338-inicio-por-papel-7nov',
+      build: 'v338b-con-pedido-distinct-7nov',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -6797,7 +6797,7 @@ app.get('/api/dashboard', verifyToken, requireRealAdmin, async (req: AuthRequest
       const r = await pool.query(`
         SELECT u.id, u.name,
                COUNT(DISTINCT v.id)::int AS visitas,
-               COUNT(*) FILTER (WHERE v.hubo_pedido)::int AS con_pedido,
+               COUNT(DISTINCT v.id) FILTER (WHERE v.hubo_pedido)::int AS con_pedido,  -- DISTINCT: tras el JOIN con annotations cada visita salía una vez por línea
                COALESCE(SUM(a.cantidad * p.precio_pvf), 0)::numeric AS total_pvf
         FROM users u
         JOIN visits v ON v.user_id = u.id
