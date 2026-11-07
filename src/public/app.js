@@ -4,7 +4,7 @@
 // Versión visible de la app. IMPORTANTE: subirla a la vez que CACHE_VERSION en
 // sw.js (app.js y sw.js se cachean juntos en el shell del SW, así que esta
 // constante refleja la versión REALMENTE cargada, no la última del servidor).
-const APP_VERSION = 'v337 · 7 nov 2026';
+const APP_VERSION = 'v338 · 7 nov 2026';
 const API = '';
 
 // ============================================================================
@@ -333,6 +333,8 @@ function logout() {
   appState.clienteActual = null;
   appState.visitaVerId = null;
   window._visitaCargada = false;
+  window._czInicio = false;          // al volver a entrar, cada papel aterriza en su inicio (inicio.js)
+  appState.vista = 'catalogos';
   _sesionCaducadaAvisada = false;   // al volver a entrar, el aviso puede salir otra vez
   render();
 }
@@ -441,13 +443,14 @@ function pintarNavAgrupada(esAdmin, esOficina) {
   const act = grupos.find(g => g.items.some(i => i.v === appState.vista)) || null;
   return `
       <div class="navtabs">
-        ${esAdmin ? `<button class="navtab ${appState.vista === 'dashboard' ? 'navtab-activa' : ''}" onclick="irA('dashboard')">🏠 Inicio</button>` : ''}
-        ${grupos.map(g => `<button class="navtab navtab-grupo ${act && g.id === act.id ? 'navtab-activa' : ''}" onclick="irAGrupo('${g.id}')">${g.icon} ${escape(g.label)}</button>`).join('')}
-        <button class="navtab navtab-lupa" onclick="abrirBusquedaGlobal()" title="Buscar (Ctrl+K)" style="margin-left:auto">🔍</button>
+        ${esAdmin ? `<button class="navtab ${['dashboard', 'dashboard-completo'].includes(appState.vista) ? 'navtab-activa' : ''}" onclick="irA('dashboard')">${iconoVista('dashboard')} Resumen</button>` : ''}
+        ${!esAdmin && !esOficina ? `<button class="navtab ${appState.vista === 'hoy' ? 'navtab-activa' : ''}" onclick="irA('hoy')">${iconoVista('hoy')} Hoy</button>` : ''}
+        ${grupos.map(g => `<button class="navtab navtab-grupo ${act && g.id === act.id ? 'navtab-activa' : ''}" onclick="irAGrupo('${g.id}')">${iconoVista(g.id)} ${escape(g.label)}</button>`).join('')}
+        <button class="navtab navtab-lupa" onclick="abrirBusquedaGlobal()" title="Buscar (Ctrl+K)" aria-label="Buscar" style="margin-left:auto">${icono('buscar')}</button>
       </div>
       ${act && act.items.length > 1 ? `
       <div class="navtabs navtabs-sub">
-        ${act.items.map(i => `<button class="navtab ${appState.vista === i.v ? 'navtab-activa' : ''}" onclick="irA('${i.v}')">${i.icon} ${escape(i.label)}</button>`).join('')}
+        ${act.items.map(i => `<button class="navtab ${appState.vista === i.v ? 'navtab-activa' : ''}" onclick="irA('${i.v}')">${iconoVista(i.v)} ${escape(i.label)}</button>`).join('')}
       </div>` : ''}
   `;
 }
@@ -492,6 +495,17 @@ async function renderApp() {
     setTimeout(_prepararOfflineComercial, 15000);
   }
 
+  // Primera pantalla tras entrar: el comercial a «Hoy», el admin a «Resumen» (inicio.js).
+  // Se decide ANTES de pintar el menú (si se hacía en el router, quedaba marcada la pestaña
+  // anterior). Sin cobertura, con una visita en curso o en modo sencillo/solo visor, nada
+  // cambia: se entra como siempre.
+  if (!window._czInicio) {
+    window._czInicio = true;
+    if (appState.vista === 'catalogos' && !appState.catalogoActual && !appState.visitaActiva) {
+      if (rolEfectivo() === 'admin') appState.vista = 'dashboard';
+      else if (rolEfectivo() === 'sales' && navigator.onLine && !esModoSimple() && !esSoloVisor()) appState.vista = 'hoy';
+    }
+  }
   const esAdmin = rolEfectivo() === 'admin';
   // Administración (rol 'oficina'): solo consulta el catálogo y su parte de la coordinación.
   const esOficina = !!(user && user.role === 'oficina');
@@ -529,7 +543,7 @@ async function renderApp() {
       ${barraVisita}
       <div class="topbar">
         <div>
-          <div class="topbar-titulo">CatalogPRO v2</div>
+          <div class="topbar-titulo">${marcaEmpresaHtml()}<span>CatalogPRO</span></div>
           <div class="topbar-usuario">
             ${escape(nombreEfectivo())} · ${rolEfectivo() === 'admin' ? 'Administrador' : 'Comercial'}
             ${impersonando ? ` <span style="opacity:0.7">(real: ${escape(user.name)})</span>` : ''}
@@ -537,14 +551,15 @@ async function renderApp() {
         </div>
         <div class="topbar-acciones" style="display:flex; gap:8px; align-items:center;">
           <div id="indicador-online" class="indicador-online" title="Estado de conexión"></div>
-          ${adminReal && !impersonando ? `<button class="topbar-action" onclick="abrirSelectorImpersonacion()" title="Ver como un comercial">👁 Ver como…</button>` : ''}
-          <button class="topbar-action" id="btn-tema" onclick="alternarTema()" title="Cambiar tema claro / oscuro">${document.documentElement.dataset.theme === 'dark' ? '☀️' : '🌙'}</button>
-          <button class="topbar-logout" onclick="logout()">Salir</button>
+          ${adminReal && !impersonando ? `<button class="topbar-action" onclick="abrirSelectorImpersonacion()" title="Ver como un comercial">${icono('ojo')}<span class="cz-txt">Ver como…</span></button>` : ''}
+          <button class="topbar-action" id="btn-tema" onclick="alternarTema()" title="Cambiar tema claro / oscuro" aria-label="Cambiar tema claro / oscuro">${icono(document.documentElement.dataset.theme === 'dark' ? 'sol' : 'luna')}</button>
+          <button class="topbar-logout" onclick="logout()" title="Salir">${icono('salir')}<span class="cz-txt">Salir</span></button>
         </div>
       </div>
       ${pintarNavAgrupada(esAdmin, esOficina)}
       <div id="vista-contenido"></div>
-      <div style="text-align:center;font-size:11px;color:#9ca3af;padding:14px 0 8px">CatalogPRO ${APP_VERSION}${!impersonating ? `<div class="solovisor-salir-wrap"><button class="solovisor-salir" onclick="salirDeSoloVisor()">🚪 Salir / cambiar de usuario</button></div>` : ''}</div>
+      ${!esOficina && !esModoSimple() && !esSoloVisor() ? barraInferior(esAdmin) : ''}
+      <div style="text-align:center;font-size:11px;color:#6b7280;padding:14px 0 8px">CatalogPRO ${APP_VERSION}${!impersonating ? `<div class="solovisor-salir-wrap"><button class="solovisor-salir" onclick="salirDeSoloVisor()">🚪 Salir / cambiar de usuario</button></div>` : ''}</div>
     </div>
     <!-- Canal de incidencias: siempre a mano, también en la visita.
          El 🛟 SIEMPRE sirve para ESCRIBIR un aviso, en cualquier pantalla y también
@@ -561,6 +576,7 @@ async function renderApp() {
   const alturaBarras = ['.banner-impersonacion', '.banner-visita']
     .reduce((n, sel) => { const el = $app.querySelector(sel); return n + (el ? el.offsetHeight : 0); }, 0);
   document.documentElement.style.setProperty('--solovisor-extra', alturaBarras + 'px');
+  document.body.classList.toggle('cz-con-barra', !!$app.querySelector('.cz-barra-inf'));
 
   routerVista();
   if (esAdmin) refrescarAvisoIncidencias();
@@ -576,7 +592,7 @@ function alternarTema() {
   document.documentElement.dataset.theme = nuevo;
   try { localStorage.setItem('cpv2_theme', nuevo); } catch (e) {}
   const b = document.getElementById('btn-tema');
-  if (b) b.textContent = nuevo === 'dark' ? '☀️' : '🌙';
+  if (b) b.innerHTML = icono(nuevo === 'dark' ? 'sol' : 'luna');
 }
 
 // SOLO VISOR: el comercial (o el admin impersonándole) tiene la app reducida a mirar
@@ -646,14 +662,22 @@ function routerVista() {
 
   // I.2: vistas que NO funcionan offline (requieren API y no tienen cache offline)
   // Clientes y Planning SÍ funcionan offline (I.3 + I-Planning) leyendo desde IndexedDB
-  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion', 'productos', 'dashboard', 'aula', 'archivo'];
+  const vistasOnlineOnly = ['comerciales', 'mapa', 'plantillas', 'configuracion', 'productos', 'dashboard', 'dashboard-completo', 'aula', 'archivo'];
   if (!navigator.onLine && vistasOnlineOnly.includes(appState.vista)) {
     renderVistaNoDisponibleOffline(appState.vista);
     return;
   }
 
   if (appState.vista === 'dashboard') {
-    renderDashboard();
+    renderResumen();          // inicio del admin (inicio.js)
+    return;
+  }
+  if (appState.vista === 'dashboard-completo') {
+    renderDashboard();        // el panel de siempre, entero
+    return;
+  }
+  if (appState.vista === 'hoy') {
+    renderHoy();              // inicio del comercial (inicio.js)
     return;
   }
   if (appState.vista === 'aula') {
@@ -1504,7 +1528,7 @@ function pintarEditorExpress() {
       <div class="titulo-pagina">
         <div>
           <button class="btn btn-secondary btn-pequeno" onclick="volverACatalogos()">← Catálogos</button>
-          <h2 style="margin-top:8px">📗 ${escape(c.name)}</h2>
+          <h2 style="margin-top:8px">${escape(c.name)}</h2>
           <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
             Express · ${sheetsExpress.length} láminas seleccionadas · V${c.version} · ${c.estado}
           </div>
@@ -3633,7 +3657,7 @@ async function renderMiCuenta() {
     <div class="contenedor" style="max-width:600px">
       <div class="titulo-pagina">
         <div>
-          <h2>⚙️ Mi cuenta</h2>
+          <h2>Mi cuenta</h2>
           <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">${escape(user.name)} · ${user.role === 'admin' ? 'Administrador' : 'Comercial'}</div>
         </div>
       </div>
@@ -6709,7 +6733,7 @@ async function renderListaPlantillas() {
       <div class="contenedor" style="max-width:780px">
         <div class="titulo-pagina">
           <div>
-            <h2>🏷️ Plantillas de anotación</h2>
+            <h2>Plantillas de anotación</h2>
             <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
               Frases rápidas que los comerciales pueden insertar de un toque mientras anotan en una visita.
             </div>
@@ -9327,7 +9351,7 @@ function pintarArchivo() {
     <div class="contenedor">
       <div class="archivo-cabecera">
         <div>
-          <h2 style="margin:0">🗄️ Archivo de catálogos</h2>
+          <h2 style="margin:0">Archivo de catálogos</h2>
           <p style="color:var(--gris-texto);font-size:13px;margin:4px 0 0">
             Todas las versiones cerradas de tus catálogos, organizadas por maestros y por comercial.
             ${_archivoTotalVersiones()} versión${_archivoTotalVersiones() === 1 ? '' : 'es'} guardada${_archivoTotalVersiones() === 1 ? '' : 's'}.
@@ -10946,7 +10970,7 @@ async function renderMapa() {
     <div class="contenedor contenedor-mapa">
       <div class="titulo-pagina">
         <div>
-          <h2>🗺️ Mapa de clientes</h2>
+          <h2>Mapa de clientes</h2>
           <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
             Selecciona clientes para construir una ruta optimizada
           </div>
@@ -11403,7 +11427,7 @@ function pintarPlanning() {
     <div class="contenedor">
       <div class="titulo-pagina">
         <div>
-          <h2>🗓️ Planning de visitas</h2>
+          <h2>Planning de visitas</h2>
         </div>
       </div>
 
@@ -12312,7 +12336,7 @@ async function renderDetalleCliente(id) {
         <div class="titulo-pagina">
           <div>
             <button class="btn btn-secondary btn-pequeno" onclick="volverAClientes()">← Clientes</button>
-            <h2 style="margin-top:8px">🏥 ${escape(c.razon_social)} ${!c.is_active ? '<span class="cliente-baja-badge">BAJA</span>' : ''}</h2>
+            <h2 style="margin-top:8px">${escape(c.razon_social)} ${!c.is_active ? '<span class="cliente-baja-badge">BAJA</span>' : ''}</h2>
             <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
               Código Sage: <b>${escape(c.sage_code || '—')}</b>
               ${c.commercial_code ? ` · Comercial asignado: ${escape(c.commercial_code)}` : ''}
@@ -12801,7 +12825,7 @@ async function renderAula() {
     <div class="contenedor">
       <div class="titulo-pagina">
         <div>
-          <h2 style="margin:0">🎓 Aula de formación ${ayuda(esAdmin ? 'Sube material de formación de los laboratorios (PDF, imágenes, vídeos, PowerPoint). Los comerciales podrán verlo y descargarlo. Si marcas una formación como "Restringida", solo los comerciales que selecciones podrán acceder. Cuando subes o reemplazas un archivo, los comerciales con acceso reciben un email automático.' : 'Material de formación de los laboratorios. Pulsa "Ver / Descargar" en cada tarjeta: los PDFs, imágenes y vídeos se abren en pestaña nueva; los Word y PowerPoint se descargan. Si tienes notificaciones activadas, recibirás un email cuando haya material nuevo.')}</h2>
+          <h2 style="margin:0">Aula de formación ${ayuda(esAdmin ? 'Sube material de formación de los laboratorios (PDF, imágenes, vídeos, PowerPoint). Los comerciales podrán verlo y descargarlo. Si marcas una formación como "Restringida", solo los comerciales que selecciones podrán acceder. Cuando subes o reemplazas un archivo, los comerciales con acceso reciben un email automático.' : 'Material de formación de los laboratorios. Pulsa "Ver / Descargar" en cada tarjeta: los PDFs, imágenes y vídeos se abren en pestaña nueva; los Word y PowerPoint se descargan. Si tienes notificaciones activadas, recibirás un email cuando haya material nuevo.')}</h2>
           <p style="color:var(--gris-texto);font-size:13px;margin:4px 0 0 0">
             ${esAdmin
               ? 'Sube y gestiona el material de formación de los laboratorios.'
@@ -13427,7 +13451,7 @@ async function renderDashboard() {
   if (!$v) return;
   $v.innerHTML = `
     <div class="contenedor">
-      <h2 style="margin-bottom:6px">🏠 Dashboard</h2>
+      <h2 style="margin-bottom:6px">Panel completo</h2>
       <p style="color:var(--gris-texto);font-size:13px;margin-top:0;margin-bottom:16px">
         Vista general · ${new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}
       </p>
@@ -14554,7 +14578,7 @@ async function renderMisPedidosGuardados() {
       <div class="contenedor" style="max-width:720px">
         <div class="titulo-pagina">
           <div>
-            <h2>📁 Mis pedidos guardados</h2>
+            <h2>Mis pedidos guardados</h2>
             <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
               Backup local de los pedidos en tu tablet.
             </div>
@@ -14582,7 +14606,7 @@ async function renderMisPedidosGuardados() {
   if (!ok) {
     $v.innerHTML = `
       <div class="contenedor" style="max-width:720px">
-        <div class="titulo-pagina"><h2>📁 Mis pedidos guardados</h2></div>
+        <div class="titulo-pagina"><h2>Mis pedidos guardados</h2></div>
         <div class="editor-panel">
           <div style="text-align:center;padding:2rem">
             <div style="font-size:48px;margin-bottom:12px">🔐</div>
@@ -14616,7 +14640,7 @@ function pintarListaPedidosBackup() {
     <div class="contenedor" style="max-width:780px">
       <div class="titulo-pagina">
         <div>
-          <h2>📁 Mis pedidos guardados ${ayuda('Lista de los PDFs de pedidos guardados en la tarjeta SD de tu tablet. Cada vez que cierras una visita, se guarda una copia local de respaldo aquí. Puedes verlos, enviarlos por email manual o compartirlos.')}</h2>
+          <h2>Mis pedidos guardados ${ayuda('Lista de los PDFs de pedidos guardados en la tarjeta SD de tu tablet. Cada vez que cierras una visita, se guarda una copia local de respaldo aquí. Puedes verlos, enviarlos por email manual o compartirlos.')}</h2>
           <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
             ${_backupArchivos.length} pedido${_backupArchivos.length === 1 ? '' : 's'} en la carpeta de backup local
           </div>
@@ -16186,7 +16210,7 @@ async function renderListaProductos() {
     <div class="contenedor">
       <div class="titulo-pagina">
         <div>
-          <h2>📦 Productos</h2>
+          <h2>Productos</h2>
           <div style="font-size:12px;color:var(--gris-texto);margin-top:4px">
             Catálogo maestro de productos. Sirve para vincular láminas y emitir pedidos con códigos exactos.
           </div>
@@ -19669,7 +19693,7 @@ async function renderCoordinacion() {
       </tr>`).join('');
     $v.innerHTML = `
       <div class="contenedor">
-        <h2 style="margin-bottom:2px">🔄 Coordinación ${esOficina ? 'con Fernando' : 'con administración'}</h2>
+        <h2 style="margin-bottom:2px">Coordinación ${esOficina ? 'con Fernando' : 'con administración'}</h2>
         <p style="color:var(--gris-texto);font-size:13px;margin-top:0">
           ${esOficina
             ? 'Lo que hace falta de vuestra parte. Al escribir el código, se pone solo en las láminas: nadie lo teclea dos veces.'

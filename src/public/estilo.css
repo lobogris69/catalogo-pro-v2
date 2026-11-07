@@ -1,0 +1,146 @@
+/* ============================================================================
+   CatalogPRO · ESTILO LIMPIO (v338, 7-nov-2026; traído de Catalenza v341) — se carga
+   DESPUÉS de styles.css y manda sobre él.
+   - Envoltorio neutro: el rosa de Lomhifar (--brand) va en la marca, en lo activo y en los
+     datos; no en cabeceras ni fondos. Sin degradados ni emojis en el menú.
+   - Grises neutros con contraste 4.5:1 o más.
+   - Pantallas «Hoy» (comercial) y «Resumen» (admin), en inicio.js.
+   - Móvil (<700px): el menú baja a una barra inferior de 4-5 botones (no en modo
+     sencillo ni en solo visor).
+   ========================================================================== */
+:root {
+  --gris-bg: #f5f5f4;  --gris-borde: #e6e6e4;  --gris-texto: #5f6368;  --texto: #16181b;
+  --surface: #ffffff;  --surface-2: #fafaf9;   --surface-3: #f1f1ef;
+  --ui-activo: #ebebe9; --ui-linea: #e8e8e6;   --ui-control: #d4d4d1;
+  --ui-tinta: #16181b;  --ui-primario: #1d1f20; --ui-primario-txt: #ffffff;
+  --ui-bien: #1f6f47;   --ui-mal: #b3261e;      --ui-aviso: #92400e;
+}
+:root[data-theme="dark"] {
+  --gris-bg: #121314;  --gris-borde: #2c2e31;  --gris-texto: #a9adb2;  --texto: #eceded;
+  --surface: #1b1c1e;  --surface-2: #202124;   --surface-3: #26282b;
+  --ui-activo: #2c2e31; --ui-linea: #2e3033;   --ui-control: #44474b;
+  --ui-tinta: #eceded;  --ui-primario: #eceded; --ui-primario-txt: #121314;
+  --ui-bien: #5fc08c;   --ui-mal: #ef7a70;      --ui-aviso: #f2b26b;
+}
+body { background: var(--gris-bg); }
+.num, .cz-num { font-variant-numeric: tabular-nums; }
+
+/* ---------- Envoltorio: barra superior limpia ---------- */
+.topbar { background: var(--surface) !important; color: var(--texto) !important; box-shadow: none !important;
+  border-bottom: 1px solid var(--ui-linea); padding: 10px 24px !important; min-height: 56px; }
+.topbar::before, .topbar::after { display: none !important; }
+.topbar-titulo { color: var(--texto) !important; display: flex; align-items: center; gap: 10px; font-size: 17px !important; font-weight: 700; }
+.topbar-usuario { color: var(--gris-texto) !important; font-size: 13px !important; opacity: 1 !important; }
+.cz-marca { width: 30px; height: 30px; border-radius: 8px; background: var(--brand); color: #fff; display: inline-grid; place-items: center;
+  font-size: 13px; font-weight: 800; letter-spacing: .02em; flex: none; }
+.topbar-action, .topbar-logout { background: transparent !important; color: var(--gris-texto) !important; border: 1px solid var(--ui-linea) !important;
+  box-shadow: none !important; min-height: 36px; border-radius: 8px !important; display: inline-flex; align-items: center; gap: 6px; }
+.topbar-action:hover, .topbar-logout:hover { background: var(--surface-3) !important; color: var(--texto) !important; }
+.cz-ico { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
+
+/* ---------- Menú: pestañas grises, la activa en píldora gris (sin color de marca) ---------- */
+.navtabs { background: var(--surface) !important; border-bottom: 1px solid var(--ui-linea) !important; box-shadow: none !important;
+  padding: 6px 20px !important; gap: 4px !important; margin: 0 !important; border-radius: 0 !important; max-width: none !important; }
+.navtab { color: var(--gris-texto) !important; background: transparent !important; border: 0 !important; border-radius: 8px !important;
+  padding: 8px 12px !important; display: inline-flex !important; align-items: center; gap: 8px; font-weight: 500 !important; min-height: 40px; }
+.navtab:hover { color: var(--texto) !important; background: var(--surface-3) !important; }
+.navtab.navtab-activa { background: var(--ui-activo) !important; color: var(--texto) !important; font-weight: 600 !important; box-shadow: none !important; }
+.navtab.navtab-activa::after { display: none !important; }
+.navtabs-sub { background: var(--surface-2) !important; }
+
+/* ---------- Pantallas Hoy / Resumen ---------- */
+.cz-pantalla { max-width: 1180px; margin: 0 auto; padding: 24px; }
+.cz-titulo { display: flex; align-items: baseline; gap: 6px 16px; flex-wrap: wrap; }
+.cz-titulo h1 { font-size: 26px; line-height: 1.2; margin: 0; font-weight: 700; letter-spacing: -0.01em; color: var(--texto); }
+.cz-titulo p { margin: 0; color: var(--gris-texto); font-size: 15px; }
+.cz-rejilla { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; margin-top: 20px; align-items: start; }
+.cz-col { display: grid; gap: 16px; min-width: 0; }
+.cz-tarjeta { background: var(--surface); border: 1px solid var(--ui-linea); border-radius: 12px; padding: 20px; min-width: 0; }
+.cz-tarjeta h2 { font-size: 15px; font-weight: 600; margin: 0 0 14px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; color: var(--texto); }
+.cz-tarjeta h2 small { font-weight: 400; color: var(--gris-texto); font-size: 13px; }
+.cz-siguiente { display: flex; gap: 16px 20px; align-items: center; flex-wrap: wrap; }
+.cz-siguiente .q { flex: 1 1 260px; min-width: 0; }
+.cz-siguiente .nombre { font-size: 24px; font-weight: 700; line-height: 1.2; color: var(--texto); }
+.cz-siguiente .det { color: var(--gris-texto); margin-top: 4px; }
+.cz-siguiente .pidio { margin-top: 10px; font-size: 14px; color: var(--texto); }
+.cz-siguiente .pidio span { color: var(--gris-texto); }
+.cz-btn { background: var(--ui-primario); color: var(--ui-primario-txt); border: 0; border-radius: 10px; padding: 0 22px; min-height: 52px;
+  font-weight: 600; font-size: 16px; line-height: 1; font-family: inherit; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; }
+.cz-btn:hover { opacity: .9; } .cz-btn:focus-visible, .cz-enlace:focus-visible, .cz-fila:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.cz-btn-sec { background: var(--surface); color: var(--texto); border: 1px solid var(--ui-control); border-radius: 8px; padding: 0 14px; min-height: 40px;
+  font-weight: 600; font-size: 14px; line-height: 1; font-family: inherit; cursor: pointer; white-space: nowrap; }
+.cz-btn-sec:hover { background: var(--surface-3); }
+.cz-enlace { background: none; border: 0; padding: 4px 0; color: var(--texto); font-weight: 600; font-size: 14px; font-family: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.cz-lista { list-style: none; margin: 0; padding: 0; }
+.cz-lista li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--ui-linea); min-height: 48px; }
+.cz-lista li:first-child { border-top: 0; padding-top: 0; }
+.cz-lista .n { font-weight: 600; color: var(--texto); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cz-lista .n small { display: block; font-weight: 400; color: var(--gris-texto); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.cz-lista .d { font-size: 13px; color: var(--gris-texto); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cz-lista .d.tarde { color: var(--ui-mal); font-weight: 600; }
+.cz-vacio { color: var(--gris-texto); font-size: 14px; padding: 6px 0; }
+.cz-cat { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 16px; align-items: center; cursor: pointer; }
+.cz-cat img { width: 96px; aspect-ratio: 1240 / 1754; object-fit: cover; border-radius: 6px; border: 1px solid var(--ui-linea); display: block; background: var(--surface-3); }
+.cz-cat b { display: block; font-size: 16px; color: var(--texto); }
+.cz-cat span { color: var(--gris-texto); font-size: 13px; }
+.cz-tira { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--surface); border: 1px solid var(--ui-linea); border-radius: 12px; margin-top: 20px; }
+.cz-tira > div { padding: 16px 20px; border-left: 1px solid var(--ui-linea); min-width: 0; }
+.cz-tira > div:first-child { border-left: 0; }
+.cz-tira small { display: block; color: var(--gris-texto); font-size: 13px; }
+.cz-tira b { display: block; font-size: 24px; font-weight: 500; line-height: 1.3; color: var(--texto); font-variant-numeric: tabular-nums; }
+.cz-tira b.lider { font-size: 32px; font-weight: 700; }
+.cz-tira em { font-style: normal; color: var(--gris-texto); font-size: 13px; }
+.cz-barras { list-style: none; margin: 0; padding: 0; }
+.cz-barras li { padding: 8px 0; }
+.cz-barras .l { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.cz-barras .l span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--texto); }
+.cz-barras .l span:last-child { font-variant-numeric: tabular-nums; color: var(--texto); }
+.cz-barras .t { height: 8px; border-radius: 99px; background: var(--ui-activo); margin-top: 6px; }
+.cz-barras .t i { display: block; height: 100%; border-radius: 99px; background: var(--brand); }
+.cz-barras.finas .t { height: 3px; } .cz-barras.finas .t i { background: var(--gris-texto); } .cz-barras.finas li:first-child .t i { background: var(--ui-tinta); }
+.cz-semanas { display: flex; align-items: flex-end; gap: 6px; height: 120px; padding-top: 8px; }
+.cz-semanas div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 6px; height: 100%; min-width: 0; }
+.cz-semanas i { display: block; width: 100%; max-width: 34px; background: var(--ui-control); border-radius: 3px 3px 0 0; }
+.cz-semanas div:last-child i { background: var(--brand); }
+.cz-semanas span { font-size: 11px; color: var(--gris-texto); font-variant-numeric: tabular-nums; }
+.cz-pie { margin-top: 16px; text-align: right; }
+.cz-carga { height: 18px; border-radius: 6px; background: var(--surface-3); }
+
+@media (max-width: 860px) {
+  .cz-rejilla { grid-template-columns: 1fr; }
+  .cz-tira { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cz-tira > div:nth-child(3) { border-left: 0; }
+  .cz-tira > div:nth-child(n+3) { border-top: 1px solid var(--ui-linea); }
+}
+
+/* ---------- Móvil: barra inferior en lugar de las dos filas de menú ---------- */
+.cz-barra-inf { display: none; }
+@media (max-width: 699px) {
+  .cz-pantalla { padding: 16px; }
+  .cz-titulo h1 { font-size: 22px; }
+  .topbar { padding: 8px 16px !important; min-height: 52px; }
+  .topbar-usuario { display: none; }
+  .topbar-action .cz-txt { display: none; }
+  body.cz-con-barra .navtabs { display: none !important; }
+  body.cz-con-barra { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+  body.cz-con-barra .btn-incidencia { bottom: calc(76px + env(safe-area-inset-bottom, 0px)) !important; }
+  .cz-barra-inf { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; position: fixed; left: 0; right: 0; bottom: 0; z-index: 900;
+    background: var(--surface); border-top: 1px solid var(--ui-linea); padding: 4px max(6px, env(safe-area-inset-right, 0px)) calc(4px + env(safe-area-inset-bottom, 0px)) max(6px, env(safe-area-inset-left, 0px)); }
+  .cz-barra-inf button { background: none; border: 0; color: var(--gris-texto); display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px; min-height: 56px; font-weight: 500; font-size: 11px; line-height: 1.2; font-family: inherit; border-radius: 10px; cursor: pointer; padding: 0 2px; min-width: 0; }
+  .cz-barra-inf button span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cz-barra-inf button.on { color: var(--texto); font-weight: 700; }
+  .cz-barra-inf button.on .cz-ico { stroke: var(--brand); }
+  .cz-siguiente .nombre { font-size: 21px; }
+  .cz-btn { width: 100%; justify-content: center; }
+  .cz-tira b.lider { font-size: 26px; white-space: nowrap; }
+  .topbar-logout .cz-txt { display: none; }
+}
+/* Muy estrecho: los días bajan debajo del nombre para que el nombre de la tienda no se corte. */
+@media (max-width: 440px) {
+  .cz-lista li { grid-template-columns: minmax(0, 1fr) auto; }
+  .cz-lista .n { white-space: normal; }
+  .cz-tarjeta h2 small { display: none; }
+  .cz-lista .d { grid-column: 1; grid-row: 2; text-align: left; margin-top: -6px; }
+  .cz-lista li > :last-child:not(.d):not(.n) { grid-column: 2; grid-row: 1 / span 2; }
+}

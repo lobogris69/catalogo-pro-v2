@@ -7,6 +7,8 @@
   <!-- Tema (claro/oscuro): aplicar ANTES del CSS para evitar parpadeo -->
   <script>try{var t=localStorage.getItem('cpv2_theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t;}catch(e){}</script>
   <link rel="stylesheet" href="/styles.css">
+  <!-- Estilo limpio (v338): manda sobre styles.css -->
+  <link rel="stylesheet" href="/estilo.css">
 
   <!-- I: PWA - manifest + meta para móvil -->
   <link rel="manifest" href="/manifest.json">
@@ -30,6 +32,8 @@
   </div>
 
   <!-- I: IndexedDB wrapper (cargar antes de app.js) -->
+  <!-- Pantallas de inicio por papel (Hoy / Resumen), iconos de línea y barra inferior -->
+  <script src="/inicio.js"></script>
   <script src="/db.js"></script>
   <!-- Manual de instrucciones: contenido estático, en su propio archivo -->
   <script src="/manual.js"></script>
