@@ -73,6 +73,12 @@ const app = express();
 app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'cambia-este-secreto-en-produccion';
+// Sin JWT_SECRET (o con uno corto), cualquiera que lea este código —el repo es público— podría
+// fabricarse una sesión de admin con el valor por defecto. En Railway, mejor no arrancar.
+if (process.env.RAILWAY_ENVIRONMENT && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32)) {
+  console.error('❌ Falta JWT_SECRET (mínimo 32 caracteres). No arranco en Railway sin él.');
+  process.exit(1);
+}
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/app/data/uploads';
 const FRONTEND_DIR = path.join(__dirname, 'public');
 
@@ -605,6 +611,57 @@ const upload = multer({
 // ============================================================================
 // INICIALIZACION BD
 // ============================================================================
+// Trocea un SQL en sentencias respetando comentarios --, cadenas '...' y bloques $$...$$
+// o con etiqueta ($migrate$...$migrate$).
+function trocearSQL(sql: string): string[] {
+  const out: string[] = [];
+  let cur = '', i = 0;
+  let enComilla = false, enComent = false;
+  let dolar = '';   // etiqueta del bloque $...$ abierto ('' = ninguno)
+  while (i < sql.length) {
+    const c = sql[i], d = sql.slice(i, i + 2);
+    if (enComent) { cur += c; if (c === '\n') enComent = false; i++; continue; }
+    if (dolar) {
+      if (sql.startsWith(dolar, i)) { cur += dolar; i += dolar.length; dolar = ''; continue; }
+      cur += c; i++; continue;
+    }
+    if (enComilla) { cur += c; if (c === "'") enComilla = false; i++; continue; }
+    if (d === '--') { enComent = true; cur += d; i += 2; continue; }
+    const tag = c === '$' ? /^\$[A-Za-z_]*\$/.exec(sql.slice(i, i + 40)) : null;
+    if (tag) { dolar = tag[0]; cur += dolar; i += dolar.length; continue; }
+    if (c === "'") { enComilla = true; cur += c; i++; continue; }
+    if (c === ';') { if (cur.replace(/--[^\n]*/g, '').trim()) out.push(cur.trim()); cur = ''; i++; continue; }
+    cur += c; i++;
+  }
+  if (cur.replace(/--[^\n]*/g, '').trim()) out.push(cur.trim());
+  return out;
+}
+
+// El esquema de initDB fue creciendo a trozos y NO está en orden de dependencias (p. ej.
+// índices sobre «visits» y agenda_citas → visits antes de crear «visits»). Con una BD que ya
+// tiene las tablas (Lomhifar) da igual, pero una BD NUEVA (restaurar copia en otro servidor) no arrancaba
+// (7-nov-2026: «relation "visits" does not exist»). Primero se intenta de una vez; si falta
+// una tabla o columna, se aplica sentencia a sentencia en pasadas hasta que no quede nada.
+async function aplicarEsquema(sql: string): Promise<void> {
+  try { await pool.query(sql); return; }
+  catch (e: any) { if (e.code !== '42P01' && e.code !== '42703') throw e; }
+  let pendientes = trocearSQL(sql);
+  for (let pasada = 1; pendientes.length && pasada <= 10; pasada++) {
+    const fallan: string[] = [];
+    let ultimoError: any = null;
+    for (const st of pendientes) {
+      try { await pool.query(st); }
+      catch (e: any) {
+        if (e.code !== '42P01' && e.code !== '42703') throw e;
+        fallan.push(st); ultimoError = e;
+      }
+    }
+    console.log(`[esquema] pasada ${pasada}: ${pendientes.length - fallan.length} aplicadas, ${fallan.length} esperan`);
+    if (fallan.length === pendientes.length) throw ultimoError;   // no avanza: error de verdad
+    pendientes = fallan;
+  }
+}
+
 async function initDB(): Promise<void> {
   console.log('Inicializando BD...');
   try {
@@ -1717,7 +1774,7 @@ async function initDB(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_office_summary_sent_at ON office_summary_sent(sent_at DESC);
     `;
-    await pool.query(schemaSQL);
+    await aplicarEsquema(schemaSQL);
 
     // H: migración idempotente — añadir columnas geo a clients si no existen.
     // Hacemos cada ALTER por separado y silenciamos el error de "ya existe"
@@ -1842,15 +1899,20 @@ async function initDB(): Promise<void> {
       console.log('✅ Sembradas ' + seed.length + ' plantillas de anotación iniciales');
     }
 
-    // Crear admin por defecto si no hay usuarios
+    // Primer admin si no hay usuarios (solo en una BD vacía). Antes era «admin123» fijo, y el
+    // repo es público: ahora la contraseña sale de ADMIN_PASSWORD o se inventa al azar y se
+    // escribe UNA vez en el registro.
     const cnt = await pool.query('SELECT COUNT(*)::int AS n FROM users');
     if (cnt.rows[0].n === 0) {
-      const hash = await bcrypt.hash('admin123', 10);
+      const adminEmail = String(process.env.ADMIN_EMAIL || 'f.ayllon66@gmail.com').trim().toLowerCase();
+      const adminPass = process.env.ADMIN_PASSWORD || require('crypto').randomBytes(9).toString('base64url');
+      const hash = await bcrypt.hash(adminPass, 10);
       await pool.query(
         'INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, $4)',
-        ['f.ayllon66@gmail.com', hash, 'Fernando Ayllon', 'admin']
+        [adminEmail, hash, 'Fernando Ayllon', 'admin']
       );
-      console.log('✅ Usuario admin creado: f.ayllon66@gmail.com / admin123');
+      console.log('✅ Usuario admin creado: ' + adminEmail +
+        (process.env.ADMIN_PASSWORD ? ' (contraseña de ADMIN_PASSWORD)' : ' · contraseña provisional: ' + adminPass));
     }
     console.log('✅ BD inicializada');
   } catch (e) {
@@ -1887,7 +1949,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v336-orden-catalogos-6nov',
+      build: 'v337-node22-esquema-7nov',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
