@@ -14,7 +14,7 @@
   --gris-bg: #f6f3f9;
   --gris-borde: #ece6f1;
   --gris-borde-2: #e1d9e9;
-  --gris-texto: #877e93;
+  --gris-texto: #6b6378; /* v337: antes #877e93 (3,9:1), ahora 5,7:1 sobre blanco */
   --texto: #1b1420;
   --surface: #ffffff;
   --surface-2: #fbf9fd;
@@ -420,7 +420,7 @@ html {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #9ca3af;
+  color: #6b7280;
   padding: 0 8px;
 }
 .nivel-btn {
@@ -1292,7 +1292,7 @@ html {
 
 /* ===== DRAG & DROP REORDENAR LAMINAS ===== */
 .drag-handle {
-  color: #9ca3af;
+  color: #6b7280;
   font-size: 14px;
   cursor: grab;
   padding: 0 4px;
@@ -4403,7 +4403,7 @@ body.con-banner-update .barra-enlace {
 .lamina-estado-precios.none { background: var(--surface-2); color: var(--gris-texto); }
 .lamina-estado-precios.excl { background: #e5e7eb; color: #374151; }
 .lamina-estado-precios.tabla { background: #e0f2fe; color: #0369a1; }
-.lamina-estado-zonas.none { background: #f3f4f6; color: #9ca3af; }
+.lamina-estado-zonas.none { background: #f3f4f6; color: #6b7280; }
 
 /* Zona-enlace en el visor: se pinta como un BOTÓN visible (deliberado) */
 .visor-zona-enlace {
@@ -4751,7 +4751,7 @@ input.rep-celda.rep-celda-error { border-color: #dc2626; background: #fef2f2; }
 tr.rep-subtotal th, tr.rep-subtotal td { background: #f9fafb; font-size: 13px; }
 tr.rep-subtotal td { text-align: left; padding-left: 10px; }
 tr.rep-subtotal-impar th, tr.rep-subtotal-impar td { background: #fef2f2; }
-.rep-sub-cero { color: #9ca3af; }
+.rep-sub-cero { color: #6b7280; }
 .rep-aviso-impar { color: #dc2626; font-weight: 800; }
 .rep-pie { display: flex; align-items: center; gap: 12px; padding-top: 10px; }
 .rep-total { flex: 1; font-size: 16px; }
@@ -4898,7 +4898,7 @@ tr.rep-subtotal-impar th, tr.rep-subtotal-impar td { background: #fef2f2; }
   background: #1f2937; color: #fff; font-size: 14px; font-family: inherit;
 }
 .mosaico-buscar-barra input::placeholder { color: #9ca3af; }
-#mosaico-buscar-cuenta { font-size: 12px; color: #9ca3af; min-width: 54px; text-align: center; }
+#mosaico-buscar-cuenta { font-size: 12px; color: #6b7280; min-width: 54px; text-align: center; }
 /* Coincidencias: todas con borde ámbar, la actual en magenta; el resto se atenúa. */
 .mosaico-card.mosaico-match { outline: 3px solid #f59e0b; outline-offset: -2px; }
 .mosaico-card.mosaico-match-actual { outline: 3px solid #d80a6b; box-shadow: 0 0 0 5px rgba(216,10,107,.4); }
@@ -5234,7 +5234,7 @@ body.modo-simple .btn-incidencia-bandeja { bottom: 96px; z-index: 99500; }
 .toast-deshacer span { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toast-deshacer .btn { background: var(--brand, #d80a6b); color: #fff; flex-shrink: 0; }
 .toast-deshacer-x {
-  background: transparent; border: 0; color: #9ca3af;
+  background: transparent; border: 0; color: #6b7280;
   font-size: 20px; line-height: 1; cursor: pointer; padding: 0 2px; flex-shrink: 0;
 }
 .toast-deshacer-x:hover { color: #fff; }
@@ -5425,7 +5425,7 @@ body.modo-simple .btn-incidencia-bandeja { bottom: 96px; z-index: 99500; }
   border: none;
   cursor: pointer;
   font-size: 18px;
-  color: #9ca3af;
+  color: #6b7280;
   padding: 2px 8px;
   border-radius: 4px;
   line-height: 1;
@@ -5492,7 +5492,7 @@ body.modo-simple .btn-incidencia-bandeja { bottom: 96px; z-index: 99500; }
 .busqueda-global-cerrar {
   cursor: pointer;
   font-size: 22px;
-  color: #9ca3af;
+  color: #6b7280;
   width: 26px;
   height: 26px;
   display: flex;
@@ -5514,7 +5514,7 @@ body.modo-simple .btn-incidencia-bandeja { bottom: 96px; z-index: 99500; }
 .busqueda-global-hint {
   padding: 16px;
   text-align: center;
-  color: #9ca3af;
+  color: #6b7280;
   font-size: 13px;
 }
 .busqueda-global-seccion {
@@ -5998,7 +5998,7 @@ body.modo-simple .btn-incidencia-bandeja { bottom: 96px; z-index: 99500; }
 }
 .bcp-tam {
   font-size: 11px;
-  color: #9ca3af;
+  color: #6b7280;
 }
 
 /* ============================================================================
