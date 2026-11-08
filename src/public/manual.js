@@ -152,7 +152,7 @@ const MANUAL_ADMIN = [
     ]
   },
   {
-    id: 'zonas',
+    id: 'zonas-venta',
     icono: '📍',
     titulo: 'Zonas de venta: lo que no se puede vender en un territorio',
     para: 'Que un comercial no ofrezca en una zona algo que ahí no se puede vender, aunque sí pueda venderlo en otra.',
@@ -592,90 +592,208 @@ function _manualApartados() {
   return _manualCual === 'admin' ? MANUAL_ADMIN : MANUAL_COMERCIAL;
 }
 
+// ============================================================================
+// PANTALLA DE AYUDA (rediseño 8-nov-2026)
+// Antes: los ~30 apartados seguidos en una sola página, todos con el mismo peso → una
+// maraña difícil de leer. Ahora:
+//  - Portada: buscador grande + temas agrupados en tarjetas (título + para qué sirve).
+//  - Un apartado por pantalla: pasos numerados, «Ten en cuenta» aparte, anterior/siguiente
+//    y el resto del mismo tema debajo.
+//  - Imprimir saca el manual entero, compacto.
+// El CONTENIDO no cambia (MANUAL_ADMIN / MANUAL_COMERCIAL, arriba); solo cómo se enseña.
+// ============================================================================
+
+// Temas de cada manual. Un apartado que no esté en ninguno cae en «Más».
+const _MAN_TEMAS = {
+  admin: [
+    { t: 'Para empezar', ico: 'brujula', ids: ['como-funciona'] },
+    { t: 'Catálogos y láminas', ico: 'libro', ids: ['crear-catalogo', 'ordenar', 'version', 'asignar', 'reparto', 'control-cambios'] },
+    { t: 'Zonas y precios', ico: 'etiqueta', ids: ['zonas', 'tipos-zona', 'precios', 'tablas', 'zonas-venta', 'informe'] },
+    { t: 'Productos y clientes', ico: 'caja', ids: ['productos', 'pendientes-alta', 'cliente-nuevo', 'clientes', 'ofertas'] },
+    { t: 'Comerciales y equipo', ico: 'personas', ids: ['modo-sencillo', 'importes', 'plantillas', 'aula', 'incidencias', 'coordinacion', 'sesion'] },
+    { t: 'Ajustes y mantenimiento', ico: 'engranaje', ids: ['emails', 'backup', 'mantenimiento'] }
+  ],
+  comercial: [
+    { t: 'Tu día', ico: 'sol', ids: ['c-empezar', 'c-visita', 'c-cerrar'] },
+    { t: 'Casos especiales', ico: 'etiqueta', ids: ['c-cliente-nuevo', 'c-expositores'] },
+    { t: 'La app', ico: 'movil', ids: ['c-instalar', 'c-sencillo', 'c-problemas', 'c-trucos'] }
+  ]
+};
+
+// Iconos de línea propios (24×24, trazo 1,7): el manual no depende de otros archivos.
+const _MAN_ICO = {
+  brujula: '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
+  libro: '<path d="M4 19.5V5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2.5z"/><path d="M8 7h7M8 11h5"/>',
+  etiqueta: '<path d="M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+  caja: '<path d="M21 8l-9-5-9 5v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
+  personas: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6"/>',
+  engranaje: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/>',
+  sol: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  movil: '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',
+  mas: '<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
+  buscar: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+  imprimir: '<path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6z"/>',
+  atras: '<path d="M15 18l-6-6 6-6"/>',
+  adelante: '<path d="M9 18l6-6-6-6"/>',
+  aviso: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17.5h.01"/>'
+};
+function _manIco(n) {
+  return `<svg class="man-ico-svg" viewBox="0 0 24 24" aria-hidden="true">${_MAN_ICO[n] || _MAN_ICO.mas}</svg>`;
+}
+
+let _manVer = null;    // null = portada; si no, el id del apartado abierto
+let _manQ = '';        // texto del buscador
+
+// Temas con sus apartados (en el orden de los temas), más «Más» con los que no tengan tema.
+function _manTemas() {
+  const aps = _manualApartados();
+  const porId = {}; aps.forEach(a => { porId[a.id] = a; });
+  const usados = new Set();
+  const temas = (_MAN_TEMAS[_manualCual] || []).map(g => {
+    const items = g.ids.map(id => porId[id]).filter(Boolean);
+    items.forEach(a => usados.add(a.id));
+    return { t: g.t, ico: g.ico, items };
+  }).filter(g => g.items.length);
+  const resto = aps.filter(a => !usados.has(a.id));
+  if (resto.length) temas.push({ t: 'Más', ico: 'mas', items: resto });
+  return temas;
+}
+// Orden de lectura (para anterior / siguiente): el de los temas.
+function _manOrden() { return _manTemas().flatMap(g => g.items.map(a => ({ a, g }))); }
+
+function _manPlano(a) {
+  return (a.titulo + ' ' + a.para + ' ' + a.pasos.join(' ') + ' ' + (a.ojo || []).join(' ')).replace(/<[^>]+>/g, '');
+}
+const _manNorm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+function _manTarjeta(a) {
+  return `<button type="button" class="man-tarjeta" onclick="abrirApartadoManual('${_manEsc(a.id)}')">
+      <span class="man-tarjeta-txt"><b>${_manEsc(a.titulo)}</b><small>${_manEsc(a.para)}</small></span>
+      <span class="man-tarjeta-ir">${_manIco('adelante')}</span>
+    </button>`;
+}
+
 function renderManual() {
   const $v = document.getElementById('vista-contenido');
   if (!$v) return;
   const esAdmin = typeof rolEfectivo === 'function' ? rolEfectivo() === 'admin' : false;
   if (!esAdmin) _manualCual = 'comercial';
-  const aps = _manualApartados();
-  $v.innerHTML = `
-    <div class="contenedor manual-wrap">
-      <div class="manual-cabecera">
-        <div>
-          <h2 style="margin:0">${_manualCual === 'admin' ? '📖 Manual de instrucciones' : '❓ Ayuda rápida'}</h2>
-          <p style="margin:4px 0 0;color:var(--gris-texto);font-size:13px">
-            ${_manualCual === 'admin'
-              ? 'Todos los procesos, paso a paso. Escrito para leerlo dentro de seis meses sin acordarte de nada.'
-              : 'Lo que necesitas para el día a día. Cinco minutos de lectura.'}
-          </p>
-        </div>
-        <div class="manual-acciones">
-          ${esAdmin ? `
-            <button class="btn ${_manualCual === 'admin' ? 'btn-primary' : 'btn-secondary'}" onclick="cambiarManual('admin')">📖 Manual completo</button>
-            <button class="btn ${_manualCual === 'comercial' ? 'btn-primary' : 'btn-secondary'}" onclick="cambiarManual('comercial')">🧑‍💼 Guía del comercial</button>
-          ` : ''}
-          <button class="btn btn-secondary" onclick="window.print()" title="Imprimir o guardar en PDF">🖨️ Imprimir</button>
-        </div>
-      </div>
-
-      <input type="search" id="manual-buscar" class="manual-buscador" placeholder="🔍 Busca por palabra: tabla, precio, zona, pedido, MEGA…" autocomplete="off">
-
-      <div class="manual-cuerpo">
-        <nav class="manual-indice" id="manual-indice">
-          ${aps.map(a => `<a href="#man-${a.id}" onclick="irAApartadoManual(event,'${a.id}')">${a.icono} ${_manEsc(a.titulo)}</a>`).join('')}
-        </nav>
-        <div class="manual-contenido" id="manual-contenido">
-          ${aps.map(a => `
-            <section class="manual-apartado" id="man-${a.id}" data-buscar="${_manEsc((a.titulo + ' ' + a.para + ' ' + a.pasos.join(' ') + ' ' + (a.ojo || []).join(' ')).toLowerCase().replace(/<[^>]+>/g, ''))}">
-              <h3>${a.icono} ${_manEsc(a.titulo)}</h3>
-              <p class="manual-para"><b>Para qué sirve:</b> ${_manEsc(a.para)}</p>
-              <ol class="manual-pasos">
-                ${a.pasos.map(p => `<li>${_manRico(p)}</li>`).join('')}
-              </ol>
-              ${(a.ojo && a.ojo.length) ? `
-                <div class="manual-ojo">
-                  <b>⚠️ Ojo</b>
-                  <ul>${a.ojo.map(o => `<li>${_manRico(o)}</li>`).join('')}</ul>
-                </div>` : ''}
-            </section>
-          `).join('')}
-          <div id="manual-sin-resultados" class="manual-vacio" style="display:none">
-            No hay ningún apartado con esa palabra. Prueba con otra (por ejemplo: <b>tabla</b>, <b>precio</b>, <b>zona</b>, <b>pedido</b>).
-          </div>
-        </div>
-      </div>
-    </div>`;
-
+  if (_manVer && !_manualApartados().some(a => a.id === _manVer)) _manVer = null;
+  $v.innerHTML = `<div class="man">${_manVer ? _manHtmlApartado(_manVer) : _manHtmlPortada(esAdmin)}</div>`;
   const $b = document.getElementById('manual-buscar');
-  if ($b) $b.addEventListener('input', filtrarManual);
+  if ($b) {
+    $b.addEventListener('input', filtrarManual);
+    if (_manQ) { $b.focus(); $b.setSelectionRange(_manQ.length, _manQ.length); }
+  }
 }
 
+function _manHtmlPortada(esAdmin) {
+  const total = _manualApartados().length;
+  return `
+    <header class="man-cab">
+      <div class="man-cab-txt">
+        <h1>${_manualCual === 'admin' ? 'Manual' : 'Ayuda'}</h1>
+        <p>${_manualCual === 'admin'
+          ? `Cómo se hace cada cosa, paso a paso · ${total} temas`
+          : `Lo que necesitas para el día a día · ${total} temas`}</p>
+      </div>
+      <div class="man-cab-acc">
+        ${esAdmin ? `<div class="man-seg" role="tablist" aria-label="Qué manual ver">
+            <button type="button" role="tab" aria-selected="${_manualCual === 'admin'}" class="${_manualCual === 'admin' ? 'on' : ''}" onclick="cambiarManual('admin')">Manual completo</button>
+            <button type="button" role="tab" aria-selected="${_manualCual === 'comercial'}" class="${_manualCual === 'comercial' ? 'on' : ''}" onclick="cambiarManual('comercial')">Guía del comercial</button>
+          </div>` : ''}
+        <button type="button" class="man-btn-icono" onclick="imprimirManual()" title="Imprimir o guardar en PDF" aria-label="Imprimir o guardar en PDF">${_manIco('imprimir')}</button>
+      </div>
+    </header>
+    <label class="man-buscar">${_manIco('buscar')}
+      <input type="search" id="manual-buscar" value="${_manEsc(_manQ)}" placeholder="Busca: precio, zona, pedido…" autocomplete="off" aria-label="Buscar en la ayuda">
+    </label>
+    <div id="man-cuerpo">${_manHtmlCuerpo()}</div>`;
+}
+
+function _manHtmlCuerpo() {
+  const q = _manNorm(_manQ.trim());
+  if (q) {
+    const hall = _manOrden().filter(x => _manNorm(_manPlano(x.a)).includes(q));
+    if (!hall.length) return `<div class="man-vacio"><b>No hay nada con «${_manEsc(_manQ.trim())}».</b><br>Prueba con otra palabra: precio, zona, pedido, tabla…</div>`;
+    return `<p class="man-contador">${hall.length} ${hall.length === 1 ? 'tema' : 'temas'} con «${_manEsc(_manQ.trim())}»</p>
+      <div class="man-rejilla">${hall.map(x => _manTarjeta(x.a)).join('')}</div>`;
+  }
+  return _manTemas().map(g => `
+    <section class="man-tema">
+      <h2>${_manIco(g.ico)}<span>${_manEsc(g.t)}</span></h2>
+      <div class="man-rejilla">${g.items.map(_manTarjeta).join('')}</div>
+    </section>`).join('');
+}
+
+function _manHtmlApartado(id) {
+  const orden = _manOrden();
+  const i = orden.findIndex(x => x.a.id === id);
+  const { a, g } = orden[i];
+  const ant = orden[i - 1], sig = orden[i + 1];
+  const delTema = g.items.filter(x => x.id !== a.id);
+  return `
+    <nav class="man-migas"><button type="button" class="man-volver" onclick="volverPortadaManual()">${_manIco('atras')}<span>${_manualCual === 'admin' ? 'Manual' : 'Ayuda'}</span></button><span class="man-migas-tema">${_manEsc(g.t)}</span></nav>
+    <article class="man-apartado">
+      <h1>${_manEsc(a.titulo)}</h1>
+      <p class="man-lead">${_manEsc(a.para)}</p>
+      <ol class="man-pasos">${a.pasos.map((p, n) => `<li><span class="man-num" aria-hidden="true">${n + 1}</span><div>${_manRico(p)}</div></li>`).join('')}</ol>
+      ${(a.ojo && a.ojo.length) ? `
+        <aside class="man-ojo">
+          <div class="man-ojo-tit">${_manIco('aviso')}<b>Ten en cuenta</b></div>
+          <ul>${a.ojo.map(o => `<li>${_manRico(o)}</li>`).join('')}</ul>
+        </aside>` : ''}
+    </article>
+    <nav class="man-pasar">
+      ${ant ? `<button type="button" class="man-pasar-btn" onclick="abrirApartadoManual('${_manEsc(ant.a.id)}')"><small>${_manIco('atras')} Anterior</small><b>${_manEsc(ant.a.titulo)}</b></button>` : '<span></span>'}
+      ${sig ? `<button type="button" class="man-pasar-btn sig" onclick="abrirApartadoManual('${_manEsc(sig.a.id)}')"><small>Siguiente ${_manIco('adelante')}</small><b>${_manEsc(sig.a.titulo)}</b></button>` : '<span></span>'}
+    </nav>
+    ${delTema.length ? `<section class="man-tema man-relacionados"><h2>${_manIco(g.ico)}<span>Más de «${_manEsc(g.t)}»</span></h2>
+      <div class="man-rejilla">${delTema.map(_manTarjeta).join('')}</div></section>` : ''}`;
+}
+
+function abrirApartadoManual(id) {
+  _manVer = id;
+  renderManual();
+  window.scrollTo(0, 0);
+}
+function volverPortadaManual() {
+  _manVer = null;
+  renderManual();
+  window.scrollTo(0, 0);
+}
 function cambiarManual(cual) {
   _manualCual = cual;
+  _manVer = null;
   renderManual();
 }
-
+// Compatibilidad: enlaces antiguos que abrían un apartado por su id.
 function irAApartadoManual(ev, id) {
-  ev.preventDefault();
-  const el = document.getElementById('man-' + id);
-  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (ev && ev.preventDefault) ev.preventDefault();
+  abrirApartadoManual(id);
 }
 
+// Buscar: solo repinta la lista (no el buscador) para no perder el foco al escribir.
 function filtrarManual() {
-  const q = (document.getElementById('manual-buscar').value || '').trim().toLowerCase();
-  const secs = document.querySelectorAll('.manual-apartado');
-  let visibles = 0;
-  secs.forEach(s => {
-    const ok = !q || (s.dataset.buscar || '').includes(q);
-    s.style.display = ok ? '' : 'none';
-    if (ok) visibles++;
-  });
-  // El índice acompaña al filtro para no dejar enlaces que no llevan a nada
-  document.querySelectorAll('#manual-indice a').forEach(a => {
-    const id = a.getAttribute('href').replace('#man-', '');
-    const s = document.getElementById('man-' + id);
-    a.style.display = (s && s.style.display !== 'none') ? '' : 'none';
-  });
-  const vacio = document.getElementById('manual-sin-resultados');
-  if (vacio) vacio.style.display = visibles ? 'none' : '';
+  const $b = document.getElementById('manual-buscar');
+  _manQ = $b ? $b.value : '';
+  const $c = document.getElementById('man-cuerpo');
+  if ($c) $c.innerHTML = _manHtmlCuerpo();
+}
+
+// Imprimir: el manual entero, compacto, y al terminar se vuelve a la pantalla de antes.
+function imprimirManual() {
+  const $v = document.getElementById('vista-contenido');
+  if (!$v) return;
+  $v.innerHTML = `<div class="man man-impresion">
+      <h1>${_manualCual === 'admin' ? 'Manual de instrucciones' : 'Guía del comercial'}</h1>
+      ${_manTemas().map(g => `<section><h2>${_manEsc(g.t)}</h2>${g.items.map(a => `
+        <article class="man-imp-ap"><h3>${_manEsc(a.titulo)}</h3><p class="man-lead">${_manEsc(a.para)}</p>
+          <ol>${a.pasos.map(p => `<li>${_manRico(p)}</li>`).join('')}</ol>
+          ${(a.ojo && a.ojo.length) ? `<p class="man-imp-ojo"><b>Ten en cuenta:</b> ${a.ojo.map(_manRico).join(' · ')}</p>` : ''}
+        </article>`).join('')}</section>`).join('')}
+    </div>`;
+  const volver = () => { window.removeEventListener('afterprint', volver); renderManual(); };
+  window.addEventListener('afterprint', volver);
+  setTimeout(() => window.print(), 50);
 }
