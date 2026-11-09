@@ -1949,7 +1949,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v339-ayuda-nueva-8nov',
+      build: 'v339b-orden-express-9nov',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -2400,7 +2400,10 @@ app.get('/api/catalogs', verifyToken, async (req: AuthRequest, res: Response) =>
         FROM catalogs c
         JOIN catalog_assignments ca ON ca.catalog_id = c.id
         WHERE ca.user_id = $1 AND c.estado != 'archivado'
-        ORDER BY c.posicion ASC NULLS LAST, c.updated_at DESC
+        -- Incidencia #34 (9-nov): el comercial no ve el maestro sino SU versión express; la
+        -- express ocupa el puesto de su maestro en el orden del admin (si no, salía al final).
+        ORDER BY COALESCE((SELECT cp.posicion FROM catalogs cp WHERE cp.id = c.parent_id AND c.tipo = 'express'), c.posicion) ASC NULLS LAST,
+                 c.posicion ASC NULLS LAST, c.updated_at DESC
       `, [req.user.id]);
     }
     // Administracion (rol 'oficina') consulta TODOS los catalogos vivos: no se les
