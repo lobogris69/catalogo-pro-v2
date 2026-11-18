@@ -31,6 +31,9 @@ const VIVO = `p.activo IS TRUE AND COALESCE(p.es_baja,false)=false AND COALESCE(
   AND p.descatalogado_at IS NULL AND COALESCE(p.proveedor,'') NOT ILIKE 'BAJA%'
   AND COALESCE(p.proveedor,'') NOT ILIKE 'PRODUCTOS ELIMINADOS%'`;
 
+/** Proveedores que NO son mercancía para la farmacia (o no se publican): no cuentan en las cifras de la web. */
+const NO_MERCANCIA = 'BETER|VARIOS|MEDIA MARKT|CORTE INGLES|ALIEXPRESS|BIGBUY|ELECTROPRECIO|TODO-RELOJES|GRAFICAS|SISTEMAS INFORMATICOS|TECHOS|TELERECARGA|TRADING MEDIA|MERCHANDISING|ENVASES|MARKETING|PROMOCIONES|MESPUBLICITAT|INVERSIONES|PACKAGING|TERMOFORMADOS|DISPLAYS|PROJECT BOX|AYUDAS TECNO|ALLOGA';
+
 /** Campos que se pueden publicar de un artículo. Cualquier otro (precio_*, coste, notas) NUNCA sale. */
 const CAMPOS_ARTICULO = 'p.id, p.nombre, p.proveedor, p.ean';
 
@@ -144,9 +147,11 @@ async function construirSalida(pool: Pool, base: string) {
     ORDER BY n.orden, n.id`)).rows.map((n) => ({
       titulo: String(n.titulo), marca: String(n.marca), imagen: abs(String(n.imagen_url)), alt: String(n.texto_alt || n.titulo),
     }));
+  // Cifras públicas: solo mercancía real. Fuera los artículos sin proveedor, Beter, «PROVEEDORES VARIOS»
+  // y las compras internas (imprenta, marketing, informática, tiendas…). Revisado con Fernando el 18-nov-2026.
   const tot = (await pool.query(`SELECT COUNT(*)::int refs, COUNT(DISTINCT p.proveedor)::int proveedores,
       COUNT(*) FILTER (WHERE p.fecha_alta_sage > NOW() - INTERVAL '12 months')::int altas
-    FROM products p WHERE ${VIVO} AND COALESCE(p.proveedor,'') NOT ILIKE '%BETER%'`)).rows[0];
+    FROM products p WHERE ${VIVO} AND p.proveedor IS NOT NULL AND p.proveedor !~* $1`, [NO_MERCANCIA])).rows[0];
   return {
     generado: new Date().toISOString(),
     contacto: {
