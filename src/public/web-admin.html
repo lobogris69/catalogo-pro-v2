@@ -20,6 +20,7 @@
     <button role="tab" id="t-marcas" aria-controls="p-marcas" aria-selected="true">Marcas</button>
     <button role="tab" id="t-novedades" aria-controls="p-novedades" aria-selected="false">Novedades del mes</button>
     <button role="tab" id="t-articulos" aria-controls="p-articulos" aria-selected="false">Quitar artículos</button>
+    <button role="tab" id="t-laboratorios" aria-controls="p-laboratorios" aria-selected="false">Laboratorios</button>
     <button role="tab" id="t-contacto" aria-controls="p-contacto" aria-selected="false">Contacto</button>
   </nav>
 </header>
@@ -84,6 +85,19 @@
     </div>
     <h3 class="sub">Artículos quitados de la web</h3>
     <ul id="lista-ocultos" class="lista"></ul>
+  </section>
+
+  <section id="p-laboratorios" role="tabpanel" aria-labelledby="t-laboratorios" hidden>
+    <div class="intro">
+      <h2>Laboratorios que cuentan en la web</h2>
+      <p>La web dice «más de <b id="lab-n">…</b> laboratorios» y cuenta sus referencias. Entra solo quien tiene 5 o más referencias en el almacén o es el proveedor de una marca que sale en la web. Si algún laboratorio importante se queda fuera, o se cuela uno que no lo es, cámbialo aquí.</p>
+    </div>
+    <div class="barra-acc">
+      <label class="oculto" for="buscar-lab">Buscar proveedor</label>
+      <input id="buscar-lab" type="search" placeholder="Buscar un proveedor…">
+      <select id="filtro-lab" aria-label="Qué enseñar"><option value="si">Los que cuentan</option><option value="no">Los que no cuentan</option><option value="todos">Todos</option></select>
+    </div>
+    <ul id="lista-lab" class="lista"></ul>
   </section>
 
   <section id="p-contacto" role="tabpanel" aria-labelledby="t-contacto" hidden>

@@ -34,10 +34,10 @@
   function bloquear() { document.querySelectorAll('[role=tabpanel], .pestanas').forEach((x) => { x.hidden = true; }); $('bloqueo').hidden = false; }
 
   // ---------- Pestañas ----------
-  const tabs = ['marcas', 'novedades', 'articulos', 'contacto'];
+  const tabs = ['marcas', 'novedades', 'articulos', 'laboratorios', 'contacto'];
   function abrir(n) {
     for (const t of tabs) { $('t-' + t).setAttribute('aria-selected', String(t === n)); $('p-' + t).hidden = t !== n; }
-    if (n === 'marcas') cargarMarcas(); if (n === 'novedades') cargarNovedades(); if (n === 'articulos') cargarOcultos(); if (n === 'contacto') cargarContacto();
+    if (n === 'marcas') cargarMarcas(); if (n === 'novedades') cargarNovedades(); if (n === 'articulos') cargarOcultos(); if (n === 'contacto') cargarContacto(); if (n === 'laboratorios') cargarLabs();
     try { localStorage.setItem('webadmin_tab', n); } catch (_) {}
   }
   tabs.forEach((t) => $('t-' + t).addEventListener('click', () => abrir(t)));
@@ -167,6 +167,31 @@
   }
   buscador('buscar-art', 'res-art', (a) => a.oculto ? el('span', { class: 'estado mal' }, 'Ya quitado')
     : el('button', { class: 'btn-sec btn-peligro', type: 'button', onclick: intenta(async () => { await api('/ocultos/' + a.id, { method: 'POST', body: {} }); $('buscar-art').dispatchEvent(new Event('input')); cargarOcultos(); }, 'Quitado de la web') }, 'Quitar de la web'));
+
+  // ---------- Laboratorios ----------
+  let labs = [];
+  async function cargarLabs() { labs = (await api('/laboratorios')).laboratorios; pintarLabs(); }
+  function pintarLabs() {
+    $('lab-n').textContent = String(labs.filter((l) => l.cuenta).length);
+    const q = $('buscar-lab').value.trim().toLowerCase(), f = $('filtro-lab').value;
+    const ul = $('lista-lab'); ul.replaceChildren();
+    const ver = labs.filter((l) => (!q || l.proveedor.toLowerCase().includes(q)) && (f === 'todos' || (f === 'si') === l.cuenta)).slice(0, 200);
+    for (const l of ver) {
+      const porque = l.manual === true ? 'Lo has puesto tú' : l.manual === false ? 'Lo has quitado tú' : l.marcaWeb ? 'Automático: tiene una marca en la web' : l.conStock >= 5 ? 'Automático: 5 o más referencias en el almacén' : 'Automático: menos de 5 referencias en el almacén';
+      const fijar = (v) => intenta(async () => { await api('/laboratorios', { method: 'PUT', body: { proveedor: l.proveedor, incluir: v } }); await cargarLabs(); }, 'Guardado. La web lo recoge en unos minutos.');
+      const acciones = el('div', { class: 'acciones' },
+        l.cuenta ? el('button', { class: 'btn-sec btn-peligro', type: 'button', onclick: fijar(false) }, 'No contarlo')
+                 : el('button', { class: 'btn', type: 'button', onclick: fijar(true) }, 'Contarlo'),
+        l.manual !== null ? el('button', { class: 'btn-sec', type: 'button', onclick: fijar(null) }, 'Volver a automático') : null);
+      ul.append(el('li', { class: l.cuenta ? '' : 'apagada' },
+        el('span', { class: 'estado ' + (l.cuenta ? 'bien' : 'mal') }, l.cuenta ? 'Cuenta' : 'No cuenta'),
+        el('div', {}, el('div', { class: 'nom' }, l.proveedor), el('div', { class: 'det' }, l.refs + ' referencias vivas · ' + l.conStock + ' con existencias · ' + porque)),
+        acciones));
+    }
+    if (!ver.length) ul.append(el('li', {}, el('span', {}), el('div', { class: 'det' }, 'Ninguno con ese filtro.')));
+  }
+  $('buscar-lab').addEventListener('input', pintarLabs);
+  $('filtro-lab').addEventListener('change', pintarLabs);
 
   // ---------- Contacto ----------
   const CLAVES = ['telefono', 'whatsapp', 'correo', 'horario_dias', 'horario_abre', 'horario_cierra'];

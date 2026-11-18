@@ -85,6 +85,12 @@ async function migrar(pool: Pool) {
       created_at TIMESTAMP NOT NULL DEFAULT NOW()
     )`);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS web_laboratorios (
+      proveedor VARCHAR(200) PRIMARY KEY,
+      incluir BOOLEAN NOT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS web_ajustes (
       clave VARCHAR(60) PRIMARY KEY,
       valor TEXT NOT NULL,
@@ -113,6 +119,43 @@ async function contarRefs(pool: Pool, patrones: Patron[]): Promise<number> {
     `SELECT COUNT(*)::int n FROM products p WHERE ${VIVO} AND ${c.sql}
        AND NOT EXISTS (SELECT 1 FROM web_ocultos o WHERE o.product_id = p.id)`, c.vals);
   return r.rows[0].n;
+}
+
+export type Laboratorio = { proveedor: string; refs: number; conStock: number; marcaWeb: boolean; auto: boolean; manual: boolean | null; cuenta: boolean };
+
+/**
+ * Laboratorios que cuentan en la web (decisión de Fernando, 18-nov-2026):
+ * AUTOMÁTICO = 5 o más referencias con existencias en el almacén, o ser el proveedor de una marca que sale en la web
+ * (así entra Avizor con sus 4 Oûne). Fernando puede poner o quitar cualquiera desde el panel (web_laboratorios).
+ * Siempre fuera Beter, competidores y compras internas (NO_MERCANCIA).
+ */
+export async function laboratorios(pool: Pool): Promise<Laboratorio[]> {
+  const base = (await pool.query(`
+    SELECT p.proveedor, COUNT(*)::int refs,
+      COUNT(*) FILTER (WHERE s.unidades > 0)::int con_stock
+    FROM products p LEFT JOIN product_stock s ON s.codigo_sage = p.codigo
+    WHERE ${VIVO} AND p.proveedor IS NOT NULL AND p.proveedor !~* $1 AND p.nombre !~* 'BETER'
+    GROUP BY p.proveedor`, [NO_MERCANCIA])).rows;
+  // Proveedores de las marcas visibles en la web
+  // Cada marca visible aporta SU proveedor principal (el que más artículos suyos tiene), no todos los que
+  // casen por nombre: «LUNA» casaba con «MINILAND» y «MEDIA LUNA».
+  const marcas = (await pool.query('SELECT patrones FROM web_marcas WHERE visible')).rows;
+  const deMarcas = new Set<string>();
+  for (const m of marcas) {
+    const pats: Patron[] = Array.isArray(m.patrones) ? m.patrones : [];
+    if (!pats.length) continue;
+    const c = condicionMarca(pats, 1);
+    const r = await pool.query(`SELECT p.proveedor FROM products p WHERE ${VIVO} AND p.proveedor IS NOT NULL AND ${c.sql}
+      GROUP BY p.proveedor ORDER BY COUNT(*) DESC LIMIT 1`, c.vals);
+    if (r.rows[0]) deMarcas.add(r.rows[0].proveedor);
+  }
+  const manual = new Map<string, boolean>((await pool.query('SELECT proveedor, incluir FROM web_laboratorios')).rows.map((f) => [f.proveedor, f.incluir]));
+  return base.map((b) => {
+    const marcaWeb = deMarcas.has(b.proveedor);
+    const auto = b.con_stock >= 5 || marcaWeb;
+    const m = manual.has(b.proveedor) ? manual.get(b.proveedor)! : null;
+    return { proveedor: b.proveedor, refs: b.refs, conStock: b.con_stock, marcaWeb, auto, manual: m, cuenta: m === null ? auto : m };
+  }).sort((x, y) => Number(y.cuenta) - Number(x.cuenta) || y.refs - x.refs);
 }
 
 async function leerAjustes(pool: Pool) {
@@ -147,20 +190,13 @@ async function construirSalida(pool: Pool, base: string) {
     ORDER BY n.orden, n.id`)).rows.map((n) => ({
       titulo: String(n.titulo), marca: String(n.marca), imagen: abs(String(n.imagen_url)), alt: String(n.texto_alt || n.titulo),
     }));
-  // Cifras públicas (decisión de Fernando, 18-nov-2026): LABORATORIOS = proveedores con al menos 5 referencias
-  // con existencias en el almacén (product_stock de Sage, solo unidades). Así quedan fuera las compras sueltas,
-  // los servicios y los restos. REFERENCIAS = artículos vivos en Sage de esos laboratorios. ALTAS = de esos, en 12 meses.
-  // Siempre sin Beter (por proveedor y por nombre) ni compras internas (NO_MERCANCIA).
-  const tot = (await pool.query(`
-    WITH labs AS (
-      SELECT p.proveedor FROM products p JOIN product_stock s ON s.codigo_sage = p.codigo
-      WHERE ${VIVO} AND s.unidades > 0 AND p.proveedor IS NOT NULL AND p.proveedor !~* $1 AND p.nombre !~* 'BETER'
-      GROUP BY p.proveedor HAVING COUNT(*) >= 5
-    )
-    SELECT (SELECT COUNT(*) FROM labs)::int AS proveedores,
-      COUNT(*)::int AS refs,
+  // Cifras públicas: LABORATORIOS = los que marca laboratorios() (regla automática + correcciones de Fernando);
+  // REFERENCIAS y ALTAS = artículos vivos de esos laboratorios (sin Beter por nombre).
+  const labs = (await laboratorios(pool)).filter((l) => l.cuenta).map((l) => l.proveedor);
+  const agg = (await pool.query(`SELECT COUNT(*)::int AS refs,
       COUNT(*) FILTER (WHERE p.fecha_alta_sage > NOW() - INTERVAL '12 months')::int AS altas
-    FROM products p WHERE ${VIVO} AND p.nombre !~* 'BETER' AND p.proveedor IN (SELECT proveedor FROM labs)`, [NO_MERCANCIA])).rows[0];
+    FROM products p WHERE ${VIVO} AND p.nombre !~* 'BETER' AND p.proveedor = ANY($1)`, [labs])).rows[0];
+  const tot = { refs: agg.refs, proveedores: labs.length, altas: agg.altas };
   return {
     generado: new Date().toISOString(),
     contacto: {
@@ -335,6 +371,24 @@ export function registrarWebPublica(app: Express, d: Deps) {
   });
   app.delete('/api/web-admin/novedades/:id', ...P, async (req, res) => {
     try { await pool.query('DELETE FROM web_novedades WHERE id = $1', [Number(req.params.id)]); ok(res); } catch (e) { fallo(res, e); }
+  });
+
+  // ---------- Laboratorios (qué proveedores cuentan en las cifras de la web) ----------
+  app.get('/api/web-admin/laboratorios', ...P, async (_req, res) => {
+    try { res.json({ laboratorios: await laboratorios(pool) }); } catch (e) { fallo(res, e); }
+  });
+  /** incluir: true (siempre cuenta), false (nunca cuenta) o null (vuelve a la regla automática). */
+  app.put('/api/web-admin/laboratorios', ...P, async (req, res) => {
+    try {
+      const proveedor = String(req.body?.proveedor || '').slice(0, 200);
+      const incluir = req.body?.incluir;
+      if (!proveedor) throw new Error('Falta el proveedor');
+      if (incluir === null) await pool.query('DELETE FROM web_laboratorios WHERE proveedor = $1', [proveedor]);
+      else if (typeof incluir === 'boolean') await pool.query(`INSERT INTO web_laboratorios (proveedor, incluir) VALUES ($1,$2)
+        ON CONFLICT (proveedor) DO UPDATE SET incluir = EXCLUDED.incluir, updated_at = NOW()`, [proveedor, incluir]);
+      else throw new Error('Valor no válido');
+      ok(res);
+    } catch (e) { fallo(res, e); }
   });
 
   // ---------- Ajustes (contacto, título de novedades) ----------
