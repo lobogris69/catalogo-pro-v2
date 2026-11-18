@@ -14,6 +14,7 @@
  * un proveedor y Sage lo da de baja, la marca y sus novedades desaparecen solas de la web.
  */
 import type { Express, Request, Response, NextFunction, RequestHandler } from 'express';
+import { nombreWeb } from './web-nombres';
 import type { Pool } from 'pg';
 import path from 'path';
 import fs from 'fs';
@@ -121,7 +122,36 @@ async function contarRefs(pool: Pool, patrones: Patron[]): Promise<number> {
   return r.rows[0].n;
 }
 
-export type Laboratorio = { proveedor: string; refs: number; conStock: number; marcaWeb: boolean; auto: boolean; manual: boolean | null; cuenta: boolean };
+/**
+ * Productos de una marca para su ficha en la web (18-nov-2026). Solo el NOMBRE limpio y si es nuevo:
+ * nunca código, EAN, proveedor, stock ni precio. Respeta los artículos quitados (web_ocultos).
+ * Si la marca se busca por nombre, solo cuenta su proveedor principal (por nombre se colaban
+ * artículos de otras casas: «LUNA» traía «Media Luna» de Herbitas, etc.).
+ */
+export async function productosMarca(pool: Pool, patrones: Patron[]): Promise<{ nombre: string; nuevo: boolean }[]> {
+  const c = condicionMarca(patrones, 1);
+  let filas = (await pool.query(
+    `SELECT p.nombre, p.proveedor, (p.fecha_alta_sage > NOW() - INTERVAL '6 months') AS nuevo
+       FROM products p WHERE ${VIVO} AND ${c.sql} AND p.nombre !~* 'BETER' AND COALESCE(p.proveedor,'') !~* $${c.vals.length + 1}
+       AND NOT EXISTS (SELECT 1 FROM web_ocultos o WHERE o.product_id = p.id)`, [...c.vals, NO_MERCANCIA])).rows;
+  if (patrones.length && patrones.every((p) => p.campo === 'nombre')) {
+    const n = new Map<string, number>();
+    for (const f of filas) if (f.proveedor) n.set(f.proveedor, (n.get(f.proveedor) || 0) + 1);
+    const principal = [...n.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    if (principal) filas = filas.filter((f) => f.proveedor === principal);
+  }
+  const out = new Map<string, { nombre: string; nuevo: boolean }>();
+  for (const f of filas) {
+    const nombre = nombreWeb(f.nombre);
+    if (!nombre) continue;
+    const k = nombre.toLowerCase();
+    const prev = out.get(k);
+    if (prev) prev.nuevo = prev.nuevo || !!f.nuevo; else out.set(k, { nombre, nuevo: !!f.nuevo });
+  }
+  return [...out.values()].sort((a, b) => Number(b.nuevo) - Number(a.nuevo) || a.nombre.localeCompare(b.nombre, 'es'));
+}
+
+export type Laboratorio ={ proveedor: string; refs: number; conStock: number; marcaWeb: boolean; auto: boolean; manual: boolean | null; cuenta: boolean };
 
 /**
  * Laboratorios que cuentan en la web (decisión de Fernando, 18-nov-2026):
@@ -221,7 +251,8 @@ export function registrarWebPublica(app: Express, d: Deps) {
   migrar(pool).catch((e) => console.error('[web] migración', e.message));
 
   let cache: { t: number; datos: unknown } | null = null;
-  const invalidar = () => { cache = null; };
+  const cacheProd = new Map<string, { t: number; datos: unknown }>();
+  const invalidar = () => { cache = null; cacheProd.clear(); };
 
   app.get('/api/web-publica', async (req: Request, res: Response) => {
     try {
@@ -236,7 +267,28 @@ export function registrarWebPublica(app: Express, d: Deps) {
     }
   });
 
-  const soloDueno = (req: Request, res: Response, next: NextFunction) => {
+  // Productos de una marca visible (ficha de marca de la web). Caché de 10 min por marca.
+  app.get('/api/web-publica/marcas/:slug/productos', async (req: Request, res: Response) => {
+    try {
+      const slug = String(req.params.slug).slice(0, 80);
+      let e = cacheProd.get(slug);
+      if (!e || Date.now() - e.t > 600_000) {
+        const m = (await pool.query('SELECT patrones FROM web_marcas WHERE slug = $1 AND visible', [slug])).rows[0];
+        if (!m) { res.status(404).json({ error: 'no existe' }); return; }
+        const productos = await productosMarca(pool, Array.isArray(m.patrones) ? m.patrones : []);
+        e = { t: Date.now(), datos: { slug, total: productos.length, productos } };
+        cacheProd.set(slug, e);
+      }
+      if (!sinPrecios(e.datos)) { res.status(500).json({ error: 'salida bloqueada' }); return; }
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.json(e.datos);
+    } catch (err: any) {
+      console.error('[web] productos', err.message);
+      res.status(503).json({ error: 'no disponible' });
+    }
+  });
+
+  const soloDueno =(req: Request, res: Response, next: NextFunction) => {
     const u = (req as any).user;
     if (!u || u._realAdminId || u.role !== 'admin' || !ids().includes(Number(u.id))) {
       res.status(403).json({ error: 'Este apartado es solo para el administrador de la web.' });
