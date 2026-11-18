@@ -147,11 +147,12 @@ async function construirSalida(pool: Pool, base: string) {
     ORDER BY n.orden, n.id`)).rows.map((n) => ({
       titulo: String(n.titulo), marca: String(n.marca), imagen: abs(String(n.imagen_url)), alt: String(n.texto_alt || n.titulo),
     }));
-  // Cifras públicas: solo mercancía real. Fuera los artículos sin proveedor, Beter, «PROVEEDORES VARIOS»
-  // y las compras internas (imprenta, marketing, informática, tiendas…). Revisado con Fernando el 18-nov-2026.
+  // Cifras públicas: solo mercancía real. Fuera Beter (por proveedor y por nombre), «PROVEEDORES VARIOS»
+  // y las compras internas (imprenta, marketing, informática, tiendas…). Los artículos SIN proveedor sí cuentan:
+  // son altas recientes de Sage aún sin asignar (mercancía real). Revisado el 18-nov-2026.
   const tot = (await pool.query(`SELECT COUNT(*)::int refs, COUNT(DISTINCT p.proveedor)::int proveedores,
       COUNT(*) FILTER (WHERE p.fecha_alta_sage > NOW() - INTERVAL '12 months')::int altas
-    FROM products p WHERE ${VIVO} AND p.proveedor IS NOT NULL AND p.proveedor !~* $1`, [NO_MERCANCIA])).rows[0];
+    FROM products p WHERE ${VIVO} AND (p.proveedor IS NULL OR p.proveedor !~* $1) AND p.nombre !~* 'BETER'`, [NO_MERCANCIA])).rows[0];
   return {
     generado: new Date().toISOString(),
     contacto: {
