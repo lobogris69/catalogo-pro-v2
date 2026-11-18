@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Web lomhifar.es · panel</title>
+<link rel="stylesheet" href="/web-admin.css">
+</head>
+<body>
+<header class="cab">
+  <div class="cab-in">
+    <div>
+      <p class="mini">CatalogPRO · solo administrador</p>
+      <h1>Web lomhifar.es</h1>
+    </div>
+    <a class="btn-sec" href="/">Volver a CatalogPRO</a>
+  </div>
+  <nav class="pestanas" role="tablist" aria-label="Apartados">
+    <button role="tab" id="t-marcas" aria-controls="p-marcas" aria-selected="true">Marcas</button>
+    <button role="tab" id="t-novedades" aria-controls="p-novedades" aria-selected="false">Novedades del mes</button>
+    <button role="tab" id="t-articulos" aria-controls="p-articulos" aria-selected="false">Quitar artículos</button>
+    <button role="tab" id="t-contacto" aria-controls="p-contacto" aria-selected="false">Contacto</button>
+  </nav>
+</header>
+
+<main class="cuerpo">
+  <p id="aviso" class="aviso" role="status" hidden></p>
+  <div id="bloqueo" class="bloqueo" hidden>
+    <h2>Este apartado es solo para el administrador</h2>
+    <p>Entra en CatalogPRO con tu usuario de administrador y vuelve a abrir esta página.</p>
+    <a class="btn" href="/">Ir a CatalogPRO</a>
+  </div>
+
+  <section id="p-marcas" role="tabpanel" aria-labelledby="t-marcas">
+    <div class="intro">
+      <h2>Marcas que salen en la web</h2>
+      <p>Pulsa el interruptor para que una marca salga o no salga. La estrella la pone en la portada. Si Sage da de baja al proveedor, la marca deja de salir sola.</p>
+    </div>
+    <div class="barra-acc">
+      <label class="oculto" for="buscar-marca">Buscar marca</label>
+      <input id="buscar-marca" type="search" placeholder="Buscar una marca…">
+      <button class="btn" id="abrir-nueva">+ Añadir una marca</button>
+    </div>
+    <form id="form-nueva" class="tarjeta" hidden>
+      <h3>Añadir una marca</h3>
+      <label for="nm-nombre">Nombre de la marca, como quieres que se vea</label>
+      <input id="nm-nombre" required maxlength="120">
+      <label for="nm-prov">Su proveedor en Sage</label>
+      <select id="nm-prov" required></select>
+      <label for="nm-desc">Qué vende, en una frase</label>
+      <input id="nm-desc" maxlength="400">
+      <div class="fila-btn"><button class="btn" type="submit">Añadir</button><button class="btn-sec" type="button" id="cerrar-nueva">Cancelar</button></div>
+    </form>
+    <ul id="lista-marcas" class="lista"></ul>
+  </section>
+
+  <section id="p-novedades" role="tabpanel" aria-labelledby="t-novedades" hidden>
+    <div class="intro">
+      <h2>Novedades del mes</h2>
+      <p>Son los productos que salen en la portada y en «Novedades». Busca el artículo, pon una buena foto y listo. Si el artículo se da de baja en Sage, desaparece solo.</p>
+    </div>
+    <div class="tarjeta">
+      <label for="titulo-mes">Título de la sección («Novedades de …»)</label>
+      <div class="fila-btn"><input id="titulo-mes" maxlength="60" placeholder="noviembre de 2026"><button class="btn" id="guardar-mes">Guardar</button></div>
+    </div>
+    <div class="tarjeta">
+      <label for="buscar-nov">Añadir una novedad: busca el artículo por nombre o código de barras</label>
+      <input id="buscar-nov" type="search" placeholder="Por ejemplo: magic colourstick">
+      <ul id="res-nov" class="resultados"></ul>
+    </div>
+    <ul id="lista-nov" class="lista"></ul>
+  </section>
+
+  <section id="p-articulos" role="tabpanel" aria-labelledby="t-articulos" hidden>
+    <div class="intro">
+      <h2>Quitar artículos de la web</h2>
+      <p>Si un artículo ya no lo traéis pero sigue vivo en Sage, quítalo aquí. No se borra de Sage ni de CatalogPRO: solo deja de salir en la web.</p>
+    </div>
+    <div class="tarjeta">
+      <label for="buscar-art">Busca el artículo</label>
+      <input id="buscar-art" type="search" placeholder="Nombre, código o código de barras">
+      <ul id="res-art" class="resultados"></ul>
+    </div>
+    <h3 class="sub">Artículos quitados de la web</h3>
+    <ul id="lista-ocultos" class="lista"></ul>
+  </section>
+
+  <section id="p-contacto" role="tabpanel" aria-labelledby="t-contacto" hidden>
+    <div class="intro">
+      <h2>Datos de contacto</h2>
+      <p>Lo que cambies aquí sale en toda la web en un par de minutos.</p>
+    </div>
+    <form id="form-contacto" class="tarjeta">
+      <label for="a-telefono">Teléfono</label><input id="a-telefono" maxlength="40">
+      <label for="a-whatsapp">WhatsApp (solo números, con el 34 delante)</label><input id="a-whatsapp" inputmode="numeric" maxlength="20">
+      <label for="a-correo">Correo</label><input id="a-correo" type="email" maxlength="120">
+      <label for="a-horario_dias">Días de apertura</label><input id="a-horario_dias" maxlength="60">
+      <div class="dos"><div><label for="a-horario_abre">Abre a las</label><input id="a-horario_abre" type="time"></div>
+      <div><label for="a-horario_cierra">Cierra a las</label><input id="a-horario_cierra" type="time"></div></div>
+      <div class="fila-btn"><button class="btn" type="submit">Guardar los datos</button></div>
+    </form>
+  </section>
+</main>
+<script src="/web-admin.js"></script>
+</body>
+</html>

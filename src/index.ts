@@ -30,6 +30,7 @@ import {
 import { generarTagsIA, resolverRutaImagen } from './ai-tags';
 import { detectarZonasIA, ultimoErrorIA, refinarRecuadroPrecio, detectarPreciosIA } from './ai-zones';
 import { parseExcelTabla, computarTabla, renderTablaExpositor, resumenExcel } from './expositor-tablas';
+import { registrarWebPublica } from './web-publica';
 
 // ============================================================================
 // AI-TAGS - dispara generacion en background y hace UPDATE cuando esta listo.
@@ -1935,6 +1936,9 @@ async function initDB(): Promise<void> {
 // /api/health verifica que la BD responde. Si no responde devuelve 503,
 // Railway lo detecta como unhealthy y reinicia el contenedor.
 // Timeout 3s para no quedarse colgado si BD esta saturada.
+// Web pública lomhifar.es: módulo aparte (tablas web_*, rutas /api/web-publica y /api/web-admin/*).
+registrarWebPublica(app as any, { pool, verifyToken: verifyToken as any, upload, uploadsDir: UPLOADS_DIR });
+
 app.get('/api/health', async (_req, res) => {
   try {
     const t0 = Date.now();
