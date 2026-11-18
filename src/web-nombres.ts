@@ -16,6 +16,7 @@ const UNIDADES: [RegExp, string][] = [
   [/(\d)\s*(CM)\b\.?/gi, '$1 cm'],
   [/(\d)\s*(MM)\b\.?/gi, '$1 mm'],
   [/(\d)\s*(L|LT|LTS)\b\.?/gi, '$1 l'],
+  [/(\d)UNID(ADES)?\b\.?/gi, '$1 unidades'],
   [/\bUNID(ADES)?\b\.?|\bUDS?\b\.?|\bU\.(?=\s|$)/gi, 'unidades'],
   [/\bS\/A\b/gi, 'sin azúcar'],
   [/\bC\/(?=\w)/gi, 'con '],
@@ -44,7 +45,9 @@ export function nombreWeb(bruto: string): string | null {
     .replace(/\bEXP\.\s*/gi, ' ')                                     // expositor del producto: se enseña el producto
     .replace(/\(\s*\d+\s*\+\s*\d+\s*\)/g, ' ')                       // (11+1)
     .replace(/\s[+-]\d[.,]\d{1,2}\b/g, ' ')                           // graduación de gafas +2.50
-    .replace(/\b(T\.|TALLA\b|T\/)\s*[\w.]+(-\d+)?/gi, ' ')           // tallas
+    .replace(/\.OM$/i, ' ')                                          // sufijo de proveedor (Omare)
+    .replace(/\bDIPS\./gi, 'DISP.')                                   // errata de Sage
+    .replace(/\b(T\.|TALLA\b|T\/)\s*[\wÑñ.]+(-\d+)?/gi, ' ')         // tallas
     .replace(/\bM-\d*(?=\s|$)/g, ' ')                                // modelos internos M-346
     .replace(/-(?=SPF|SFP)/gi, ' ').replace(/\bSFP/gi, 'SPF')
     .replace(/\bC\.?\s?N\.?\s*[:.]?\s*[A-Z]?\d[\d.]*/gi, ' ')       // CN.218616, C.N: 189876.0, CN.I00360
