@@ -32,7 +32,7 @@ const VIVO = `p.activo IS TRUE AND COALESCE(p.es_baja,false)=false AND COALESCE(
   AND COALESCE(p.proveedor,'') NOT ILIKE 'PRODUCTOS ELIMINADOS%'`;
 
 /** Proveedores que NO son mercancía para la farmacia (o no se publican): no cuentan en las cifras de la web. */
-const NO_MERCANCIA = 'BETER|VARIOS|MEDIA MARKT|CORTE INGLES|ALIEXPRESS|BIGBUY|ELECTROPRECIO|TODO-RELOJES|GRAFICAS|SISTEMAS INFORMATICOS|TECHOS|TELERECARGA|TRADING MEDIA|MERCHANDISING|ENVASES|MARKETING|PROMOCIONES|MESPUBLICITAT|INVERSIONES|PACKAGING|TERMOFORMADOS|DISPLAYS|PROJECT BOX|AYUDAS TECNO|ALLOGA';
+const NO_MERCANCIA = 'BETER|GALIFARMA|JAHISIL|VARIOS|MEDIA MARKT|CORTE INGLES|ALIEXPRESS|BIGBUY|ELECTROPRECIO|TODO-RELOJES|GRAFICAS|SISTEMAS INFORMATICOS|TECHOS|TELERECARGA|TRADING MEDIA|MERCHANDISING|ENVASES|MARKETING|PROMOCIONES|MESPUBLICITAT|INVERSIONES|PACKAGING|TERMOFORMADOS|DISPLAYS|PROJECT BOX|AYUDAS TECNO|ALLOGA';
 
 /** Campos que se pueden publicar de un artículo. Cualquier otro (precio_*, coste, notas) NUNCA sale. */
 const CAMPOS_ARTICULO = 'p.id, p.nombre, p.proveedor, p.ean';
@@ -147,12 +147,20 @@ async function construirSalida(pool: Pool, base: string) {
     ORDER BY n.orden, n.id`)).rows.map((n) => ({
       titulo: String(n.titulo), marca: String(n.marca), imagen: abs(String(n.imagen_url)), alt: String(n.texto_alt || n.titulo),
     }));
-  // Cifras públicas: solo mercancía real. Fuera Beter (por proveedor y por nombre), «PROVEEDORES VARIOS»
-  // y las compras internas (imprenta, marketing, informática, tiendas…). Los artículos SIN proveedor sí cuentan:
-  // son altas recientes de Sage aún sin asignar (mercancía real). Revisado el 18-nov-2026.
-  const tot = (await pool.query(`SELECT COUNT(*)::int refs, COUNT(DISTINCT p.proveedor)::int proveedores,
-      COUNT(*) FILTER (WHERE p.fecha_alta_sage > NOW() - INTERVAL '12 months')::int altas
-    FROM products p WHERE ${VIVO} AND (p.proveedor IS NULL OR p.proveedor !~* $1) AND p.nombre !~* 'BETER'`, [NO_MERCANCIA])).rows[0];
+  // Cifras públicas (decisión de Fernando, 18-nov-2026): LABORATORIOS = proveedores con al menos 5 referencias
+  // con existencias en el almacén (product_stock de Sage, solo unidades). Así quedan fuera las compras sueltas,
+  // los servicios y los restos. REFERENCIAS = artículos vivos en Sage de esos laboratorios. ALTAS = de esos, en 12 meses.
+  // Siempre sin Beter (por proveedor y por nombre) ni compras internas (NO_MERCANCIA).
+  const tot = (await pool.query(`
+    WITH labs AS (
+      SELECT p.proveedor FROM products p JOIN product_stock s ON s.codigo_sage = p.codigo
+      WHERE ${VIVO} AND s.unidades > 0 AND p.proveedor IS NOT NULL AND p.proveedor !~* $1 AND p.nombre !~* 'BETER'
+      GROUP BY p.proveedor HAVING COUNT(*) >= 5
+    )
+    SELECT (SELECT COUNT(*) FROM labs)::int AS proveedores,
+      COUNT(*)::int AS refs,
+      COUNT(*) FILTER (WHERE p.fecha_alta_sage > NOW() - INTERVAL '12 months')::int AS altas
+    FROM products p WHERE ${VIVO} AND p.nombre !~* 'BETER' AND p.proveedor IN (SELECT proveedor FROM labs)`, [NO_MERCANCIA])).rows[0];
   return {
     generado: new Date().toISOString(),
     contacto: {
