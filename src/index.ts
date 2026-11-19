@@ -923,6 +923,24 @@ async function initDB(): Promise<void> {
           GRANT SELECT, UPDATE (estado, error, twilio_sid, enviado_at) ON envios_whatsapp TO vendedor_ia;
         END IF;
       END $$;
+      -- CATÁLOGOS QUE EL VENDEDOR IA PUEDE MANDAR A LOS CLIENTES (19-nov-2026, Fernando: «el de regalos de Navidad es
+      -- el que usamos para enseñar los regalos a los clientes»). CatalogPro mantiene un PDF (calidad 'whatsapp') al día
+      -- en una ruta pública aleatoria y aquí deja dónde está; el Vendedor IA lo lee (solo lectura) y lo manda cuando una
+      -- farmacia lo pide. Se rehace solo al cambiar las láminas (firma).
+      CREATE TABLE IF NOT EXISTS catalogos_pdf_publico (
+        catalog_id INTEGER PRIMARY KEY,
+        nombre VARCHAR(300),
+        ruta VARCHAR(300),
+        bytes INTEGER,
+        laminas INTEGER,
+        firma TEXT,
+        generado_at TIMESTAMP DEFAULT NOW()
+      );
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vendedor_ia') THEN
+          GRANT SELECT ON catalogos_pdf_publico TO vendedor_ia;
+        END IF;
+      END $$;
 
       -- CLIENTE PENDIENTE DE ALTA. Una apertura nueva o una farmacia que aun no es
       -- cliente: el comercial la da de alta ALLI MISMO con todos los datos que necesita
@@ -3103,6 +3121,42 @@ app.get('/api/envios-whatsapp/:id', verifyToken, async (req: AuthRequest, res: R
     res.json({ success: true, envio: e });
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
+// PDF PÚBLICO DE LOS CATÁLOGOS QUE EL VENDEDOR IA MANDA A LOS CLIENTES (ver tabla catalogos_pdf_publico).
+// 24 = «REGALOS PROMOCIONALES NAVIDAD 2026». Para añadir otro: su id aquí (y la herramienta en el Vendedor IA).
+const CATALOGOS_PDF_PUBLICO = [24];
+let _pdfPublicoEnMarcha = false;
+async function refrescarPdfsPublicos(): Promise<void> {
+  if (_pdfPublicoEnMarcha) return;
+  _pdfPublicoEnMarcha = true;
+  try {
+    for (const id of CATALOGOS_PDF_PUBLICO) {
+      try {
+        const acceso = await cargarCatalogoConAcceso(id, { user: { id: 1, role: 'admin' } } as any);
+        if (!acceso || 'error' in acceso || !acceso.sheets.length) continue;
+        const { catalog, sheets } = acceso;
+        const fecha = await fechaActualizadoCatalogo(id);
+        const firma = JSON.stringify([catalog.name, fecha, sheets.map((s: any) => [s.id, s.orden, s.imagen_path, s.updated_at])]);
+        const prev = (await pool.query('SELECT ruta, firma FROM catalogos_pdf_publico WHERE catalog_id=$1', [id])).rows[0];
+        if (prev && prev.firma === firma && prev.ruta && fs.existsSync(path.join(UPLOADS_DIR, prev.ruta))) continue;
+        const nombreCat = nombreConFechaActualizado(catalog.name, fecha);
+        const dirRel = 'publicos/' + require('crypto').randomBytes(16).toString('hex');
+        fs.mkdirSync(path.join(UPLOADS_DIR, dirRel), { recursive: true });
+        const fname = nombreFicheroSeguro(nombreCat) + '.pdf';
+        const abs = path.join(UPLOADS_DIR, dirRel, fname);
+        await generarPdfCatalogoStream(catalog, sheets, fs.createWriteStream(abs), 'whatsapp');
+        const bytes = fs.statSync(abs).size;
+        if (bytes > 19.5 * 1048576) { fs.rmSync(path.join(UPLOADS_DIR, dirRel), { recursive: true, force: true }); throw new Error(`pesa ${(bytes / 1048576).toFixed(1)} MB (WhatsApp admite 20)`); }
+        await pool.query(`INSERT INTO catalogos_pdf_publico (catalog_id, nombre, ruta, bytes, laminas, firma, generado_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())
+          ON CONFLICT (catalog_id) DO UPDATE SET nombre=$2, ruta=$3, bytes=$4, laminas=$5, firma=$6, generado_at=NOW()`, [id, nombreCat, dirRel + '/' + fname, bytes, sheets.length, firma]);
+        // El PDF anterior se borra un rato después (por si se está enviando justo ahora).
+        if (prev?.ruta) { const viejo = path.join(UPLOADS_DIR, path.dirname(prev.ruta)); setTimeout(() => { try { fs.rmSync(viejo, { recursive: true, force: true }); } catch { /* nada */ } }, 30 * 60 * 1000).unref(); }
+        console.log(`[pdf-publico] catálogo ${id}: ${sheets.length} láminas, ${(bytes / 1048576).toFixed(1)} MB → ${dirRel}`);
+      } catch (e) { console.error('[pdf-publico] catálogo ' + id + ':', (e as Error).message); }
+    }
+  } finally { _pdfPublicoEnMarcha = false; }
+}
+setTimeout(() => { refrescarPdfsPublicos().catch(() => {}); }, 90 * 1000).unref();
+setInterval(() => { refrescarPdfsPublicos().catch(() => {}); }, 30 * 60 * 1000).unref();
 // Limpieza: los PDF enviados se borran a los 3 días (cada uno pesa ~16 MB en el volumen).
 setInterval(() => {
   try {
