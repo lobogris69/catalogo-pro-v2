@@ -207,7 +207,8 @@ async function construirSalida(pool: Pool, base: string) {
     marcas.push({
       slug: String(m.slug), nombre: String(m.nombre), desc: String(m.descripcion || ''),
       familias: Array.isArray(m.familias) ? m.familias.map(String) : [],
-      refs, destacada: !!m.destacada,
+      // Sin el número de referencias de cada marca (23-nov-2026): la web la ven otros laboratorios y no deben compararse.
+      destacada: !!m.destacada,
       logo: abs(m.logo_url ? String(m.logo_url) : null), foto: abs(m.foto_url ? String(m.foto_url) : null),
     });
   }
@@ -276,7 +277,7 @@ export function registrarWebPublica(app: Express, d: Deps) {
         const m = (await pool.query('SELECT patrones FROM web_marcas WHERE slug = $1 AND visible', [slug])).rows[0];
         if (!m) { res.status(404).json({ error: 'no existe' }); return; }
         const productos = await productosMarca(pool, Array.isArray(m.patrones) ? m.patrones : []);
-        e = { t: Date.now(), datos: { slug, total: productos.length, productos } };
+        e = { t: Date.now(), datos: { slug, productos } };
         cacheProd.set(slug, e);
       }
       if (!sinPrecios(e.datos)) { res.status(500).json({ error: 'salida bloqueada' }); return; }
