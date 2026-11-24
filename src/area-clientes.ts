@@ -89,11 +89,11 @@ async function clientePorId(pool: Pool, id: number) {
 export async function clienteDeSesion(pool: Pool, sesion: unknown) {
   const s = String(sesion || '');
   if (s.length < 20) return null;
-  const r = await pool.query(`SELECT client_id FROM web_acceso_sesiones WHERE token_hash = $1 AND NOT revocada AND expira > NOW()`, [hash(s)]);
+  const r = await pool.query(`SELECT client_id, ip FROM web_acceso_sesiones WHERE token_hash = $1 AND NOT revocada AND expira > NOW()`, [hash(s)]);
   if (!r.rowCount) return null;
   const cli = await clientePorId(pool, r.rows[0].client_id);
   if (!cli || evaluar(cli, await proveedores(pool), await reglaDe(pool, cli.id)) !== 'ok') return null;
-  return cli as { id: number; sage_code: string; razon_social: string; nombre_comercial: string; email: string; commercial_code: string; provincia: string };
+  return { ...cli, prueba: r.rows[0].ip === 'prueba' } as { id: number; sage_code: string; razon_social: string; nombre_comercial: string; email: string; commercial_code: string; provincia: string; prueba: boolean };
 }
 const ipDe = (req: Request) => String(req.headers['x-cliente-ip'] || req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim().slice(0, 60);
 const enmascarar = (e: string) => { const [u, d = ''] = e.split('@'); const [dn, ...tld] = d.split('.'); return (u[0] || '') + '•••@' + (dn[0] || '') + '•••.' + tld.join('.'); };
@@ -152,14 +152,15 @@ export function registrarAreaClientes(app: Express, d: Deps) {
     try {
       const t = String(req.body?.t || '');
       if (t.length < 20) { res.status(400).json({ ok: false, motivo: 'enlace' }); return; }
-      const r = await pool.query(`UPDATE web_acceso_enlaces SET usado_at = NOW() WHERE token_hash = $1 AND usado_at IS NULL AND expira > NOW() RETURNING client_id`, [hash(t)]);
+      const r = await pool.query(`UPDATE web_acceso_enlaces SET usado_at = NOW() WHERE token_hash = $1 AND usado_at IS NULL AND expira > NOW() RETURNING client_id, ip`, [hash(t)]);
       if (!r.rowCount) { log(ip, null, 'canjear', 'enlace_malo'); res.status(401).json({ ok: false, motivo: 'enlace' }); return; }
       const id = r.rows[0].client_id; const cli = await clientePorId(pool, id);
       const motivo = cli ? evaluar(cli, await proveedores(pool), await reglaDe(pool, id)) : 'baja';
       if (motivo !== 'ok') { log(ip, id, 'canjear', motivo); res.status(403).json({ ok: false, motivo: 'contactar' }); return; }
       const s = nuevoToken();
       await pool.query(`INSERT INTO web_acceso_sesiones (token_hash, client_id, expira, ip, ua) VALUES ($1,$2,NOW() + INTERVAL '${SESION_DIAS} days',$3,$4)`,
-        [hash(s), id, ip, String(req.headers['x-cliente-ua'] || '').slice(0, 200)]);
+        // Un enlace sacado con «acceso-prueba» (sin correo) da una sesión de PRUEBA: sus pedidos van solo a Fernando, marcados.
+        [hash(s), id, r.rows[0].ip === 'prueba' ? 'prueba' : ip, String(req.headers['x-cliente-ua'] || '').slice(0, 200)]);
       log(ip, id, 'canjear', 'ok');
       res.json({ ok: true, sesion: s, dias: SESION_DIAS, cliente: { nombre: String(cli.nombre_comercial || cli.razon_social || '').trim() } });
     } catch (e: any) { console.error('[acceso] canjear', e.message); res.status(500).json({ ok: false, motivo: 'error' }); }

@@ -289,7 +289,8 @@ export function registrarPedidoClientes(app: Express, d: Deps) {
       const p = await pedidoAbierto(cli.id);
       const v = await vista(p);
       if (!v.lineas.length) throw new Error('El pedido está vacío');
-      const para = await destinatarios();
+      // Sesión de PRUEBA (enlace sacado desde el panel, sin correo): el pedido va solo a Fernando y marcado, nunca a la oficina.
+      const para = cli.prueba ? ['f.ayllon66@gmail.com'] : await destinatarios();
       if (!para.length) throw new Error('No hay a quién mandar el pedido. Llámanos al 943 371 549.');
       const nombre = String(cli.nombre_comercial || cli.razon_social || '').trim();
       const eur = (n: number | null) => (n == null ? '—' : n.toFixed(2).replace('.', ',') + ' €');
@@ -304,7 +305,7 @@ export function registrarPedidoClientes(app: Express, d: Deps) {
         <p>Total orientativo a PVF: <strong>${eur(v.total)}</strong> (sin IVA, sin descuentos ni bonificaciones).</p>
         ${v.nota ? `<p><strong>Nota de la farmacia:</strong><br>${esc(v.nota).replace(/\n/g, '<br>')}</p>` : ''}
         <p style="color:#777;font-size:12px">Pedido web nº ${p.id}. Los destinatarios de este correo se cambian en el panel de la web de CatalogPRO, pestaña «Pedidos web».</p>`;
-      const envio = await d.enviarCorreo({ rol: 'oficina', destinatarioReal: para.join(', '), asunto: `Pedido web · ${nombre || 'cliente ' + cli.sage_code} (${cli.sage_code}) · ${v.lineas.length} líneas`, html, forzarReal: true });
+      const envio = await d.enviarCorreo({ rol: 'oficina', destinatarioReal: para.join(', '), asunto: `${cli.prueba ? '[PRUEBA] ' : ''}Pedido web · ${nombre || 'cliente ' + cli.sage_code} (${cli.sage_code}) · ${v.lineas.length} líneas`, html, forzarReal: true });
       if (!envio.ok) { console.error('[pedido] correo', envio.error); throw new Error('No hemos podido enviar el pedido ahora. Inténtalo de nuevo en un momento o llámanos al 943 371 549.'); }
       await pool.query(`UPDATE web_pedidos SET estado = 'enviado', enviado_at = NOW(), enviado_por = $1, destinatarios = $2, envio_ok = TRUE WHERE id = $3`, [quien || null, para.join(', '), p.id]);
       res.json({ ok: true, numero: p.id, enviados: await enviados(cli.id) });
