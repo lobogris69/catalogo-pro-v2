@@ -3122,8 +3122,9 @@ app.get('/api/envios-whatsapp/:id', verifyToken, async (req: AuthRequest, res: R
   } catch (e) { res.status(500).json({ success: false, error: (e as Error).message }); }
 });
 // PDF PÚBLICO DE LOS CATÁLOGOS QUE EL VENDEDOR IA MANDA A LOS CLIENTES (ver tabla catalogos_pdf_publico).
-// 24 = «REGALOS PROMOCIONALES NAVIDAD 2026». Para añadir otro: su id aquí (y la herramienta en el Vendedor IA).
-const CATALOGOS_PDF_PUBLICO = [24];
+// 24 = «REGALOS PROMOCIONALES NAVIDAD 2026» (Iker lo manda solo); 4 = «CATALOGO LOMHIFAR» general (solo con autorización de
+// Fernando, 24-nov: lo envía Claude a mano). Para añadir otro: su id aquí (y la herramienta en el Vendedor IA).
+const CATALOGOS_PDF_PUBLICO = [24, 4];
 let _pdfPublicoEnMarcha = false;
 async function refrescarPdfsPublicos(): Promise<void> {
   if (_pdfPublicoEnMarcha) return;
