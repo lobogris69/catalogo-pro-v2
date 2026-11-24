@@ -270,6 +270,9 @@ export function registrarWebPublica(app: Express, d: Deps) {
 
   // Productos de una marca visible (ficha de marca de la web). Caché de 10 min por marca.
   app.get('/api/web-publica/marcas/:slug/productos', async (req: Request, res: Response) => {
+    // CERRADO (24-nov-2026, Fernando): los laboratorios ven la web y no deben ver qué productos de otros llevamos.
+    // Volverá solo dentro de la zona privada de clientes, con sesión de cliente.
+    if (process.env.WEB_PRODUCTOS_PUBLICOS !== 'si') { res.status(404).json({ error: 'no disponible' }); return; }
     try {
       const slug = String(req.params.slug).slice(0, 80);
       let e = cacheProd.get(slug);
