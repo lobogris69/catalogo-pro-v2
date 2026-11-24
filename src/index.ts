@@ -32,6 +32,7 @@ import { detectarZonasIA, ultimoErrorIA, refinarRecuadroPrecio, detectarPreciosI
 import { parseExcelTabla, computarTabla, renderTablaExpositor, resumenExcel } from './expositor-tablas';
 import { registrarWebPublica } from './web-publica';
 import { registrarAreaClientes } from './area-clientes';
+import { registrarPedidoClientes } from './area-clientes-pedido';
 
 // ============================================================================
 // AI-TAGS - dispara generacion en background y hace UPDATE cuando esta listo.
@@ -1958,6 +1959,8 @@ async function initDB(): Promise<void> {
 // Web pública lomhifar.es: módulo aparte (tablas web_*, rutas /api/web-publica y /api/web-admin/*).
 registrarWebPublica(app as any, { pool, verifyToken: verifyToken as any, upload, uploadsDir: UPLOADS_DIR });
 registrarAreaClientes(app as any, { pool, verifyToken: verifyToken as any, enviarCorreo: enviarEmailConRedireccion as any, adminIds: () => (process.env.WEB_ADMIN_IDS || '1,10').split(',').map((x) => Number(x.trim())).filter((n) => n > 0) });
+// Zona de clientes: catálogo con precios de hoy y pedido web (destinatarios en el panel, pestaña «Pedidos web»).
+registrarPedidoClientes(app as any, { pool, verifyToken: verifyToken as any, enviarCorreo: enviarEmailConRedireccion as any, adminIds: () => (process.env.WEB_ADMIN_IDS || '1,10').split(',').map((x) => Number(x.trim())).filter((n) => n > 0), recomponer: recomponerLaminaHoy });
 
 app.get('/api/health', async (_req, res) => {
   try {

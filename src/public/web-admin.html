@@ -22,6 +22,7 @@
     <button role="tab" id="t-articulos" aria-controls="p-articulos" aria-selected="false">Quitar artículos</button>
     <button role="tab" id="t-laboratorios" aria-controls="p-laboratorios" aria-selected="false">Laboratorios</button>
     <button role="tab" id="t-acceso" aria-controls="p-acceso" aria-selected="false">Acceso clientes</button>
+    <button role="tab" id="t-pedidos" aria-controls="p-pedidos" aria-selected="false">Pedidos web</button>
     <button role="tab" id="t-contacto" aria-controls="p-contacto" aria-selected="false">Contacto</button>
   </nav>
 </header>
@@ -114,6 +115,24 @@
       <select id="filtro-acc" aria-label="Qué enseñar"><option value="revisar">Por revisar</option><option value="proveedor">Proveedores bloqueados</option><option value="manual">Decididos por ti</option><option value="todos">Todos</option></select>
     </div>
     <ul id="lista-acc" class="lista"></ul>
+  </section>
+
+  <section id="p-pedidos" role="tabpanel" aria-labelledby="t-pedidos" hidden>
+    <div class="intro">
+      <h2>Pedidos que hacen las farmacias en la web</h2>
+      <p>Cada pedido que envía una farmacia desde su zona de clientes llega por correo a estas direcciones. Puedes añadir al comercial o a quien quieras, y quitar a quien no deba recibirlos.</p>
+    </div>
+    <form id="form-dest" class="form-dest">
+      <ul id="lista-dest" class="lista"></ul>
+      <div class="fila-btn">
+        <label class="oculto" for="nuevo-dest">Añadir un correo</label>
+        <input id="nuevo-dest" type="email" placeholder="correo@ejemplo.com" autocomplete="off">
+        <button class="btn-sec" type="button" id="btn-anadir-dest">Añadir</button>
+        <button class="btn" type="submit">Guardar destinatarios</button>
+      </div>
+    </form>
+    <h3 class="sub">Últimos pedidos</h3>
+    <ul id="lista-ped" class="lista"></ul>
   </section>
 
   <section id="p-contacto" role="tabpanel" aria-labelledby="t-contacto" hidden>

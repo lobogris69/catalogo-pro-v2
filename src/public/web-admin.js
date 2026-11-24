@@ -34,10 +34,10 @@
   function bloquear() { document.querySelectorAll('[role=tabpanel], .pestanas').forEach((x) => { x.hidden = true; }); $('bloqueo').hidden = false; }
 
   // ---------- Pestañas ----------
-  const tabs = ['marcas', 'novedades', 'articulos', 'laboratorios', 'acceso', 'contacto'];
+  const tabs = ['marcas', 'novedades', 'articulos', 'laboratorios', 'acceso', 'pedidos', 'contacto'];
   function abrir(n) {
     for (const t of tabs) { $('t-' + t).setAttribute('aria-selected', String(t === n)); $('p-' + t).hidden = t !== n; }
-    if (n === 'marcas') cargarMarcas(); if (n === 'novedades') cargarNovedades(); if (n === 'articulos') cargarOcultos(); if (n === 'contacto') cargarContacto(); if (n === 'laboratorios') cargarLabs(); if (n === 'acceso') cargarAcceso();
+    if (n === 'marcas') cargarMarcas(); if (n === 'novedades') cargarNovedades(); if (n === 'articulos') cargarOcultos(); if (n === 'contacto') cargarContacto(); if (n === 'laboratorios') cargarLabs(); if (n === 'acceso') cargarAcceso(); if (n === 'pedidos') cargarPedidos();
     try { localStorage.setItem('webadmin_tab', n); } catch (_) {}
   }
   tabs.forEach((t) => $('t-' + t).addEventListener('click', () => abrir(t)));
@@ -225,6 +225,44 @@
   $('filtro-acc').addEventListener('change', pintarAcceso);
   $('acc-activo').addEventListener('change', intenta(async (e) => { await api('/acceso-activo', { method: 'PUT', body: { activo: e.target.checked } }); acc.activo = e.target.checked; }, 'Guardado'));
   $('filtro-lab').addEventListener('change', pintarLabs);
+
+
+  // ---------- Pedidos web ----------
+  let dest = [];
+  async function cargarPedidos() {
+    const j = await api('/pedidos'); dest = j.destinatarios || []; pintarDest();
+    const ul = $('lista-ped'); ul.replaceChildren();
+    for (const p of j.pedidos || []) {
+      const cuando = new Date(p.enviado_at || p.actualizado_at).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' });
+      const det = el('div', { class: 'det' }, (p.estado === 'enviado' ? 'Enviado ' + cuando + (p.enviado_por ? ' por ' + p.enviado_por : '') + ' · a ' + (p.destinatarios || '') : 'Sin enviar todavía · último cambio ' + cuando) + ' · ' + p.n + ' líneas');
+      const caja = el('div', { class: 'det' });
+      const ver = el('button', { class: 'btn-sec', type: 'button', onclick: intenta(async () => {
+        if (caja.childNodes.length) { caja.replaceChildren(); return; }
+        const { pedido } = await api('/pedidos/' + p.id);
+        for (const l of pedido.lineas) caja.append(el('div', {}, l.cantidad + ' × ' + (l.codigo ? l.codigo + ' · ' : '') + l.nombre + (l.quien ? ' (' + l.quien + ')' : '')));
+        if (pedido.nota) caja.append(el('div', {}, 'Nota: ' + pedido.nota));
+      }) }, 'Ver');
+      ul.append(el('li', { class: p.estado === 'enviado' ? '' : 'apagada' },
+        el('span', { class: 'estado ' + (p.estado === 'enviado' ? 'bien' : 'mal') }, p.estado === 'enviado' ? 'Nº ' + p.id : 'Abierto'),
+        el('div', {}, el('div', { class: 'nom' }, (p.nombre || 'Cliente') + ' · ' + (p.sage_code || '')), det, caja),
+        el('div', { class: 'acciones' }, ver)));
+    }
+    if (!(j.pedidos || []).length) ul.append(el('li', {}, el('span', {}), el('div', { class: 'det' }, 'Todavía no ha llegado ningún pedido.')));
+  }
+  function pintarDest() {
+    const ul = $('lista-dest'); ul.replaceChildren();
+    dest.forEach((c, i) => ul.append(el('li', {}, el('span', { class: 'estado bien' }, 'Recibe'), el('div', { class: 'nom' }, c),
+      el('div', { class: 'acciones' }, el('button', { class: 'btn-sec btn-peligro', type: 'button', onclick: () => { dest.splice(i, 1); pintarDest(); } }, 'Quitar')))));
+  }
+  $('btn-anadir-dest').addEventListener('click', () => {
+    const v = $('nuevo-dest').value.trim().toLowerCase();
+    if (!v || !$('nuevo-dest').checkValidity()) { avisar('Escribe un correo válido', true); return; }
+    if (!dest.includes(v)) dest.push(v); $('nuevo-dest').value = ''; pintarDest(); avisar('Añadido. Pulsa «Guardar destinatarios».');
+  });
+  $('form-dest').addEventListener('submit', intenta(async (ev) => {
+    ev.preventDefault();
+    const j = await api('/pedidos-destinatarios', { method: 'PUT', body: { destinatarios: dest } }); dest = j.destinatarios; pintarDest();
+  }, 'Destinatarios guardados'));
 
   // ---------- Contacto ----------
   const CLAVES = ['telefono', 'whatsapp', 'correo', 'horario_dias', 'horario_abre', 'horario_cierra'];

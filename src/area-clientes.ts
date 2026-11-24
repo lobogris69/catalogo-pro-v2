@@ -85,6 +85,16 @@ async function reglaDe(pool: Pool, id: number) {
 async function clientePorId(pool: Pool, id: number) {
   return (await pool.query(`SELECT ${CAMPOS_CLI} FROM clients WHERE id = $1`, [id])).rows[0];
 }
+/** Cliente de una sesión de la web, volviendo a pasar TODAS las capas (lo usa también el catálogo y el pedido). */
+export async function clienteDeSesion(pool: Pool, sesion: unknown) {
+  const s = String(sesion || '');
+  if (s.length < 20) return null;
+  const r = await pool.query(`SELECT client_id FROM web_acceso_sesiones WHERE token_hash = $1 AND NOT revocada AND expira > NOW()`, [hash(s)]);
+  if (!r.rowCount) return null;
+  const cli = await clientePorId(pool, r.rows[0].client_id);
+  if (!cli || evaluar(cli, await proveedores(pool), await reglaDe(pool, cli.id)) !== 'ok') return null;
+  return cli as { id: number; sage_code: string; razon_social: string; nombre_comercial: string; email: string; commercial_code: string; provincia: string };
+}
 const ipDe = (req: Request) => String(req.headers['x-cliente-ip'] || req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim().slice(0, 60);
 const enmascarar = (e: string) => { const [u, d = ''] = e.split('@'); const [dn, ...tld] = d.split('.'); return (u[0] || '') + '•••@' + (dn[0] || '') + '•••.' + tld.join('.'); };
 
