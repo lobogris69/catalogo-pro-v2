@@ -31,6 +31,7 @@ import { generarTagsIA, resolverRutaImagen } from './ai-tags';
 import { detectarZonasIA, ultimoErrorIA, refinarRecuadroPrecio, detectarPreciosIA } from './ai-zones';
 import { parseExcelTabla, computarTabla, renderTablaExpositor, resumenExcel } from './expositor-tablas';
 import { registrarWebPublica } from './web-publica';
+import { registrarAreaClientes } from './area-clientes';
 
 // ============================================================================
 // AI-TAGS - dispara generacion en background y hace UPDATE cuando esta listo.
@@ -1956,6 +1957,7 @@ async function initDB(): Promise<void> {
 // Timeout 3s para no quedarse colgado si BD esta saturada.
 // Web pública lomhifar.es: módulo aparte (tablas web_*, rutas /api/web-publica y /api/web-admin/*).
 registrarWebPublica(app as any, { pool, verifyToken: verifyToken as any, upload, uploadsDir: UPLOADS_DIR });
+registrarAreaClientes(app as any, { pool, verifyToken: verifyToken as any, enviarCorreo: enviarEmailConRedireccion as any, adminIds: () => (process.env.WEB_ADMIN_IDS || '1,10').split(',').map((x) => Number(x.trim())).filter((n) => n > 0) });
 
 app.get('/api/health', async (_req, res) => {
   try {

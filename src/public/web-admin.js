@@ -34,10 +34,10 @@
   function bloquear() { document.querySelectorAll('[role=tabpanel], .pestanas').forEach((x) => { x.hidden = true; }); $('bloqueo').hidden = false; }
 
   // ---------- Pestañas ----------
-  const tabs = ['marcas', 'novedades', 'articulos', 'laboratorios', 'contacto'];
+  const tabs = ['marcas', 'novedades', 'articulos', 'laboratorios', 'acceso', 'contacto'];
   function abrir(n) {
     for (const t of tabs) { $('t-' + t).setAttribute('aria-selected', String(t === n)); $('p-' + t).hidden = t !== n; }
-    if (n === 'marcas') cargarMarcas(); if (n === 'novedades') cargarNovedades(); if (n === 'articulos') cargarOcultos(); if (n === 'contacto') cargarContacto(); if (n === 'laboratorios') cargarLabs();
+    if (n === 'marcas') cargarMarcas(); if (n === 'novedades') cargarNovedades(); if (n === 'articulos') cargarOcultos(); if (n === 'contacto') cargarContacto(); if (n === 'laboratorios') cargarLabs(); if (n === 'acceso') cargarAcceso();
     try { localStorage.setItem('webadmin_tab', n); } catch (_) {}
   }
   tabs.forEach((t) => $('t-' + t).addEventListener('click', () => abrir(t)));
@@ -198,6 +198,32 @@
     if (!ver.length) ul.append(el('li', {}, el('span', {}), el('div', { class: 'det' }, 'Ninguno con ese filtro.')));
   }
   $('buscar-lab').addEventListener('input', pintarLabs);
+
+  // ---------- Acceso a la zona de clientes ----------
+  let acc = { lista: [], cuenta: {}, activo: false };
+  const ESTADO_ACC = { ok: 'Entra', revisar: 'Por revisar', proveedor: 'Proveedor: bloqueado', bloqueado: 'Bloqueado por ti', baja: 'De baja', sin_email: 'Sin correo en Sage' };
+  async function cargarAcceso() { acc = await api('/acceso'); $('acc-activo').checked = !!acc.activo; pintarAcceso(); }
+  function pintarAcceso() {
+    const c = acc.cuenta || {};
+    $('acc-resumen').textContent = `Pueden entrar: ${c.ok || 0} · por revisar: ${c.revisar || 0} · proveedores bloqueados: ${c.proveedor || 0} · bloqueados por ti: ${c.bloqueado || 0} · sin correo en Sage: ${c.sin_email || 0} · de baja: ${c.baja || 0}`;
+    const q = $('buscar-acc').value.trim().toLowerCase(), f = $('filtro-acc').value;
+    const ul = $('lista-acc'); ul.replaceChildren();
+    const ver = acc.lista.filter((x) => (!q || x.nombre.toLowerCase().includes(q) || String(x.codigo).includes(q)) && (f === 'todos' || (f === 'manual' ? x.regla : x.estado === f))).slice(0, 300);
+    for (const x of ver) {
+      const fijar = (v) => intenta(async () => { await api('/acceso/' + x.id, { method: 'PUT', body: { estado: v } }); await cargarAcceso(); }, 'Guardado. Vale desde ya.');
+      ul.append(el('li', { class: x.estado === 'ok' ? '' : 'apagada' },
+        el('span', { class: 'estado ' + (x.estado === 'ok' ? 'bien' : 'mal') }, ESTADO_ACC[x.estado] || x.estado),
+        el('div', {}, el('div', { class: 'nom' }, x.nombre), el('div', { class: 'det' }, 'Código ' + x.codigo + (x.provincia ? ' · ' + x.provincia : '') + (x.regla ? ' · decidido por ti' : ''))),
+        el('div', { class: 'acciones' },
+          x.regla !== 'permitido' ? el('button', { class: 'btn', type: 'button', onclick: fijar('permitido') }, 'Dejarle entrar') : null,
+          x.regla !== 'bloqueado' ? el('button', { class: 'btn-sec btn-peligro', type: 'button', onclick: fijar('bloqueado') }, 'Bloquear') : null,
+          x.regla ? el('button', { class: 'btn-sec', type: 'button', onclick: fijar(null) }, 'Volver a automático') : null)));
+    }
+    if (!ver.length) ul.append(el('li', {}, el('span', {}), el('div', { class: 'det' }, 'Ninguno con ese filtro. Para bloquear a una farmacia concreta, búscala en «Todos» si está en la lista, o pídemelo.')));
+  }
+  $('buscar-acc').addEventListener('input', pintarAcceso);
+  $('filtro-acc').addEventListener('change', pintarAcceso);
+  $('acc-activo').addEventListener('change', intenta(async (e) => { await api('/acceso-activo', { method: 'PUT', body: { activo: e.target.checked } }); acc.activo = e.target.checked; }, 'Guardado'));
   $('filtro-lab').addEventListener('change', pintarLabs);
 
   // ---------- Contacto ----------

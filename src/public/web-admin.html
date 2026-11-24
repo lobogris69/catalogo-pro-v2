@@ -21,6 +21,7 @@
     <button role="tab" id="t-novedades" aria-controls="p-novedades" aria-selected="false">Novedades del mes</button>
     <button role="tab" id="t-articulos" aria-controls="p-articulos" aria-selected="false">Quitar artículos</button>
     <button role="tab" id="t-laboratorios" aria-controls="p-laboratorios" aria-selected="false">Laboratorios</button>
+    <button role="tab" id="t-acceso" aria-controls="p-acceso" aria-selected="false">Acceso clientes</button>
     <button role="tab" id="t-contacto" aria-controls="p-contacto" aria-selected="false">Contacto</button>
   </nav>
 </header>
@@ -98,6 +99,21 @@
       <select id="filtro-lab" aria-label="Qué enseñar"><option value="si">Los que cuentan</option><option value="no">Los que no cuentan</option><option value="todos">Todos</option></select>
     </div>
     <ul id="lista-lab" class="lista"></ul>
+  </section>
+
+  <section id="p-acceso" role="tabpanel" aria-labelledby="t-acceso" hidden>
+    <div class="intro">
+      <h2>Quién puede entrar en la zona de clientes</h2>
+      <p>Solo entran clientes de Sage activos que sean farmacia (titular persona física o nombre con farmacia, óptica, ortopedia…). Los proveedores dados de alta como clientes en Sage quedan <b>bloqueados siempre</b>. Las demás sociedades no entran hasta que tú las permitas aquí. El enlace de entrada va solo al correo que tiene Sage.</p>
+      <p id="acc-resumen"></p>
+      <label class="fila-btn"><input type="checkbox" id="acc-activo"> Mandar los enlaces a las farmacias (si está apagado, van al correo de la oficina como prueba)</label>
+    </div>
+    <div class="barra-acc">
+      <label class="oculto" for="buscar-acc">Buscar cliente</label>
+      <input id="buscar-acc" type="search" placeholder="Buscar por nombre o código…">
+      <select id="filtro-acc" aria-label="Qué enseñar"><option value="revisar">Por revisar</option><option value="proveedor">Proveedores bloqueados</option><option value="manual">Decididos por ti</option><option value="todos">Todos</option></select>
+    </div>
+    <ul id="lista-acc" class="lista"></ul>
   </section>
 
   <section id="p-contacto" role="tabpanel" aria-labelledby="t-contacto" hidden>
