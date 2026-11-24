@@ -35,7 +35,9 @@ const CATALOGOS_DEFECTO = [
 ];
 const DESTINATARIOS_DEFECTO = ['lomhifar@lomhifar.com', 'f.ayllon66@gmail.com'];
 const MAX_LINEAS = 300, MAX_CANT = 9999;
-const TARIFA = 1; // CatalogPRO trabaja con una sola tarifa (app_config.num_tarifas = 1)
+const TARIFA = 1;
+/** Láminas que NO se enseñan en la zona privada (Beter no aparece en ninguna parte de la web, 24-nov-2026). */
+const LAMINA_OCULTA = `COALESCE(s.titulo,'') !~* 'BETER'`; // CatalogPRO trabaja con una sola tarifa (app_config.num_tarifas = 1)
 
 type Linea = { k: string; product_id?: number; codigo?: string; nombre: string; cantidad: number; quien?: string; lamina_id?: number; at?: string };
 
@@ -43,7 +45,10 @@ const esc = (s: unknown) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&
 const correoValido = (e: string) => /^[^\s@<>,;]+@[^\s@<>,;]+\.[a-z]{2,}$/i.test(e);
 /** «2 LABEL ROBOT FARMACIA 17 NOVIEMBRE 2025» → «Label robot farmacia»: fuera números de orden, fechas y notas internas. */
 export function tituloLimpio(t: unknown) {
-  let s = String(t || '').replace(/\.(png|jpe?g|webp)$/i, '').replace(/_/g, ' ');
+  let s = String(t || '');
+  if (/Ã.|Â./.test(s)) { try { s = Buffer.from(s, 'latin1').toString('utf8'); } catch { /* se queda */ } }
+  s = s.replace(/\.(png|jpe?g|webp)$/i, '').replace(/_/g, ' ').replace(/page-?\d+/gi, '')
+    .replace(/([A-Za-z])(\d{1,2})\s+(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)/gi, '$1 $2 $3');
   s = s.replace(/^\s*\d+\s+/, '')
     .replace(/\b\d{1,2}\s+(DE\s+)?(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)(\s+(DE\s+)?\d{4})?\b/gi, '')
     .replace(/\b(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\s+\d{4}\b/gi, '')
@@ -52,7 +57,8 @@ export function tituloLimpio(t: unknown) {
     .replace(/\s+\d+\s*$/, '').replace(/\s+/g, ' ').trim();
   if (!s) return 'Lámina';
   // Si viene todo en mayúsculas, se pasa a frase normal.
-  if (s === s.toUpperCase()) s = s.charAt(0) + s.slice(1).toLowerCase();
+  const may = (s.match(/[A-ZÁÉÍÓÚÑ]/g) || []).length, min = (s.match(/[a-záéíóúñ]/g) || []).length;
+  if (may > min) s = s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
   return s;
 }
 
@@ -103,7 +109,7 @@ export function registrarPedidoClientes(app: Express, d: Deps) {
   /** ¿Pertenece la lámina a uno de los catálogos de la farmacia y está visible? */
   async function laminaPermitida(id: number) {
     const cats = (await catalogos()).map((c) => c.id);
-    const r = await pool.query(`SELECT s.id, s.catalog_id, s.titulo, s.orden FROM sheets s WHERE s.id = $1 AND NOT COALESCE(s.oculta,false) AND s.catalog_id = ANY($2::int[])`, [id, cats]);
+    const r = await pool.query(`SELECT s.id, s.catalog_id, s.titulo, s.orden FROM sheets s WHERE s.id = $1 AND NOT COALESCE(s.oculta,false) AND ${LAMINA_OCULTA} AND s.catalog_id = ANY($2::int[])`, [id, cats]);
     return r.rows[0] || null;
   }
 
@@ -135,10 +141,12 @@ export function registrarPedidoClientes(app: Express, d: Deps) {
   app.post(`${R}/catalogos`, conCliente, async (_req, res) => {
     try {
       const cats = await catalogos();
-      const filas = (await pool.query(`SELECT id, catalog_id, titulo, miniatura_path, orden FROM sheets
-        WHERE catalog_id = ANY($1::int[]) AND NOT COALESCE(oculta,false) ORDER BY catalog_id, orden, id`, [cats.map((c) => c.id)])).rows;
+      const filas = (await pool.query(`SELECT s.id, s.catalog_id, s.titulo, s.miniatura_path, s.orden FROM sheets s
+        WHERE s.catalog_id = ANY($1::int[]) AND NOT COALESCE(s.oculta,false) AND ${LAMINA_OCULTA} ORDER BY s.catalog_id, s.orden, s.id`, [cats.map((c) => c.id)])).rows;
+      // «Se pide desde aquí» solo si alguna zona lleva a un artículo VIVO que se puede pedir.
       const conProd = new Set((await pool.query(`SELECT DISTINCT z.sheet_id FROM sheet_zones z JOIN sheets s ON s.id = z.sheet_id
-        WHERE s.catalog_id = ANY($1::int[]) AND (z.product_id IS NOT NULL OR z.familia_skus IS NOT NULL OR z.familia_ref IS NOT NULL)`, [cats.map((c) => c.id)])).rows.map((r: any) => r.sheet_id));
+        JOIN products p ON (p.id = z.product_id OR (z.familia_skus IS NOT NULL AND z.familia_skus @> to_jsonb(p.id)))
+        WHERE s.catalog_id = ANY($1::int[]) AND ${VIVO}`, [cats.map((c) => c.id)])).rows.map((r: any) => r.sheet_id));
       res.json({ ok: true, catalogos: cats.map((c) => ({ id: c.id, nombre: c.nombre,
         laminas: filas.filter((f: any) => f.catalog_id === c.id).map((f: any) => ({ id: f.id, titulo: tituloLimpio(f.titulo), mini: f.miniatura_path || null, pedible: conProd.has(f.id) })) })) });
     } catch (e: any) { console.error('[pedido] catalogos', e.message); res.status(500).json({ ok: false }); }
@@ -150,7 +158,7 @@ export function registrarPedidoClientes(app: Express, d: Deps) {
       const s = await laminaPermitida(Number(req.body?.id));
       if (!s) { res.status(404).json({ ok: false }); return; }
       const img = await imagenLamina(s.id);
-      const hermanas = (await pool.query(`SELECT id FROM sheets WHERE catalog_id = $1 AND NOT COALESCE(oculta,false) ORDER BY orden, id`, [s.catalog_id])).rows.map((r: any) => r.id);
+      const hermanas = (await pool.query(`SELECT s.id FROM sheets s WHERE s.catalog_id = $1 AND NOT COALESCE(s.oculta,false) AND ${LAMINA_OCULTA} ORDER BY s.orden, s.id`, [s.catalog_id])).rows.map((r: any) => r.id);
       const i = hermanas.indexOf(s.id);
       const zonas = (await pool.query(`SELECT id, product_id, familia_skus, familia_ref, etiqueta, link_sheet_id, es_comision, x, y, ancho, alto
         FROM sheet_zones WHERE sheet_id = $1 ORDER BY orden, id`, [s.id])).rows;
@@ -204,7 +212,7 @@ export function registrarPedidoClientes(app: Express, d: Deps) {
       const arts = await articulos(ids);
       const cats = (await catalogos()).map((c) => c.id);
       const lam = await pool.query(`SELECT DISTINCT ON (z.product_id) z.product_id, s.id, s.titulo FROM sheet_zones z JOIN sheets s ON s.id = z.sheet_id
-        WHERE z.product_id = ANY($1::int[]) AND s.catalog_id = ANY($2::int[]) AND NOT COALESCE(s.oculta,false) ORDER BY z.product_id, s.catalog_id, s.orden`, [ids, cats]);
+        WHERE z.product_id = ANY($1::int[]) AND s.catalog_id = ANY($2::int[]) AND NOT COALESCE(s.oculta,false) AND ${LAMINA_OCULTA} ORDER BY z.product_id, s.catalog_id, s.orden`, [ids, cats]);
       const lm = new Map(lam.rows.map((x: any) => [x.product_id, { id: x.id, titulo: tituloLimpio(x.titulo) }]));
       res.json({ ok: true, articulos: ids.filter((id) => arts.has(id)).map((id) => ({ ...arts.get(id), lamina: lm.get(id) || null })) });
     } catch (e: any) { console.error('[pedido] buscar', e.message); res.status(500).json({ ok: false }); }
