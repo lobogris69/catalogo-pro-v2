@@ -67,6 +67,9 @@ async function migrar(pool: Pool) {
       foto_url TEXT,
       updated_at TIMESTAMP NOT NULL DEFAULT NOW()
     )`);
+  // Marca o laboratorio (24-nov-2026, Fernando): 'marca' (de un laboratorio), 'laboratorio' o 'las-dos' (laboratorio con marca propia).
+  await pool.query(`ALTER TABLE web_marcas ADD COLUMN IF NOT EXISTS tipo VARCHAR(12) NOT NULL DEFAULT 'marca'`);
+  await pool.query(`ALTER TABLE web_marcas ADD COLUMN IF NOT EXISTS laboratorio VARCHAR(120) NOT NULL DEFAULT ''`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS web_novedades (
       id SERIAL PRIMARY KEY,
@@ -209,6 +212,8 @@ async function construirSalida(pool: Pool, base: string) {
       familias: Array.isArray(m.familias) ? m.familias.map(String) : [],
       // Sin el número de referencias de cada marca (23-nov-2026): la web la ven otros laboratorios y no deben compararse.
       destacada: !!m.destacada,
+      tipo: ['marca', 'laboratorio', 'las-dos'].includes(m.tipo) ? String(m.tipo) : 'marca',
+      laboratorio: m.tipo === 'marca' ? String(m.laboratorio || '') : '',
       logo: abs(m.logo_url ? String(m.logo_url) : null), foto: abs(m.foto_url ? String(m.foto_url) : null),
     });
   }
@@ -327,6 +332,8 @@ export function registrarWebPublica(app: Express, d: Deps) {
       if (Array.isArray(b.patrones)) pon('patrones', JSON.stringify(b.patrones.filter((p: any) => p && p.texto).map((p: any) => ({ campo: p.campo === 'nombre' ? 'nombre' : 'proveedor', texto: String(p.texto).slice(0, 80) }))));
       if (b.logo_url === null || typeof b.logo_url === 'string') pon('logo_url', b.logo_url || null);
       if (b.foto_url === null || typeof b.foto_url === 'string') pon('foto_url', b.foto_url || null);
+      if (['marca', 'laboratorio', 'las-dos'].includes(b.tipo)) pon('tipo', b.tipo);
+      if (typeof b.laboratorio === 'string') pon('laboratorio', b.laboratorio.trim().slice(0, 120));
       if (!campos.length) throw new Error('Nada que cambiar');
       vals.push(req.params.slug);
       const r = await pool.query(`UPDATE web_marcas SET ${campos.join(', ')}, updated_at = NOW() WHERE slug = $${vals.length}`, vals);

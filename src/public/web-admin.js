@@ -72,14 +72,21 @@
       const desc = el('textarea', { rows: '2', maxlength: '400' }); desc.value = m.descripcion || '';
       const [bLogo, iLogo] = botonFoto(m.logo_url ? 'Cambiar logo' : 'Subir logo', async (url) => { await api('/marcas/' + m.slug, { method: 'PUT', body: { logo_url: url } }); m.logo_url = url; pintarMarcas(); });
       const [bFoto, iFoto] = botonFoto(m.foto_url ? 'Cambiar foto' : 'Subir foto de producto', async (url) => { await api('/marcas/' + m.slug, { method: 'PUT', body: { foto_url: url } }); m.foto_url = url; pintarMarcas(); });
-      const editar = el('details', { class: 'editar' }, el('summary', {}, 'Cambiar texto, logo o foto'),
+      const TIPOS = { marca: 'Marca', laboratorio: 'Laboratorio', 'las-dos': 'Laboratorio con marca propia' };
+      const selTipo = el('select', { 'aria-label': 'Qué es ' + m.nombre }, ...Object.entries(TIPOS).map(([k, t]) => { const o = el('option', { value: k }, t); if ((m.tipo || 'marca') === k) o.selected = true; return o; }));
+      const iLab = el('input', { type: 'text', maxlength: '120', placeholder: 'De qué laboratorio es (solo si es marca)' }); iLab.value = m.laboratorio || '';
+      const editar = el('details', { class: 'editar' }, el('summary', {}, 'Cambiar tipo, texto, logo o foto'),
+        el('label', {}, '¿Marca o laboratorio?'), selTipo,
+        el('label', {}, 'Laboratorio al que pertenece'), iLab,
+        el('div', { class: 'fila-btn' },
+          el('button', { class: 'btn', type: 'button', onclick: intenta(async () => { await api('/marcas/' + m.slug, { method: 'PUT', body: { tipo: selTipo.value, laboratorio: selTipo.value === 'marca' ? iLab.value : '' } }); m.tipo = selTipo.value; m.laboratorio = selTipo.value === 'marca' ? iLab.value : ''; pintarMarcas(); }, 'Guardado. La web lo recoge en unos minutos.') }, 'Guardar tipo')),
         el('label', {}, 'Qué vende, en una frase'), desc,
         el('div', { class: 'fila-btn' },
           el('button', { class: 'btn', type: 'button', onclick: intenta(async () => { await api('/marcas/' + m.slug, { method: 'PUT', body: { descripcion: desc.value } }); m.descripcion = desc.value; }, 'Texto guardado') }, 'Guardar texto'),
           bLogo, iLogo, bFoto, iFoto));
       ul.append(el('li', { class: sale ? '' : 'apagada' },
         inter,
-        el('div', {}, el('div', { class: 'nom' }, m.nombre), el('div', { class: 'det' }, (m.refs || 0) + ' artículos vivos en Sage'), estado),
+        el('div', {}, el('div', { class: 'nom' }, m.nombre), el('div', { class: 'det' }, ({ marca: 'Marca' + (m.laboratorio ? ' de ' + m.laboratorio : ''), laboratorio: 'Laboratorio', 'las-dos': 'Laboratorio con marca propia' }[m.tipo || 'marca']) + ' · ' + (m.refs || 0) + ' artículos vivos en Sage'), estado),
         el('div', { class: 'acciones' }, estrella),
         editar));
     }
