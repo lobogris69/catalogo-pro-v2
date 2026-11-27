@@ -7,6 +7,27 @@ import { Pool } from 'pg';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
+
+// multer 1.x entrega el NOMBRE del archivo leído como latin1, no UTF-8: «Promoción.png» llegaba
+// como «PromociÃ³n» y ese nombre se usa de título automático de la lámina (27-nov-2026). Se
+// corrige aquí, en el fileFilter, que multer llama para CADA archivo antes de guardarlo: así vale
+// para todas las subidas. Si el nombre ya trae caracteres fuera de latin1, o no es UTF-8 válido,
+// se deja tal cual. NFC: el Mac y algunos móviles escriben la tilde aparte («o» + «´»).
+function nombreArchivoUtf8(n: string): string {
+  if (!n || /[^\x00-\xff]/.test(n) || !/[\x80-\xff]/.test(n)) return (n || '').normalize('NFC');
+  const d = Buffer.from(n, 'latin1').toString('utf8');
+  return (d.includes('\uFFFD') ? n : d).normalize('NFC');
+}
+function multerUtf8(opts: multer.Options = {}) {
+  const filtro = opts.fileFilter;
+  return multer({
+    ...opts,
+    fileFilter: (req, file, cb) => {
+      file.originalname = nombreArchivoUtf8(file.originalname);
+      if (filtro) filtro(req, file, cb); else cb(null, true);
+    },
+  });
+}
 import path from 'path';
 import fs from 'fs';
 import { exec } from 'child_process';
@@ -606,7 +627,7 @@ const storage = multer.diskStorage({
     cb(null, `${Date.now()}_${safe}`);
   }
 });
-const upload = multer({
+const upload = multerUtf8({
   storage,
   limits: { fileSize: 20 * 1024 * 1024 }
 });
@@ -1976,7 +1997,7 @@ app.get('/api/health', async (_req, res) => {
       // Marca del build: se sube A MANO en cada cambio de BACKEND. Sin esto no hay
       // forma de saber si Railway ya sirve el codigo nuevo (el APP_VERSION del
       // frontend solo delata los cambios de app.js) y se acaba depurando a ciegas.
-      build: 'v339b-orden-express-9nov',
+      build: 'v339c-nombres-utf8-27nov',
       service: 'CatalogPRO v2',
       db_ms: Date.now() - t0,
       uptime_s: Math.round(process.uptime()),
@@ -3811,7 +3832,7 @@ app.post('/api/catalogs/:id/sheets/insert-blank', verifyToken, requireRealAdmin,
 // Acepta hasta 50 archivos por petición (límite seguro Railway).
 // Frontend puede llamar varias veces si tiene >50.
 // ============================================================================
-const uploadMultiple = multer({
+const uploadMultiple = multerUtf8({
   storage,
   limits: {
     fileSize: 20 * 1024 * 1024,      // 20 MB por archivo
@@ -6249,7 +6270,7 @@ app.delete('/api/catalogs/:cid/assignments/:uid', verifyToken, requireAdmin, asy
 // ============================================================================
 // LAMINAS - subir PDF entero y trocear en laminas
 // ============================================================================
-const uploadPdf = multer({
+const uploadPdf = multerUtf8({
   storage,
   limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
   fileFilter: (req, file, cb) => {
@@ -6930,7 +6951,7 @@ app.get('/api/dashboard', verifyToken, requireRealAdmin, async (req: AuthRequest
 });
 
 // Importar clientes desde Excel de Sage (admin)
-const uploadExcel = multer({
+const uploadExcel = multerUtf8({
   storage,
   limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
@@ -10813,7 +10834,7 @@ app.post('/api/catalogs/:id/enviar-laminas', verifyToken, async (req: AuthReques
 // ============================================================================
 // TABLAS DE EXPOSITOR — biblioteca (subir Excel), calcular y dibujar.
 // ============================================================================
-const uploadTablaMem = multer({
+const uploadTablaMem = multerUtf8({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
@@ -12385,7 +12406,7 @@ app.get('/api/visits/:id/pdf', verifyToken, async (req: AuthRequest, res: Respon
 });
 
 // Endpoint para enviar un PDF de backup local por email (lo usa la pantalla "Mis pedidos guardados")
-const uploadBackupMem = multer({
+const uploadBackupMem = multerUtf8({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 } // 25 MB máx
 });
@@ -15002,7 +15023,7 @@ const MIMES_FORMACION_VIDEO = [
   'video/mp4', 'video/webm', 'video/quicktime'
 ];
 
-const uploadFormacion = multer({
+const uploadFormacion = multerUtf8({
   storage: storageFormaciones,
   // Límite mayor (200 MB) — luego validamos por tipo en el handler (50 MB doc / 200 MB vídeo)
   limits: { fileSize: 200 * 1024 * 1024 },
